@@ -131,6 +131,22 @@ source .venv/bin/activate
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
+## Development Scripts
+
+WSL/Linux development scripts are available for managing the local backend on
+port `8001`:
+
+```bash
+./scripts/start.sh
+./scripts/status.sh
+./scripts/stop.sh
+./scripts/restart.sh
+```
+
+The scripts use `backend/.venv`, start Uvicorn on `127.0.0.1:8001`, print the
+health URL, and help recover from stuck port issues. Override the port for local
+experiments with `RESEARCHOS_DEV_PORT`.
+
 ## Microsoft Graph Auth Setup
 
 ResearchOS uses Microsoft Authentication Library (MSAL) for delegated Microsoft

@@ -40,3 +40,5 @@ Thumbs.db
 # Logs
 *.log
 logs/
+.researchos-dev.pid
+.researchos-dev.log
