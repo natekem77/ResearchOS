@@ -7,11 +7,15 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
+from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
+from app.ingestion import ingest_markdown_folder
 from app.logging import configure_logging
 from app.onenote_provider import list_notebooks, list_pages, list_sections
+from app.storage import SQLiteStore
+from app.vector_index import ChromaVectorIndex
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -54,6 +58,76 @@ class OneNoteMetadataResponse(BaseModel):
     title: str | None = None
     createdDateTime: str | None = None
     lastModifiedDateTime: str | None = None
+
+
+class MarkdownIngestRequest(BaseModel):
+    """Request body for local Markdown ingestion."""
+
+    folder_path: str = "../samples/lab_notes"
+
+
+class IngestResponse(BaseModel):
+    """Summary of a document ingestion run."""
+
+    provider: str
+    documents_ingested: int
+    chunks_indexed: int
+
+
+class DocumentSummaryResponse(BaseModel):
+    """Stored document summary returned by list endpoints."""
+
+    id: str
+    provider: str
+    source_id: str
+    title: str
+    source_path: str | None = None
+    source_url: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    ingested_at: str
+
+
+class DocumentDetailResponse(DocumentSummaryResponse):
+    """Stored document detail with content."""
+
+    content: str
+    metadata: dict[str, str]
+    chunk_count: int
+
+
+class SearchRequest(BaseModel):
+    """Search request for local research documents."""
+
+    query: str
+    limit: int = 10
+
+
+class SearchResultResponse(BaseModel):
+    """Normalized search result from vector or keyword search."""
+
+    document_id: str | None
+    title: str | None
+    provider: str | None
+    chunk_id: str | None
+    snippet: str
+    score: float | None
+    source: str
+
+
+class ChatRequest(BaseModel):
+    """Chat request against configured AI provider."""
+
+    message: str
+    use_search_context: bool = True
+    limit: int = 5
+
+
+class ChatResponse(BaseModel):
+    """Chat response from a configured AI provider."""
+
+    provider: str
+    response: str
 
 
 def _handle_graph_error(exc: Exception) -> HTTPException:
@@ -146,3 +220,86 @@ def onenote_pages(
         return [OneNoteMetadataResponse(**item.__dict__) for item in list_pages(section_id)]
     except (MissingGraphTokenError, GraphRequestError) as exc:
         raise _handle_graph_error(exc) from exc
+
+
+@app.post("/ingest/markdown", response_model=IngestResponse, tags=["ingestion"])
+def ingest_markdown(request: MarkdownIngestRequest) -> IngestResponse:
+    """Ingest local Markdown files into SQLite and the vector index."""
+
+    try:
+        result = ingest_markdown_folder(request.folder_path)
+    except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return IngestResponse(**result.__dict__)
+
+
+@app.get("/documents", response_model=list[DocumentSummaryResponse], tags=["documents"])
+def documents() -> list[DocumentSummaryResponse]:
+    """List locally ingested research documents."""
+
+    store = SQLiteStore(settings=settings)
+    return [DocumentSummaryResponse(**document) for document in store.list_documents()]
+
+
+@app.get("/documents/{document_id}", response_model=DocumentDetailResponse, tags=["documents"])
+def document_detail(document_id: str) -> DocumentDetailResponse:
+    """Return one locally ingested research document."""
+
+    store = SQLiteStore(settings=settings)
+    document = store.get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+
+    return DocumentDetailResponse(**document)
+
+
+@app.post("/search", response_model=list[SearchResultResponse], tags=["search"])
+def search(request: SearchRequest) -> list[SearchResultResponse]:
+    """Search local research documents.
+
+    Vector search is attempted first. SQLite keyword search is always available
+    as a no-AI fallback and is used when vector search returns no results.
+    """
+
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Search query must not be empty.")
+
+    limit = max(1, min(request.limit, 50))
+    store = SQLiteStore(settings=settings)
+    if settings.ai_provider.lower() in {"", "none"}:
+        results = store.keyword_search(request.query, limit=limit)
+    else:
+        vector_results = ChromaVectorIndex(settings=settings).search(request.query, limit=limit)
+        results = vector_results or store.keyword_search(request.query, limit=limit)
+
+    return [SearchResultResponse(**result) for result in results]
+
+
+@app.post("/chat", response_model=ChatResponse, tags=["ai"])
+def chat(request: ChatRequest) -> ChatResponse:
+    """Chat with the configured AI provider using optional local search context."""
+
+    if not request.message.strip():
+        raise HTTPException(status_code=400, detail="Chat message must not be empty.")
+
+    try:
+        provider = get_ai_provider(settings=settings)
+    except AIProviderError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    context = None
+    if request.use_search_context:
+        search_results = SQLiteStore(settings=settings).keyword_search(
+            request.message,
+            limit=max(1, min(request.limit, 10)),
+        )
+        if search_results:
+            context = "\n\n".join(result["snippet"] for result in search_results)
+
+    try:
+        response = provider.chat(message=request.message, context=context)
+    except AIProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return ChatResponse(provider=provider.provider_name, response=response)

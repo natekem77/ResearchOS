@@ -3,8 +3,9 @@
 This guide explains how to register a Microsoft Entra ID app so ResearchOS can
 use delegated Microsoft Graph login for read-only OneNote metadata access.
 
-ResearchOS does not need a client secret for the current local delegated login
-scaffold. Do not commit secrets, tokens, or real `.env` files.
+ResearchOS uses a local development public-client delegated auth flow. It does
+not need a client secret for this scaffold. Do not commit secrets, tokens, or
+real `.env` files.
 
 ## 1. Open App Registrations
 
@@ -34,13 +35,36 @@ in `.env` is acceptable.
 
 In the registration form, add a redirect URI:
 
-- Platform: **Web** or public-client/native option appropriate for local testing.
+- Platform: **Mobile and desktop applications**.
 - Redirect URI: `http://localhost:8001/auth/callback`
 
 The redirect URI in Azure must exactly match `MICROSOFT_REDIRECT_URI` in `.env`.
 If the backend runs on a different port, update both Azure and `.env`.
 
-## 4. Copy IDs
+Do not configure this local development redirect URI only under the **Web**
+platform. A Web platform registration can cause Microsoft Entra to treat the
+token exchange as a confidential-client flow and return:
+
+```text
+AADSTS7000218: The request body must contain client_assertion or client_secret.
+```
+
+ResearchOS uses `msal.PublicClientApplication`, so the app registration must
+allow public-client auth.
+
+## 4. Enable Public Client Flows
+
+After creating the registration:
+
+1. Open **Authentication**.
+2. Find **Advanced settings**.
+3. Set **Allow public client flows** to **Yes**.
+4. Save the change.
+
+No client secret is required. Do not create or configure a client secret for the
+current ResearchOS local development flow.
+
+## 5. Copy IDs
 
 After creating the app registration:
 
@@ -51,7 +75,7 @@ After creating the app registration:
 For prototype login across account types, `MICROSOFT_TENANT_ID=common` can be
 used instead of a specific tenant ID.
 
-## 5. Add Microsoft Graph API Permissions
+## 6. Add Microsoft Graph API Permissions
 
 Open **API permissions** for the app registration.
 
@@ -66,7 +90,7 @@ Graph. Do not add write permissions for the current MVP.
 
 Depending on your tenant settings, an administrator may need to grant consent.
 
-## 6. Update `.env`
+## 7. Update `.env`
 
 From the repository root, copy the example file if needed:
 
@@ -91,7 +115,7 @@ MICROSOFT_REDIRECT_URI=http://localhost:8000/auth/callback
 
 The redirect URI must match the Azure app registration exactly.
 
-## 7. Run the Backend
+## 8. Run the Backend
 
 From the repository root:
 
@@ -111,7 +135,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 
-## 8. Test Login and OneNote Listing
+## 9. Test Login and OneNote Listing
 
 Check auth status before login:
 
@@ -151,7 +175,7 @@ curl "http://127.0.0.1:8001/onenote/sections?notebook_id=<notebook-id>"
 curl "http://127.0.0.1:8001/onenote/pages?section_id=<section-id>"
 ```
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Redirect URI mismatch
 
@@ -164,6 +188,19 @@ MICROSOFT_REDIRECT_URI=http://localhost:8001/auth/callback
 ```
 
 Check protocol, host, port, and path.
+
+### Client secret required error
+
+Symptom: `/auth/callback` fails with:
+
+```text
+AADSTS7000218: The request body must contain client_assertion or client_secret.
+```
+
+Fix: Configure the redirect URI under **Mobile and desktop applications**, not
+only under **Web**. Then enable **Allow public client flows** under
+**Authentication**. ResearchOS uses MSAL public-client delegated auth and does
+not send a client secret.
 
 ### Missing token
 

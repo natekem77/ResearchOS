@@ -56,6 +56,23 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GRAPH_SCOPES", "RESEARCHOS_GRAPH_SCOPES"),
     )
 
+    ai_provider: str = Field(
+        default="none",
+        description="AI provider name: none, openai, openai-compatible, ollama, lmstudio, claude.",
+    )
+    ai_api_key: str = Field(
+        default="",
+        description="Optional API key for cloud or authenticated OpenAI-compatible providers.",
+    )
+    ai_base_url: str = Field(
+        default="",
+        description="OpenAI-compatible base URL, including local Ollama or LM Studio endpoints.",
+    )
+    ai_model: str = Field(
+        default="gpt-4o-mini",
+        description="Chat model name for the configured AI provider.",
+    )
+
     @property
     def graph_scope_list(self) -> list[str]:
         """Return Microsoft Graph scopes as a normalized list for MSAL."""

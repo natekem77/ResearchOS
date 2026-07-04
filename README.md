@@ -72,6 +72,7 @@ ResearchOS/
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── AZURE_APP_SETUP.md
+│   ├── CORE_ARCHITECTURE.md
 │   ├── DESIGN.md
 │   └── MVP_ROADMAP.md
 ├── frontend/
@@ -79,6 +80,8 @@ ResearchOS/
 ├── .env.example
 ├── .gitignore
 ├── LICENSE
+├── samples/
+│   └── lab_notes/
 └── README.md
 ```
 
@@ -118,6 +121,14 @@ Check health:
 
 ```bash
 curl http://127.0.0.1:8000/health
+```
+
+For Milestone 3 local ingestion and search development, run on port `8001`:
+
+```bash
+cd backend
+source .venv/bin/activate
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8001
 ```
 
 ## Microsoft Graph Auth Setup
@@ -179,6 +190,51 @@ curl "http://127.0.0.1:8000/onenote/pages?section_id=<section-id>"
 These endpoints return notebook, section, and page metadata only. They do not
 fetch full page content and do not write to OneNote.
 
+## Local Markdown Ingestion and Search
+
+Milestone 3 adds provider-agnostic local ingestion and search. It does not
+require Microsoft auth.
+
+Ingest the sample lab notes:
+
+```bash
+curl -X POST http://127.0.0.1:8001/ingest/markdown \
+  -H "Content-Type: application/json" \
+  -d '{"folder_path":"../samples/lab_notes"}'
+```
+
+List documents:
+
+```bash
+curl http://127.0.0.1:8001/documents
+```
+
+Get one document:
+
+```bash
+curl "http://127.0.0.1:8001/documents/<document-id>"
+```
+
+Search documents. This works without an AI provider because SQLite keyword
+search is available as a fallback:
+
+```bash
+curl -X POST http://127.0.0.1:8001/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"SAG BRN3B staining","limit":5}'
+```
+
+Chat with a configured AI provider:
+
+```bash
+curl -X POST http://127.0.0.1:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Summarize the SAG experiment and staining result."}'
+```
+
+If no AI provider is configured, `/chat` returns a setup error. `/search`
+continues to work locally.
+
 ## Configuration
 
 Runtime settings are loaded from environment variables. See `.env.example` for
@@ -197,6 +253,9 @@ The initial defaults are suitable for local development:
 See [docs/DESIGN.md](docs/DESIGN.md) for the main ResearchOS architecture
 blueprint, including MVP scope, provider interfaces, security model, development
 standards, distribution plan, and milestone roadmap.
+
+See [docs/CORE_ARCHITECTURE.md](docs/CORE_ARCHITECTURE.md) for the local
+document ingestion, SQLite, vector search, and AI provider architecture.
 
 ## Development Principles
 
