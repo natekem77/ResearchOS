@@ -61,8 +61,10 @@ ResearchOS/
 │   │   ├── __init__.py
 │   │   ├── config.py
 │   │   ├── graph_auth.py
+│   │   ├── graph_client.py
 │   │   ├── logging.py
-│   │   └── main.py
+│   │   ├── main.py
+│   │   └── onenote_provider.py
 │   ├── pyproject.toml
 │   └── requirements.txt
 ├── data/
@@ -151,6 +153,27 @@ GET /auth/status
 Token storage is temporary and local-development only. Tokens are stored in
 process memory, are not encrypted, are not user-scoped, and disappear when the
 API restarts. Replace this before handling real laboratory data.
+
+## OneNote Metadata Listing
+
+After completing Microsoft Graph login, the backend can list OneNote metadata in
+read-only mode:
+
+```http
+GET /onenote/notebooks
+GET /onenote/sections
+GET /onenote/pages
+```
+
+Optional filters:
+
+```bash
+curl "http://127.0.0.1:8000/onenote/sections?notebook_id=<notebook-id>"
+curl "http://127.0.0.1:8000/onenote/pages?section_id=<section-id>"
+```
+
+These endpoints return notebook, section, and page metadata only. They do not
+fetch full page content and do not write to OneNote.
 
 ## Configuration
 

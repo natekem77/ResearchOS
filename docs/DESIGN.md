@@ -321,18 +321,19 @@ default, no hardcoded secrets, and explicit opt-in for cloud AI.
 - Add local development token status route.
 - Keep token storage temporary and clearly marked.
 
-### Milestone 2: OneNote Read Sync
+### Milestone 2: OneNote Metadata Listing
 
 - List notebooks, sections, and pages through Microsoft Graph.
-- Fetch page content in read-only mode.
-- Store normalized metadata in SQLite.
-- Preserve source URLs and provider IDs.
-- Add sync logs and error handling.
+- Return normalized metadata fields for early UI and integration work.
+- Keep all OneNote access read-only.
+- Handle missing delegated tokens with clear login guidance.
+- Do not fetch full page content yet.
 
 ### Milestone 3: Local Indexing and Search
 
+- Fetch page content in read-only mode.
+- Store normalized metadata and content chunks in SQLite.
 - Convert OneNote content into text chunks.
-- Store chunks in SQLite.
 - Generate embeddings through the configured AI provider.
 - Store vectors in ChromaDB.
 - Add semantic search endpoints.

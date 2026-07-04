@@ -124,3 +124,19 @@ def get_token_status(settings: Settings | None = None) -> TokenStatus:
         scopes=list(_DEV_TOKEN_CACHE.get("scopes", resolved_settings.graph_scope_list)),
         token_type=_DEV_TOKEN_CACHE.get("token_type"),
     )
+
+
+def get_development_access_token() -> str | None:
+    """Return the temporary local access token if it is present and unexpired.
+
+    This function exists so early Microsoft Graph read-only providers can reuse
+    the current development auth scaffold. It must be replaced with user-scoped,
+    encrypted token lookup before production use.
+    """
+
+    status = get_token_status()
+    if not status.authenticated:
+        return None
+
+    token = _DEV_TOKEN_CACHE.get("access_token")
+    return str(token) if token else None
