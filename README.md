@@ -69,6 +69,7 @@ ResearchOS/
 │   └── .gitkeep
 ├── docs/
 │   ├── ARCHITECTURE.md
+│   ├── DESIGN.md
 │   └── MVP_ROADMAP.md
 ├── frontend/
 │   └── README.md
@@ -163,6 +164,12 @@ The initial defaults are suitable for local development:
 - API host `0.0.0.0`
 - API port `8000`
 - Microsoft Graph delegated auth values for future OneNote login
+
+## Design Blueprint
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the main ResearchOS architecture
+blueprint, including MVP scope, provider interfaces, security model, development
+standards, distribution plan, and milestone roadmap.
 
 ## Development Principles
 

@@ -4,8 +4,8 @@ import logging
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
-from starlette.responses import RedirectResponse
 
 from app.config import get_settings
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
