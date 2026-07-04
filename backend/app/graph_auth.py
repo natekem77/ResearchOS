@@ -1,0 +1,126 @@
+"""Microsoft Graph delegated authentication helpers.
+
+This module contains only authentication scaffolding. It does not read, sync, or
+modify OneNote data. The goal is to establish the login foundation that future
+OneNote synchronization code can depend on.
+"""
+
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import msal
+
+from app.config import Settings, get_settings
+
+
+@dataclass
+class TokenStatus:
+    """Safe token status details returned by the API.
+
+    Access tokens are deliberately excluded so they are not exposed through logs
+    or HTTP responses.
+    """
+
+    authenticated: bool
+    expires_at: int | None
+    scopes: list[str]
+    token_type: str | None
+
+
+# Temporary local development storage.
+#
+# This is intentionally process-local and insecure for production:
+# - Tokens disappear when the API process restarts.
+# - Tokens are shared across all local users of this process.
+# - Tokens are not encrypted.
+#
+# Replace this with encrypted, user-scoped storage before using ResearchOS with
+# real laboratory accounts or data.
+_DEV_TOKEN_CACHE: dict[str, Any] = {}
+
+
+def _build_public_client(settings: Settings) -> msal.PublicClientApplication:
+    """Create an MSAL public client for delegated Microsoft Graph login."""
+
+    authority = f"https://login.microsoftonline.com/{settings.microsoft_tenant_id}"
+    return msal.PublicClientApplication(
+        client_id=settings.microsoft_client_id,
+        authority=authority,
+    )
+
+
+def build_auth_url(settings: Settings | None = None) -> str:
+    """Build the Microsoft authorization URL for delegated Graph consent.
+
+    The returned URL sends the user to Microsoft login. After consent, Microsoft
+    redirects back to ``MICROSOFT_REDIRECT_URI`` with an authorization code.
+    """
+
+    resolved_settings = settings or get_settings()
+    if not resolved_settings.microsoft_client_id:
+        raise ValueError("MICROSOFT_CLIENT_ID must be configured before login.")
+
+    client = _build_public_client(resolved_settings)
+    return client.get_authorization_request_url(
+        scopes=resolved_settings.graph_scope_list,
+        redirect_uri=resolved_settings.microsoft_redirect_uri,
+        response_mode="query",
+    )
+
+
+def exchange_code_for_token(code: str, settings: Settings | None = None) -> TokenStatus:
+    """Exchange an authorization code for a delegated Microsoft Graph token.
+
+    The token is stored only in the temporary in-memory development cache above.
+    API responses expose only token status, never token contents.
+    """
+
+    resolved_settings = settings or get_settings()
+    if not resolved_settings.microsoft_client_id:
+        raise ValueError("MICROSOFT_CLIENT_ID must be configured before callback handling.")
+
+    client = _build_public_client(resolved_settings)
+    token_result = client.acquire_token_by_authorization_code(
+        code=code,
+        scopes=resolved_settings.graph_scope_list,
+        redirect_uri=resolved_settings.microsoft_redirect_uri,
+    )
+
+    if "access_token" not in token_result:
+        error = token_result.get("error", "unknown_error")
+        description = token_result.get("error_description", "Microsoft token exchange failed.")
+        raise ValueError(f"{error}: {description}")
+
+    expires_in = int(token_result.get("expires_in", 0))
+    expires_at = int(time.time()) + expires_in if expires_in > 0 else None
+
+    _DEV_TOKEN_CACHE.clear()
+    _DEV_TOKEN_CACHE.update(
+        {
+            "access_token": token_result["access_token"],
+            "expires_at": expires_at,
+            "scopes": token_result.get("scope", resolved_settings.graph_scopes).split(),
+            "token_type": token_result.get("token_type"),
+        }
+    )
+
+    return get_token_status(settings=resolved_settings)
+
+
+def get_token_status(settings: Settings | None = None) -> TokenStatus:
+    """Return whether the local development cache currently has a usable token."""
+
+    resolved_settings = settings or get_settings()
+    expires_at = _DEV_TOKEN_CACHE.get("expires_at")
+    has_token = bool(_DEV_TOKEN_CACHE.get("access_token"))
+    not_expired = expires_at is None or int(expires_at) > int(time.time())
+
+    return TokenStatus(
+        authenticated=has_token and not_expired,
+        expires_at=expires_at,
+        scopes=list(_DEV_TOKEN_CACHE.get("scopes", resolved_settings.graph_scope_list)),
+        token_type=_DEV_TOKEN_CACHE.get("token_type"),
+    )
