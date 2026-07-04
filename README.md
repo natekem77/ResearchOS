@@ -71,6 +71,7 @@ ResearchOS/
 │   └── .gitkeep
 ├── docs/
 │   ├── ARCHITECTURE.md
+│   ├── AZURE_APP_SETUP.md
 │   ├── DESIGN.md
 │   └── MVP_ROADMAP.md
 ├── frontend/
@@ -124,6 +125,9 @@ curl http://127.0.0.1:8000/health
 ResearchOS uses Microsoft Authentication Library (MSAL) for delegated Microsoft
 Graph login. This is required before future OneNote sync work can read notebook
 data on behalf of a user.
+
+For detailed Azure app registration steps, see
+[docs/AZURE_APP_SETUP.md](docs/AZURE_APP_SETUP.md).
 
 Before using real login, register an Azure app in the Microsoft Entra admin
 center:
