@@ -1,15 +1,12 @@
 # ResearchOS Frontend
 
-The frontend has not been implemented yet.
+This is a minimal static frontend served by the FastAPI backend.
 
-This directory exists to reserve the client application boundary and keep the
-repository layout ready for a future web interface. The initial product focus is
-the backend foundation and OneNote integration design.
+Run the backend and visit:
 
-Future frontend work should document:
+```text
+http://127.0.0.1:8001
+```
 
-- Framework choice
-- Local development commands
-- Environment variables
-- API client generation or request conventions
-- Testing and accessibility expectations
+The UI uses the existing API endpoints for health, documents, experiments, and
+search. There is no build step yet.

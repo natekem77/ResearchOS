@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ResearchOS</title>
+    <link rel="stylesheet" href="/frontend-assets/styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Scientific Lab Workspace</p>
+        <h1>ResearchOS</h1>
+      </div>
+      <div class="status-pill" id="connectionStatus">Checking backend</div>
+    </header>
+
+    <main class="app-shell">
+      <section class="panel search-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Search</p>
+            <h2>Research Notes</h2>
+          </div>
+        </div>
+        <form id="searchForm" class="search-form">
+          <label class="sr-only" for="searchInput">Search query</label>
+          <input id="searchInput" type="search" placeholder="Search SAG, BRN3B, BMP4..." />
+          <button type="submit">Search</button>
+        </form>
+        <div id="searchResults" class="results-list"></div>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Library</p>
+              <h2>Documents</h2>
+            </div>
+            <span class="count" id="documentCount">0</span>
+          </div>
+          <div id="documentsList" class="item-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Structured Data</p>
+              <h2>Experiments</h2>
+            </div>
+            <span class="count" id="experimentCount">0</span>
+          </div>
+          <div id="experimentsList" class="item-list"></div>
+        </article>
+      </section>
+
+      <section class="panel chat-panel" aria-disabled="true">
+        <div>
+          <p class="eyebrow">AI Assistant</p>
+          <h2>Chat</h2>
+          <p>
+            Chat will be enabled after an AI provider is configured. ResearchOS
+            already supports the backend provider interface for OpenAI-compatible
+            APIs, Ollama, LM Studio, and future Claude integration.
+          </p>
+        </div>
+        <button disabled>Provider setup coming next</button>
+      </section>
+    </main>
+
+    <script src="/frontend-assets/app.js" defer></script>
+  </body>
+</html>

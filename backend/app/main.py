@@ -1,10 +1,12 @@
 """FastAPI entrypoint for the ResearchOS backend."""
 
 import logging
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.ai_providers import AIProviderError, get_ai_provider
@@ -21,12 +23,21 @@ from app.vector_index import ChromaVectorIndex
 settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
 
 app = FastAPI(
     title=settings.project_name,
     description="AI-powered research operating system for scientific laboratories.",
     version="0.1.0",
 )
+
+if FRONTEND_DIR.exists():
+    app.mount(
+        "/frontend-assets",
+        StaticFiles(directory=FRONTEND_DIR),
+        name="frontend-assets",
+    )
 
 
 class HealthResponse(BaseModel):
@@ -190,6 +201,17 @@ def health() -> HealthResponse:
 
     logger.debug("Health check requested.")
     return HealthResponse(status="ok", project="ResearchOS")
+
+
+@app.get("/", include_in_schema=False)
+def homepage() -> FileResponse:
+    """Serve the local ResearchOS web UI."""
+
+    index_path = FRONTEND_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="ResearchOS frontend is not available.")
+
+    return FileResponse(index_path)
 
 
 @app.get("/auth/login", tags=["auth"])

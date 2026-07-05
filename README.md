@@ -76,7 +76,10 @@ ResearchOS/
 │   ├── DESIGN.md
 │   └── MVP_ROADMAP.md
 ├── frontend/
-│   └── README.md
+│   ├── README.md
+│   ├── app.js
+│   ├── index.html
+│   └── styles.css
 ├── .env.example
 ├── .gitignore
 ├── LICENSE
@@ -146,6 +149,32 @@ port `8001`:
 The scripts use `backend/.venv`, start Uvicorn on `127.0.0.1:8001`, print the
 health URL, and help recover from stuck port issues. Override the port for local
 experiments with `RESEARCHOS_DEV_PORT`.
+
+## Web UI Demo
+
+The backend serves a minimal browser UI at:
+
+```text
+http://127.0.0.1:8001
+```
+
+Launch the backend:
+
+```bash
+./scripts/start.sh
+```
+
+Load sample data for the demo:
+
+```bash
+curl -X POST http://127.0.0.1:8001/ingest/markdown \
+  -H "Content-Type: application/json" \
+  -d '{"folder_path":"../samples/lab_notes"}'
+```
+
+Then open `http://127.0.0.1:8001` in a browser. The UI shows backend health,
+ingested documents, extracted experiments, local search, and a placeholder chat
+panel for future AI provider setup.
 
 ## Microsoft Graph Auth Setup
 
