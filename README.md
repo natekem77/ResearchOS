@@ -284,6 +284,55 @@ curl -X POST http://127.0.0.1:8001/chat \
 If no AI provider is configured, `/chat` returns a setup error. `/search`
 continues to work locally.
 
+## AI Chat Setup
+
+ResearchOS chat uses an OpenAI-compatible provider abstraction. Do not hardcode
+API keys; set them in `.env`.
+
+OpenAI:
+
+```bash
+AI_PROVIDER=openai_compatible
+AI_BASE_URL=https://api.openai.com/v1
+AI_API_KEY=<your-openai-api-key>
+AI_MODEL=gpt-4o-mini
+```
+
+OpenRouter:
+
+```bash
+AI_PROVIDER=openai_compatible
+AI_BASE_URL=https://openrouter.ai/api/v1
+AI_API_KEY=<your-openrouter-api-key>
+AI_MODEL=openai/gpt-4o-mini
+```
+
+LM Studio:
+
+```bash
+AI_PROVIDER=openai_compatible
+AI_BASE_URL=http://localhost:1234/v1
+AI_API_KEY=
+AI_MODEL=<loaded-local-model>
+```
+
+Ollama with an OpenAI-compatible endpoint:
+
+```bash
+AI_PROVIDER=openai_compatible
+AI_BASE_URL=http://localhost:11434/v1
+AI_API_KEY=
+AI_MODEL=llama3.1
+```
+
+Chat returns an assistant answer and the source chunks used for retrieval:
+
+```bash
+curl -X POST http://127.0.0.1:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"What do the SAG and BRN3B notes suggest?","use_search_context":true,"limit":5}'
+```
+
 ## Experiment Extraction
 
 ResearchOS can extract structured scientific experiments from provider-agnostic

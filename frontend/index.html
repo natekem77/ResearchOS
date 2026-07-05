@@ -55,17 +55,25 @@
         </article>
       </section>
 
-      <section class="panel chat-panel" aria-disabled="true">
-        <div>
+      <section class="panel chat-panel">
+        <div class="chat-copy">
           <p class="eyebrow">AI Assistant</p>
           <h2>Chat</h2>
           <p>
-            Chat will be enabled after an AI provider is configured. ResearchOS
-            already supports the backend provider interface for OpenAI-compatible
-            APIs, Ollama, LM Studio, and future Claude integration.
+            Ask questions over ingested ResearchOS notes. Configure an
+            OpenAI-compatible provider to enable generated answers.
           </p>
         </div>
-        <button disabled>Provider setup coming next</button>
+        <form id="chatForm" class="chat-form">
+          <label class="sr-only" for="chatInput">Chat question</label>
+          <textarea
+            id="chatInput"
+            rows="3"
+            placeholder="What do the SAG and BRN3B notes suggest?"
+          ></textarea>
+          <button type="submit">Ask</button>
+        </form>
+        <div id="chatOutput" class="chat-output"></div>
       </section>
     </main>
 

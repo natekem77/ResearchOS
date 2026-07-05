@@ -58,19 +58,23 @@ class Settings(BaseSettings):
 
     ai_provider: str = Field(
         default="none",
-        description="AI provider name: none, openai, openai-compatible, ollama, lmstudio, claude.",
+        description="AI provider name: none, openai_compatible, ollama, lmstudio, claude.",
+        validation_alias=AliasChoices("AI_PROVIDER", "RESEARCHOS_AI_PROVIDER"),
     )
     ai_api_key: str = Field(
         default="",
         description="Optional API key for cloud or authenticated OpenAI-compatible providers.",
+        validation_alias=AliasChoices("AI_API_KEY", "RESEARCHOS_AI_API_KEY"),
     )
     ai_base_url: str = Field(
         default="",
         description="OpenAI-compatible base URL, including local Ollama or LM Studio endpoints.",
+        validation_alias=AliasChoices("AI_BASE_URL", "RESEARCHOS_AI_BASE_URL"),
     )
     ai_model: str = Field(
         default="gpt-4o-mini",
         description="Chat model name for the configured AI provider.",
+        validation_alias=AliasChoices("AI_MODEL", "RESEARCHOS_AI_MODEL"),
     )
 
     @property

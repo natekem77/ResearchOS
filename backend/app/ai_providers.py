@@ -106,15 +106,26 @@ def get_ai_provider(settings: Settings | None = None) -> AIProvider:
 
     if provider in {"", "none"}:
         raise AIProviderError(
-            "No AI provider is configured. Set RESEARCHOS_AI_PROVIDER and related "
-            "settings, or use /search for keyword fallback."
+            "No AI provider is configured. Set AI_PROVIDER, AI_BASE_URL, AI_MODEL, "
+            "and AI_API_KEY when required. /search still works without AI."
         )
 
-    if provider in {"openai", "openai-compatible", "ollama", "lmstudio", "lm-studio"}:
-        if provider == "openai" and not resolved_settings.ai_api_key:
-            raise AIProviderError("OpenAI-compatible cloud usage requires RESEARCHOS_AI_API_KEY.")
+    if provider in {
+        "openai",
+        "openai-compatible",
+        "openai_compatible",
+        "ollama",
+        "lmstudio",
+        "lm-studio",
+    }:
+        if not resolved_settings.ai_model:
+            raise AIProviderError("Set AI_MODEL for the configured AI provider.")
         if not resolved_settings.ai_base_url:
-            raise AIProviderError("Set RESEARCHOS_AI_BASE_URL for the configured AI provider.")
+            raise AIProviderError("Set AI_BASE_URL for the configured AI provider.")
+        if provider == "openai" and not resolved_settings.ai_api_key:
+            raise AIProviderError("OpenAI usage requires AI_API_KEY.")
+        if resolved_settings.ai_base_url.startswith("https://") and not resolved_settings.ai_api_key:
+            raise AIProviderError("Cloud OpenAI-compatible usage usually requires AI_API_KEY.")
 
         return OpenAICompatibleProvider(
             base_url=resolved_settings.ai_base_url,

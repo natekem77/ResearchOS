@@ -11,6 +11,9 @@ const experimentCount = document.querySelector("#experimentCount");
 const searchForm = document.querySelector("#searchForm");
 const searchInput = document.querySelector("#searchInput");
 const searchResults = document.querySelector("#searchResults");
+const chatForm = document.querySelector("#chatForm");
+const chatInput = document.querySelector("#chatInput");
+const chatOutput = document.querySelector("#chatOutput");
 
 function setStatus(text, className) {
   connectionStatus.textContent = text;
@@ -40,7 +43,14 @@ async function requestJson(path, options = {}) {
     ...options,
   });
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    let detail = `${response.status} ${response.statusText}`;
+    try {
+      const errorPayload = await response.json();
+      detail = errorPayload.detail || detail;
+    } catch (error) {
+      detail = `${response.status} ${response.statusText}`;
+    }
+    throw new Error(detail);
   }
   return response.json();
 }
@@ -118,6 +128,36 @@ function renderSearchResults(results) {
     .join("");
 }
 
+function renderChatResponse(payload) {
+  const sources = payload.sources || [];
+  chatOutput.innerHTML = `
+    <div class="assistant-answer">
+      <h3>Answer</h3>
+      <p>${escapeHtml(payload.answer)}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(payload.provider)}</span>
+        <span class="tag">${sources.length} source${sources.length === 1 ? "" : "s"}</span>
+      </div>
+    </div>
+    <div class="source-list">
+      ${sources
+        .map(
+          (source, index) => `
+            <div class="result">
+              <h3>[${index + 1}] ${escapeHtml(source.title || "Untitled source")}</h3>
+              <p>${escapeHtml(shortText(source.snippet, 180))}</p>
+              <div class="meta">
+                <span class="tag">${escapeHtml(source.provider || "unknown")}</span>
+                <span class="tag">${escapeHtml(source.chunk_id || "chunk")}</span>
+              </div>
+            </div>
+          `,
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 async function loadStatus() {
   try {
     const health = await requestJson("/health");
@@ -158,6 +198,31 @@ searchForm.addEventListener("submit", async (event) => {
     await runSearch(query);
   } catch (error) {
     searchResults.innerHTML = `<div class="result"><p>Search failed: ${escapeHtml(error.message)}</p></div>`;
+  }
+});
+
+chatForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const message = chatInput.value.trim();
+  if (!message) {
+    chatOutput.innerHTML = `<div class="result"><p>Enter a question for ResearchOS chat.</p></div>`;
+    return;
+  }
+
+  chatOutput.innerHTML = `<div class="result"><p>Thinking...</p></div>`;
+  try {
+    const payload = await requestJson("/chat", {
+      method: "POST",
+      body: JSON.stringify({ message, use_search_context: true, limit: 5 }),
+    });
+    renderChatResponse(payload);
+  } catch (error) {
+    chatOutput.innerHTML = `
+      <div class="result">
+        <h3>Chat is not configured</h3>
+        <p>${escapeHtml(error.message)}. Set AI_PROVIDER, AI_BASE_URL, AI_MODEL, and AI_API_KEY when required.</p>
+      </div>
+    `;
   }
 });
 

@@ -140,7 +140,8 @@ class ChatResponse(BaseModel):
     """Chat response from a configured AI provider."""
 
     provider: str
-    response: str
+    answer: str
+    sources: list[SearchResultResponse]
 
 
 class ExtractRequest(BaseModel):
@@ -193,6 +194,51 @@ def _handle_graph_error(exc: Exception) -> HTTPException:
 
     logger.exception("Unexpected OneNote listing failure.")
     return HTTPException(status_code=500, detail="Unexpected OneNote listing failure.")
+
+
+def _search_local_documents(query: str, limit: int) -> list[dict[str, object]]:
+    """Run ResearchOS local retrieval with keyword fallback preserved."""
+
+    store = SQLiteStore(settings=settings)
+    if settings.ai_provider.lower() in {"", "none"}:
+        return store.keyword_search(query, limit=limit)
+
+    vector_results = ChromaVectorIndex(settings=settings).search(query, limit=limit)
+    return vector_results or store.keyword_search(query, limit=limit)
+
+
+def _build_rag_prompt(question: str, sources: list[SearchResultResponse]) -> str:
+    """Build a concise RAG prompt from retrieved ResearchOS chunks."""
+
+    if not sources:
+        return (
+            "Answer the user's research question. No relevant ResearchOS source "
+            "chunks were found, so say that clearly and avoid inventing details.\n\n"
+            f"Question: {question}"
+        )
+
+    source_blocks = []
+    for index, source in enumerate(sources, start=1):
+        source_blocks.append(
+            "\n".join(
+                [
+                    f"[{index}] Title: {source.title or 'Untitled'}",
+                    f"Provider: {source.provider or 'unknown'}",
+                    f"Document ID: {source.document_id or 'unknown'}",
+                    f"Chunk ID: {source.chunk_id or 'unknown'}",
+                    f"Snippet: {source.snippet}",
+                ]
+            )
+        )
+
+    return (
+        "Answer the user's research question using only the ResearchOS source "
+        "chunks below. Be concise, preserve scientific uncertainty, and cite "
+        "sources inline as [1], [2], etc. If the sources are insufficient, say so.\n\n"
+        f"Question: {question}\n\n"
+        "Sources:\n"
+        + "\n\n".join(source_blocks)
+    )
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
@@ -328,19 +374,14 @@ def search(request: SearchRequest) -> list[SearchResultResponse]:
         raise HTTPException(status_code=400, detail="Search query must not be empty.")
 
     limit = max(1, min(request.limit, 50))
-    store = SQLiteStore(settings=settings)
-    if settings.ai_provider.lower() in {"", "none"}:
-        results = store.keyword_search(request.query, limit=limit)
-    else:
-        vector_results = ChromaVectorIndex(settings=settings).search(request.query, limit=limit)
-        results = vector_results or store.keyword_search(request.query, limit=limit)
+    results = _search_local_documents(request.query, limit=limit)
 
     return [SearchResultResponse(**result) for result in results]
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["ai"])
 def chat(request: ChatRequest) -> ChatResponse:
-    """Chat with the configured AI provider using optional local search context."""
+    """Answer a question with configured AI provider and ResearchOS source chunks."""
 
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Chat message must not be empty.")
@@ -350,21 +391,19 @@ def chat(request: ChatRequest) -> ChatResponse:
     except AIProviderError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    context = None
+    source_results: list[SearchResultResponse] = []
     if request.use_search_context:
-        search_results = SQLiteStore(settings=settings).keyword_search(
-            request.message,
-            limit=max(1, min(request.limit, 10)),
-        )
-        if search_results:
-            context = "\n\n".join(result["snippet"] for result in search_results)
+        raw_results = _search_local_documents(request.message, limit=max(1, min(request.limit, 10)))
+        source_results = [SearchResultResponse(**result) for result in raw_results]
+
+    prompt = _build_rag_prompt(request.message, source_results)
 
     try:
-        response = provider.chat(message=request.message, context=context)
+        answer = provider.chat(message=prompt)
     except AIProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    return ChatResponse(provider=provider.provider_name, response=response)
+    return ChatResponse(provider=provider.provider_name, answer=answer, sources=source_results)
 
 
 @app.get("/experiments", response_model=list[ExperimentResponse], tags=["experiments"])
