@@ -53,6 +53,8 @@ The ingestion pipeline is:
 3. The chunker splits document content into `DocumentChunk` records.
 4. SQLite stores documents and chunks.
 5. The vector index stores chunk vectors and metadata.
+6. The regex experiment extractor converts experiment-like documents into
+   structured `Experiment` records.
 
 The Markdown ingestion endpoint is:
 
@@ -72,6 +74,7 @@ SQLite stores durable local records:
 
 - `documents`
 - `chunks`
+- `experiments`
 
 SQLite is local-first and simple for early development. It is used for document
 listing, document detail, and keyword fallback search.
@@ -136,6 +139,33 @@ RESEARCHOS_AI_MODEL=local-model
 
 If no provider is configured, `POST /chat` returns a helpful setup error instead
 of silently pretending to answer.
+
+## Experiment Extraction
+
+The experiment extraction layer lives in `backend/app/experiment_extraction.py`.
+It starts with deterministic regex extraction and defines an extractor interface
+for future LLM-backed extraction.
+
+The extracted `Experiment` model includes:
+
+- Experiment ID
+- Date
+- Researcher
+- Cell line
+- Organoid batch
+- Compounds
+- Treatments
+- Concentrations
+- Time points
+- Markers
+- Antibodies
+- Imaging methods
+- Sequencing
+- Notes
+- Conclusions
+
+Markdown ingestion automatically stores extracted experiments. `POST /extract`
+can rerun extraction across all stored documents or one selected document.
 
 ## How OneNote Plugs In Later
 

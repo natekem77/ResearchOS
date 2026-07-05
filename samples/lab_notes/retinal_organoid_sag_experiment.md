@@ -1,6 +1,8 @@
 # Retinal Organoid SAG Experiment
 
 Date: 2026-06-12
+Researcher: N. Researcher
+Organoid batch: RO-SAG-24A
 
 Objective: Test whether SAG exposure improves ventral retinal organoid patterning
 without reducing overall organoid viability.

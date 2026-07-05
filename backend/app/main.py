@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
+from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.ingestion import ingest_markdown_folder
@@ -72,6 +73,7 @@ class IngestResponse(BaseModel):
     provider: str
     documents_ingested: int
     chunks_indexed: int
+    experiments_extracted: int
 
 
 class DocumentSummaryResponse(BaseModel):
@@ -128,6 +130,44 @@ class ChatResponse(BaseModel):
 
     provider: str
     response: str
+
+
+class ExtractRequest(BaseModel):
+    """Request body for structured experiment extraction."""
+
+    document_id: str | None = None
+
+
+class ExtractResponse(BaseModel):
+    """Summary of an extraction run."""
+
+    documents_scanned: int
+    experiments_extracted: int
+
+
+class ExperimentResponse(BaseModel):
+    """Structured experiment response."""
+
+    id: str
+    source_document_id: str
+    source_provider: str
+    title: str
+    experiment_id: str | None = None
+    date: str | None = None
+    researcher: str | None = None
+    cell_line: str | None = None
+    organoid_batch: str | None = None
+    compounds: list[str]
+    treatments: list[str]
+    concentrations: list[str]
+    time_points: list[str]
+    markers: list[str]
+    antibodies: list[str]
+    imaging_methods: list[str]
+    sequencing: list[str]
+    notes: str | None = None
+    conclusions: str | None = None
+    extracted_at: str
 
 
 def _handle_graph_error(exc: Exception) -> HTTPException:
@@ -303,3 +343,49 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return ChatResponse(provider=provider.provider_name, response=response)
+
+
+@app.get("/experiments", response_model=list[ExperimentResponse], tags=["experiments"])
+def experiments() -> list[ExperimentResponse]:
+    """List structured experiments extracted from research documents."""
+
+    store = SQLiteStore(settings=settings)
+    return [ExperimentResponse(**experiment) for experiment in store.list_experiments()]
+
+
+@app.get("/experiments/{experiment_id}", response_model=ExperimentResponse, tags=["experiments"])
+def experiment_detail(experiment_id: str) -> ExperimentResponse:
+    """Return one structured experiment."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = store.get_experiment(experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+
+    return ExperimentResponse(**experiment)
+
+
+@app.post("/extract", response_model=ExtractResponse, tags=["experiments"])
+def extract(request: ExtractRequest) -> ExtractResponse:
+    """Extract structured experiments from stored research documents."""
+
+    store = SQLiteStore(settings=settings)
+    if request.document_id:
+        document = store.get_research_document(request.document_id)
+        if document is None:
+            raise HTTPException(status_code=404, detail=f"Document not found: {request.document_id}")
+        documents_to_scan = [document]
+    else:
+        documents_to_scan = store.get_all_research_documents()
+
+    extracted_count = 0
+    for document in documents_to_scan:
+        experiment = extract_experiment(document)
+        if experiment is not None:
+            store.upsert_experiment(experiment)
+            extracted_count += 1
+
+    return ExtractResponse(
+        documents_scanned=len(documents_to_scan),
+        experiments_extracted=extracted_count,
+    )

@@ -1,5 +1,9 @@
 # BMP4 Protocol Note
 
+Date: 2026-06-05
+Researcher: Protocol Team
+Organoid batch: RO-BMP4-setup
+
 Purpose: Record the BMP4 pulse protocol used for early retinal differentiation.
 
 Protocol:

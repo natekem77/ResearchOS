@@ -219,6 +219,10 @@ curl -X POST http://127.0.0.1:8001/ingest/markdown \
   -d '{"folder_path":"../samples/lab_notes"}'
 ```
 
+Markdown ingestion stores documents, chunks text for search, updates the local
+vector index, and automatically extracts structured experiment records when
+experiment-like fields are detected.
+
 List documents:
 
 ```bash
@@ -250,6 +254,44 @@ curl -X POST http://127.0.0.1:8001/chat \
 
 If no AI provider is configured, `/chat` returns a setup error. `/search`
 continues to work locally.
+
+## Experiment Extraction
+
+ResearchOS can extract structured scientific experiments from provider-agnostic
+documents. The current extractor is regex-first and designed so future LLM
+extractors can plug into the same pipeline.
+
+Run extraction manually across all stored documents:
+
+```bash
+curl -X POST http://127.0.0.1:8001/extract \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Extract from one document:
+
+```bash
+curl -X POST http://127.0.0.1:8001/extract \
+  -H "Content-Type: application/json" \
+  -d '{"document_id":"<document-id>"}'
+```
+
+List extracted experiments:
+
+```bash
+curl http://127.0.0.1:8001/experiments
+```
+
+Get one extracted experiment:
+
+```bash
+curl "http://127.0.0.1:8001/experiments/<experiment-id>"
+```
+
+The extracted schema includes experiment ID, date, researcher, cell line,
+organoid batch, compounds, treatments, concentrations, time points, markers,
+antibodies, imaging methods, sequencing, notes, and conclusions when present.
 
 ## Configuration
 
