@@ -153,7 +153,7 @@ experiments with `RESEARCHOS_DEV_PORT`.
 
 ## Web UI Demo
 
-The backend serves a minimal browser UI at:
+The backend serves the ResearchOS dashboard at:
 
 ```text
 http://127.0.0.1:8001
@@ -173,9 +173,26 @@ curl -X POST http://127.0.0.1:8001/ingest/markdown \
   -d '{"folder_path":"../samples/lab_notes"}'
 ```
 
-Then open `http://127.0.0.1:8001` in a browser. The UI shows backend health,
-ingested documents, extracted experiments, local search, and AI chat when a
-provider is configured.
+Then open `http://127.0.0.1:8001` in a browser. The dashboard includes top
+navigation, provider/sync status, sidebar navigation, metrics, recent activity,
+experiments, documents, search, and AI chat when a provider is configured.
+
+## Screenshots
+
+Screenshots should be added here as the UI stabilizes:
+
+- Dashboard overview
+- Experiments table
+- Experiment detail page
+- Search results with highlighted markers and compounds
+- AI chat with source snippets
+
+Recommended capture path:
+
+1. Run `./scripts/restart.sh`.
+2. Open `http://127.0.0.1:8001`.
+3. Click **Load demo notes**.
+4. Capture the dashboard and experiment detail views.
 
 ## 5-Minute Lab Demo
 

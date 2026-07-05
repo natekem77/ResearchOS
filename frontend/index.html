@@ -7,88 +7,258 @@
     <link rel="stylesheet" href="/frontend-assets/styles.css" />
   </head>
   <body>
-    <header class="app-header">
-      <div>
-        <p class="eyebrow">Scientific Lab Workspace</p>
-        <h1>ResearchOS</h1>
-      </div>
-      <div class="status-pill" id="connectionStatus">Checking backend</div>
-    </header>
+    <div class="app-frame">
+      <aside class="sidebar">
+        <a class="brand" href="#/dashboard" aria-label="ResearchOS dashboard">
+          <span class="brand-mark">R</span>
+          <span>
+            <strong>ResearchOS</strong>
+            <small>Lab Intelligence</small>
+          </span>
+        </a>
 
-    <main class="app-shell">
-      <section class="panel demo-panel">
-        <div>
-          <p class="eyebrow">Demo Controls</p>
-          <h2>Load ResearchOS sample data</h2>
-          <p>Reset and reload bundled lab notes, then extract structured experiments.</p>
-        </div>
-        <div class="demo-actions">
-          <button type="button" id="loadDemoButton">Load demo notes</button>
-          <button type="button" id="extractButton" class="secondary-button">Extract experiments</button>
-        </div>
-        <div id="demoStatus" class="demo-status"></div>
-      </section>
+        <nav class="side-nav" aria-label="Primary navigation">
+          <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+          <a href="#/experiments" data-nav="experiments">Experiments</a>
+          <a href="#/protocols" data-nav="protocols">Protocols</a>
+          <a href="#/documents" data-nav="documents">Documents</a>
+          <a href="#/search" data-nav="search">Search</a>
+          <a href="#/chat" data-nav="chat">AI Chat</a>
+          <a href="#/settings" data-nav="settings">Settings</a>
+        </nav>
+      </aside>
 
-      <section class="panel search-panel">
-        <div class="panel-heading">
+      <div class="workspace">
+        <header class="topbar">
           <div>
-            <p class="eyebrow">Search</p>
-            <h2>Research Notes</h2>
+            <p class="eyebrow" id="viewEyebrow">Dashboard</p>
+            <h1 id="viewTitle">ResearchOS Dashboard</h1>
           </div>
-        </div>
-        <form id="searchForm" class="search-form">
-          <label class="sr-only" for="searchInput">Search query</label>
-          <input id="searchInput" type="search" placeholder="Search SAG, BRN3B, BMP4..." />
-          <button type="submit">Search</button>
-        </form>
-        <div id="searchResults" class="results-list"></div>
-      </section>
-
-      <section class="grid">
-        <article class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Library</p>
-              <h2>Documents</h2>
-            </div>
-            <span class="count" id="documentCount">0</span>
+          <div class="topbar-status">
+            <span class="status-pill" id="providerStatus">Provider: checking</span>
+            <span class="status-pill" id="syncStatus">Sync: not loaded</span>
+            <a class="settings-link" href="#/settings">Settings</a>
           </div>
-          <div id="documentsList" class="item-list"></div>
-        </article>
+        </header>
 
-        <article class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Structured Data</p>
-              <h2>Experiments</h2>
-            </div>
-            <span class="count" id="experimentCount">0</span>
-          </div>
-          <div id="experimentsList" class="item-list"></div>
-        </article>
-      </section>
+        <main class="content">
+          <section class="view active" id="dashboardView">
+            <section class="hero-panel">
+              <div>
+                <p class="eyebrow">Daily Research Workspace</p>
+                <h2>Find notes, compare experiments, and structure lab records.</h2>
+              </div>
+              <div class="hero-actions">
+                <button type="button" id="loadDemoButton">Load demo notes</button>
+                <button type="button" id="extractButton" class="secondary-button">
+                  Extract experiments
+                </button>
+              </div>
+              <p class="demo-status" id="demoStatus"></p>
+            </section>
 
-      <section class="panel chat-panel">
-        <div class="chat-copy">
-          <p class="eyebrow">AI Assistant</p>
-          <h2>Chat</h2>
-          <p>
-            Ask questions over ingested ResearchOS notes. Configure an
-            OpenAI-compatible provider to enable generated answers.
-          </p>
-        </div>
-        <form id="chatForm" class="chat-form">
-          <label class="sr-only" for="chatInput">Chat question</label>
-          <textarea
-            id="chatInput"
-            rows="3"
-            placeholder="What do the SAG and BRN3B notes suggest?"
-          ></textarea>
-          <button type="submit">Ask</button>
-        </form>
-        <div id="chatOutput" class="chat-output"></div>
-      </section>
-    </main>
+            <section class="metric-grid" aria-label="ResearchOS metrics">
+              <article class="metric-card">
+                <span>Experiments indexed</span>
+                <strong id="metricExperiments">0</strong>
+              </article>
+              <article class="metric-card">
+                <span>Documents indexed</span>
+                <strong id="metricDocuments">0</strong>
+              </article>
+              <article class="metric-card">
+                <span>Protocols detected</span>
+                <strong id="metricProtocols">0</strong>
+              </article>
+              <article class="metric-card">
+                <span>Compounds detected</span>
+                <strong id="metricCompounds">0</strong>
+              </article>
+              <article class="metric-card">
+                <span>Last sync</span>
+                <strong id="metricLastSync">Never</strong>
+              </article>
+            </section>
+
+            <section class="dashboard-grid">
+              <article class="panel">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">Recent Activity</p>
+                    <h2>Timeline</h2>
+                  </div>
+                </div>
+                <div class="timeline" id="activityTimeline"></div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">Recent</p>
+                    <h2>Experiments</h2>
+                  </div>
+                  <a class="inline-link" href="#/experiments">View all</a>
+                </div>
+                <div class="item-list" id="recentExperiments"></div>
+              </article>
+
+              <article class="panel">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">Signals</p>
+                    <h2>Popular Compounds</h2>
+                  </div>
+                </div>
+                <div class="compound-cloud" id="popularCompounds"></div>
+              </article>
+
+              <article class="panel dashboard-search">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">Instant Search</p>
+                    <h2>Search notes</h2>
+                  </div>
+                </div>
+                <form class="search-form" id="dashboardSearchForm">
+                  <label class="sr-only" for="dashboardSearchInput">Search query</label>
+                  <input id="dashboardSearchInput" type="search" placeholder="Search SAG, BRN3B, BMP4..." />
+                  <button type="submit">Search</button>
+                </form>
+                <div class="results-list compact-results" id="dashboardSearchResults"></div>
+              </article>
+
+              <article class="panel dashboard-chat">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">AI Chat</p>
+                    <h2>Ask ResearchOS</h2>
+                  </div>
+                </div>
+                <form class="chat-form" id="dashboardChatForm">
+                  <label class="sr-only" for="dashboardChatInput">AI chat question</label>
+                  <textarea id="dashboardChatInput" rows="3" placeholder="What do the SAG and BRN3B notes suggest?"></textarea>
+                  <button type="submit">Ask</button>
+                </form>
+                <div class="chat-output" id="dashboardChatOutput"></div>
+              </article>
+            </section>
+          </section>
+
+          <section class="view" id="experimentsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Structured Records</p>
+                  <h2>Experiments</h2>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Experiment ID</th>
+                      <th>Date</th>
+                      <th>Title</th>
+                      <th>Compounds</th>
+                      <th>Markers</th>
+                      <th>Provider</th>
+                    </tr>
+                  </thead>
+                  <tbody id="experimentsTable"></tbody>
+                </table>
+              </div>
+            </article>
+          </section>
+
+          <section class="view" id="experimentDetailView">
+            <article class="panel" id="experimentDetail"></article>
+          </section>
+
+          <section class="view" id="protocolsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Detected</p>
+                  <h2>Protocols</h2>
+                </div>
+              </div>
+              <div class="item-list" id="protocolsList"></div>
+            </article>
+          </section>
+
+          <section class="view" id="documentsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Library</p>
+                  <h2>Documents</h2>
+                </div>
+              </div>
+              <div class="item-list" id="documentsList"></div>
+            </article>
+          </section>
+
+          <section class="view" id="searchView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Search</p>
+                  <h2>Research notes</h2>
+                </div>
+              </div>
+              <form class="search-form" id="searchForm">
+                <label class="sr-only" for="searchInput">Search query</label>
+                <input id="searchInput" type="search" placeholder="Search compounds, markers, experiment IDs..." />
+                <button type="submit">Search</button>
+              </form>
+              <div class="results-list" id="searchResults"></div>
+            </article>
+          </section>
+
+          <section class="view" id="chatView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">AI Assistant</p>
+                  <h2>Chat with ResearchOS</h2>
+                </div>
+              </div>
+              <form class="chat-form" id="chatForm">
+                <label class="sr-only" for="chatInput">Chat question</label>
+                <textarea id="chatInput" rows="4" placeholder="Summarize the SAG experiment and staining result."></textarea>
+                <button type="submit">Ask</button>
+              </form>
+              <div class="chat-output" id="chatOutput"></div>
+            </article>
+          </section>
+
+          <section class="view" id="settingsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Configuration</p>
+                  <h2>Settings</h2>
+                </div>
+              </div>
+              <div class="settings-grid">
+                <div>
+                  <span>Notebook provider</span>
+                  <strong>Markdown demo + OneNote-ready</strong>
+                </div>
+                <div>
+                  <span>AI provider</span>
+                  <strong>OpenAI-compatible via environment</strong>
+                </div>
+                <div>
+                  <span>Storage</span>
+                  <strong>SQLite + ChromaDB local-first</strong>
+                </div>
+              </div>
+            </article>
+          </section>
+        </main>
+      </div>
+    </div>
 
     <script src="/frontend-assets/app.js" defer></script>
   </body>
