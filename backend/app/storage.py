@@ -382,6 +382,36 @@ class SQLiteStore:
             metadata=json.loads(record["metadata_json"] or "{}"),
         )
 
+    def delete_documents_by_source_prefix(self, source_prefix: str) -> int:
+        """Delete documents, chunks, and experiments under a trusted source prefix.
+
+        This is used by the local demo reset endpoint. It intentionally requires
+        a concrete source path prefix so it cannot wipe arbitrary stored data.
+        """
+
+        normalized_prefix = str(Path(source_prefix).resolve())
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM documents
+                WHERE source_path IS NOT NULL
+                  AND (source_path = ? OR source_path LIKE ?)
+                """,
+                (normalized_prefix, f"{normalized_prefix}/%"),
+            ).fetchall()
+            document_ids = [row["id"] for row in rows]
+
+            for document_id in document_ids:
+                connection.execute(
+                    "DELETE FROM experiments WHERE source_document_id = ?",
+                    (document_id,),
+                )
+                connection.execute("DELETE FROM chunks WHERE document_id = ?", (document_id,))
+                connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+
+        return len(document_ids)
+
     def _experiment_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Deserialize an experiment row into API-ready fields."""
 

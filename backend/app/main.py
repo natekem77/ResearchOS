@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -131,7 +131,8 @@ class SearchResultResponse(BaseModel):
 class ChatRequest(BaseModel):
     """Chat request against configured AI provider."""
 
-    message: str
+    message: str | None = None
+    question: str | None = None
     use_search_context: bool = True
     limit: int = 5
 
@@ -180,6 +181,12 @@ class ExperimentResponse(BaseModel):
     notes: str | None = None
     conclusions: str | None = None
     extracted_at: str
+
+
+class DemoResetResponse(IngestResponse):
+    """Response returned after resetting and loading local demo notes."""
+
+    documents_deleted: int
 
 
 def _handle_graph_error(exc: Exception) -> HTTPException:
@@ -239,6 +246,13 @@ def _build_rag_prompt(question: str, sources: list[SearchResultResponse]) -> str
         "Sources:\n"
         + "\n\n".join(source_blocks)
     )
+
+
+def _chat_question(request: ChatRequest) -> str:
+    """Accept both `message` and `question` request shapes for chat."""
+
+    question = request.message or request.question or ""
+    return question.strip()
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
@@ -331,15 +345,36 @@ def onenote_pages(
 
 
 @app.post("/ingest/markdown", response_model=IngestResponse, tags=["ingestion"])
-def ingest_markdown(request: MarkdownIngestRequest) -> IngestResponse:
+def ingest_markdown(
+    request: MarkdownIngestRequest | None = Body(default=None),
+) -> IngestResponse:
     """Ingest local Markdown files into SQLite and the vector index."""
 
+    resolved_request = request or MarkdownIngestRequest()
     try:
-        result = ingest_markdown_folder(request.folder_path)
+        result = ingest_markdown_folder(resolved_request.folder_path)
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return IngestResponse(**result.__dict__)
+
+
+@app.post("/demo/reset", response_model=DemoResetResponse, tags=["demo"])
+def demo_reset() -> DemoResetResponse:
+    """Reset local sample data and reload the bundled demo lab notes."""
+
+    sample_path = PROJECT_ROOT / "samples" / "lab_notes"
+    store = SQLiteStore(settings=settings)
+    deleted_count = store.delete_documents_by_source_prefix(str(sample_path))
+    result = ingest_markdown_folder(sample_path)
+
+    return DemoResetResponse(
+        documents_deleted=deleted_count,
+        provider=result.provider,
+        documents_ingested=result.documents_ingested,
+        chunks_indexed=result.chunks_indexed,
+        experiments_extracted=result.experiments_extracted,
+    )
 
 
 @app.get("/documents", response_model=list[DocumentSummaryResponse], tags=["documents"])
@@ -383,7 +418,8 @@ def search(request: SearchRequest) -> list[SearchResultResponse]:
 def chat(request: ChatRequest) -> ChatResponse:
     """Answer a question with configured AI provider and ResearchOS source chunks."""
 
-    if not request.message.strip():
+    question = _chat_question(request)
+    if not question:
         raise HTTPException(status_code=400, detail="Chat message must not be empty.")
 
     try:
@@ -393,10 +429,10 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     source_results: list[SearchResultResponse] = []
     if request.use_search_context:
-        raw_results = _search_local_documents(request.message, limit=max(1, min(request.limit, 10)))
+        raw_results = _search_local_documents(question, limit=max(1, min(request.limit, 10)))
         source_results = [SearchResultResponse(**result) for result in raw_results]
 
-    prompt = _build_rag_prompt(request.message, source_results)
+    prompt = _build_rag_prompt(question, source_results)
 
     try:
         answer = provider.chat(message=prompt)

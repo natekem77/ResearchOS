@@ -73,6 +73,7 @@ ResearchOS/
 │   ├── ARCHITECTURE.md
 │   ├── AZURE_APP_SETUP.md
 │   ├── CORE_ARCHITECTURE.md
+│   ├── DEMO_SCRIPT.md
 │   ├── DESIGN.md
 │   └── MVP_ROADMAP.md
 ├── frontend/
@@ -173,8 +174,42 @@ curl -X POST http://127.0.0.1:8001/ingest/markdown \
 ```
 
 Then open `http://127.0.0.1:8001` in a browser. The UI shows backend health,
-ingested documents, extracted experiments, local search, and a placeholder chat
-panel for future AI provider setup.
+ingested documents, extracted experiments, local search, and AI chat when a
+provider is configured.
+
+## 5-Minute Lab Demo
+
+Use this flow for a quick lab-member demo:
+
+1. Start the backend:
+
+```bash
+./scripts/restart.sh
+```
+
+2. Open the web UI:
+
+```text
+http://127.0.0.1:8001
+```
+
+3. Click **Load demo notes**.
+4. Show the Documents and Experiments panels.
+5. Search:
+
+```text
+SAG BRN3B staining
+```
+
+6. If an AI provider is configured, ask chat:
+
+```text
+What do the SAG and BRN3B notes suggest?
+```
+
+The demo uses local Markdown notes, so it does not require Microsoft or UCSD
+tenant approval. See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for a short
+presentation script.
 
 ## Microsoft Graph Auth Setup
 
@@ -241,6 +276,12 @@ Milestone 3 adds provider-agnostic local ingestion and search. It does not
 require Microsoft auth.
 
 Ingest the sample lab notes:
+
+```bash
+curl -X POST http://127.0.0.1:8001/ingest/markdown
+```
+
+Or pass a custom folder:
 
 ```bash
 curl -X POST http://127.0.0.1:8001/ingest/markdown \
@@ -331,6 +372,14 @@ Chat returns an assistant answer and the source chunks used for retrieval:
 curl -X POST http://127.0.0.1:8001/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"What do the SAG and BRN3B notes suggest?","use_search_context":true,"limit":5}'
+```
+
+`/chat` also accepts `question`:
+
+```bash
+curl -X POST http://127.0.0.1:8001/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What do the SAG and BRN3B notes suggest?","limit":5}'
 ```
 
 ## Experiment Extraction

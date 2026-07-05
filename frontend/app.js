@@ -14,6 +14,9 @@ const searchResults = document.querySelector("#searchResults");
 const chatForm = document.querySelector("#chatForm");
 const chatInput = document.querySelector("#chatInput");
 const chatOutput = document.querySelector("#chatOutput");
+const loadDemoButton = document.querySelector("#loadDemoButton");
+const extractButton = document.querySelector("#extractButton");
+const demoStatus = document.querySelector("#demoStatus");
 
 function setStatus(text, className) {
   connectionStatus.textContent = text;
@@ -177,6 +180,10 @@ async function loadExperiments() {
   renderExperiments();
 }
 
+async function refreshData() {
+  await Promise.all([loadDocuments(), loadExperiments()]);
+}
+
 async function runSearch(query) {
   const results = await requestJson("/search", {
     method: "POST",
@@ -198,6 +205,41 @@ searchForm.addEventListener("submit", async (event) => {
     await runSearch(query);
   } catch (error) {
     searchResults.innerHTML = `<div class="result"><p>Search failed: ${escapeHtml(error.message)}</p></div>`;
+  }
+});
+
+loadDemoButton.addEventListener("click", async () => {
+  demoStatus.textContent = "Loading demo notes...";
+  loadDemoButton.disabled = true;
+  extractButton.disabled = true;
+  try {
+    const result = await requestJson("/demo/reset", { method: "POST" });
+    await refreshData();
+    demoStatus.textContent = `Loaded ${result.documents_ingested} notes and extracted ${result.experiments_extracted} experiments.`;
+  } catch (error) {
+    demoStatus.textContent = `Demo load failed: ${error.message}`;
+  } finally {
+    loadDemoButton.disabled = false;
+    extractButton.disabled = false;
+  }
+});
+
+extractButton.addEventListener("click", async () => {
+  demoStatus.textContent = "Extracting experiments...";
+  loadDemoButton.disabled = true;
+  extractButton.disabled = true;
+  try {
+    const result = await requestJson("/extract", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    await loadExperiments();
+    demoStatus.textContent = `Scanned ${result.documents_scanned} documents and extracted ${result.experiments_extracted} experiments.`;
+  } catch (error) {
+    demoStatus.textContent = `Extraction failed: ${error.message}`;
+  } finally {
+    loadDemoButton.disabled = false;
+    extractButton.disabled = false;
   }
 });
 
@@ -229,7 +271,7 @@ chatForm.addEventListener("submit", async (event) => {
 async function boot() {
   await loadStatus();
   try {
-    await Promise.all([loadDocuments(), loadExperiments()]);
+    await refreshData();
   } catch (error) {
     documentsList.innerHTML = `<div class="item"><p>Could not load local data.</p></div>`;
     experimentsList.innerHTML = `<div class="item"><p>Could not load local data.</p></div>`;
