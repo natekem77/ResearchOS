@@ -543,7 +543,8 @@ button {
 }
 
 .search-form,
-.chat-form {
+.chat-form,
+.entry-draft-form {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: end;
@@ -568,6 +569,38 @@ button {
   background: var(--accent-soft);
   font-size: 0.82rem;
   font-weight: 800;
+}
+
+.entry-draft-form {
+  grid-template-columns: 1fr;
+  align-items: stretch;
+}
+
+.entry-draft-form label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.markdown-preview {
+  min-height: 280px;
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 14px;
+  color: var(--text);
+  background: var(--surface-2);
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 input,
@@ -771,6 +804,7 @@ mark {
   .topbar-status,
   .hero-actions,
   .settings-actions,
+  .entry-actions,
   .prompt-row,
   .search-form,
   .chat-form,
@@ -786,6 +820,7 @@ mark {
   .topbar-status,
   .hero-actions,
   .settings-actions,
+  .entry-actions,
   .prompt-row {
     justify-content: stretch;
   }

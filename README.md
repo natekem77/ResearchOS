@@ -303,6 +303,23 @@ The dashboard and AI Chat page include a **Compare with literature** button.
 Load demo notes, ingest papers, enter a question such as `Do our SIX6/BRN3B
 results match published expectations?`, then click **Compare with literature**.
 
+## Voice-To-Experiment Entry Drafts
+
+Prototype a dictated experiment entry:
+
+```bash
+curl -X POST http://127.0.0.1:8001/entries/draft \
+  -H "Content-Type: application/json" \
+  -d '{"dictation":"Create NK Expt 31. Day 1 SAG plus GRK inhibitor. Treat with 100 nM SAG from D18 to D24. DMSO vehicle control. Planned readouts brightfield and BRN3B staining."}'
+```
+
+The dashboard includes a **New Experiment** page with a dictation text area,
+structured Markdown preview, and disabled **Save to OneNote** placeholder.
+Write-back requires UCSD IT approval and Microsoft Graph permissions such as
+`Notes.Create` or `Notes.ReadWrite`.
+
+See [docs/VOICE_ENTRY_DESIGN.md](docs/VOICE_ENTRY_DESIGN.md).
+
 ## Retinal Organoid Intelligence
 
 ResearchOS now builds a retinal organoid ontology from provider-agnostic
@@ -398,6 +415,7 @@ Presentation-ready materials:
 - [Troubleshooting guide](docs/TROUBLESHOOTING.md)
 - [AI research assistant](docs/AI_RESEARCH_ASSISTANT.md)
 - [Literature ingestion](docs/LITERATURE_INGESTION.md)
+- [Voice entry design](docs/VOICE_ENTRY_DESIGN.md)
 
 ## Microsoft Graph Auth Setup
 

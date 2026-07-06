@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
+from app.entry_drafting import draft_entry_from_notes
 from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
@@ -225,6 +226,25 @@ class LiteratureComparisonResponse(BaseModel):
     provider: str
 
 
+class DraftEntryRequest(BaseModel):
+    """Raw dictated notes for generating a structured entry draft."""
+
+    dictation: str | None = None
+    notes: str | None = None
+    use_ai: bool = True
+
+
+class DraftEntryResponse(BaseModel):
+    """Structured entry draft plus Markdown preview."""
+
+    structured: dict[str, object]
+    markdown: str
+    confidence: float
+    missing_fields: list[str]
+    ai_used: bool
+    provider: str
+
+
 class ExtractRequest(BaseModel):
     """Request body for structured experiment extraction."""
 
@@ -386,6 +406,13 @@ def _assistant_question(request: AssistantRequest) -> str:
 
     question = request.question or request.message or ""
     return question.strip()
+
+
+def _draft_entry_notes(request: DraftEntryRequest) -> str:
+    """Accept both `dictation` and `notes` request shapes."""
+
+    notes = request.dictation or request.notes or ""
+    return notes.strip()
 
 
 def _metadata_terms(value: str | None) -> list[str]:
@@ -889,6 +916,18 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return ChatResponse(provider=provider.provider_name, answer=answer, sources=source_results)
+
+
+@app.post("/entries/draft", response_model=DraftEntryResponse, tags=["entries"])
+def draft_entry(request: DraftEntryRequest) -> DraftEntryResponse:
+    """Generate a structured notebook-entry draft from dictated raw notes."""
+
+    notes = _draft_entry_notes(request)
+    if not notes:
+        raise HTTPException(status_code=400, detail="Draft entry dictation or notes must not be empty.")
+
+    draft = draft_entry_from_notes(raw_notes=notes, settings=settings, use_ai=request.use_ai)
+    return DraftEntryResponse(**draft.__dict__)
 
 
 @app.post("/assistant/ask", response_model=AssistantResponse, tags=["ai"])

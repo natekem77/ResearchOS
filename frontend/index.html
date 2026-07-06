@@ -19,6 +19,7 @@
 
         <nav class="side-nav" aria-label="Primary navigation">
           <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+          <a href="#/new-experiment" data-nav="new-experiment">New Experiment</a>
           <a href="#/experiments" data-nav="experiments">Experiments</a>
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
@@ -197,6 +198,39 @@
                 <div class="chat-output" id="dashboardChatOutput"></div>
               </article>
             </section>
+          </section>
+
+          <section class="view" id="newExperimentView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Voice-to-entry prototype</p>
+                  <h2>New Experiment</h2>
+                </div>
+                <button type="button" id="sampleDictationButton" class="secondary-button">Use sample dictation</button>
+              </div>
+              <form class="entry-draft-form" id="entryDraftForm">
+                <label for="entryDictation">Dictation / raw notes</label>
+                <textarea id="entryDictation" rows="8" placeholder="Create NK Expt 31. Day 1 SAG plus GRK inhibitor..."></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Generate structured entry</button>
+                  <button type="button" disabled>Save to OneNote</button>
+                  <span class="muted">requires UCSD IT approval + Notes.ReadWrite</span>
+                </div>
+              </form>
+            </article>
+
+            <article class="panel entry-preview-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Preview</p>
+                  <h2>Formatted experiment entry</h2>
+                </div>
+                <span class="status-pill" id="entryDraftStatus">No draft yet</span>
+              </div>
+              <div class="detail-grid" id="entryStructuredPreview"></div>
+              <pre class="markdown-preview" id="entryMarkdownPreview">Generate a structured entry to preview the notebook Markdown.</pre>
+            </article>
           </section>
 
           <section class="view" id="experimentsView">

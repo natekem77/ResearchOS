@@ -17,6 +17,7 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const views = {
   dashboard: $("#dashboardView"),
+  "new-experiment": $("#newExperimentView"),
   experiments: $("#experimentsView"),
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
@@ -189,6 +190,7 @@ function route() {
 
   const titles = {
     dashboard: ["Dashboard", "ResearchOS Dashboard"],
+    "new-experiment": ["New Experiment", "Dictation Draft"],
     experiments: ["Experiments", "Experiment Index"],
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
@@ -559,6 +561,54 @@ function formatComparisonValue(value) {
   if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
   if (value === null || value === undefined || value === "") return "not captured";
   return String(value);
+}
+
+function renderEntryDraft(payload) {
+  const structured = payload.structured || {};
+  const fields = [
+    ["Title", structured.title],
+    ["Experiment ID", structured.experiment_id],
+    ["Date", structured.date],
+    ["Objective", structured.objective],
+    ["Cell line", structured.cell_line],
+    ["Organoid batch", structured.organoid_batch],
+    ["Conditions", structured.conditions],
+    ["Treatments", structured.treatments],
+    ["Concentrations", structured.concentrations],
+    ["Timing / differentiation days", structured.timing_differentiation_days],
+    ["Controls", structured.controls],
+    ["Planned readouts", structured.planned_readouts],
+    ["Observations", structured.observations],
+    ["Next steps", structured.next_steps],
+  ];
+
+  $("#entryStructuredPreview").innerHTML = fields
+    .map(([label, value]) => detailField(label, formatComparisonValue(value)))
+    .join("");
+  $("#entryMarkdownPreview").textContent = payload.markdown || "No Markdown generated.";
+  $("#entryDraftStatus").textContent = `Confidence ${Math.round((payload.confidence || 0) * 100)}% · ${payload.provider}`;
+  $("#entryDraftStatus").className = `status-pill ${(payload.confidence || 0) >= 0.55 ? "ok" : ""}`;
+
+  if ((payload.missing_fields || []).length) {
+    $("#entryStructuredPreview").insertAdjacentHTML(
+      "beforeend",
+      detailField("Missing fields", payload.missing_fields.join(", ")),
+    );
+  }
+}
+
+async function generateEntryDraft() {
+  const notes = $("#entryDictation").value.trim();
+  if (!notes) {
+    $("#entryDraftStatus").textContent = "Enter dictation first";
+    return;
+  }
+  $("#entryDraftStatus").textContent = "Generating draft...";
+  const payload = await requestJson("/entries/draft", {
+    method: "POST",
+    body: JSON.stringify({ dictation: notes }),
+  });
+  renderEntryDraft(payload);
 }
 
 async function compareSelectedExperiments() {
@@ -1148,6 +1198,26 @@ $("#loadDemoButton").addEventListener("click", () => {
 $("#loadPapersButton").addEventListener("click", () => {
   ingestPapers().catch((error) => {
     $("#demoStatus").textContent = `Paper ingestion failed: ${error.message}`;
+  });
+});
+
+$("#sampleDictationButton").addEventListener("click", () => {
+  $("#entryDictation").value = (
+    "Create NK Expt 31. Day 1 SAG plus GRK inhibitor. "
+    + "Objective: test whether SAG with GRK inhibitor improves early retinal organoid patterning. "
+    + "Cell line SIX6 reporter iPSC line. Organoid batch RO-NK-31. "
+    + "Treat with 100 nM SAG and 250 nM GRK inhibitor from D18 to D24. "
+    + "DMSO vehicle control. Planned readouts brightfield, SIX6 fluorescence, BRN3B staining at D32. "
+    + "Observed smooth rims in treated wells. Next steps quantify SIX6 intensity and repeat with three organoids per condition."
+  );
+  $("#entryDictation").focus();
+});
+
+$("#entryDraftForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  generateEntryDraft().catch((error) => {
+    $("#entryDraftStatus").textContent = `Draft failed: ${error.message}`;
+    $("#entryDraftStatus").className = "status-pill";
   });
 });
 
