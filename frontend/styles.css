@@ -209,6 +209,31 @@ button {
   display: block;
 }
 
+.status-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.status-banner span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.status-banner strong {
+  color: var(--text);
+}
+
 .hero-panel,
 .panel,
 .metric-card {

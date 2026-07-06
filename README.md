@@ -49,6 +49,43 @@ Read-only OneNote page sync is implemented behind Microsoft Graph delegated
 login. Real UCSD notebook access still requires tenant consent or a UCSD-owned
 app registration before lab OneNote content can be synced.
 
+## Run The Demo In One Command
+
+After creating `backend/.venv` and installing `backend/requirements.txt`, run:
+
+```bash
+./scripts/demo.sh
+```
+
+The script restarts the backend, waits for `/health`, loads sample lab notes,
+and prints the dashboard URL:
+
+```text
+http://127.0.0.1:8001
+```
+
+## What Works Today
+
+- Local FastAPI backend and browser dashboard.
+- Markdown demo note ingestion.
+- SQLite document and experiment storage.
+- Local chunking, vector indexing, and keyword fallback search.
+- Structured experiment extraction.
+- Retinal organoid entity pages for compounds, markers, cell lines, and batches.
+- Provider status Settings page.
+- Read-only Microsoft Graph auth and OneNote sync pipeline scaffolding.
+- Optional OpenAI-compatible AI chat when configured.
+
+## What Needs UCSD IT Approval
+
+Real UCSD OneNote access needs Microsoft tenant approval or a UCSD-owned app
+registration for the ResearchOS Development app. The requested initial Graph
+permissions are delegated and read-only: `User.Read`, `Notes.Read`, `openid`,
+`profile`, and `offline_access`.
+
+See [docs/UCSD_IT_APPROVAL_REQUEST.md](docs/UCSD_IT_APPROVAL_REQUEST.md) for the
+email-ready approval request.
+
 ## Repository Layout
 
 ```text
@@ -138,6 +175,7 @@ WSL/Linux development scripts are available for managing the local backend on
 port `8001`:
 
 ```bash
+./scripts/demo.sh
 ./scripts/start.sh
 ./scripts/status.sh
 ./scripts/stop.sh
@@ -147,6 +185,9 @@ port `8001`:
 The scripts use `backend/.venv`, start Uvicorn on `127.0.0.1:8001`, print the
 health URL, and help recover from stuck port issues. Override the port for local
 experiments with `RESEARCHOS_DEV_PORT`.
+
+For Windows setup, see [docs/INSTALL_WINDOWS_WSL.md](docs/INSTALL_WINDOWS_WSL.md).
+For common failure modes, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Web UI Demo
 
@@ -280,6 +321,8 @@ Presentation-ready materials:
 - [Lab demo talk track](docs/LAB_DEMO_TALK_TRACK.md)
 - [PI one-page summary](docs/PI_ONE_PAGE_SUMMARY.md)
 - [UCSD IT approval request](docs/UCSD_IT_APPROVAL_REQUEST.md)
+- [Windows/WSL install guide](docs/INSTALL_WINDOWS_WSL.md)
+- [Troubleshooting guide](docs/TROUBLESHOOTING.md)
 
 ## Microsoft Graph Auth Setup
 
