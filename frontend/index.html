@@ -22,6 +22,10 @@
           <a href="#/experiments" data-nav="experiments">Experiments</a>
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
+          <a href="#/compounds" data-nav="compounds">Compounds</a>
+          <a href="#/markers" data-nav="markers">Markers</a>
+          <a href="#/cell-lines" data-nav="cell-lines">Cell Lines</a>
+          <a href="#/organoid-batches" data-nav="organoid-batches">Batches</a>
           <a href="#/search" data-nav="search">Search</a>
           <a href="#/chat" data-nav="chat">AI Chat</a>
           <a href="#/settings" data-nav="settings">Settings</a>
@@ -213,6 +217,22 @@
               </form>
               <div class="results-list" id="searchResults"></div>
             </article>
+          </section>
+
+          <section class="view" id="entityListView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow" id="entityListEyebrow">Ontology</p>
+                  <h2 id="entityListTitle">Entities</h2>
+                </div>
+              </div>
+              <div class="entity-grid" id="entityList"></div>
+            </article>
+          </section>
+
+          <section class="view" id="entityDetailView">
+            <article class="panel" id="entityDetail"></article>
           </section>
 
           <section class="view" id="chatView">

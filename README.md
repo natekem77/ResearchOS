@@ -177,6 +177,34 @@ Then open `http://127.0.0.1:8001` in a browser. The dashboard includes top
 navigation, provider/sync status, sidebar navigation, metrics, recent activity,
 experiments, documents, search, and AI chat when a provider is configured.
 
+## Retinal Organoid Intelligence
+
+ResearchOS now builds a retinal organoid ontology from provider-agnostic
+documents and extracted experiments. It links experiment IDs, cell lines,
+organoid batches, differentiation days, compounds, concentrations, treatment
+windows, markers, cell types, imaging modalities, RNA-seq, flow cytometry, and
+protocols.
+
+Ontology pages:
+
+```text
+http://127.0.0.1:8001/compounds
+http://127.0.0.1:8001/markers
+http://127.0.0.1:8001/cell-lines
+http://127.0.0.1:8001/organoid-batches
+```
+
+Clicking an entity such as `BMP4`, `SAG`, `SIX6`, or `BRN3B` shows linked
+experiments, protocols, documents, images, and AI summaries when available.
+
+Ontology API examples:
+
+```bash
+curl http://127.0.0.1:8001/ontology/compounds
+curl http://127.0.0.1:8001/ontology/compounds/BMP4
+curl http://127.0.0.1:8001/ontology/markers/SIX6
+```
+
 ## Screenshots
 
 Screenshots should be added here as the UI stabilizes:

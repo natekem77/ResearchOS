@@ -17,6 +17,7 @@ from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.ingestion import ingest_markdown_folder
 from app.logging import configure_logging
 from app.onenote_provider import list_notebooks, list_pages, list_sections
+from app.retinal_ontology import build_retinal_ontology
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -189,6 +190,18 @@ class DemoResetResponse(IngestResponse):
     documents_deleted: int
 
 
+class OntologyEntityResponse(BaseModel):
+    """Linked retinal organoid ontology entity."""
+
+    type: str
+    name: str
+    experiments: list[dict[str, object]]
+    documents: list[dict[str, object]]
+    protocols: list[dict[str, object]]
+    images: list[dict[str, object]]
+    ai_summaries: list[dict[str, object]]
+
+
 def _handle_graph_error(exc: Exception) -> HTTPException:
     """Convert provider-level Graph errors into helpful API responses."""
 
@@ -255,12 +268,108 @@ def _chat_question(request: ChatRequest) -> str:
     return question.strip()
 
 
+def _ontology() -> dict[str, list[dict[str, object]]]:
+    """Build the current local retinal organoid ontology."""
+
+    store = SQLiteStore(settings=settings)
+    experiments = store.list_experiments()
+    documents = [document.__dict__ for document in store.get_all_research_documents()]
+    return build_retinal_ontology(experiments=experiments, documents=documents)
+
+
+def _ontology_entities(entity_type: str) -> list[OntologyEntityResponse]:
+    """Return linked ontology entities for a known entity type."""
+
+    entities = _ontology().get(entity_type)
+    if entities is None:
+        raise HTTPException(status_code=404, detail=f"Unknown ontology entity type: {entity_type}")
+    return [OntologyEntityResponse(**entity) for entity in entities]
+
+
+def _ontology_entity(entity_type: str, entity_name: str) -> OntologyEntityResponse:
+    """Return one linked ontology entity by name."""
+
+    entities = _ontology().get(entity_type)
+    if entities is None:
+        raise HTTPException(status_code=404, detail=f"Unknown ontology entity type: {entity_type}")
+
+    for entity in entities:
+        if entity["name"].lower() == entity_name.lower():
+            return OntologyEntityResponse(**entity)
+
+    raise HTTPException(status_code=404, detail=f"Ontology entity not found: {entity_name}")
+
+
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 def health() -> HealthResponse:
     """Return a minimal health check for uptime probes and local smoke tests."""
 
     logger.debug("Health check requested.")
     return HealthResponse(status="ok", project="ResearchOS")
+
+
+@app.get("/api/compounds", response_model=list[OntologyEntityResponse], tags=["ontology"])
+@app.get("/compounds", response_model=list[OntologyEntityResponse], include_in_schema=False)
+def compounds_api() -> list[OntologyEntityResponse]:
+    """Return compound ontology entities as JSON."""
+
+    return _ontology_entities("compounds")
+
+
+@app.get("/api/compounds/{entity_name:path}", response_model=OntologyEntityResponse, tags=["ontology"])
+@app.get("/compounds/{entity_name:path}", response_model=OntologyEntityResponse, include_in_schema=False)
+def compound_api(entity_name: str) -> OntologyEntityResponse:
+    """Return one compound ontology entity as JSON."""
+
+    return _ontology_entity("compounds", entity_name)
+
+
+@app.get("/api/markers", response_model=list[OntologyEntityResponse], tags=["ontology"])
+@app.get("/markers", response_model=list[OntologyEntityResponse], include_in_schema=False)
+def markers_api() -> list[OntologyEntityResponse]:
+    """Return marker ontology entities as JSON."""
+
+    return _ontology_entities("markers")
+
+
+@app.get("/api/markers/{entity_name:path}", response_model=OntologyEntityResponse, tags=["ontology"])
+@app.get("/markers/{entity_name:path}", response_model=OntologyEntityResponse, include_in_schema=False)
+def marker_api(entity_name: str) -> OntologyEntityResponse:
+    """Return one marker ontology entity as JSON."""
+
+    return _ontology_entity("markers", entity_name)
+
+
+@app.get("/api/cell-lines", response_model=list[OntologyEntityResponse], tags=["ontology"])
+@app.get("/cell-lines", response_model=list[OntologyEntityResponse], include_in_schema=False)
+def cell_lines_api() -> list[OntologyEntityResponse]:
+    """Return cell-line ontology entities as JSON."""
+
+    return _ontology_entities("cell-lines")
+
+
+@app.get("/api/cell-lines/{entity_name:path}", response_model=OntologyEntityResponse, tags=["ontology"])
+@app.get("/cell-lines/{entity_name:path}", response_model=OntologyEntityResponse, include_in_schema=False)
+def cell_line_api(entity_name: str) -> OntologyEntityResponse:
+    """Return one cell-line ontology entity as JSON."""
+
+    return _ontology_entity("cell-lines", entity_name)
+
+
+@app.get("/api/organoid-batches", response_model=list[OntologyEntityResponse], tags=["ontology"])
+@app.get("/organoid-batches", response_model=list[OntologyEntityResponse], include_in_schema=False)
+def organoid_batches_api() -> list[OntologyEntityResponse]:
+    """Return organoid-batch ontology entities as JSON."""
+
+    return _ontology_entities("organoid-batches")
+
+
+@app.get("/api/organoid-batches/{entity_name:path}", response_model=OntologyEntityResponse, tags=["ontology"])
+@app.get("/organoid-batches/{entity_name:path}", response_model=OntologyEntityResponse, include_in_schema=False)
+def organoid_batch_api(entity_name: str) -> OntologyEntityResponse:
+    """Return one organoid-batch ontology entity as JSON."""
+
+    return _ontology_entity("organoid-batches", entity_name)
 
 
 @app.get("/", include_in_schema=False)
@@ -460,6 +569,34 @@ def experiment_detail(experiment_id: str) -> ExperimentResponse:
         raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
 
     return ExperimentResponse(**experiment)
+
+
+@app.get("/ontology", tags=["ontology"])
+def ontology() -> dict[str, list[OntologyEntityResponse]]:
+    """Return all linked retinal organoid ontology entities."""
+
+    return {
+        entity_type: [OntologyEntityResponse(**entity) for entity in entities]
+        for entity_type, entities in _ontology().items()
+    }
+
+
+@app.get("/ontology/{entity_type}", response_model=list[OntologyEntityResponse], tags=["ontology"])
+def ontology_entities(entity_type: str) -> list[OntologyEntityResponse]:
+    """Return ontology entities for one entity type."""
+
+    return _ontology_entities(entity_type)
+
+
+@app.get(
+    "/ontology/{entity_type}/{entity_name:path}",
+    response_model=OntologyEntityResponse,
+    tags=["ontology"],
+)
+def ontology_entity(entity_type: str, entity_name: str) -> OntologyEntityResponse:
+    """Return one linked ontology entity."""
+
+    return _ontology_entity(entity_type, entity_name)
 
 
 @app.post("/extract", response_model=ExtractResponse, tags=["experiments"])

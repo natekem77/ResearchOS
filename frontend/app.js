@@ -3,6 +3,7 @@ const state = {
   experiments: [],
   health: null,
   auth: null,
+  ontology: {},
   lastSync: null,
   searchTerms: [],
 };
@@ -16,6 +17,8 @@ const views = {
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
   documents: $("#documentsView"),
+  entityList: $("#entityListView"),
+  entityDetail: $("#entityDetailView"),
   search: $("#searchView"),
   chat: $("#chatView"),
   settings: $("#settingsView"),
@@ -102,7 +105,8 @@ function setStatus() {
 }
 
 function route() {
-  const raw = window.location.hash.replace(/^#\/?/, "") || "dashboard";
+  const pathView = window.location.pathname.replace(/^\//, "");
+  const raw = window.location.hash.replace(/^#\/?/, "") || pathView || "dashboard";
   const [view, id] = raw.split("/");
 
   $$(".view").forEach((node) => node.classList.remove("active"));
@@ -113,6 +117,24 @@ function route() {
     $("[data-nav='experiments']").classList.add("active");
     renderExperimentDetail(decodeURIComponent(id));
     setHeader("Experiment Detail", "Experiment record");
+    return;
+  }
+
+  if (["compounds", "markers", "cell-lines", "organoid-batches"].includes(view)) {
+    const entityType = view;
+    if (id) {
+      views.entityDetail.classList.add("active");
+      const nav = $(`[data-nav='${entityType}']`);
+      if (nav) nav.classList.add("active");
+      renderEntityDetail(entityType, decodeURIComponent(id));
+      setHeader("Retinal Ontology", decodeURIComponent(id));
+      return;
+    }
+    views.entityList.classList.add("active");
+    const nav = $(`[data-nav='${entityType}']`);
+    if (nav) nav.classList.add("active");
+    renderEntityList(entityType);
+    setHeader("Retinal Ontology", entityTitle(entityType));
     return;
   }
 
@@ -134,7 +156,7 @@ function route() {
 }
 
 function allCompounds() {
-  return unique(state.experiments.flatMap((experiment) => experiment.compounds || []));
+  return (state.ontology.compounds || []).map((entity) => entity.name);
 }
 
 function protocolDocuments() {
@@ -183,13 +205,17 @@ function renderRecentExperiments() {
 }
 
 function renderPopularCompounds() {
-  const counts = new Map();
-  for (const compound of state.experiments.flatMap((experiment) => experiment.compounds || [])) {
-    counts.set(compound, (counts.get(compound) || 0) + 1);
-  }
-  const compounds = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const compounds = (state.ontology.compounds || []).map((entity) => [
+    entity.name,
+    entity.experiments.length + entity.protocols.length,
+  ]);
   $("#popularCompounds").innerHTML = compounds.length
-    ? compounds.map(([name, count]) => `<span class="compound-chip">${escapeHtml(name)} <small>${count}</small></span>`).join("")
+    ? compounds
+        .map(
+          ([name, count]) =>
+            `<a class="compound-chip" href="#/compounds/${encodeURIComponent(name)}">${escapeHtml(name)} <small>${count}</small></a>`,
+        )
+        .join("")
     : `<div class="empty-state">No compounds detected.</div>`;
 }
 
@@ -276,6 +302,89 @@ function renderExperimentDetail(experimentId) {
     ${tagSection("Time points", experiment.time_points)}
     ${textSection("Notes", experiment.notes)}
     ${textSection("Conclusions", experiment.conclusions)}
+  `;
+}
+
+function entityTitle(entityType) {
+  return {
+    compounds: "Compounds",
+    markers: "Markers",
+    "cell-lines": "Cell Lines",
+    "organoid-batches": "Organoid Batches",
+  }[entityType] || "Entities";
+}
+
+function renderEntityList(entityType) {
+  const entities = state.ontology[entityType] || [];
+  $("#entityListEyebrow").textContent = "Retinal organoid ontology";
+  $("#entityListTitle").textContent = entityTitle(entityType);
+  $("#entityList").innerHTML = entities.length
+    ? entities
+        .map(
+          (entity) => `
+            <a class="entity-card" href="#/${entityType}/${encodeURIComponent(entity.name)}">
+              <strong>${escapeHtml(entity.name)}</strong>
+              <span>${entity.experiments.length} experiments · ${entity.protocols.length} protocols · ${entity.documents.length} documents</span>
+            </a>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">No ${escapeHtml(entityTitle(entityType).toLowerCase())} detected.</div>`;
+}
+
+function renderEntityDetail(entityType, name) {
+  const entity = (state.ontology[entityType] || []).find(
+    (item) => item.name.toLowerCase() === name.toLowerCase(),
+  );
+  if (!entity) {
+    $("#entityDetail").innerHTML = `<div class="empty-state">Entity not found.</div>`;
+    return;
+  }
+  $("#entityDetail").innerHTML = `
+    <a class="inline-link" href="#/${entityType}">Back to ${escapeHtml(entityTitle(entityType))}</a>
+    <div class="detail-header">
+      <div>
+        <p class="eyebrow">${escapeHtml(entityTitle(entityType))}</p>
+        <h2>${escapeHtml(entity.name)}</h2>
+      </div>
+      <span class="status-pill ok">${entity.experiments.length} experiments</span>
+    </div>
+    ${linkedSection("Experiments", entity.experiments, (experiment) => `
+      <a class="item-link" href="#/experiments/${encodeURIComponent(experiment.id)}">
+        <strong>${escapeHtml(experiment.experiment_id || experiment.title)}</strong>
+        <span>${escapeHtml(experiment.date || "No date")} · ${escapeHtml(experiment.provider || "unknown")}</span>
+      </a>
+    `)}
+    ${linkedSection("Protocols", entity.protocols, (document) => `
+      <article class="record-card">
+        <h3>${escapeHtml(document.title)}</h3>
+        <p>${escapeHtml(document.source_path || document.source_url || document.id)}</p>
+      </article>
+    `)}
+    ${linkedSection("Documents", entity.documents, (document) => `
+      <article class="record-card">
+        <h3>${escapeHtml(document.title)}</h3>
+        <p>${escapeHtml(document.source_path || document.source_url || document.id)}</p>
+      </article>
+    `)}
+    ${linkedSection("Images", entity.images, (image) => `<article class="record-card"><h3>${escapeHtml(image.title || "Image")}</h3></article>`)}
+    ${linkedSection("AI summaries", entity.ai_summaries, (summary) => `
+      <article class="record-card">
+        <h3>${escapeHtml(summary.title || "Summary")}</h3>
+        <p>${escapeHtml(summary.summary || "")}</p>
+      </article>
+    `)}
+  `;
+}
+
+function linkedSection(title, items, renderer) {
+  return `
+    <section class="detail-section">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="item-list">
+        ${items.length ? items.map(renderer).join("") : `<div class="empty-state">No linked ${escapeHtml(title.toLowerCase())} yet.</div>`}
+      </div>
+    </section>
   `;
 }
 
@@ -419,12 +528,22 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, experiments] = await Promise.all([
+  const [documents, experiments, compounds, markers, cellLines, organoidBatches] = await Promise.all([
     requestJson("/documents"),
     requestJson("/experiments"),
+    requestJson("/api/compounds"),
+    requestJson("/api/markers"),
+    requestJson("/api/cell-lines"),
+    requestJson("/api/organoid-batches"),
   ]);
   state.documents = documents;
   state.experiments = experiments;
+  state.ontology = {
+    compounds,
+    markers,
+    "cell-lines": cellLines,
+    "organoid-batches": organoidBatches,
+  };
   state.lastSync = new Date();
   renderAll();
 }
