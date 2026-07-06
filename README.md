@@ -66,6 +66,30 @@ http://127.0.0.1:8001
 
 For the PI/lab walkthrough, use [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md).
 
+## ResearchOS v0.1 Demo Release
+
+This repository is prepared as a `v0.1 demo` for PI/lab discussion and UCSD IT
+handoff. The demo is local-first, uses bundled sample notes/paper records, and
+does not require UCSD OneNote access.
+
+Start the demo:
+
+```bash
+./scripts/demo.sh
+```
+
+Run the endpoint smoke test after the backend is running:
+
+```bash
+./scripts/smoke_test.sh
+```
+
+Release notes:
+
+- [docs/V0_1_DEMO_RELEASE_NOTES.md](docs/V0_1_DEMO_RELEASE_NOTES.md)
+- [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md)
+- [docs/UCSD_IT_APPROVAL_REQUEST.md](docs/UCSD_IT_APPROVAL_REQUEST.md)
+
 ## What Works Today
 
 - Local FastAPI backend and browser dashboard.

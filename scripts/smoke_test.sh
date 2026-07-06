@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PORT="${RESEARCHOS_DEV_PORT:-8001}"
+HOST="${RESEARCHOS_DEV_HOST:-127.0.0.1}"
+BASE_URL="${RESEARCHOS_BASE_URL:-http://$HOST:$PORT}"
+TMP_DIR="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$TMP_DIR"
+}
+trap cleanup EXIT
+
+pass() {
+  echo "PASS $1" >&2
+}
+
+request() {
+  local method="$1"
+  local path="$2"
+  local body="${3:-}"
+  local output="$TMP_DIR/$(echo "$path" | tr '/:' '__').json"
+
+  if [ "$method" = "GET" ]; then
+    curl -fsS "$BASE_URL$path" > "$output"
+  else
+    curl -fsS -X "$method" "$BASE_URL$path" \
+      -H "Content-Type: application/json" \
+      -d "$body" > "$output"
+  fi
+
+  test -s "$output"
+  pass "$method $path"
+  printf "%s" "$output"
+}
+
+echo "Running ResearchOS smoke test against $BASE_URL"
+
+request GET "/health" >/dev/null
+request GET "/demo/status" >/dev/null
+request POST "/demo/reset" "{}" >/dev/null
+request GET "/documents" >/dev/null
+EXPERIMENTS_FILE="$(request GET "/experiments")"
+request GET "/papers" >/dev/null
+request GET "/graph/stats" >/dev/null
+request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
+
+COMPARE_BODY="$(
+  python3 - "$EXPERIMENTS_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    experiments = json.load(handle)
+
+ids = [experiment["id"] for experiment in experiments[:2]]
+if len(ids) < 2:
+    raise SystemExit("Need at least two experiments for /experiments/compare smoke test.")
+
+print(json.dumps({"experiment_ids": ids, "use_ai": False}))
+PY
+)"
+request POST "/experiments/compare" "$COMPARE_BODY" >/dev/null
+
+echo "ResearchOS smoke test passed."

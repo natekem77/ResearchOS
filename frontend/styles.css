@@ -190,6 +190,10 @@ button {
   background: var(--accent-soft);
 }
 
+.release-badge {
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--line));
+}
+
 .settings-link,
 .inline-link {
   color: var(--accent-strong);
