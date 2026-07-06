@@ -9,6 +9,7 @@ const state = {
   ontology: {},
   lastSync: null,
   searchTerms: [],
+  activity: [],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -112,6 +113,41 @@ function setStatus() {
     : "Sync: not loaded";
 }
 
+function recordActivity(title, meta) {
+  state.activity = [
+    { title, meta, timestamp: new Date() },
+    ...state.activity,
+  ].slice(0, 8);
+  renderTimeline();
+}
+
+function oneNoteDisplayStatus() {
+  const auth = state.providerStatus?.onenote_auth;
+  if (auth?.status === "connected" || auth?.authenticated) {
+    return {
+      label: "Connected",
+      status: "ok",
+      message: "OneNote delegated login is active. Read-only sync can run when notebook access is available.",
+    };
+  }
+  if (auth?.status === "pending_ucsd_approval") {
+    return {
+      label: "Waiting for IT approval",
+      status: "warn",
+      message: "UCSD tenant approval is needed before lab OneNote notebooks can sync.",
+    };
+  }
+  return {
+    label: "Not connected",
+    status: "warn",
+    message: "Markdown demo mode is active. OneNote remains ready for login after app approval.",
+  };
+}
+
+function newestPaper() {
+  return [...state.papers].sort((a, b) => String(b.ingested_at).localeCompare(String(a.ingested_at)))[0];
+}
+
 function route() {
   const pathView = window.location.pathname.replace(/^\//, "");
   const raw = window.location.hash.replace(/^#\/?/, "") || pathView || "dashboard";
@@ -168,6 +204,10 @@ function allCompounds() {
   return (state.ontology.compounds || []).map((entity) => entity.name);
 }
 
+function allMarkers() {
+  return (state.ontology.markers || []).map((entity) => entity.name);
+}
+
 function protocolDocuments() {
   return state.documents.filter((document) => /protocol/i.test(document.title));
 }
@@ -175,13 +215,34 @@ function protocolDocuments() {
 function renderMetrics() {
   $("#metricExperiments").textContent = state.experiments.length;
   $("#metricDocuments").textContent = state.documents.length;
-  $("#metricProtocols").textContent = protocolDocuments().length;
+  $("#metricPapers").textContent = state.papers.length;
   $("#metricCompounds").textContent = allCompounds().length;
-  $("#metricLastSync").textContent = state.lastSync ? state.lastSync.toLocaleTimeString() : "Never";
+  $("#metricMarkers").textContent = allMarkers().length;
+  $("#metricCellLines").textContent = (state.ontology["cell-lines"] || []).length;
+  $("#metricOrganoidBatches").textContent = (state.ontology["organoid-batches"] || []).length;
 }
 
 function renderTimeline() {
+  const oneNote = oneNoteDisplayStatus();
+  const systemItems = [
+    {
+      title: `OneNote status: ${oneNote.label}`,
+      meta: oneNote.message,
+    },
+    state.lastSync
+      ? {
+          title: "Workspace data refreshed",
+          meta: state.lastSync.toLocaleTimeString(),
+        }
+      : null,
+  ].filter(Boolean);
+
   const items = [
+    ...state.activity.map((item) => ({
+      title: item.title,
+      meta: `${item.meta} · ${item.timestamp.toLocaleTimeString()}`,
+    })),
+    ...systemItems,
     ...state.experiments.slice(0, 3).map((experiment) => ({
       title: `Extracted ${experiment.title}`,
       meta: `${formatDate(experiment.date)} · ${experiment.source_provider}`,
@@ -194,7 +255,7 @@ function renderTimeline() {
 
   $("#activityTimeline").innerHTML = items.length
     ? items.map((item) => `<div class="timeline-item"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.meta)}</span></div>`).join("")
-    : `<div class="empty-state">No activity yet. Load demo notes to begin.</div>`;
+    : `<div class="empty-state">No recent activity. Load demo notes to begin.</div>`;
 }
 
 function renderRecentExperiments() {
@@ -210,7 +271,7 @@ function renderRecentExperiments() {
           `,
         )
         .join("")
-    : `<div class="empty-state">No experiments extracted.</div>`;
+    : `<div class="empty-state">No experiments available.</div>`;
 }
 
 function renderPopularCompounds() {
@@ -226,6 +287,37 @@ function renderPopularCompounds() {
         )
         .join("")
     : `<div class="empty-state">No compounds detected.</div>`;
+}
+
+function renderOneNoteStatusCard() {
+  const oneNote = oneNoteDisplayStatus();
+  $("#oneNoteStatusCard").innerHTML = `
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">OneNote</p>
+        <h2>Status</h2>
+      </div>
+      <span class="status-pill ${oneNote.status === "ok" ? "ok" : ""}">${escapeHtml(oneNote.label)}</span>
+    </div>
+    <p class="card-copy">${escapeHtml(oneNote.message)}</p>
+  `;
+}
+
+function renderLiteratureStatusCard() {
+  const paper = newestPaper();
+  $("#literatureStatusCard").innerHTML = `
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Literature</p>
+        <h2>${state.papers.length} paper${state.papers.length === 1 ? "" : "s"}</h2>
+      </div>
+      <span class="status-pill ${state.papers.length ? "ok" : ""}">${state.papers.length ? "Literature ready" : "Not imported"}</span>
+    </div>
+    <div class="detail-grid compact-detail-grid">
+      ${detailField("Papers", state.papers.length)}
+      ${detailField("Newest paper", paper?.title || "No papers have been imported.")}
+    </div>
+  `;
 }
 
 function renderDocuments() {
@@ -244,7 +336,7 @@ function renderDocuments() {
           `,
         )
         .join("")
-    : `<div class="empty-state">No documents indexed.</div>`;
+    : `<div class="empty-state">No documents have been indexed.</div>`;
 }
 
 function renderPapers() {
@@ -269,7 +361,7 @@ function renderPapers() {
           `,
         )
         .join("")
-    : `<div class="empty-state">No literature indexed. Add .pdf, .txt, or .md files under samples/papers or data/papers, then ingest papers.</div>`;
+    : `<div class="empty-state">No papers have been imported.</div>`;
 }
 
 function renderProtocols() {
@@ -286,7 +378,7 @@ function renderProtocols() {
           `,
         )
         .join("")
-    : `<div class="empty-state">No protocols detected yet.</div>`;
+    : `<div class="empty-state">No protocols detected.</div>`;
 }
 
 function statusLabel(status) {
@@ -389,7 +481,7 @@ function renderExperimentsTable() {
           `,
         )
         .join("")
-    : `<tr><td colspan="7">No experiments extracted.</td></tr>`;
+    : `<tr><td colspan="7">No experiments available.</td></tr>`;
 
   $$(".experiment-select").forEach((checkbox) => {
     checkbox.addEventListener("change", (event) => {
@@ -890,6 +982,23 @@ function bindLiteratureComparison(buttonSelector, inputSelector, outputSelector)
   });
 }
 
+function bindDashboardSuggestedQuestions() {
+  $$(".suggested-question").forEach((button) => {
+    button.addEventListener("click", () => {
+      const question = button.dataset.question || button.textContent.trim();
+      const mode = button.dataset.mode || "ask";
+      const input = $("#dashboardChatInput");
+      const output = $("#suggestedQuestionOutput");
+      input.value = question;
+      if (mode === "compare-literature") {
+        runLiteratureComparison(question, output);
+      } else {
+        runChat(question, output);
+      }
+    });
+  });
+}
+
 function bindSuggestedPrompts() {
   $$(".prompt-row").forEach((row) => {
     const targetId = row.dataset.promptTarget;
@@ -953,6 +1062,8 @@ function renderAll() {
   renderTimeline();
   renderRecentExperiments();
   renderPopularCompounds();
+  renderOneNoteStatusCard();
+  renderLiteratureStatusCard();
   renderDocuments();
   renderPapers();
   renderProtocols();
@@ -966,6 +1077,7 @@ async function loadDemo() {
   const result = await requestJson("/demo/reset", { method: "POST" });
   await loadStatus();
   await refreshData();
+  recordActivity("Demo reset", `Loaded ${result.documents_ingested} notes and ${result.experiments_extracted} experiments`);
   $("#demoStatus").textContent = `Loaded ${result.documents_ingested} notes and ${result.experiments_extracted} experiments.`;
   const settingsStatus = $("#settingsActionStatus");
   if (settingsStatus) {
@@ -980,6 +1092,7 @@ async function extractExperiments() {
     body: JSON.stringify({}),
   });
   await refreshData();
+  recordActivity("Experiment extraction", `Scanned ${result.documents_scanned} documents`);
   $("#demoStatus").textContent = `Scanned ${result.documents_scanned} documents and extracted ${result.experiments_extracted} experiments.`;
 }
 
@@ -988,6 +1101,7 @@ async function ingestPapers() {
   target.textContent = "Ingesting local papers...";
   const result = await requestJson("/ingest/papers", { method: "POST" });
   await refreshData();
+  recordActivity("Paper ingestion", result.message || `Indexed ${result.documents_ingested} paper document(s)`);
   target.textContent = result.message || `Indexed ${result.documents_ingested} paper document(s).`;
 }
 
@@ -1028,6 +1142,12 @@ async function testAiFromSettings() {
 $("#loadDemoButton").addEventListener("click", () => {
   loadDemo().catch((error) => {
     $("#demoStatus").textContent = `Demo load failed: ${error.message}`;
+  });
+});
+
+$("#loadPapersButton").addEventListener("click", () => {
+  ingestPapers().catch((error) => {
+    $("#demoStatus").textContent = `Paper ingestion failed: ${error.message}`;
   });
 });
 
@@ -1074,6 +1194,7 @@ bindChat("#dashboardChatForm", "#dashboardChatInput", "#dashboardChatOutput");
 bindChat("#chatForm", "#chatInput", "#chatOutput");
 bindLiteratureComparison("#dashboardCompareLiteratureButton", "#dashboardChatInput", "#dashboardChatOutput");
 bindLiteratureComparison("#compareLiteratureButton", "#chatInput", "#chatOutput");
+bindDashboardSuggestedQuestions();
 bindSuggestedPrompts();
 
 window.addEventListener("hashchange", route);

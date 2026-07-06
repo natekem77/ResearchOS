@@ -634,6 +634,7 @@ def organoid_batch_api(entity_name: str) -> OntologyEntityResponse:
 
 
 @app.get("/", include_in_schema=False)
+@app.get("/dashboard", include_in_schema=False)
 def homepage() -> FileResponse:
     """Serve the local ResearchOS web UI."""
 

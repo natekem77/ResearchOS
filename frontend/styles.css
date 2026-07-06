@@ -256,6 +256,14 @@ button {
   font-size: clamp(1.4rem, 3vw, 2.4rem);
 }
 
+.welcome-copy,
+.card-copy {
+  max-width: 760px;
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .hero-actions,
 .demo-actions {
   display: flex;
@@ -274,7 +282,7 @@ button {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 12px;
   margin: 16px 0;
 }
@@ -301,6 +309,28 @@ button {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+
+.suggested-panel {
+  grid-column: 1 / -1;
+}
+
+.suggested-question-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.suggested-question {
+  min-height: 46px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  text-align: left;
+}
+
+.status-card .detail-grid,
+.compact-detail-grid {
+  margin-bottom: 0;
 }
 
 .panel {
@@ -334,6 +364,31 @@ button {
   border-radius: 9px;
   padding: 13px;
   background: var(--surface-2);
+}
+
+.app-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 24px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 750;
+}
+
+.app-footer strong,
+.app-footer span {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 5px 10px;
+  background: var(--surface);
+}
+
+.app-footer strong {
+  color: var(--text);
 }
 
 .item-link {
@@ -702,6 +757,7 @@ mark {
 
   .metric-grid,
   .dashboard-grid,
+  .suggested-question-grid,
   .detail-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -720,6 +776,7 @@ mark {
   .chat-form,
   .metric-grid,
   .dashboard-grid,
+  .suggested-question-grid,
   .detail-grid,
   .settings-grid,
   .side-nav {

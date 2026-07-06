@@ -55,13 +55,15 @@
           </section>
 
           <section class="view active" id="dashboardView">
-            <section class="hero-panel">
+            <section class="hero-panel welcome-card">
               <div>
-                <p class="eyebrow">Daily Research Workspace</p>
-                <h2>Find notes, compare experiments, and structure lab records.</h2>
+                <p class="eyebrow">ResearchOS</p>
+                <h2>AI-powered laboratory knowledge system</h2>
+                <p class="welcome-copy">Local-first research search, experiment extraction, literature comparison, and OneNote-ready lab intelligence.</p>
               </div>
               <div class="hero-actions">
                 <button type="button" id="loadDemoButton">Load demo notes</button>
+                <button type="button" id="loadPapersButton" class="secondary-button">Ingest papers</button>
                 <button type="button" id="extractButton" class="secondary-button">
                   Extract experiments
                 </button>
@@ -71,28 +73,58 @@
 
             <section class="metric-grid" aria-label="ResearchOS metrics">
               <article class="metric-card">
-                <span>Experiments indexed</span>
-                <strong id="metricExperiments">0</strong>
-              </article>
-              <article class="metric-card">
-                <span>Documents indexed</span>
+                <span>Documents</span>
                 <strong id="metricDocuments">0</strong>
               </article>
               <article class="metric-card">
-                <span>Protocols detected</span>
-                <strong id="metricProtocols">0</strong>
+                <span>Experiments</span>
+                <strong id="metricExperiments">0</strong>
               </article>
               <article class="metric-card">
-                <span>Compounds detected</span>
+                <span>Papers</span>
+                <strong id="metricPapers">0</strong>
+              </article>
+              <article class="metric-card">
+                <span>Compounds</span>
                 <strong id="metricCompounds">0</strong>
               </article>
               <article class="metric-card">
-                <span>Last sync</span>
-                <strong id="metricLastSync">Never</strong>
+                <span>Markers</span>
+                <strong id="metricMarkers">0</strong>
+              </article>
+              <article class="metric-card">
+                <span>Cell lines</span>
+                <strong id="metricCellLines">0</strong>
+              </article>
+              <article class="metric-card">
+                <span>Organoid batches</span>
+                <strong id="metricOrganoidBatches">0</strong>
               </article>
             </section>
 
             <section class="dashboard-grid">
+              <article class="panel suggested-panel">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">Suggested Questions</p>
+                    <h2>Ask the demo dataset</h2>
+                  </div>
+                </div>
+                <div class="suggested-question-grid">
+                  <button type="button" class="suggested-question" data-question="Which experiments used SAG?" data-mode="ask">Which experiments used SAG?</button>
+                  <button type="button" class="suggested-question" data-question="Compare our SAG experiments with the literature." data-mode="compare-literature">Compare our SAG experiments with the literature.</button>
+                  <button type="button" class="suggested-question" data-question="What does BMP4 do?" data-mode="ask">What does BMP4 do?</button>
+                  <button type="button" class="suggested-question" data-question="Show experiments involving SIX6." data-mode="ask">Show experiments involving SIX6.</button>
+                  <button type="button" class="suggested-question" data-question="Compare BRN3B experiments." data-mode="ask">Compare BRN3B experiments.</button>
+                  <button type="button" class="suggested-question" data-question="Summarize today's demo notebook." data-mode="ask">Summarize today's demo notebook.</button>
+                </div>
+                <div class="chat-output" id="suggestedQuestionOutput"></div>
+              </article>
+
+              <article class="panel status-card" id="oneNoteStatusCard"></article>
+
+              <article class="panel status-card" id="literatureStatusCard"></article>
+
               <article class="panel">
                 <div class="panel-heading">
                   <div>
@@ -323,6 +355,13 @@
               </div>
             </article>
           </section>
+
+          <footer class="app-footer" aria-label="ResearchOS footer">
+            <strong>ResearchOS</strong>
+            <span>Local-first</span>
+            <span>OneNote-ready</span>
+            <span>AI-assisted</span>
+          </footer>
         </main>
       </div>
     </div>
