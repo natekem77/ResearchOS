@@ -18,6 +18,7 @@ from app.ingestion import ingest_documents, ingest_markdown_folder
 from app.logging import configure_logging
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
 from app.retinal_ontology import build_retinal_ontology
+from app.research_assistant import ask_research_assistant
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -144,6 +145,29 @@ class ChatResponse(BaseModel):
     provider: str
     answer: str
     sources: list[SearchResultResponse]
+
+
+class AssistantRequest(BaseModel):
+    """Natural-language request for the scientific research assistant."""
+
+    question: str | None = None
+    message: str | None = None
+    use_ai: bool = True
+
+
+class AssistantResponse(BaseModel):
+    """Structured scientific assistant answer."""
+
+    question: str
+    direct_answer: str
+    evidence_from_experiments: list[dict[str, object]]
+    source_document_citations: list[dict[str, object]]
+    extracted_facts: dict[str, list[str]]
+    ai_synthesis: str | None
+    limitations_uncertainties: list[str]
+    sources: list[dict[str, object]]
+    ai_used: bool
+    provider: str
 
 
 class ExtractRequest(BaseModel):
@@ -279,6 +303,13 @@ def _chat_question(request: ChatRequest) -> str:
     """Accept both `message` and `question` request shapes for chat."""
 
     question = request.message or request.question or ""
+    return question.strip()
+
+
+def _assistant_question(request: AssistantRequest) -> str:
+    """Accept both `question` and `message` request shapes."""
+
+    question = request.question or request.message or ""
     return question.strip()
 
 
@@ -702,6 +733,18 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return ChatResponse(provider=provider.provider_name, answer=answer, sources=source_results)
+
+
+@app.post("/assistant/ask", response_model=AssistantResponse, tags=["ai"])
+def assistant_ask(request: AssistantRequest) -> AssistantResponse:
+    """Answer a scientific question with retrieved ResearchOS context."""
+
+    question = _assistant_question(request)
+    if not question:
+        raise HTTPException(status_code=400, detail="Assistant question must not be empty.")
+
+    answer = ask_research_assistant(question=question, settings=settings, use_ai=request.use_ai)
+    return AssistantResponse(**answer.__dict__)
 
 
 @app.get("/experiments", response_model=list[ExperimentResponse], tags=["experiments"])

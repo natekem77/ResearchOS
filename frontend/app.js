@@ -518,37 +518,62 @@ async function runSearch(query, target) {
 }
 
 function renderChatResponse(target, payload) {
-  const sources = payload.sources || [];
+  const sources = payload.source_document_citations || payload.sources || [];
+  const evidence = payload.evidence_from_experiments || [];
+  const limitations = payload.limitations_uncertainties || [];
   target.innerHTML = `
     <div class="assistant-answer">
       <h3>Answer</h3>
-      <p>${escapeHtml(payload.answer)}</p>
+      <p>${escapeHtml(payload.direct_answer || payload.answer)}</p>
       <div class="meta">
         <span class="tag">${escapeHtml(payload.provider)}</span>
+        <span class="tag">${payload.ai_used ? "AI synthesis" : "local fallback"}</span>
         <span class="tag">${sources.length} source${sources.length === 1 ? "" : "s"}</span>
       </div>
     </div>
+    ${payload.ai_synthesis ? `<div class="assistant-answer"><h3>Synthesis</h3><p>${escapeHtml(payload.ai_synthesis)}</p></div>` : ""}
+    ${evidence.length ? `
+      <div class="source-list">
+        <h3>Experiment Evidence</h3>
+        ${evidence
+          .map(
+            (experiment) => `
+              <article class="result">
+                <h3>${escapeHtml(experiment.experiment_id || experiment.title || experiment.id)}</h3>
+                <p>${escapeHtml(shortText(experiment.conclusions || experiment.notes || "Structured experiment metadata available.", 220))}</p>
+                <div class="meta">
+                  ${(experiment.compounds || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+                  ${(experiment.markers || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+                </div>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    ` : ""}
     <div class="source-list">
+      <h3>Sources</h3>
       ${sources
         .map(
           (source, index) => `
             <article class="result">
-              <h3>[${index + 1}] ${escapeHtml(source.title || "Untitled source")}</h3>
+              <h3>${escapeHtml(source.citation || `[${index + 1}]`)} ${escapeHtml(source.title || "Untitled source")}</h3>
               <p>${escapeHtml(shortText(source.snippet, 180))}</p>
             </article>
           `,
         )
         .join("")}
     </div>
+    ${limitations.length ? `<div class="empty-state"><strong>Limitations:</strong> ${escapeHtml(limitations.join(" "))}</div>` : ""}
   `;
 }
 
 async function runChat(message, target) {
   target.innerHTML = `<div class="empty-state">Thinking...</div>`;
   try {
-    const payload = await requestJson("/chat", {
+    const payload = await requestJson("/assistant/ask", {
       method: "POST",
-      body: JSON.stringify({ question: message, use_search_context: true, limit: 5 }),
+      body: JSON.stringify({ question: message }),
     });
     renderChatResponse(target, payload);
   } catch (error) {
@@ -587,6 +612,21 @@ function bindChat(formSelector, inputSelector, outputSelector) {
     event.preventDefault();
     const message = input.value.trim();
     if (message) runChat(message, output);
+  });
+}
+
+function bindSuggestedPrompts() {
+  $$(".prompt-row").forEach((row) => {
+    const targetId = row.dataset.promptTarget;
+    const input = targetId ? document.getElementById(targetId) : null;
+    if (!input) return;
+
+    row.querySelectorAll("button").forEach((button) => {
+      button.addEventListener("click", () => {
+        input.value = button.textContent.trim();
+        input.focus();
+      });
+    });
   });
 }
 
@@ -734,6 +774,7 @@ bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchRes
 bindSearch("#searchForm", "#searchInput", "#searchResults");
 bindChat("#dashboardChatForm", "#dashboardChatInput", "#dashboardChatOutput");
 bindChat("#chatForm", "#chatInput", "#chatOutput");
+bindSuggestedPrompts();
 
 window.addEventListener("hashchange", route);
 

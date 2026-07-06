@@ -150,6 +150,12 @@
                   <textarea id="dashboardChatInput" rows="3" placeholder="What do the SAG and BRN3B notes suggest?"></textarea>
                   <button type="submit">Ask</button>
                 </form>
+                <div class="prompt-row" data-prompt-target="dashboardChatInput">
+                  <button type="button" class="prompt-chip">Which experiments used SAG?</button>
+                  <button type="button" class="prompt-chip">Compare BMP4 and SAG experiments.</button>
+                  <button type="button" class="prompt-chip">What markers were used with BRN3B?</button>
+                  <button type="button" class="prompt-chip">Summarize retinal organoid differentiation notes.</button>
+                </div>
                 <div class="chat-output" id="dashboardChatOutput"></div>
               </article>
             </section>
@@ -255,6 +261,12 @@
                 <textarea id="chatInput" rows="4" placeholder="Summarize the SAG experiment and staining result."></textarea>
                 <button type="submit">Ask</button>
               </form>
+              <div class="prompt-row" data-prompt-target="chatInput">
+                <button type="button" class="prompt-chip">Which experiments used SAG?</button>
+                <button type="button" class="prompt-chip">Compare BMP4 and SAG experiments.</button>
+                <button type="button" class="prompt-chip">What markers were used with BRN3B?</button>
+                <button type="button" class="prompt-chip">Summarize retinal organoid differentiation notes.</button>
+              </div>
               <div class="chat-output" id="chatOutput"></div>
             </article>
           </section>

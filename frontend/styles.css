@@ -495,6 +495,22 @@ button {
   gap: 10px;
 }
 
+.prompt-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.prompt-chip {
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 input,
 textarea {
   width: 100%;
@@ -670,6 +686,7 @@ mark {
   .topbar-status,
   .hero-actions,
   .settings-actions,
+  .prompt-row,
   .search-form,
   .chat-form,
   .metric-grid,
@@ -682,7 +699,8 @@ mark {
 
   .topbar-status,
   .hero-actions,
-  .settings-actions {
+  .settings-actions,
+  .prompt-row {
     justify-content: stretch;
   }
 

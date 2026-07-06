@@ -72,6 +72,7 @@ http://127.0.0.1:8001
 - Local chunking, vector indexing, and keyword fallback search.
 - Structured experiment extraction.
 - Retinal organoid entity pages for compounds, markers, cell lines, and batches.
+- Scientific research assistant with local fallback answers.
 - Provider status Settings page.
 - Read-only Microsoft Graph auth and OneNote sync pipeline scaffolding.
 - Optional OpenAI-compatible AI chat when configured.
@@ -237,6 +238,31 @@ The Settings page uses this endpoint to show integration cards and actions:
 If OneNote sync is blocked because Microsoft Graph is not connected or UCSD
 tenant approval is still pending, the UI shows the returned message directly.
 
+## Scientific Research Assistant
+
+Ask structured scientific questions with local fallback support:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assistant/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Which experiments used SAG?"}'
+```
+
+The assistant combines document search, structured experiments, ontology
+entities, and source snippets. If an AI provider is configured, it adds AI
+synthesis. If no AI provider is configured, it still returns a local evidence
+answer.
+
+Suggested demo prompts:
+
+- Which experiments used SAG?
+- Compare BMP4 and SAG experiments.
+- What markers were used with BRN3B?
+- Summarize retinal organoid differentiation notes.
+
+See [docs/AI_RESEARCH_ASSISTANT.md](docs/AI_RESEARCH_ASSISTANT.md) for endpoint
+details and response shape.
+
 ## Retinal Organoid Intelligence
 
 ResearchOS now builds a retinal organoid ontology from provider-agnostic
@@ -323,6 +349,7 @@ Presentation-ready materials:
 - [UCSD IT approval request](docs/UCSD_IT_APPROVAL_REQUEST.md)
 - [Windows/WSL install guide](docs/INSTALL_WINDOWS_WSL.md)
 - [Troubleshooting guide](docs/TROUBLESHOOTING.md)
+- [AI research assistant](docs/AI_RESEARCH_ASSISTANT.md)
 
 ## Microsoft Graph Auth Setup
 
