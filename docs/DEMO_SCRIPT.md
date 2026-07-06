@@ -43,10 +43,12 @@ ResearchOS adds:
 3. Click **Load demo notes**.
 4. Show the three sample lab notes in the Documents panel.
 5. Show the extracted experiment records in the Experiments panel.
-6. Search for `SAG BRN3B staining`.
-7. Explain that search works locally even without cloud AI.
-8. If an AI provider is configured, ask: `What do the SAG and BRN3B notes suggest?`
-9. Show that the chat answer includes source snippets.
+6. Select the SAG experiment and SIX6/BRN3B staining result, then click
+   **Compare selected**.
+7. Search for `SAG BRN3B staining`.
+8. Explain that search works locally even without cloud AI.
+9. Ask the assistant: `Compare SAG experiment and SIX6/BRN3B staining result`.
+10. Show that the answer includes structured evidence and source snippets.
 
 ## Demo Search
 
@@ -73,6 +75,18 @@ The system converts unstructured notebook-style text into structured experiment
 records. It extracts fields like date, researcher, organoid batch, treatment,
 concentration, time points, markers, notes, and conclusions. This is regex-first
 today, with an interface for future LLM extraction.
+
+## Demo Experiment Comparison
+
+In the Experiments panel, select two experiment rows and click **Compare
+selected**.
+
+Talk track:
+
+ResearchOS compares structured fields side-by-side: compounds, treatments,
+concentrations, time points, markers, imaging methods, notes, and conclusions.
+The local fallback interpretation works without an AI key, and an AI provider
+can optionally rewrite the comparison narrative.
 
 ## Future UCSD OneNote Integration
 

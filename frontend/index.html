@@ -22,6 +22,7 @@
           <a href="#/experiments" data-nav="experiments">Experiments</a>
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
+          <a href="#/literature" data-nav="literature">Literature</a>
           <a href="#/compounds" data-nav="compounds">Compounds</a>
           <a href="#/markers" data-nav="markers">Markers</a>
           <a href="#/cell-lines" data-nav="cell-lines">Cell Lines</a>
@@ -151,6 +152,7 @@
                   <button type="submit">Ask</button>
                 </form>
                 <div class="prompt-row" data-prompt-target="dashboardChatInput">
+                  <button type="button" class="prompt-chip">Compare SAG experiment and SIX6/BRN3B staining result</button>
                   <button type="button" class="prompt-chip">Which experiments used SAG?</button>
                   <button type="button" class="prompt-chip">Compare BMP4 and SAG experiments.</button>
                   <button type="button" class="prompt-chip">What markers were used with BRN3B?</button>
@@ -168,11 +170,14 @@
                   <p class="eyebrow">Structured Records</p>
                   <h2>Experiments</h2>
                 </div>
+                <button type="button" id="compareSelectedButton" class="secondary-button">Compare selected</button>
               </div>
+              <p class="demo-status" id="comparisonStatus"></p>
               <div class="table-wrap">
                 <table>
                   <thead>
                     <tr>
+                      <th>Select</th>
                       <th>Experiment ID</th>
                       <th>Date</th>
                       <th>Title</th>
@@ -185,6 +190,7 @@
                 </table>
               </div>
             </article>
+            <article class="panel comparison-panel" id="comparisonPanel" hidden></article>
           </section>
 
           <section class="view" id="experimentDetailView">
@@ -212,6 +218,20 @@
                 </div>
               </div>
               <div class="item-list" id="documentsList"></div>
+            </article>
+          </section>
+
+          <section class="view" id="literatureView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Local Papers</p>
+                  <h2>Literature</h2>
+                </div>
+                <button type="button" id="ingestPapersButton" class="secondary-button">Ingest papers</button>
+              </div>
+              <p class="demo-status" id="literatureStatus"></p>
+              <div class="item-list" id="papersList"></div>
             </article>
           </section>
 
@@ -262,6 +282,7 @@
                 <button type="submit">Ask</button>
               </form>
               <div class="prompt-row" data-prompt-target="chatInput">
+                <button type="button" class="prompt-chip">Compare SAG experiment and SIX6/BRN3B staining result</button>
                 <button type="button" class="prompt-chip">Which experiments used SAG?</button>
                 <button type="button" class="prompt-chip">Compare BMP4 and SAG experiments.</button>
                 <button type="button" class="prompt-chip">What markers were used with BRN3B?</button>

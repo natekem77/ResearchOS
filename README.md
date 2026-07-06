@@ -72,6 +72,7 @@ http://127.0.0.1:8001
 - Local chunking, vector indexing, and keyword fallback search.
 - Structured experiment extraction.
 - Retinal organoid entity pages for compounds, markers, cell lines, and batches.
+- Local literature ingestion for paper notes and PDFs.
 - Scientific research assistant with local fallback answers.
 - Provider status Settings page.
 - Read-only Microsoft Graph auth and OneNote sync pipeline scaffolding.
@@ -266,6 +267,20 @@ Suggested demo prompts:
 See [docs/AI_RESEARCH_ASSISTANT.md](docs/AI_RESEARCH_ASSISTANT.md) for endpoint
 details and response shape.
 
+## Experiment Comparison
+
+Compare structured experiment records side-by-side:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiments/compare \
+  -H "Content-Type: application/json" \
+  -d '{"experiment_ids":["<experiment-id-1>","<experiment-id-2>"]}'
+```
+
+The response includes shared features, differences, a likely scientific
+interpretation, limitations, and the source experiment records. The Experiments
+page also has checkboxes and a **Compare selected** button for the same workflow.
+
 ## Retinal Organoid Intelligence
 
 ResearchOS now builds a retinal organoid ontology from provider-agnostic
@@ -353,6 +368,7 @@ Presentation-ready materials:
 - [Windows/WSL install guide](docs/INSTALL_WINDOWS_WSL.md)
 - [Troubleshooting guide](docs/TROUBLESHOOTING.md)
 - [AI research assistant](docs/AI_RESEARCH_ASSISTANT.md)
+- [Literature ingestion](docs/LITERATURE_INGESTION.md)
 
 ## Microsoft Graph Auth Setup
 
@@ -483,6 +499,47 @@ curl -X POST http://127.0.0.1:8001/chat \
 
 If no AI provider is configured, `/chat` returns a setup error. `/search`
 continues to work locally.
+
+## Literature Ingestion
+
+ResearchOS can ingest local paper notes and PDFs from:
+
+```text
+samples/papers/
+data/papers/
+```
+
+Ingest papers:
+
+```bash
+curl -X POST http://127.0.0.1:8001/ingest/papers
+```
+
+List papers:
+
+```bash
+curl http://127.0.0.1:8001/papers
+```
+
+Search across lab notes and literature:
+
+```bash
+curl -X POST http://127.0.0.1:8001/search \
+  -H "Content-Type: application/json" \
+  -d '{"query":"BRN3B immunostaining literature","limit":5}'
+```
+
+Ask the assistant with literature context separated from lab notebook evidence:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assistant/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What does the literature say about BRN3B staining?"}'
+```
+
+PDF text extraction uses `pypdf`; text and Markdown paper notes work for local
+demo use even when no PDFs are available. See
+[docs/LITERATURE_INGESTION.md](docs/LITERATURE_INGESTION.md).
 
 ## AI Chat Setup
 

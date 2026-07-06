@@ -11,10 +11,11 @@ from pydantic import BaseModel
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
+from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
-from app.ingestion import ingest_documents, ingest_markdown_folder
+from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.logging import configure_logging
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
 from app.retinal_ontology import build_retinal_ontology
@@ -89,6 +90,12 @@ class IngestResponse(BaseModel):
     experiments_extracted: int
 
 
+class PaperIngestResponse(IngestResponse):
+    """Summary of a literature ingestion run."""
+
+    message: str
+
+
 class DocumentSummaryResponse(BaseModel):
     """Stored document summary returned by list endpoints."""
 
@@ -108,6 +115,32 @@ class DocumentDetailResponse(DocumentSummaryResponse):
 
     content: str
     metadata: dict[str, str]
+    chunk_count: int
+
+
+class PaperSummaryResponse(BaseModel):
+    """Literature paper summary with extracted metadata."""
+
+    id: str
+    title: str
+    source_path: str | None = None
+    ingested_at: str
+    authors: str | None = None
+    year: str | None = None
+    journal: str | None = None
+    doi: str | None = None
+    abstract: str | None = None
+    compounds: list[str]
+    markers: list[str]
+    genes: list[str]
+    cell_types: list[str]
+    methods: list[str]
+
+
+class PaperDetailResponse(PaperSummaryResponse):
+    """Detailed literature paper response."""
+
+    content: str
     chunk_count: int
 
 
@@ -164,6 +197,7 @@ class AssistantResponse(BaseModel):
     related_context: list[dict[str, object]]
     evidence_from_experiments: list[dict[str, object]]
     source_document_citations: list[dict[str, object]]
+    literature_context: list[dict[str, object]]
     extracted_facts: dict[str, list[str]]
     ai_synthesis: str | None
     limitations_uncertainties: list[str]
@@ -208,6 +242,26 @@ class ExperimentResponse(BaseModel):
     notes: str | None = None
     conclusions: str | None = None
     extracted_at: str
+
+
+class ExperimentCompareRequest(BaseModel):
+    """Request body for comparing structured experiments."""
+
+    experiment_ids: list[str]
+    use_ai: bool = True
+
+
+class ExperimentCompareResponse(BaseModel):
+    """Structured experiment comparison response."""
+
+    experiment_ids: list[str]
+    shared_features: dict[str, object]
+    differences: dict[str, dict[str, object]]
+    likely_scientific_interpretation: str
+    limitations: list[str]
+    source_experiment_records: list[dict[str, object]]
+    ai_used: bool
+    provider: str
 
 
 class DemoResetResponse(IngestResponse):
@@ -313,6 +367,37 @@ def _assistant_question(request: AssistantRequest) -> str:
 
     question = request.question or request.message or ""
     return question.strip()
+
+
+def _metadata_terms(value: str | None) -> list[str]:
+    """Split comma-separated metadata terms."""
+
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _paper_summary(document: dict[str, object]) -> dict[str, object]:
+    """Normalize a stored literature document into paper response fields."""
+
+    metadata = document.get("metadata") if isinstance(document.get("metadata"), dict) else {}
+    assert isinstance(metadata, dict)
+    return {
+        "id": document["id"],
+        "title": document["title"],
+        "source_path": document.get("source_path"),
+        "ingested_at": document.get("ingested_at", ""),
+        "authors": metadata.get("authors") or None,
+        "year": metadata.get("year") or None,
+        "journal": metadata.get("journal") or None,
+        "doi": metadata.get("doi") or None,
+        "abstract": metadata.get("abstract") or None,
+        "compounds": _metadata_terms(str(metadata.get("compounds") or "")),
+        "markers": _metadata_terms(str(metadata.get("markers") or "")),
+        "genes": _metadata_terms(str(metadata.get("genes") or "")),
+        "cell_types": _metadata_terms(str(metadata.get("cell_types") or "")),
+        "methods": _metadata_terms(str(metadata.get("methods") or "")),
+    }
 
 
 def _ontology() -> dict[str, list[dict[str, object]]]:
@@ -654,6 +739,23 @@ def ingest_markdown(
     return IngestResponse(**result.__dict__)
 
 
+@app.post("/ingest/papers", response_model=PaperIngestResponse, tags=["literature"])
+def ingest_papers() -> PaperIngestResponse:
+    """Ingest local literature files from samples/papers and data/papers."""
+
+    try:
+        result = ingest_literature()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    message = (
+        f"Ingested {result.documents_ingested} paper document(s)."
+        if result.documents_ingested
+        else "No paper files found. Add .pdf, .txt, or .md files under samples/papers or data/papers."
+    )
+    return PaperIngestResponse(message=message, **result.__dict__)
+
+
 @app.post("/demo/reset", response_model=DemoResetResponse, tags=["demo"])
 def demo_reset() -> DemoResetResponse:
     """Reset local sample data and reload the bundled demo lab notes."""
@@ -690,6 +792,38 @@ def document_detail(document_id: str) -> DocumentDetailResponse:
         raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
 
     return DocumentDetailResponse(**document)
+
+
+@app.get("/papers", response_model=list[PaperSummaryResponse], tags=["literature"])
+def papers() -> list[PaperSummaryResponse]:
+    """List locally ingested literature papers."""
+
+    store = SQLiteStore(settings=settings)
+    paper_summaries = []
+    for document in store.list_documents():
+        if document["provider"] != "literature":
+            continue
+        detail = store.get_document(str(document["id"]))
+        if detail is not None:
+            paper_summaries.append(PaperSummaryResponse(**_paper_summary(detail)))
+    return paper_summaries
+
+
+@app.get("/papers/{paper_id}", response_model=PaperDetailResponse, tags=["literature"])
+def paper_detail(paper_id: str) -> PaperDetailResponse:
+    """Return one ingested literature paper."""
+
+    store = SQLiteStore(settings=settings)
+    document = store.get_document(paper_id)
+    if document is None or document["provider"] != "literature":
+        raise HTTPException(status_code=404, detail=f"Paper not found: {paper_id}")
+
+    summary = _paper_summary(document)
+    return PaperDetailResponse(
+        **summary,
+        content=str(document["content"]),
+        chunk_count=int(document["chunk_count"]),
+    )
 
 
 @app.post("/search", response_model=list[SearchResultResponse], tags=["search"])
@@ -755,6 +889,37 @@ def experiments() -> list[ExperimentResponse]:
 
     store = SQLiteStore(settings=settings)
     return [ExperimentResponse(**experiment) for experiment in store.list_experiments()]
+
+
+@app.post("/experiments/compare", response_model=ExperimentCompareResponse, tags=["experiments"])
+def experiment_compare(request: ExperimentCompareRequest) -> ExperimentCompareResponse:
+    """Compare selected experiments using structured extracted fields."""
+
+    requested_ids = [experiment_id.strip() for experiment_id in request.experiment_ids if experiment_id.strip()]
+    if len(requested_ids) < 2:
+        raise HTTPException(status_code=400, detail="Select at least two experiments to compare.")
+    if len(set(requested_ids)) != len(requested_ids):
+        raise HTTPException(status_code=400, detail="Experiment IDs must be unique.")
+
+    store = SQLiteStore(settings=settings)
+    selected_experiments = []
+    missing_ids = []
+    for experiment_id in requested_ids:
+        experiment = store.get_experiment(experiment_id)
+        if experiment is None:
+            missing_ids.append(experiment_id)
+        else:
+            selected_experiments.append(experiment)
+
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {', '.join(missing_ids)}")
+
+    comparison = compare_experiments(
+        selected_experiments,
+        settings=settings,
+        use_ai=request.use_ai,
+    )
+    return ExperimentCompareResponse(**comparison.__dict__)
 
 
 @app.get("/experiments/{experiment_id}", response_model=ExperimentResponse, tags=["experiments"])

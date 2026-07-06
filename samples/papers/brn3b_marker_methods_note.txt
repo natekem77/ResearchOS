@@ -1,0 +1,15 @@
+Title: BRN3B immunostaining considerations in retinal organoids
+Authors: ResearchOS Demo Literature Team
+Year: 2023
+Journal: Demo Methods Notes
+DOI: 10.0000/researchos.demo.brn3b.2023
+
+Abstract:
+BRN3B is used as a retinal ganglion cell marker in retinal organoid cultures.
+Interpretation benefits from co-staining with progenitor or retinal identity
+markers such as SIX6 and PAX6. DAPI is commonly used for nuclei. Confocal
+imaging and careful blocking controls help reduce false positive interpretation
+when background signal is high.
+
+Keywords: BRN3B, SIX6, PAX6, DAPI, retinal ganglion cell, immunostaining,
+confocal

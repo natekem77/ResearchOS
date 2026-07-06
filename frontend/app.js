@@ -1,6 +1,8 @@
 const state = {
   documents: [],
+  papers: [],
   experiments: [],
+  selectedExperimentIds: new Set(),
   health: null,
   auth: null,
   providerStatus: null,
@@ -18,6 +20,7 @@ const views = {
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
   documents: $("#documentsView"),
+  literature: $("#literatureView"),
   entityList: $("#entityListView"),
   entityDetail: $("#entityDetailView"),
   search: $("#searchView"),
@@ -153,6 +156,7 @@ function route() {
     experiments: ["Experiments", "Experiment Index"],
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
+    literature: ["Literature", "Paper Library"],
     search: ["Search", "Search Research Notes"],
     chat: ["AI Chat", "Ask ResearchOS"],
     settings: ["Settings", "Workspace Settings"],
@@ -241,6 +245,31 @@ function renderDocuments() {
         )
         .join("")
     : `<div class="empty-state">No documents indexed.</div>`;
+}
+
+function renderPapers() {
+  $("#papersList").innerHTML = state.papers.length
+    ? state.papers
+        .map(
+          (paper) => `
+            <article class="record-card">
+              <h3>${escapeHtml(paper.title)}</h3>
+              <p>${escapeHtml(shortText(paper.abstract || paper.source_path || "No abstract detected.", 260))}</p>
+              <div class="meta">
+                ${paper.year ? `<span class="tag">${escapeHtml(paper.year)}</span>` : ""}
+                ${paper.journal ? `<span class="tag">${escapeHtml(paper.journal)}</span>` : ""}
+                ${paper.doi ? `<span class="tag">${escapeHtml(paper.doi)}</span>` : ""}
+              </div>
+              <div class="meta">
+                ${(paper.compounds || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}
+                ${(paper.markers || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}
+                ${(paper.methods || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}
+              </div>
+            </article>
+          `,
+        )
+        .join("")
+    : `<div class="empty-state">No literature indexed. Add .pdf, .txt, or .md files under samples/papers or data/papers, then ingest papers.</div>`;
 }
 
 function renderProtocols() {
@@ -333,11 +362,23 @@ function renderProviderSettings() {
 }
 
 function renderExperimentsTable() {
+  state.selectedExperimentIds = new Set(
+    [...state.selectedExperimentIds].filter((id) => state.experiments.some((experiment) => experiment.id === id)),
+  );
   $("#experimentsTable").innerHTML = state.experiments.length
     ? state.experiments
         .map(
           (experiment) => `
             <tr>
+              <td>
+                <input
+                  class="experiment-select"
+                  type="checkbox"
+                  value="${escapeHtml(experiment.id)}"
+                  ${state.selectedExperimentIds.has(experiment.id) ? "checked" : ""}
+                  aria-label="Select ${escapeHtml(experiment.title)}"
+                />
+              </td>
               <td><a href="#/experiments/${encodeURIComponent(experiment.id)}">${escapeHtml(experiment.experiment_id || experiment.id)}</a></td>
               <td>${escapeHtml(formatDate(experiment.date))}</td>
               <td>${escapeHtml(experiment.title)}</td>
@@ -348,7 +389,99 @@ function renderExperimentsTable() {
           `,
         )
         .join("")
-    : `<tr><td colspan="6">No experiments extracted.</td></tr>`;
+    : `<tr><td colspan="7">No experiments extracted.</td></tr>`;
+
+  $$(".experiment-select").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const input = event.target;
+      if (input.checked) {
+        state.selectedExperimentIds.add(input.value);
+      } else {
+        state.selectedExperimentIds.delete(input.value);
+      }
+      $("#comparisonStatus").textContent = `${state.selectedExperimentIds.size} experiment${state.selectedExperimentIds.size === 1 ? "" : "s"} selected.`;
+    });
+  });
+}
+
+function renderComparison(comparison) {
+  const panel = $("#comparisonPanel");
+  const fieldRows = Object.entries(comparison.differences || {})
+    .map(
+      ([field, values]) => `
+        <tr>
+          <th>${escapeHtml(field.replaceAll("_", " "))}</th>
+          <td>${Object.entries(values)
+            .map(([experimentId, value]) => `<div><strong>${escapeHtml(shortExperimentLabel(experimentId))}</strong>: ${escapeHtml(formatComparisonValue(value))}</div>`)
+            .join("")}</td>
+        </tr>
+      `,
+    )
+    .join("");
+
+  panel.hidden = false;
+  panel.innerHTML = `
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Comparison</p>
+        <h2>Selected Experiments</h2>
+      </div>
+      <span class="status-pill ${comparison.ai_used ? "ok" : ""}">${escapeHtml(comparison.provider)}</span>
+    </div>
+    <section class="detail-section">
+      <h3>Likely scientific interpretation</h3>
+      <p>${escapeHtml(comparison.likely_scientific_interpretation)}</p>
+    </section>
+    <section class="detail-section">
+      <h3>Shared features</h3>
+      <div class="tag-row">
+        ${Object.entries(comparison.shared_features || {}).length
+          ? Object.entries(comparison.shared_features)
+              .map(([field, value]) => `<span class="tag">${escapeHtml(field)}: ${escapeHtml(formatComparisonValue(value))}</span>`)
+              .join("")
+          : `<span class="muted">No shared structured fields detected.</span>`}
+      </div>
+    </section>
+    <section class="detail-section">
+      <h3>Differences</h3>
+      <div class="table-wrap">
+        <table class="comparison-table">
+          <tbody>${fieldRows || `<tr><td>No structured differences detected.</td></tr>`}</tbody>
+        </table>
+      </div>
+    </section>
+    <section class="detail-section">
+      <h3>Limitations</h3>
+      <p>${escapeHtml((comparison.limitations || []).join(" "))}</p>
+    </section>
+  `;
+  panel.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function shortExperimentLabel(experimentId) {
+  const experiment = state.experiments.find((item) => item.id === experimentId);
+  return experiment?.experiment_id || experiment?.title || experimentId;
+}
+
+function formatComparisonValue(value) {
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "none";
+  if (value === null || value === undefined || value === "") return "not captured";
+  return String(value);
+}
+
+async function compareSelectedExperiments() {
+  const ids = [...state.selectedExperimentIds];
+  if (ids.length < 2) {
+    $("#comparisonStatus").textContent = "Select at least two experiments to compare.";
+    return;
+  }
+  $("#comparisonStatus").textContent = "Comparing selected experiments...";
+  const comparison = await requestJson("/experiments/compare", {
+    method: "POST",
+    body: JSON.stringify({ experiment_ids: ids }),
+  });
+  $("#comparisonStatus").textContent = `Compared ${ids.length} experiments.`;
+  renderComparison(comparison);
 }
 
 function renderExperimentDetail(experimentId) {
@@ -521,6 +654,7 @@ function renderChatResponse(target, payload) {
   const sources = payload.source_document_citations || payload.sources || [];
   const directMatches = payload.direct_matches || payload.evidence_from_experiments || [];
   const relatedContext = payload.related_context || [];
+  const literatureContext = payload.literature_context || [];
   const limitations = payload.limitations_uncertainties || [];
   target.innerHTML = `
     <div class="assistant-answer">
@@ -565,6 +699,25 @@ function renderChatResponse(target, payload) {
                   <span class="tag">related</span>
                   ${(experiment.compounds || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
                   ${(experiment.markers || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+                </div>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    ` : ""}
+    ${literatureContext.length ? `
+      <div class="source-list">
+        <h3>Literature Context</h3>
+        ${literatureContext
+          .map(
+            (source) => `
+              <article class="result">
+                <h3>${escapeHtml(source.title || "Untitled literature source")}</h3>
+                <p>${escapeHtml(shortText(source.snippet, 220))}</p>
+                <div class="meta">
+                  <span class="tag">literature</span>
+                  <span class="tag">score ${escapeHtml(source.score ?? "n/a")}</span>
                 </div>
               </article>
             `,
@@ -671,8 +824,9 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, experiments, compounds, markers, cellLines, organoidBatches] = await Promise.all([
+  const [documents, papers, experiments, compounds, markers, cellLines, organoidBatches] = await Promise.all([
     requestJson("/documents"),
+    requestJson("/papers"),
     requestJson("/experiments"),
     requestJson("/api/compounds"),
     requestJson("/api/markers"),
@@ -680,6 +834,7 @@ async function refreshData() {
     requestJson("/api/organoid-batches"),
   ]);
   state.documents = documents;
+  state.papers = papers;
   state.experiments = experiments;
   state.ontology = {
     compounds,
@@ -698,6 +853,7 @@ function renderAll() {
   renderRecentExperiments();
   renderPopularCompounds();
   renderDocuments();
+  renderPapers();
   renderProtocols();
   renderExperimentsTable();
   renderProviderSettings();
@@ -724,6 +880,14 @@ async function extractExperiments() {
   });
   await refreshData();
   $("#demoStatus").textContent = `Scanned ${result.documents_scanned} documents and extracted ${result.experiments_extracted} experiments.`;
+}
+
+async function ingestPapers() {
+  const target = $("#literatureStatus");
+  target.textContent = "Ingesting local papers...";
+  const result = await requestJson("/ingest/papers", { method: "POST" });
+  await refreshData();
+  target.textContent = result.message || `Indexed ${result.documents_ingested} paper document(s).`;
 }
 
 async function syncOneNoteFromSettings() {
@@ -769,6 +933,18 @@ $("#loadDemoButton").addEventListener("click", () => {
 $("#extractButton").addEventListener("click", () => {
   extractExperiments().catch((error) => {
     $("#demoStatus").textContent = `Extraction failed: ${error.message}`;
+  });
+});
+
+$("#compareSelectedButton").addEventListener("click", () => {
+  compareSelectedExperiments().catch((error) => {
+    $("#comparisonStatus").textContent = `Comparison failed: ${error.message}`;
+  });
+});
+
+$("#ingestPapersButton").addEventListener("click", () => {
+  ingestPapers().catch((error) => {
+    $("#literatureStatus").textContent = `Paper ingestion failed: ${error.message}`;
   });
 });
 

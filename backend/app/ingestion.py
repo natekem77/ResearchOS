@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.chunking import chunk_document
 from app.experiment_extraction import extract_experiment
+from app.literature_provider import load_literature_documents
 from app.markdown_provider import load_markdown_folder
 from app.research_document import ResearchDocument
 from app.storage import SQLiteStore
@@ -28,6 +29,13 @@ def ingest_markdown_folder(folder_path: str | Path) -> IngestionResult:
 
     documents = load_markdown_folder(folder_path)
     return ingest_documents(documents=documents, provider="markdown")
+
+
+def ingest_literature(paths: list[str | Path] | None = None) -> IngestionResult:
+    """Load local literature files, store them, and index their chunks."""
+
+    documents = load_literature_documents(paths)
+    return ingest_documents(documents=documents, provider="literature")
 
 
 def ingest_documents(documents: list[ResearchDocument], provider: str) -> IngestionResult:

@@ -49,6 +49,7 @@ class AssistantAnswer:
     related_context: list[dict[str, Any]]
     evidence_from_experiments: list[dict[str, Any]]
     source_document_citations: list[dict[str, Any]]
+    literature_context: list[dict[str, Any]]
     extracted_facts: dict[str, list[str]]
     ai_synthesis: str | None
     limitations_uncertainties: list[str]
@@ -351,6 +352,26 @@ def _source_citations(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return citations
 
 
+def _literature_context(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return retrieved literature chunks separately from lab notebook evidence."""
+
+    literature = []
+    for source in sources:
+        if source.get("provider") != "literature":
+            continue
+        literature.append(
+            {
+                "document_id": source.get("document_id"),
+                "chunk_id": source.get("chunk_id"),
+                "title": source.get("title"),
+                "provider": "literature",
+                "snippet": source.get("snippet"),
+                "score": source.get("score"),
+            }
+        )
+    return literature
+
+
 def _filter_sources_for_experiments(
     sources: list[dict[str, Any]],
     direct_experiments: list[dict[str, Any]],
@@ -528,6 +549,7 @@ def _assistant_prompt(
     question: str,
     evidence: list[dict[str, Any]],
     citations: list[dict[str, Any]],
+    literature: list[dict[str, Any]],
     facts: dict[str, list[str]],
     entities: dict[str, list[dict[str, Any]]],
 ) -> str:
@@ -539,6 +561,7 @@ def _assistant_prompt(
         f"Question: {question}\n\n"
         f"Structured experiment evidence:\n{evidence}\n\n"
         f"Source citations:\n{citations}\n\n"
+        f"Literature context:\n{literature}\n\n"
         f"Extracted facts:\n{facts}\n\n"
         f"Ontology entities:\n{entities}"
     )
@@ -555,14 +578,20 @@ def ask_research_assistant(
     clean_question = question.strip()
     store = SQLiteStore(settings=resolved_settings)
     sources = _search_documents(clean_question, settings=resolved_settings)
+    literature = _literature_context(sources)
     experiments = store.list_experiments()
+    lab_experiments = [
+        experiment for experiment in experiments if experiment.get("source_provider") != "literature"
+    ]
     documents = [document.__dict__ for document in store.get_all_research_documents()]
     ontology = build_retinal_ontology(experiments=experiments, documents=documents)
     intent = _query_intent(clean_question, ontology)
-    scored_experiments = _score_experiments(intent, experiments)
+    scored_experiments = _score_experiments(intent, lab_experiments)
     direct_experiments, related_experiments = _split_experiment_relevance(scored_experiments)
     relevant_entities = _relevant_entities(clean_question, ontology)
-    sources = _filter_sources_for_experiments(sources, direct_experiments, related_experiments)
+    lab_sources = [source for source in sources if source.get("provider") != "literature"]
+    lab_sources = _filter_sources_for_experiments(lab_sources, direct_experiments, related_experiments)
+    sources = lab_sources + literature
 
     direct_matches = _experiment_evidence(direct_experiments, relevance="direct")
     related_context = _experiment_evidence(related_experiments, relevance="related")
@@ -585,7 +614,9 @@ def ask_research_assistant(
     if use_ai:
         try:
             provider = get_ai_provider(settings=resolved_settings)
-            ai_synthesis = provider.chat(_assistant_prompt(clean_question, evidence, citations, facts, relevant_entities))
+            ai_synthesis = provider.chat(
+                _assistant_prompt(clean_question, evidence, citations, literature, facts, relevant_entities)
+            )
             ai_used = True
             provider_name = provider.provider_name
         except AIProviderError as exc:
@@ -598,6 +629,7 @@ def ask_research_assistant(
         related_context=related_context,
         evidence_from_experiments=evidence,
         source_document_citations=citations,
+        literature_context=literature,
         extracted_facts=facts,
         ai_synthesis=ai_synthesis or local_synthesis,
         limitations_uncertainties=limitations,

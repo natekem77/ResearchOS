@@ -526,6 +526,12 @@ input {
   min-height: 42px;
 }
 
+input[type="checkbox"] {
+  width: 18px;
+  min-height: 18px;
+  accent-color: var(--accent);
+}
+
 textarea {
   min-height: 96px;
   padding-top: 11px;
@@ -572,6 +578,14 @@ table {
   width: 100%;
   border-collapse: collapse;
   min-width: 780px;
+}
+
+.comparison-table {
+  min-width: 640px;
+}
+
+.comparison-panel {
+  margin-top: 16px;
 }
 
 th,
