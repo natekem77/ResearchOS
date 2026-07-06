@@ -9,19 +9,18 @@ PID_FILE="$ROOT_DIR/.researchos-dev.pid"
 LOG_FILE="$ROOT_DIR/.researchos-dev.log"
 
 find_port_pids() {
+  local pids=""
+
   if command -v ss >/dev/null 2>&1; then
-    ss -ltnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p'
-    return
+    pids="$(ss -H -ltnp "sport = :$PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' || true)"
+    if [ -n "$pids" ]; then
+      printf "%s\n" "$pids"
+    fi
   fi
 
   if command -v lsof >/dev/null 2>&1; then
-    lsof -ti "tcp:$PORT" -sTCP:LISTEN 2>/dev/null || true
-    return
-  fi
-
-  if command -v fuser >/dev/null 2>&1; then
-    fuser -n tcp "$PORT" 2>/dev/null || true
-    return
+    lsof -nP -iTCP@"$HOST":"$PORT" -sTCP:LISTEN -t 2>/dev/null || \
+      lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null || true
   fi
 }
 
