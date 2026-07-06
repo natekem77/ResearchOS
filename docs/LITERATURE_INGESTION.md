@@ -99,6 +99,39 @@ If an AI provider is configured, ResearchOS can use the retrieved literature in
 its synthesis. Without an AI provider, the local fallback still returns matching
 experiments, source snippets, extracted facts, and separate literature context.
 
+## Compare Lab Experiments Against Literature
+
+Use the lab-literature comparison endpoint when the question asks whether local
+results align with paper context:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assistant/compare-literature \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Compare our SAG experiments with the literature.","use_ai":false}'
+```
+
+It accepts either `question` or `message`:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assistant/compare-literature \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Do our SIX6/BRN3B results match published expectations?","use_ai":false}'
+```
+
+The response includes:
+
+- Direct answer
+- Matching lab experiments
+- Matching literature sources
+- Similarities
+- Differences
+- Protocol/treatment differences when detectable
+- Limitations
+- Citations/source snippets
+
+The dashboard and AI Chat page expose the same workflow with the **Compare with
+literature** button.
+
 ## Future Work
 
 This milestone does not implement citation graph management, PubMed lookup,

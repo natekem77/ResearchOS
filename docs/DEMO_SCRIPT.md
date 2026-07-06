@@ -29,9 +29,11 @@ ResearchOS adds:
 
 - Local document ingestion for development and demos.
 - Search across lab notes.
+- Local paper/literature ingestion.
 - Automatic experiment extraction.
 - Structured fields like date, cell line, compounds, markers, time points, and
   conclusions.
+- Lab-versus-literature comparison using local evidence first.
 - A provider-agnostic foundation for OneNote, Markdown, Obsidian, Notion, and
   future lab systems.
 - A configurable AI chat layer for OpenAI-compatible providers and local models.
@@ -45,10 +47,14 @@ ResearchOS adds:
 5. Show the extracted experiment records in the Experiments panel.
 6. Select the SAG experiment and SIX6/BRN3B staining result, then click
    **Compare selected**.
-7. Search for `SAG BRN3B staining`.
-8. Explain that search works locally even without cloud AI.
-9. Ask the assistant: `Compare SAG experiment and SIX6/BRN3B staining result`.
-10. Show that the answer includes structured evidence and source snippets.
+7. Open the Literature panel and click **Ingest papers**.
+8. Search for `SAG BRN3B staining`.
+9. Explain that search works locally even without cloud AI.
+10. Ask the assistant: `Compare SAG experiment and SIX6/BRN3B staining result`.
+11. Ask: `Compare our SAG experiments with the literature.`
+12. Click **Compare with literature**.
+13. Show that ResearchOS separates lab matches, literature matches,
+    similarities, protocol differences, limitations, and source snippets.
 
 ## Demo Search
 
@@ -87,6 +93,26 @@ ResearchOS compares structured fields side-by-side: compounds, treatments,
 concentrations, time points, markers, imaging methods, notes, and conclusions.
 The local fallback interpretation works without an AI key, and an AI provider
 can optionally rewrite the comparison narrative.
+
+## Demo Lab-Literature Comparison
+
+First ingest the sample literature notes from the Literature panel.
+
+Suggested questions:
+
+```text
+Compare our SAG experiments with the literature.
+What does the literature say about BMP4 timing?
+Do our SIX6/BRN3B results match published expectations?
+```
+
+Talk track:
+
+ResearchOS compares internal experiment records against local papers and paper
+notes. It keeps lab evidence separate from literature evidence, then reports
+overlap, differences, protocol or treatment differences, limitations, and source
+snippets. This works locally without an AI key, and a configured AI provider can
+turn the same evidence into a cleaner written synthesis.
 
 ## Future UCSD OneNote Integration
 

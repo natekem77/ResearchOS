@@ -742,6 +742,83 @@ function renderChatResponse(target, payload) {
   `;
 }
 
+function renderLiteratureComparisonResponse(target, payload) {
+  const labExperiments = payload.matching_lab_experiments || [];
+  const literatureSources = payload.matching_literature_sources || [];
+  const citations = payload.citations || [];
+  const listItems = (items) => items.length
+    ? items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+    : `<li>None detected in the retrieved local context.</li>`;
+
+  target.innerHTML = `
+    <div class="assistant-answer">
+      <h3>Lab-Literature Comparison</h3>
+      <p>${escapeHtml(payload.direct_answer)}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(payload.provider)}</span>
+        <span class="tag">${payload.ai_used ? "AI synthesis" : "local fallback"}</span>
+        <span class="tag">${labExperiments.length} lab match${labExperiments.length === 1 ? "" : "es"}</span>
+        <span class="tag">${literatureSources.length} literature source${literatureSources.length === 1 ? "" : "s"}</span>
+      </div>
+    </div>
+    ${payload.ai_synthesis ? `<div class="assistant-answer"><h3>Synthesis</h3><p>${escapeHtml(payload.ai_synthesis)}</p></div>` : ""}
+    <div class="source-list">
+      <h3>Matching Lab Experiments</h3>
+      ${labExperiments.length ? labExperiments.map((experiment) => `
+        <article class="result">
+          <h3>${escapeHtml(experiment.experiment_id || experiment.title || experiment.id)}</h3>
+          <p>${escapeHtml(shortText(experiment.conclusions || experiment.notes || "Structured experiment metadata available.", 220))}</p>
+          <div class="meta">
+            ${(experiment.compounds || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+            ${(experiment.markers || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+          </div>
+        </article>
+      `).join("") : `<div class="empty-state">No matching lab experiments found.</div>`}
+    </div>
+    <div class="source-list">
+      <h3>Matching Literature Sources</h3>
+      ${literatureSources.length ? literatureSources.map((source) => `
+        <article class="result">
+          <h3>${escapeHtml(source.title || "Untitled literature source")}</h3>
+          <p>${escapeHtml(shortText(source.snippet, 240))}</p>
+          <div class="meta">
+            <span class="tag">literature</span>
+            <span class="tag">score ${escapeHtml(source.score ?? "n/a")}</span>
+          </div>
+        </article>
+      `).join("") : `<div class="empty-state">No matching literature sources found. Ingest papers first.</div>`}
+    </div>
+    <div class="detail-grid comparison-summary-grid">
+      <section class="detail-field">
+        <span>Similarities</span>
+        <ul>${listItems(payload.similarities || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Differences</span>
+        <ul>${listItems(payload.differences || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Protocol/treatment differences</span>
+        <ul>${listItems(payload.protocol_treatment_differences || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Limitations</span>
+        <ul>${listItems(payload.limitations || [])}</ul>
+      </section>
+    </div>
+    <div class="source-list">
+      <h3>Citations</h3>
+      ${citations.length ? citations.map((source) => `
+        <article class="result">
+          <h3>${escapeHtml(source.citation || "")} ${escapeHtml(source.title || "Untitled source")}</h3>
+          <p>${escapeHtml(shortText(source.snippet, 180))}</p>
+          <div class="meta"><span class="tag">${escapeHtml(source.provider || "unknown")}</span></div>
+        </article>
+      `).join("") : `<div class="empty-state">No citations retrieved.</div>`}
+    </div>
+  `;
+}
+
 async function runChat(message, target) {
   target.innerHTML = `<div class="empty-state">Thinking...</div>`;
   try {
@@ -752,6 +829,19 @@ async function runChat(message, target) {
     renderChatResponse(target, payload);
   } catch (error) {
     target.innerHTML = `<div class="result"><h3>Chat setup required</h3><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
+async function runLiteratureComparison(message, target) {
+  target.innerHTML = `<div class="empty-state">Comparing lab records with literature...</div>`;
+  try {
+    const payload = await requestJson("/assistant/compare-literature", {
+      method: "POST",
+      body: JSON.stringify({ question: message }),
+    });
+    renderLiteratureComparisonResponse(target, payload);
+  } catch (error) {
+    target.innerHTML = `<div class="result"><h3>Comparison unavailable</h3><p>${escapeHtml(error.message)}</p></div>`;
   }
 }
 
@@ -786,6 +876,17 @@ function bindChat(formSelector, inputSelector, outputSelector) {
     event.preventDefault();
     const message = input.value.trim();
     if (message) runChat(message, output);
+  });
+}
+
+function bindLiteratureComparison(buttonSelector, inputSelector, outputSelector) {
+  const button = $(buttonSelector);
+  const input = $(inputSelector);
+  const output = $(outputSelector);
+  if (!button || !input || !output) return;
+  button.addEventListener("click", () => {
+    const message = input.value.trim();
+    if (message) runLiteratureComparison(message, output);
   });
 }
 
@@ -971,6 +1072,8 @@ bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchRes
 bindSearch("#searchForm", "#searchInput", "#searchResults");
 bindChat("#dashboardChatForm", "#dashboardChatInput", "#dashboardChatOutput");
 bindChat("#chatForm", "#chatInput", "#chatOutput");
+bindLiteratureComparison("#dashboardCompareLiteratureButton", "#dashboardChatInput", "#dashboardChatOutput");
+bindLiteratureComparison("#compareLiteratureButton", "#chatInput", "#chatOutput");
 bindSuggestedPrompts();
 
 window.addEventListener("hashchange", route);

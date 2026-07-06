@@ -259,6 +259,9 @@ SAG questions only include SAG experiments unless the user asks for a comparison
 
 Suggested demo prompts:
 
+- Compare our SAG experiments with the literature.
+- What does the literature say about BMP4 timing?
+- Do our SIX6/BRN3B results match published expectations?
 - Which experiments used SAG?
 - Compare BMP4 and SAG experiments.
 - What markers were used with BRN3B?
@@ -280,6 +283,25 @@ curl -X POST http://127.0.0.1:8001/experiments/compare \
 The response includes shared features, differences, a likely scientific
 interpretation, limitations, and the source experiment records. The Experiments
 page also has checkboxes and a **Compare selected** button for the same workflow.
+
+## Lab-Literature Comparison
+
+Compare internal experiments against ingested literature:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assistant/compare-literature \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Compare our SAG experiments with the literature.","use_ai":false}'
+```
+
+The response separates matching lab experiments, matching literature sources,
+similarities, differences, protocol/treatment differences, limitations, and
+source snippets. It works locally without an AI key, and uses a configured AI
+provider for synthesis when available.
+
+The dashboard and AI Chat page include a **Compare with literature** button.
+Load demo notes, ingest papers, enter a question such as `Do our SIX6/BRN3B
+results match published expectations?`, then click **Compare with literature**.
 
 ## Retinal Organoid Intelligence
 
@@ -343,17 +365,24 @@ http://127.0.0.1:8001
 ```
 
 3. Click **Load demo notes**.
-4. Show the Documents and Experiments panels.
-5. Search:
+4. Open Literature and click **Ingest papers**.
+5. Show the Documents, Experiments, and Literature panels.
+6. Search:
 
 ```text
 SAG BRN3B staining
 ```
 
-6. If an AI provider is configured, ask chat:
+7. Ask chat:
 
 ```text
 What do the SAG and BRN3B notes suggest?
+```
+
+8. Click **Compare with literature** using:
+
+```text
+Compare our SAG experiments with the literature.
 ```
 
 The demo uses local Markdown notes, so it does not require Microsoft or UCSD
@@ -540,6 +569,14 @@ curl -X POST http://127.0.0.1:8001/assistant/ask \
 PDF text extraction uses `pypdf`; text and Markdown paper notes work for local
 demo use even when no PDFs are available. See
 [docs/LITERATURE_INGESTION.md](docs/LITERATURE_INGESTION.md).
+
+Compare lab experiments against literature:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assistant/compare-literature \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Do our SIX6/BRN3B results match published expectations?","use_ai":false}'
+```
 
 ## AI Chat Setup
 

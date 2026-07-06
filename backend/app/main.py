@@ -16,6 +16,7 @@ from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
+from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
 from app.retinal_ontology import build_retinal_ontology
@@ -202,6 +203,24 @@ class AssistantResponse(BaseModel):
     ai_synthesis: str | None
     limitations_uncertainties: list[str]
     sources: list[dict[str, object]]
+    ai_used: bool
+    provider: str
+
+
+class LiteratureComparisonResponse(BaseModel):
+    """Structured lab-literature comparison response."""
+
+    question: str
+    direct_answer: str
+    matching_lab_experiments: list[dict[str, object]]
+    matching_literature_sources: list[dict[str, object]]
+    relevant_source_documents: list[dict[str, object]]
+    similarities: list[str]
+    differences: list[str]
+    protocol_treatment_differences: list[str]
+    limitations: list[str]
+    citations: list[dict[str, object]]
+    ai_synthesis: str | None
     ai_used: bool
     provider: str
 
@@ -881,6 +900,18 @@ def assistant_ask(request: AssistantRequest) -> AssistantResponse:
 
     answer = ask_research_assistant(question=question, settings=settings, use_ai=request.use_ai)
     return AssistantResponse(**answer.__dict__)
+
+
+@app.post("/assistant/compare-literature", response_model=LiteratureComparisonResponse, tags=["ai"])
+def assistant_compare_literature(request: AssistantRequest) -> LiteratureComparisonResponse:
+    """Compare local lab experiments against ingested literature."""
+
+    question = _assistant_question(request)
+    if not question:
+        raise HTTPException(status_code=400, detail="Comparison question must not be empty.")
+
+    answer = compare_lab_with_literature(question=question, settings=settings, use_ai=request.use_ai)
+    return LiteratureComparisonResponse(**answer.__dict__)
 
 
 @app.get("/experiments", response_model=list[ExperimentResponse], tags=["experiments"])

@@ -495,6 +495,10 @@ button {
   gap: 10px;
 }
 
+.chat-form {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .prompt-row {
   display: flex;
   flex-wrap: wrap;
@@ -628,6 +632,17 @@ td a {
 
 .detail-field strong {
   margin-top: 5px;
+}
+
+.detail-field ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.comparison-summary-grid {
+  margin-top: 12px;
 }
 
 .detail-section {
