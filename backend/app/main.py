@@ -324,6 +324,21 @@ class DemoResetResponse(IngestResponse):
     documents_deleted: int
 
 
+class DemoStatusResponse(BaseModel):
+    """Pre-demo readiness status for Nathan's PI/lab walkthrough."""
+
+    backend_healthy: bool
+    demo_notes_loaded: bool
+    demo_note_count: int
+    experiments_extracted: bool
+    experiment_count: int
+    papers_loaded: bool
+    paper_count: int
+    assistant_available: bool
+    onenote_status: dict[str, object]
+    ai_provider_status: dict[str, object]
+
+
 class OntologyEntityResponse(BaseModel):
     """Linked retinal organoid ontology entity."""
 
@@ -833,6 +848,67 @@ def demo_reset() -> DemoResetResponse:
         documents_ingested=result.documents_ingested,
         chunks_indexed=result.chunks_indexed,
         experiments_extracted=result.experiments_extracted,
+    )
+
+
+@app.get("/demo/status", response_model=DemoStatusResponse, tags=["demo"])
+def demo_status() -> DemoStatusResponse:
+    """Return a concise readiness report for the local demo workflow."""
+
+    store = SQLiteStore(settings=settings)
+    documents_list = store.list_documents()
+    experiments_list = store.list_experiments()
+    sample_path = str(PROJECT_ROOT / "samples" / "lab_notes")
+
+    demo_note_count = 0
+    paper_count = 0
+    for document in documents_list:
+        provider = str(document.get("provider") or "")
+        source_path = str(document.get("source_path") or "")
+        if provider == "markdown" and source_path.startswith(sample_path):
+            demo_note_count += 1
+        if provider == "literature":
+            paper_count += 1
+
+    token_status = get_token_status(settings=settings)
+    if token_status.authenticated:
+        onenote_state = "connected"
+        onenote_message = "OneNote is connected for this local session."
+    elif settings.microsoft_client_id.strip():
+        onenote_state = "not_connected"
+        onenote_message = "OneNote app settings exist, but Microsoft Graph login is not connected."
+    else:
+        onenote_state = "waiting_for_it_approval"
+        onenote_message = "OneNote integration is pending UCSD IT approval/app registration."
+
+    ai_configured = _ai_provider_configured()
+
+    return DemoStatusResponse(
+        backend_healthy=True,
+        demo_notes_loaded=demo_note_count > 0,
+        demo_note_count=demo_note_count,
+        experiments_extracted=len(experiments_list) > 0,
+        experiment_count=len(experiments_list),
+        papers_loaded=paper_count > 0,
+        paper_count=paper_count,
+        assistant_available=True,
+        onenote_status={
+            "status": onenote_state,
+            "authenticated": token_status.authenticated,
+            "read_only": True,
+            "message": onenote_message,
+        },
+        ai_provider_status={
+            "status": "configured" if ai_configured else "local_fallback",
+            "configured": ai_configured,
+            "provider": settings.ai_provider,
+            "model": settings.ai_model if ai_configured else None,
+            "message": (
+                "Configured AI provider can be used for synthesis."
+                if ai_configured
+                else "Assistant uses local search/structured fallback without an AI key."
+            ),
+        },
     )
 
 

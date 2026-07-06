@@ -64,6 +64,8 @@ and prints the dashboard URL:
 http://127.0.0.1:8001
 ```
 
+For the PI/lab walkthrough, use [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md).
+
 ## What Works Today
 
 - Local FastAPI backend and browser dashboard.
@@ -109,6 +111,7 @@ ResearchOS/
 │   ├── ARCHITECTURE.md
 │   ├── AZURE_APP_SETUP.md
 │   ├── CORE_ARCHITECTURE.md
+│   ├── DEMO_CHECKLIST.md
 │   ├── DEMO_SCRIPT.md
 │   ├── DESIGN.md
 │   └── MVP_ROADMAP.md

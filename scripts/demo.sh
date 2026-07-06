@@ -7,6 +7,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_FILE="$ROOT_DIR/.researchos-dev.log"
 HEALTH_URL="http://$HOST:$PORT/health"
 DASHBOARD_URL="http://$HOST:$PORT"
+CHECKLIST_PATH="$ROOT_DIR/docs/DEMO_CHECKLIST.md"
+IT_APPROVAL_PATH="$ROOT_DIR/docs/UCSD_IT_APPROVAL_REQUEST.md"
 
 wait_for_health() {
   echo "Waiting for ResearchOS at $HEALTH_URL ..."
@@ -54,10 +56,20 @@ wait_for_health
 echo "Loading demo lab notes ..."
 curl -fsS -X POST "$DASHBOARD_URL/demo/reset" >/dev/null
 
+echo "Loading sample literature if available ..."
+curl -fsS -X POST "$DASHBOARD_URL/ingest/papers" >/dev/null || true
+
 echo
 echo "ResearchOS demo is ready."
-echo "Dashboard: $DASHBOARD_URL"
-echo "Health:    $HEALTH_URL"
+echo "Dashboard:      $DASHBOARD_URL"
+echo "Health:         $HEALTH_URL"
+echo "Demo checklist: $CHECKLIST_PATH"
+echo "UCSD IT doc:    $IT_APPROVAL_PATH"
+echo
+echo "Suggested questions:"
+echo "  1. Which experiments used SAG?"
+echo "  2. Compare our SAG experiments with the literature."
+echo "  3. Do our SIX6/BRN3B results match published expectations?"
 echo
 
 open_dashboard_if_possible || true
