@@ -1,105 +1,100 @@
 # UCSD IT Approval Request: ResearchOS Development
 
-## Plain-Language Summary
+## Copy/Paste Email
 
-ResearchOS is an AI-powered research operating system for scientific
-laboratories. The current prototype helps researchers search, summarize, and
-structure lab notebook information while keeping the official lab notebook in
-Microsoft OneNote.
+Subject: Request for UCSD Microsoft Graph approval for read-only OneNote research prototype
 
-We are requesting Microsoft Graph delegated read-only access so ResearchOS can
-read OneNote notebook content for the signed-in researcher during local
-development.
+Hello UCSD IT team,
 
-## Why The Lab Wants This
+I am developing a local research software prototype called ResearchOS
+Development for our lab. ResearchOS is intended to help researchers search,
+summarize, and structure existing lab notebook information while keeping
+Microsoft OneNote as the official notebook.
 
-The lab already uses OneNote for day-to-day research notes. Researchers need a
-better way to find prior experiments, compare treatments, extract structured
-experiment records, identify compounds and markers, and prepare summaries from
-existing notes.
+I am requesting guidance or approval for a Microsoft Entra app registration that
+allows read-only delegated Microsoft Graph access to OneNote for the signed-in
+user.
 
-ResearchOS is intended to reduce manual note searching and make experiments
-easier to review without changing the lab's official notebook workflow.
+Requested app details:
 
-## OneNote Remains The Official Notebook
-
-OneNote remains the official electronic notebook. ResearchOS does not replace
-OneNote. The initial integration only reads notebook data into a local
-development environment for indexing and analysis.
-
-## Read-Only Initial Scope
-
-The initial ResearchOS OneNote integration is read-only. It will not create,
-modify, delete, or annotate OneNote pages.
-
-Initial capabilities:
-
-- List notebooks, sections, and pages for the signed-in user.
-- Read page content for local indexing after approval.
-- Convert pages into local ResearchOS documents.
-- Run local search, experiment extraction, and optional AI-assisted summaries.
-
-## Application Details
-
-- App name: `ResearchOS Development`
+- App name: ResearchOS Development
 - Client ID: `<CLIENT_ID_PROVIDED_BY_UCSD_OR_APP_REGISTRATION>`
 - Redirect URI: `http://localhost:8001/auth/callback`
 - App type: public client / local development client
-- Client secret: not required for local public-client delegated auth
+- Client secret: not required
+- Delegated permissions requested:
+  - User.Read
+  - Notes.Read
+  - openid
+  - profile
+  - offline_access
 
-## Requested Delegated Microsoft Graph Permissions
+The initial integration is read-only. ResearchOS will not create, modify,
+delete, or annotate OneNote pages. It will read notebook content that the
+signed-in user is already allowed to access, then index it locally for search and
+experiment extraction.
 
-Please approve or register an app with these delegated permissions:
+The prototype is local-first. Notebook content is stored on the user's local
+machine in SQLite and a local vector index. No secrets are hardcoded. Tokens and
+configuration values are not committed to source control. Optional cloud AI
+features are separate and would be governed by lab and UCSD policy before use
+with real notebook content.
 
-- `User.Read`
-- `Notes.Read`
-- `openid`
-- `profile`
-- `offline_access`
+Could you please advise whether UCSD can either approve this ResearchOS
+Development app for the UCSD tenant or create a UCSD-owned app registration with
+the permissions above?
 
-These permissions allow the signed-in user to authenticate and allow ResearchOS
-to read OneNote content that the user is already allowed to access.
+Thank you,
+Nathan
 
-## Data Handling And Privacy Model
+## Short Project Summary
 
-ResearchOS is local-first during development:
+ResearchOS is an AI-powered research operating system for scientific
+laboratories. The first integration is a read-only OneNote companion that helps
+researchers search notes, extract structured experiments, and connect related
+protocols, compounds, markers, and organoid batches.
 
-- OneNote content is read into the user's local machine.
-- Local storage uses SQLite and a local vector index.
-- No ResearchOS-hosted cloud database is used in the current prototype.
-- Access tokens and refresh tokens must not be committed to source control.
-- Secrets are configured through environment variables, not hardcoded.
-- Logs should not contain access tokens, refresh tokens, authorization codes, or
-  sensitive notebook content.
+OneNote remains the official lab notebook. ResearchOS is an analysis and search
+layer around notebook content.
 
-## Optional Cloud AI Warning
+## Why The Lab Wants This
 
-ResearchOS can support optional AI providers in the future. If cloud AI is
-enabled, selected note snippets may be sent to the configured AI provider for
-summarization or question answering.
+Researchers need a faster way to find prior experiments, compare conditions, and
+summarize related notes. ResearchOS reduces manual notebook searching while
+preserving the lab's existing OneNote workflow.
 
-For UCSD review, this should be treated as optional and separately governed by
-lab policy, data classification, and approved vendor requirements. The OneNote
-read-only sync can function independently from cloud AI.
+## Requested Microsoft Graph Permissions
 
-## Security Boundaries
+- `User.Read`: sign in and read basic user profile.
+- `Notes.Read`: read OneNote notebooks and pages available to the user.
+- `openid`: OpenID Connect sign-in.
+- `profile`: basic profile claims.
+- `offline_access`: refresh delegated access during local development sessions.
 
-The requested integration:
+No write permissions are requested.
 
-- Uses delegated user login.
-- Reads only data the signed-in user can already access.
-- Does not request write permissions.
-- Does not use hardcoded secrets.
-- Runs locally for development.
-- Can be disabled by revoking consent or removing the app registration.
+## Data Handling And Privacy
 
-## Request
+- Local-first development prototype.
+- OneNote content is stored locally after sync.
+- SQLite is used for local metadata and document storage.
+- A local vector index is used for search.
+- No hardcoded secrets.
+- No committed tokens.
+- Logs should not include tokens, authorization codes, or sensitive notebook
+  content.
+- Cloud AI is optional and should not be enabled for real notebook content
+  without lab and UCSD approval.
+
+## Specific Request
 
 Please either:
 
-1. Approve the `ResearchOS Development` app for use in the UCSD tenant, or
-2. Register a UCSD-owned Microsoft Entra app for ResearchOS development with the
-   delegated permissions and redirect URI listed above.
+1. Approve the `ResearchOS Development` app for the UCSD tenant, or
+2. Register a UCSD-owned Microsoft Entra app for this prototype.
 
-The lab's preference is a UCSD-owned app registration if that is the standard
-path for internal research software prototypes.
+Preferred redirect URI:
+
+```text
+http://localhost:8001/auth/callback
+```

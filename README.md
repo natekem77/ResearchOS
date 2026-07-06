@@ -256,6 +256,12 @@ The demo uses local Markdown notes, so it does not require Microsoft or UCSD
 tenant approval. See [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) for a short
 presentation script.
 
+Presentation-ready materials:
+
+- [Lab demo talk track](docs/LAB_DEMO_TALK_TRACK.md)
+- [PI one-page summary](docs/PI_ONE_PAGE_SUMMARY.md)
+- [UCSD IT approval request](docs/UCSD_IT_APPROVAL_REQUEST.md)
+
 ## Microsoft Graph Auth Setup
 
 ResearchOS uses Microsoft Authentication Library (MSAL) for delegated Microsoft
@@ -486,6 +492,9 @@ standards, distribution plan, and milestone roadmap.
 
 See [docs/CORE_ARCHITECTURE.md](docs/CORE_ARCHITECTURE.md) for the local
 document ingestion, SQLite, vector search, and AI provider architecture.
+
+See [docs/ONENOTE_SYNC_DESIGN.md](docs/ONENOTE_SYNC_DESIGN.md) for the planned
+read-only OneNote sync architecture and Microsoft Graph integration design.
 
 ## Development Principles
 
