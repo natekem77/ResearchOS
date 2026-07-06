@@ -170,6 +170,7 @@ a {
 .mini-chip,
 .compound-chip,
 .settings-link,
+.secondary-link-button,
 select,
 button {
   border-radius: 8px;
@@ -812,6 +813,17 @@ button:hover:not(:disabled) {
 .secondary-button {
   color: var(--accent-strong);
   background: var(--accent-soft);
+}
+
+.secondary-link-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 15px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-weight: 800;
 }
 
 button:disabled {

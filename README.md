@@ -370,7 +370,8 @@ Browser speech recognition may use browser/device services; users can always
 type or paste notes instead.
 Generated entries can be saved locally with **Save Draft in ResearchOS**, then
 reopened from **Saved Drafts** or marked `ready_for_onenote` for a future
-approved write-back workflow.
+approved write-back workflow. Saved draft detail pages support copying Markdown
+and downloading `.md` files while OneNote write-back is pending.
 Write-back requires UCSD IT approval and Microsoft Graph permissions such as
 `Notes.Create` or `Notes.ReadWrite`.
 
@@ -482,6 +483,7 @@ Presentation-ready materials:
 - [Literature ingestion](docs/LITERATURE_INGESTION.md)
 - [Voice entry design](docs/VOICE_ENTRY_DESIGN.md)
 - [Pending entries workflow](docs/PENDING_ENTRIES.md)
+- [Draft export workflow](docs/DRAFT_EXPORT_WORKFLOW.md)
 - [OneNote write-back design](docs/ONENOTE_WRITEBACK_DESIGN.md)
 
 ## Microsoft Graph Auth Setup

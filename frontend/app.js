@@ -707,7 +707,7 @@ function renderSavedDrafts() {
               </div>
             </div>
             <div class="entry-actions">
-              <button type="button" class="secondary-button open-saved-draft" data-entry-id="${escapeHtml(entry.id)}">Open</button>
+              <a class="secondary-link-button" href="#/saved-drafts/${encodeURIComponent(entry.id)}">Open</a>
               <button type="button" class="secondary-button delete-saved-draft" data-entry-id="${escapeHtml(entry.id)}">Delete</button>
             </div>
           </article>
@@ -715,13 +715,6 @@ function renderSavedDrafts() {
         .join("")
     : `<div class="empty-state">No pending notebook entries saved yet.</div>`;
 
-  $$(".open-saved-draft").forEach((button) => {
-    button.addEventListener("click", () => {
-      openSavedDraft(button.dataset.entryId).catch((error) => {
-        target.innerHTML = `<div class="empty-state">Could not open draft: ${escapeHtml(error.message)}</div>`;
-      });
-    });
-  });
   $$(".delete-saved-draft").forEach((button) => {
     button.addEventListener("click", () => {
       deleteSavedDraft(button.dataset.entryId).catch((error) => {
@@ -807,6 +800,44 @@ async function openSavedDraft(entryId) {
   window.location.hash = "#/new-experiment";
 }
 
+async function copySavedDraftMarkdown(entryId) {
+  const payload = await requestJson(`/entries/${encodeURIComponent(entryId)}/markdown`);
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(payload.content);
+  } else {
+    const textarea = document.createElement("textarea");
+    textarea.value = payload.content;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+  $("#savedDraftActionStatus").textContent = "Markdown copied locally. OneNote write-back was not used.";
+}
+
+function downloadSavedDraftMarkdown(entryId) {
+  window.location.href = `/entries/${encodeURIComponent(entryId)}/download`;
+}
+
+async function markSavedDraftReady(entryId) {
+  const entry = await requestJson(`/entries/${encodeURIComponent(entryId)}`);
+  const payload = await requestJson("/entries/save-draft", {
+    method: "POST",
+    body: JSON.stringify({
+      id: entry.id,
+      title: entry.title,
+      experiment_id: entry.experiment_id,
+      template: entry.template,
+      structured: entry.structured,
+      markdown: entry.markdown,
+      status: "ready_for_onenote",
+    }),
+  });
+  state.currentSavedEntryId = payload.id;
+  await refreshData();
+  $("#savedDraftActionStatus").textContent = "Draft marked ready for OneNote. Save to OneNote remains disabled pending approval.";
+}
+
 async function deleteSavedDraft(entryId) {
   await requestJson(`/entries/${encodeURIComponent(entryId)}`, { method: "DELETE" });
   if (state.currentSavedEntryId === entryId) {
@@ -814,6 +845,54 @@ async function deleteSavedDraft(entryId) {
   }
   await refreshData();
   recordActivity("Deleted notebook draft", entryId);
+}
+
+async function renderSavedDraftDetail(entryId) {
+  const target = $("#savedDraftDetail");
+  target.innerHTML = `<div class="empty-state">Loading saved draft...</div>`;
+  try {
+    const entry = await requestJson(`/entries/${encodeURIComponent(entryId)}`);
+    target.innerHTML = `
+      <a class="inline-link" href="#/saved-drafts">Back to saved drafts</a>
+      <div class="detail-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(entry.status)}</p>
+          <h2>${escapeHtml(entry.title)}</h2>
+        </div>
+        <span class="status-pill ${entry.status === "ready_for_onenote" ? "ok" : ""}">${escapeHtml(entry.status)}</span>
+      </div>
+      <div class="detail-grid">
+        ${detailField("Experiment ID", entry.experiment_id)}
+        ${detailField("Template", entry.template)}
+        ${detailField("Created", formatDate(entry.created_at))}
+        ${detailField("Updated", formatDate(entry.updated_at))}
+      </div>
+      <div class="entry-actions preview-actions">
+        <button type="button" id="copySavedMarkdownButton" class="secondary-button">Copy Markdown</button>
+        <button type="button" id="downloadSavedMarkdownButton" class="secondary-button">Download Markdown</button>
+        <button type="button" id="markSavedReadyButton" class="secondary-button">Mark Ready for OneNote</button>
+        <button type="button" disabled>Save to OneNote</button>
+      </div>
+      <p class="privacy-note">OneNote write-back is pending UCSD IT approval. This draft is stored locally in ResearchOS and can be copied or downloaded as Markdown.</p>
+      <p class="demo-status" id="savedDraftActionStatus"></p>
+      <pre class="markdown-preview">${escapeHtml(entry.markdown)}</pre>
+    `;
+    $("#copySavedMarkdownButton").addEventListener("click", () => {
+      copySavedDraftMarkdown(entry.id).catch((error) => {
+        $("#savedDraftActionStatus").textContent = `Copy failed: ${error.message}`;
+      });
+    });
+    $("#downloadSavedMarkdownButton").addEventListener("click", () => {
+      downloadSavedDraftMarkdown(entry.id);
+    });
+    $("#markSavedReadyButton").addEventListener("click", () => {
+      markSavedDraftReady(entry.id).catch((error) => {
+        $("#savedDraftActionStatus").textContent = `Status update failed: ${error.message}`;
+      });
+    });
+  } catch (error) {
+    target.innerHTML = `<div class="empty-state">Saved draft unavailable: ${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function markdownToPreviewHtml(markdown) {

@@ -57,6 +57,8 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 PY
 )"
 request GET "/entries/$SAVED_ENTRY_ID" >/dev/null
+request GET "/entries/$SAVED_ENTRY_ID/markdown" >/dev/null
+request GET "/entries/$SAVED_ENTRY_ID/download" >/dev/null
 request DELETE "/entries/$SAVED_ENTRY_ID" >/dev/null
 request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
 
