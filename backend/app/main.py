@@ -14,9 +14,9 @@ from app.config import get_settings
 from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
-from app.ingestion import ingest_markdown_folder
+from app.ingestion import ingest_documents, ingest_markdown_folder
 from app.logging import configure_logging
-from app.onenote_provider import list_notebooks, list_pages, list_sections
+from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
 from app.retinal_ontology import build_retinal_ontology
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
@@ -451,6 +451,35 @@ def onenote_pages(
         return [OneNoteMetadataResponse(**item.__dict__) for item in list_pages(section_id)]
     except (MissingGraphTokenError, GraphRequestError) as exc:
         raise _handle_graph_error(exc) from exc
+
+
+@app.post("/sync/onenote", response_model=IngestResponse, tags=["onenote"])
+def sync_onenote() -> IngestResponse:
+    """Read OneNote pages into local ResearchOS storage without writing back."""
+
+    try:
+        documents = sync_onenote_pages()
+        result = ingest_documents(documents=documents, provider="onenote")
+    except MissingGraphTokenError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                f"{exc} If UCSD blocks consent, request tenant approval for "
+                "the ResearchOS Development app."
+            ),
+        ) from exc
+    except GraphRequestError as exc:
+        logger.warning("OneNote sync failed during Microsoft Graph read: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"OneNote sync could not read Microsoft Graph: {exc}. "
+                "Check UCSD tenant consent, OneNote licensing, notebook access, "
+                "and Graph delegated Notes.Read approval."
+            ),
+        ) from exc
+
+    return IngestResponse(**result.__dict__)
 
 
 @app.post("/ingest/markdown", response_model=IngestResponse, tags=["ingestion"])

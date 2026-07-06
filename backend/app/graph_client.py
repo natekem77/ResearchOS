@@ -42,6 +42,57 @@ def _build_graph_url(path_or_url: str, query_params: dict[str, str] | None = Non
     return url
 
 
+def _format_graph_http_error(exc: HTTPError, error_body: str) -> str:
+    """Return a readable Graph error without hiding tenant or consent details."""
+
+    try:
+        payload = json.loads(error_body)
+    except json.JSONDecodeError:
+        payload = {}
+
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        code = error.get("code")
+        message = error.get("message")
+        if code or message:
+            return f"Microsoft Graph returned HTTP {exc.code}: {code or 'error'} - {message or error_body}"
+
+    return f"Microsoft Graph returned HTTP {exc.code}: {error_body}"
+
+
+def graph_get_text(
+    path_or_url: str,
+    query_params: dict[str, str] | None = None,
+    accept: str = "text/html",
+) -> str:
+    """Perform an authenticated read-only Microsoft Graph GET and return text."""
+
+    access_token = get_development_access_token()
+    if access_token is None:
+        raise MissingGraphTokenError(
+            "Microsoft Graph is not connected. Visit /auth/login first, then retry. "
+            "If UCSD blocks consent, the ResearchOS app needs tenant approval."
+        )
+
+    request = Request(
+        url=_build_graph_url(path_or_url=path_or_url, query_params=query_params),
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": accept,
+        },
+        method="GET",
+    )
+
+    try:
+        with urlopen(request, timeout=30) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        raise GraphRequestError(_format_graph_http_error(exc, error_body)) from exc
+    except URLError as exc:
+        raise GraphRequestError(f"Microsoft Graph request failed: {exc.reason}") from exc
+
+
 def graph_get(path_or_url: str, query_params: dict[str, str] | None = None) -> dict[str, Any]:
     """Perform an authenticated read-only Microsoft Graph GET request.
 
@@ -70,7 +121,7 @@ def graph_get(path_or_url: str, query_params: dict[str, str] | None = None) -> d
             raw_body = response.read().decode("utf-8")
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace")
-        raise GraphRequestError(f"Microsoft Graph returned HTTP {exc.code}: {error_body}") from exc
+        raise GraphRequestError(_format_graph_http_error(exc, error_body)) from exc
     except URLError as exc:
         raise GraphRequestError(f"Microsoft Graph request failed: {exc.reason}") from exc
 

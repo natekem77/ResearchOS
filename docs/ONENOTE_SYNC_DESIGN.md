@@ -22,6 +22,31 @@ Current ResearchOS endpoints already list notebook, section, and page metadata.
 The sync engine should build on those helpers rather than duplicating Graph
 request code.
 
+## Current Implementation Status
+
+ResearchOS now exposes:
+
+```http
+POST /sync/onenote
+```
+
+The endpoint is read-only. It uses the existing Microsoft Graph delegated token,
+fetches notebooks, sections, pages, and page HTML content, converts page HTML to
+clean text, and stores each page as a provider-agnostic `ResearchDocument` with
+`provider="onenote"`.
+
+After storage, the sync reuses the existing ResearchOS pipeline:
+
+1. Chunk page text.
+2. Store chunks in SQLite.
+3. Upsert chunks into ChromaDB.
+4. Run regex-first experiment extraction.
+5. Make OneNote pages available to `/documents`, `/search`, `/experiments`, and
+   ontology views when relevant entities are detected.
+
+UCSD production use still depends on Microsoft tenant approval or a UCSD-owned
+app registration with the requested delegated read permissions.
+
 ## Auth Flow Already Implemented
 
 ResearchOS currently has Microsoft delegated authentication scaffolding:
@@ -56,6 +81,10 @@ The OneNote provider should produce the same `ResearchDocument` model used by
 Markdown ingestion so downstream chunking, search, ontology extraction, and
 experiment extraction remain provider-agnostic.
 
+This is the implemented mapping for synced pages. Source metadata is stored in
+`metadata_json` and includes notebook ID/name, section ID/name, page ID/title,
+Graph timestamps, and `contentUrl` when Graph provides it.
+
 ## Page HTML Conversion
 
 Microsoft Graph returns OneNote page bodies as HTML. The sync engine should:
@@ -68,12 +97,17 @@ Microsoft Graph returns OneNote page bodies as HTML. The sync engine should:
 6. Store selected original metadata, but avoid storing unnecessary Graph tokens
    or auth artifacts.
 
-The first implementation can convert to plain Markdown-like text. A later
-version can preserve richer block structure for tables, protocols, and images.
+The first implementation converts to plain Markdown-like text with a standard
+library HTML parser. It preserves visible text, basic block breaks, list
+markers, and image alt text. A later version can preserve richer block structure
+for tables, protocols, embedded files, and images.
 
 ## Incremental Sync
 
-The MVP sync strategy should use `lastModifiedDateTime`:
+The current sync upserts pages by stable OneNote page ID and records
+`lastModifiedDateTime` in the document's `updated_at` and metadata fields. The
+next optimization should use `lastModifiedDateTime` to avoid fetching unchanged
+page content:
 
 1. Store each OneNote page ID and its last synced `lastModifiedDateTime`.
 2. During sync, list page metadata first.
@@ -136,14 +170,14 @@ Errors should be logged with request context, but never with access tokens,
 refresh tokens, authorization codes, or sensitive page content unless the user
 explicitly enables local debug logging.
 
-## Proposed Modules
+## Modules
 
 Initial implementation can be split into small modules:
 
 - `graph_client.py`: authenticated Microsoft Graph GET helper.
-- `onenote_provider.py`: metadata listing and future page content fetches.
-- `onenote_sync.py`: sync orchestration and incremental state.
-- `html_conversion.py`: OneNote HTML to text/Markdown conversion.
+- `onenote_provider.py`: metadata listing, page content fetches, HTML
+  conversion, and `ResearchDocument` mapping.
+- `ingestion.py`: shared provider-agnostic document ingestion pipeline.
 - `storage.py`: local document, chunk, experiment, and sync metadata storage.
 
 This keeps OneNote-specific code at the provider boundary and preserves the

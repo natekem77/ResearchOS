@@ -45,12 +45,9 @@ Response:
 }
 ```
 
-OneNote synchronization is intentionally not implemented yet.
-
-Microsoft Graph delegated authentication scaffolding is included for future
-OneNote access. It currently supports login, callback handling, and local auth
-status only. It is read-only with respect to Microsoft Graph and does not sync
-OneNote content.
+Read-only OneNote page sync is implemented behind Microsoft Graph delegated
+login. Real UCSD notebook access still requires tenant consent or a UCSD-owned
+app registration before lab OneNote content can be synced.
 
 ## Repository Layout
 
@@ -265,8 +262,8 @@ Presentation-ready materials:
 ## Microsoft Graph Auth Setup
 
 ResearchOS uses Microsoft Authentication Library (MSAL) for delegated Microsoft
-Graph login. This is required before future OneNote sync work can read notebook
-data on behalf of a user.
+Graph login. This is required before OneNote sync can read notebook data on
+behalf of a user.
 
 For detailed Azure app registration steps, see
 [docs/AZURE_APP_SETUP.md](docs/AZURE_APP_SETUP.md).
@@ -300,7 +297,7 @@ Token storage is temporary and local-development only. Tokens are stored in
 process memory, are not encrypted, are not user-scoped, and disappear when the
 API restarts. Replace this before handling real laboratory data.
 
-## OneNote Metadata Listing
+## OneNote Metadata Listing And Sync
 
 After completing Microsoft Graph login, the backend can list OneNote metadata in
 read-only mode:
@@ -320,6 +317,22 @@ curl "http://127.0.0.1:8000/onenote/pages?section_id=<section-id>"
 
 These endpoints return notebook, section, and page metadata only. They do not
 fetch full page content and do not write to OneNote.
+
+Read-only page sync is available after login:
+
+```bash
+curl -X POST http://127.0.0.1:8001/sync/onenote
+```
+
+The sync pipeline fetches notebooks, sections, pages, and page HTML content,
+converts pages to clean text, stores them as `ResearchDocument` records with
+`provider="onenote"`, then reuses the existing chunking, vector indexing,
+search, and experiment extraction pipeline.
+
+If Microsoft Graph is not connected, the endpoint returns a clear setup message.
+If UCSD tenant consent, licensing, or notebook access blocks the request, the
+endpoint returns the Microsoft Graph error with guidance to request tenant
+approval.
 
 ## Local Markdown Ingestion and Search
 

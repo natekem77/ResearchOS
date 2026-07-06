@@ -8,6 +8,7 @@ from pathlib import Path
 from app.chunking import chunk_document
 from app.experiment_extraction import extract_experiment
 from app.markdown_provider import load_markdown_folder
+from app.research_document import ResearchDocument
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -26,6 +27,12 @@ def ingest_markdown_folder(folder_path: str | Path) -> IngestionResult:
     """Load Markdown documents, store them in SQLite, and index their chunks."""
 
     documents = load_markdown_folder(folder_path)
+    return ingest_documents(documents=documents, provider="markdown")
+
+
+def ingest_documents(documents: list[ResearchDocument], provider: str) -> IngestionResult:
+    """Store provider-normalized documents, chunks, vectors, and experiments."""
+
     store = SQLiteStore()
     index = ChromaVectorIndex()
 
@@ -43,7 +50,7 @@ def ingest_markdown_folder(folder_path: str | Path) -> IngestionResult:
             experiment_count += 1
 
     return IngestionResult(
-        provider="markdown",
+        provider=provider,
         documents_ingested=len(documents),
         chunks_indexed=chunk_count,
         experiments_extracted=experiment_count,
