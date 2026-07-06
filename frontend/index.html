@@ -240,6 +240,13 @@
                 </div>
                 <label for="entryDictation">Dictation / raw notes</label>
                 <textarea id="entryDictation" rows="8" placeholder="Create NK Expt 31. Day 1 SAG plus GRK inhibitor..."></textarea>
+                <div class="voice-dictation-panel">
+                  <div class="entry-actions">
+                    <button type="button" id="voiceDictationButton" class="secondary-button">Start microphone</button>
+                    <span class="status-pill" id="voiceDictationStatus">Stopped</span>
+                  </div>
+                  <p class="privacy-note">Browser speech recognition may use device or browser services. You can alternatively type or paste notes here.</p>
+                </div>
                 <div class="entry-actions">
                   <button type="submit">Generate structured entry</button>
                   <button type="button" disabled>Save to OneNote</button>

@@ -727,6 +727,89 @@ function previewOneNoteEntry() {
   $("#entryExportStatus").textContent = "Preview generated locally. Saving to OneNote still requires UCSD approval.";
 }
 
+let speechRecognition = null;
+let speechListening = false;
+let speechFinalTranscript = "";
+
+function setVoiceStatus(message, isActive = false) {
+  const status = $("#voiceDictationStatus");
+  if (!status) return;
+  status.textContent = message;
+  status.className = `status-pill ${isActive ? "ok" : ""}`;
+}
+
+function appendDictationText(text) {
+  const textarea = $("#entryDictation");
+  const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return;
+  const prefix = textarea.value.trim() ? `${textarea.value.trim()} ` : "";
+  textarea.value = `${prefix}${cleaned}`.trim();
+}
+
+function setupVoiceDictation() {
+  const button = $("#voiceDictationButton");
+  if (!button) return;
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    button.disabled = true;
+    setVoiceStatus("Speech recognition unavailable");
+    return;
+  }
+
+  speechRecognition = new SpeechRecognition();
+  speechRecognition.continuous = true;
+  speechRecognition.interimResults = true;
+  speechRecognition.lang = navigator.language || "en-US";
+
+  speechRecognition.addEventListener("start", () => {
+    speechListening = true;
+    speechFinalTranscript = "";
+    button.textContent = "Stop microphone";
+    setVoiceStatus("Listening...", true);
+  });
+
+  speechRecognition.addEventListener("result", (event) => {
+    let interimTranscript = "";
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const transcript = event.results[index][0]?.transcript || "";
+      if (event.results[index].isFinal) {
+        speechFinalTranscript += ` ${transcript}`;
+      } else {
+        interimTranscript += ` ${transcript}`;
+      }
+    }
+    setVoiceStatus(interimTranscript.trim() ? `Listening... ${shortText(interimTranscript, 60)}` : "Listening...", true);
+  });
+
+  speechRecognition.addEventListener("end", () => {
+    speechListening = false;
+    button.textContent = "Start microphone";
+    appendDictationText(speechFinalTranscript);
+    speechFinalTranscript = "";
+    setVoiceStatus("Stopped");
+  });
+
+  speechRecognition.addEventListener("error", () => {
+    speechListening = false;
+    button.textContent = "Start microphone";
+    setVoiceStatus("Stopped");
+  });
+
+  button.addEventListener("click", () => {
+    if (!speechRecognition) return;
+    if (speechListening) {
+      speechRecognition.stop();
+      return;
+    }
+    try {
+      speechRecognition.start();
+    } catch (error) {
+      setVoiceStatus("Stopped");
+    }
+  });
+}
+
 async function generateEntryDraft() {
   const notes = $("#entryDictation").value.trim();
   const template = $("#entryTemplateSelect").value || "general_experiment";
@@ -1697,6 +1780,7 @@ bindLiteratureComparison("#dashboardCompareLiteratureButton", "#dashboardChatInp
 bindLiteratureComparison("#compareLiteratureButton", "#chatInput", "#chatOutput");
 bindDashboardSuggestedQuestions();
 bindSuggestedPrompts();
+setupVoiceDictation();
 
 window.addEventListener("hashchange", route);
 

@@ -17,12 +17,21 @@ Supported today:
 - iPhone dictation pasted into the ResearchOS text area.
 - Laptop operating-system dictation pasted or typed into the browser.
 - Manually typed rough notes.
+- Browser microphone dictation through the Web Speech API when supported by the
+  user's browser.
 
-Future browser support:
+Browser support:
 
-- Browser speech recognition when available.
-- Push-to-talk capture in the New Experiment page.
+- The New Experiment page includes a microphone button.
+- Supported browsers show `Listening...` while speech recognition is active.
+- Final transcript text is appended to the dictation text area.
+- Unsupported browsers show `Speech recognition unavailable`.
+- Users can always type or paste notes instead.
+
+Future browser improvements:
+
 - Speaker/lab member attribution if needed.
+- Better handling of interim transcripts and punctuation cleanup.
 
 ## Draft Generation
 
@@ -100,3 +109,9 @@ The prototype is local-first. Dictation is sent only to the local FastAPI backen
 unless an AI provider is configured. If cloud AI is enabled, dictated notes may
 be sent to that provider for formatting, so users should avoid sensitive or
 unapproved data until lab policy is defined.
+
+Browser speech recognition has a separate privacy consideration: depending on
+the browser and device, microphone audio may be processed by browser, operating
+system, or vendor speech-recognition services before text appears in
+ResearchOS. Users who do not want browser speech services can type or paste
+notes directly into the dictation field.

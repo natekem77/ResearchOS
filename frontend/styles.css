@@ -691,6 +691,22 @@ button {
   gap: 8px;
 }
 
+.voice-dictation-panel {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 12px;
+  background: var(--surface-2);
+}
+
+.privacy-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
 .preview-actions {
   margin: 0 0 12px;
 }

@@ -362,8 +362,11 @@ curl -X POST http://127.0.0.1:8001/entries/draft \
   -d '{"dictation":"Create NK Expt 31. Day 1 SAG plus GRK inhibitor. Treat with 100 nM SAG from D18 to D24. DMSO vehicle control. Planned readouts brightfield and BRN3B staining."}'
 ```
 
-The dashboard includes a **New Experiment** page with a dictation text area,
+The dashboard includes a **New Experiment** page with template selection, sample
+dictation buttons, a browser microphone button when Web Speech API is available,
 structured Markdown preview, and disabled **Save to OneNote** placeholder.
+Browser speech recognition may use browser/device services; users can always
+type or paste notes instead.
 Write-back requires UCSD IT approval and Microsoft Graph permissions such as
 `Notes.Create` or `Notes.ReadWrite`.
 
