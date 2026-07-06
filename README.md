@@ -101,6 +101,7 @@ Release notes:
 - Retinal organoid entity pages for compounds, markers, cell lines, and batches.
 - Knowledge Graph Explorer for connected experiments, papers, protocols, and entities.
 - Lab notebook templates for polished structured entry drafts from dictation.
+- Pending notebook-entry drafts saved locally before OneNote write-back approval.
 - Local literature ingestion for paper notes and PDFs.
 - Scientific research assistant with local fallback answers.
 - Provider status Settings page.
@@ -367,6 +368,9 @@ dictation buttons, a browser microphone button when Web Speech API is available,
 structured Markdown preview, and disabled **Save to OneNote** placeholder.
 Browser speech recognition may use browser/device services; users can always
 type or paste notes instead.
+Generated entries can be saved locally with **Save Draft in ResearchOS**, then
+reopened from **Saved Drafts** or marked `ready_for_onenote` for a future
+approved write-back workflow.
 Write-back requires UCSD IT approval and Microsoft Graph permissions such as
 `Notes.Create` or `Notes.ReadWrite`.
 
@@ -477,6 +481,7 @@ Presentation-ready materials:
 - [AI research assistant](docs/AI_RESEARCH_ASSISTANT.md)
 - [Literature ingestion](docs/LITERATURE_INGESTION.md)
 - [Voice entry design](docs/VOICE_ENTRY_DESIGN.md)
+- [Pending entries workflow](docs/PENDING_ENTRIES.md)
 - [OneNote write-back design](docs/ONENOTE_WRITEBACK_DESIGN.md)
 
 ## Microsoft Graph Auth Setup

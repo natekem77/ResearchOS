@@ -20,6 +20,7 @@
         <nav class="side-nav" aria-label="Primary navigation">
           <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
           <a href="#/new-experiment" data-nav="new-experiment">New Experiment</a>
+          <a href="#/saved-drafts" data-nav="saved-drafts">Saved Drafts</a>
           <a href="#/experiments" data-nav="experiments">Experiments</a>
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
@@ -249,6 +250,8 @@
                 </div>
                 <div class="entry-actions">
                   <button type="submit">Generate structured entry</button>
+                  <button type="button" id="saveDraftButton" class="secondary-button">Save Draft in ResearchOS</button>
+                  <button type="button" id="markReadyButton" class="secondary-button">Mark ready for OneNote</button>
                   <button type="button" disabled>Save to OneNote</button>
                   <span class="muted">Write-back is intentionally disabled until UCSD IT approves OneNote create/write permissions.</span>
                 </div>
@@ -272,6 +275,18 @@
               <p class="demo-status" id="entryExportStatus"></p>
               <pre class="markdown-preview" id="entryMarkdownPreview">Generate a structured entry to preview the notebook Markdown.</pre>
               <div class="onenote-preview" id="oneNoteEntryPreview" hidden></div>
+            </article>
+          </section>
+
+          <section class="view" id="savedDraftsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Local drafts</p>
+                  <h2>Saved Drafts</h2>
+                </div>
+              </div>
+              <div class="item-list" id="savedDraftsList"></div>
             </article>
           </section>
 

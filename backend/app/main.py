@@ -272,6 +272,37 @@ class ExportMarkdownResponse(BaseModel):
     content: str
 
 
+class PendingEntrySaveRequest(BaseModel):
+    """Local pending notebook-entry save/update request."""
+
+    id: str | None = None
+    title: str
+    experiment_id: str | None = None
+    template: str
+    structured: dict[str, object]
+    markdown: str
+    status: Literal["draft", "ready_for_onenote", "exported"] = "draft"
+
+
+class PendingEntrySummaryResponse(BaseModel):
+    """Saved pending notebook-entry summary."""
+
+    id: str
+    title: str
+    experiment_id: str | None = None
+    template: str
+    status: Literal["draft", "ready_for_onenote", "exported"]
+    created_at: str
+    updated_at: str
+
+
+class PendingEntryResponse(PendingEntrySummaryResponse):
+    """Saved pending notebook-entry detail."""
+
+    structured: dict[str, object]
+    markdown: str
+
+
 class ExtractRequest(BaseModel):
     """Request body for structured experiment extraction."""
 
@@ -1096,6 +1127,58 @@ def entry_templates() -> list[EntryTemplateResponse]:
     """Return available reusable lab notebook entry templates."""
 
     return [EntryTemplateResponse(**template) for template in available_entry_templates()]
+
+
+@app.post("/entries/save-draft", response_model=PendingEntryResponse, tags=["entries"])
+def save_entry_draft(request: PendingEntrySaveRequest) -> PendingEntryResponse:
+    """Save or update a generated notebook draft inside local ResearchOS storage."""
+
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Saved draft title must not be empty.")
+    if not request.markdown.strip():
+        raise HTTPException(status_code=400, detail="Saved draft Markdown must not be empty.")
+
+    store = SQLiteStore(settings=settings)
+    saved = store.save_pending_entry(
+        entry_id=request.id,
+        title=request.title.strip(),
+        experiment_id=request.experiment_id,
+        template=request.template,
+        structured=dict(request.structured),
+        markdown=request.markdown,
+        status=request.status,
+    )
+    return PendingEntryResponse(**saved)
+
+
+@app.get("/entries", response_model=list[PendingEntrySummaryResponse], tags=["entries"])
+def pending_entries() -> list[PendingEntrySummaryResponse]:
+    """List locally saved pending notebook-entry drafts."""
+
+    store = SQLiteStore(settings=settings)
+    return [PendingEntrySummaryResponse(**entry) for entry in store.list_pending_entries()]
+
+
+@app.get("/entries/{entry_id}", response_model=PendingEntryResponse, tags=["entries"])
+def pending_entry_detail(entry_id: str) -> PendingEntryResponse:
+    """Return one locally saved pending notebook-entry draft."""
+
+    store = SQLiteStore(settings=settings)
+    entry = store.get_pending_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Pending entry not found: {entry_id}")
+    return PendingEntryResponse(**entry)
+
+
+@app.delete("/entries/{entry_id}", tags=["entries"])
+def delete_pending_entry(entry_id: str) -> dict[str, object]:
+    """Delete one locally saved pending notebook-entry draft."""
+
+    store = SQLiteStore(settings=settings)
+    deleted = store.delete_pending_entry(entry_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Pending entry not found: {entry_id}")
+    return {"deleted": True, "id": entry_id}
 
 
 @app.post("/entries/export-markdown", response_model=ExportMarkdownResponse, tags=["entries"])

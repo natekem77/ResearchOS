@@ -9,10 +9,12 @@ const state = {
   ontology: {},
   graphStats: null,
   entryTemplates: [],
+  pendingEntries: [],
   lastSync: null,
   searchTerms: [],
   activity: [],
   currentEntryDraft: null,
+  currentSavedEntryId: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -21,6 +23,7 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const views = {
   dashboard: $("#dashboardView"),
   "new-experiment": $("#newExperimentView"),
+  "saved-drafts": $("#savedDraftsView"),
   experiments: $("#experimentsView"),
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
@@ -217,6 +220,7 @@ function route() {
   const titles = {
     dashboard: ["Dashboard", "ResearchOS Dashboard"],
     "new-experiment": ["New Experiment", "Dictation Draft"],
+    "saved-drafts": ["Saved Drafts", "Pending Notebook Entries"],
     experiments: ["Experiments", "Experiment Index"],
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
@@ -607,6 +611,9 @@ function formatComparisonValue(value) {
 function renderEntryDraft(payload) {
   const structured = payload.structured || {};
   state.currentEntryDraft = payload;
+  if (payload.id) {
+    state.currentSavedEntryId = payload.id;
+  }
   const fields = [
     ["Title", structured.title],
     ["Experiment ID", structured.experiment_id],
@@ -642,6 +649,76 @@ function renderEntryDraft(payload) {
       detailField("Missing fields", payload.missing_fields.join(", ")),
     );
   }
+}
+
+function pendingEntryPayload(status = "draft") {
+  const draft = state.currentEntryDraft;
+  const structured = draft?.structured || {};
+  const markdown = currentDraftMarkdown();
+  if (!draft || !markdown) {
+    throw new Error("Generate or open a draft before saving.");
+  }
+  return {
+    id: state.currentSavedEntryId || draft.id || null,
+    title: structured.title || "Untitled notebook draft",
+    experiment_id: structured.experiment_id || null,
+    template: draft.template || structured.template || $("#entryTemplateSelect").value || "general_experiment",
+    structured,
+    markdown,
+    status,
+  };
+}
+
+function savedEntryToDraft(entry) {
+  return {
+    id: entry.id,
+    structured: entry.structured || {},
+    markdown: entry.markdown,
+    template: entry.template,
+    confidence: 1,
+    missing_fields: [],
+    ai_used: false,
+    provider: `saved-${entry.status}`,
+  };
+}
+
+function renderSavedDrafts() {
+  const target = $("#savedDraftsList");
+  if (!target) return;
+  target.innerHTML = state.pendingEntries.length
+    ? state.pendingEntries
+        .map((entry) => `
+          <article class="record-card saved-draft-card">
+            <div>
+              <h3>${escapeHtml(entry.title)}</h3>
+              <p>${escapeHtml(entry.experiment_id || "No experiment ID")} · ${escapeHtml(entry.template)} · ${escapeHtml(entry.status)}</p>
+              <div class="meta">
+                <span class="tag">updated ${escapeHtml(formatDate(entry.updated_at))}</span>
+              </div>
+            </div>
+            <div class="entry-actions">
+              <button type="button" class="secondary-button open-saved-draft" data-entry-id="${escapeHtml(entry.id)}">Open</button>
+              <button type="button" class="secondary-button delete-saved-draft" data-entry-id="${escapeHtml(entry.id)}">Delete</button>
+            </div>
+          </article>
+        `)
+        .join("")
+    : `<div class="empty-state">No pending notebook entries saved yet.</div>`;
+
+  $$(".open-saved-draft").forEach((button) => {
+    button.addEventListener("click", () => {
+      openSavedDraft(button.dataset.entryId).catch((error) => {
+        target.innerHTML = `<div class="empty-state">Could not open draft: ${escapeHtml(error.message)}</div>`;
+      });
+    });
+  });
+  $$(".delete-saved-draft").forEach((button) => {
+    button.addEventListener("click", () => {
+      deleteSavedDraft(button.dataset.entryId).catch((error) => {
+        target.innerHTML = `<div class="empty-state">Could not delete draft: ${escapeHtml(error.message)}</div>`;
+      });
+    });
+  });
 }
 
 function currentDraftMarkdown() {
@@ -693,6 +770,40 @@ async function downloadEntryMarkdown() {
   link.remove();
   URL.revokeObjectURL(url);
   $("#entryExportStatus").textContent = `Downloaded ${payload.filename}. OneNote write-back was not used.`;
+}
+
+async function saveCurrentDraft(status = "draft") {
+  const payload = await requestJson("/entries/save-draft", {
+    method: "POST",
+    body: JSON.stringify(pendingEntryPayload(status)),
+  });
+  state.currentSavedEntryId = payload.id;
+  state.currentEntryDraft = savedEntryToDraft(payload);
+  await refreshData();
+  $("#entryExportStatus").textContent = status === "ready_for_onenote"
+    ? "Draft marked ready for OneNote inside ResearchOS. OneNote write-back is still disabled."
+    : "Draft saved inside ResearchOS.";
+  recordActivity("Saved notebook draft", `${payload.title} · ${payload.status}`);
+}
+
+async function openSavedDraft(entryId) {
+  const entry = await requestJson(`/entries/${encodeURIComponent(entryId)}`);
+  state.currentSavedEntryId = entry.id;
+  const draft = savedEntryToDraft(entry);
+  renderEntryDraft(draft);
+  $("#entryTemplateSelect").value = entry.template;
+  $("#entryDictation").value = "";
+  $("#entryExportStatus").textContent = `Opened saved draft: ${entry.status}.`;
+  window.location.hash = "#/new-experiment";
+}
+
+async function deleteSavedDraft(entryId) {
+  await requestJson(`/entries/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+  if (state.currentSavedEntryId === entryId) {
+    state.currentSavedEntryId = null;
+  }
+  await refreshData();
+  recordActivity("Deleted notebook draft", entryId);
 }
 
 function markdownToPreviewHtml(markdown) {
@@ -822,6 +933,7 @@ async function generateEntryDraft() {
     method: "POST",
     body: JSON.stringify({ dictation: notes, template }),
   });
+  state.currentSavedEntryId = null;
   renderEntryDraft(payload);
 }
 
@@ -1526,10 +1638,11 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, experiments, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
+  const [documents, papers, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/experiments"),
+    requestJson("/entries"),
     requestJson("/api/compounds"),
     requestJson("/api/markers"),
     requestJson("/api/cell-lines"),
@@ -1540,6 +1653,7 @@ async function refreshData() {
   state.documents = documents;
   state.papers = papers;
   state.experiments = experiments;
+  state.pendingEntries = pendingEntries;
   state.graphStats = graphStats;
   state.entryTemplates = entryTemplates;
   state.ontology = {
@@ -1566,6 +1680,7 @@ function renderAll() {
   renderExperimentsTable();
   renderProviderSettings();
   renderEntryTemplates();
+  renderSavedDrafts();
   route();
 }
 
@@ -1699,6 +1814,7 @@ $$(".sample-dictation").forEach((button) => {
   button.addEventListener("click", () => {
     const sample = sampleDictations[button.dataset.sample];
     if (!sample) return;
+    state.currentSavedEntryId = null;
     $("#entryTemplateSelect").value = sample.template;
     $("#entryDictation").value = sample.text;
     $("#entryDictation").focus();
@@ -1710,6 +1826,18 @@ $("#entryDraftForm").addEventListener("submit", (event) => {
   generateEntryDraft().catch((error) => {
     $("#entryDraftStatus").textContent = `Draft failed: ${error.message}`;
     $("#entryDraftStatus").className = "status-pill";
+  });
+});
+
+$("#saveDraftButton").addEventListener("click", () => {
+  saveCurrentDraft("draft").catch((error) => {
+    $("#entryExportStatus").textContent = `Save failed: ${error.message}`;
+  });
+});
+
+$("#markReadyButton").addEventListener("click", () => {
+  saveCurrentDraft("ready_for_onenote").catch((error) => {
+    $("#entryExportStatus").textContent = `Status update failed: ${error.message}`;
   });
 });
 

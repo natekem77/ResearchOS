@@ -458,6 +458,13 @@ button {
   line-height: 1.25;
 }
 
+.saved-draft-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+}
+
 .record-card p,
 .result p,
 .detail-section p {
@@ -973,6 +980,7 @@ mark {
   .settings-grid,
   .graph-stat-grid,
   .graph-layout,
+  .saved-draft-card,
   .side-nav {
     grid-template-columns: 1fr;
   }

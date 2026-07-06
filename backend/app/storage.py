@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -103,6 +104,23 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_experiments_source_document_id
                     ON experiments(source_document_id);
                 CREATE INDEX IF NOT EXISTS idx_experiments_date ON experiments(date);
+
+                CREATE TABLE IF NOT EXISTS pending_entries (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    experiment_id TEXT,
+                    template TEXT NOT NULL,
+                    structured_json TEXT NOT NULL DEFAULT '{}',
+                    markdown TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_pending_entries_status
+                    ON pending_entries(status);
+                CREATE INDEX IF NOT EXISTS idx_pending_entries_updated_at
+                    ON pending_entries(updated_at);
                 """
             )
 
@@ -411,6 +429,106 @@ class SQLiteStore:
                 connection.execute("DELETE FROM documents WHERE id = ?", (document_id,))
 
         return len(document_ids)
+
+    def save_pending_entry(
+        self,
+        title: str,
+        experiment_id: str | None,
+        template: str,
+        structured: dict[str, Any],
+        markdown: str,
+        status: str = "draft",
+        entry_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a local pending notebook entry draft."""
+
+        resolved_id = entry_id or f"entry:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM pending_entries WHERE id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO pending_entries (
+                        id, title, experiment_id, template, structured_json,
+                        markdown, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        title,
+                        experiment_id,
+                        template,
+                        json.dumps(structured, sort_keys=True),
+                        markdown,
+                        status,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE pending_entries
+                    SET title = ?,
+                        experiment_id = ?,
+                        template = ?,
+                        structured_json = ?,
+                        markdown = ?,
+                        status = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        title,
+                        experiment_id,
+                        template,
+                        json.dumps(structured, sort_keys=True),
+                        markdown,
+                        status,
+                        resolved_id,
+                    ),
+                )
+
+        saved = self.get_pending_entry(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Pending entry was not saved: {resolved_id}")
+        return saved
+
+    def list_pending_entries(self) -> list[dict[str, Any]]:
+        """Return pending notebook-entry drafts."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, title, experiment_id, template, status, created_at, updated_at
+                FROM pending_entries
+                ORDER BY updated_at DESC, created_at DESC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_pending_entry(self, entry_id: str) -> dict[str, Any] | None:
+        """Return one pending notebook-entry draft."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM pending_entries WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        record = dict(row)
+        record["structured"] = json.loads(record.pop("structured_json") or "{}")
+        return record
+
+    def delete_pending_entry(self, entry_id: str) -> bool:
+        """Delete one pending notebook-entry draft."""
+
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM pending_entries WHERE id = ?", (entry_id,))
+        return cursor.rowcount > 0
 
     def _experiment_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Deserialize an experiment row into API-ready fields."""

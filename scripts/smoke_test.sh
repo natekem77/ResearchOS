@@ -45,6 +45,19 @@ request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null
 request GET "/entry-templates" >/dev/null
 request POST "/entries/draft" '{"template":"retinal_organoid","dictation":"Create NK Expt 31. Date today. Researcher Nathan. D18 SAG plus GRKi rescue with 100 nM SAG and 250 nM GRK inhibitor. DMSO control. Readouts SIX6 and BRN3B. Next steps quantify SIX6 intensity.","use_ai":false}' >/dev/null
+SAVED_ENTRY_FILE="$(request POST "/entries/save-draft" '{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1","template":"general_experiment","structured":{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1"},"markdown":"# Smoke Test Pending Entry\n\nLocal pending entry smoke test.","status":"draft"}')"
+request GET "/entries" >/dev/null
+SAVED_ENTRY_ID="$(
+  python3 - "$SAVED_ENTRY_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["id"])
+PY
+)"
+request GET "/entries/$SAVED_ENTRY_ID" >/dev/null
+request DELETE "/entries/$SAVED_ENTRY_ID" >/dev/null
 request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
 
 COMPARE_BODY="$(
