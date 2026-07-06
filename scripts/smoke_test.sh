@@ -43,6 +43,8 @@ request GET "/documents" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null
+request GET "/entry-templates" >/dev/null
+request POST "/entries/draft" '{"template":"retinal_organoid","dictation":"Create NK Expt 31. Date today. Researcher Nathan. D18 SAG plus GRKi rescue with 100 nM SAG and 250 nM GRK inhibitor. DMSO control. Readouts SIX6 and BRN3B. Next steps quantify SIX6 intensity.","use_ai":false}' >/dev/null
 request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
 
 COMPARE_BODY="$(

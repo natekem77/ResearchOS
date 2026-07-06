@@ -228,9 +228,16 @@
                   <p class="eyebrow">Voice-to-entry prototype</p>
                   <h2>New Experiment</h2>
                 </div>
-                <button type="button" id="sampleDictationButton" class="secondary-button">Use sample dictation</button>
               </div>
               <form class="entry-draft-form" id="entryDraftForm">
+                <label for="entryTemplateSelect">Notebook template</label>
+                <select id="entryTemplateSelect"></select>
+                <div class="sample-dictation-row" aria-label="Sample dictation options">
+                  <button type="button" class="secondary-button sample-dictation" data-sample="sag_grki">D1 SAG + GRKi rescue</button>
+                  <button type="button" class="secondary-button sample-dictation" data-sample="bmp4_pulse">BMP4 pulse</button>
+                  <button type="button" class="secondary-button sample-dictation" data-sample="immunostaining">Immunostaining result</button>
+                  <button type="button" class="secondary-button sample-dictation" data-sample="imaging">Imaging session</button>
+                </div>
                 <label for="entryDictation">Dictation / raw notes</label>
                 <textarea id="entryDictation" rows="8" placeholder="Create NK Expt 31. Day 1 SAG plus GRK inhibitor..."></textarea>
                 <div class="entry-actions">

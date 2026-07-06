@@ -89,6 +89,7 @@ Release notes:
 - [docs/V0_1_DEMO_RELEASE_NOTES.md](docs/V0_1_DEMO_RELEASE_NOTES.md)
 - [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md)
 - [docs/UCSD_IT_APPROVAL_REQUEST.md](docs/UCSD_IT_APPROVAL_REQUEST.md)
+- [docs/LAB_NOTE_TEMPLATES.md](docs/LAB_NOTE_TEMPLATES.md)
 
 ## What Works Today
 
@@ -99,6 +100,7 @@ Release notes:
 - Structured experiment extraction.
 - Retinal organoid entity pages for compounds, markers, cell lines, and batches.
 - Knowledge Graph Explorer for connected experiments, papers, protocols, and entities.
+- Lab notebook templates for polished structured entry drafts from dictation.
 - Local literature ingestion for paper notes and PDFs.
 - Scientific research assistant with local fallback answers.
 - Provider status Settings page.

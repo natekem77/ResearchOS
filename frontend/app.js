@@ -8,6 +8,7 @@ const state = {
   providerStatus: null,
   ontology: {},
   graphStats: null,
+  entryTemplates: [],
   lastSync: null,
   searchTerms: [],
   activity: [],
@@ -482,6 +483,19 @@ function renderProviderSettings() {
   ].join("");
 }
 
+function renderEntryTemplates() {
+  const select = $("#entryTemplateSelect");
+  if (!select) return;
+  select.innerHTML = state.entryTemplates.length
+    ? state.entryTemplates
+        .map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`)
+        .join("")
+    : `<option value="general_experiment">General experiment</option>`;
+  if (!select.value) {
+    select.value = "retinal_organoid";
+  }
+}
+
 function renderExperimentsTable() {
   state.selectedExperimentIds = new Set(
     [...state.selectedExperimentIds].filter((id) => state.experiments.some((experiment) => experiment.id === id)),
@@ -596,17 +610,19 @@ function renderEntryDraft(payload) {
   const fields = [
     ["Title", structured.title],
     ["Experiment ID", structured.experiment_id],
-    ["Date", structured.date],
     ["Objective", structured.objective],
+    ["Date", structured.date],
+    ["Researcher", structured.researcher],
     ["Cell line", structured.cell_line],
     ["Organoid batch", structured.organoid_batch],
+    ["Differentiation day", structured.differentiation_day],
     ["Conditions", structured.conditions],
-    ["Treatments", structured.treatments],
-    ["Concentrations", structured.concentrations],
-    ["Timing / differentiation days", structured.timing_differentiation_days],
+    ["Treatment schedule", structured.treatment_schedule],
+    ["Reagents / concentrations", structured.reagents_concentrations],
     ["Controls", structured.controls],
     ["Planned readouts", structured.planned_readouts],
     ["Observations", structured.observations],
+    ["Issues / deviations", structured.issues_deviations],
     ["Next steps", structured.next_steps],
   ];
 
@@ -713,6 +729,7 @@ function previewOneNoteEntry() {
 
 async function generateEntryDraft() {
   const notes = $("#entryDictation").value.trim();
+  const template = $("#entryTemplateSelect").value || "general_experiment";
   if (!notes) {
     $("#entryDraftStatus").textContent = "Enter dictation first";
     return;
@@ -720,7 +737,7 @@ async function generateEntryDraft() {
   $("#entryDraftStatus").textContent = "Generating draft...";
   const payload = await requestJson("/entries/draft", {
     method: "POST",
-    body: JSON.stringify({ dictation: notes }),
+    body: JSON.stringify({ dictation: notes, template }),
   });
   renderEntryDraft(payload);
 }
@@ -1426,7 +1443,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, experiments, compounds, markers, cellLines, organoidBatches, graphStats] = await Promise.all([
+  const [documents, papers, experiments, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/experiments"),
@@ -1435,11 +1452,13 @@ async function refreshData() {
     requestJson("/api/cell-lines"),
     requestJson("/api/organoid-batches"),
     requestJson("/graph/stats"),
+    requestJson("/entry-templates"),
   ]);
   state.documents = documents;
   state.papers = papers;
   state.experiments = experiments;
   state.graphStats = graphStats;
+  state.entryTemplates = entryTemplates;
   state.ontology = {
     compounds,
     markers,
@@ -1463,6 +1482,7 @@ function renderAll() {
   renderProtocols();
   renderExperimentsTable();
   renderProviderSettings();
+  renderEntryTemplates();
   route();
 }
 
@@ -1545,16 +1565,61 @@ $("#loadPapersButton").addEventListener("click", () => {
   });
 });
 
-$("#sampleDictationButton").addEventListener("click", () => {
-  $("#entryDictation").value = (
-    "Create NK Expt 31. Day 1 SAG plus GRK inhibitor. "
-    + "Objective: test whether SAG with GRK inhibitor improves early retinal organoid patterning. "
-    + "Cell line SIX6 reporter iPSC line. Organoid batch RO-NK-31. "
-    + "Treat with 100 nM SAG and 250 nM GRK inhibitor from D18 to D24. "
-    + "DMSO vehicle control. Planned readouts brightfield, SIX6 fluorescence, BRN3B staining at D32. "
-    + "Observed smooth rims in treated wells. Next steps quantify SIX6 intensity and repeat with three organoids per condition."
-  );
-  $("#entryDictation").focus();
+const sampleDictations = {
+  sag_grki: {
+    template: "retinal_organoid",
+    text: (
+      "Create NK Expt 31. Date today. Researcher Nathan. Day 1 SAG plus GRK inhibitor rescue. "
+      + "Objective: test whether SAG with GRKi improves early retinal organoid patterning. "
+      + "Cell line SIX6 reporter iPSC line. Organoid batch RO-NK-31. Differentiation day D18. "
+      + "Treatment schedule: add 100 nM SAG and 250 nM GRK inhibitor from D18 to D24 during media changes. "
+      + "DMSO vehicle control. Planned readouts brightfield, SIX6 fluorescence, BRN3B staining at D32. "
+      + "Observed smooth rims in treated wells. Issues: one well had partial detachment. "
+      + "Next steps quantify SIX6 intensity and repeat with three organoids per condition."
+    ),
+  },
+  bmp4_pulse: {
+    template: "retinal_organoid",
+    text: (
+      "Create BMP4 Expt 12. Researcher Nathan. Objective: test whether a short BMP4 pulse improves retinal vesicle emergence. "
+      + "Cell line SIX6 reporter iPSC line. Organoid batch RO-BMP4-12. Differentiation day D16. "
+      + "Treatment schedule: pulse 1.5 nM BMP4 from D16 to D20, then wash out at media change. "
+      + "Controls: matched no BMP4 control and standard media change control. "
+      + "Planned readouts brightfield morphology, SIX6 reporter intensity, and PAX6 staining. "
+      + "Observations: treated aggregates looked slightly more symmetric. Next steps image again at D24."
+    ),
+  },
+  immunostaining: {
+    template: "immunostaining",
+    text: (
+      "Create stain Expt 08. Researcher Nathan. Immunostaining result for D32 retinal organoids from SAG comparison. "
+      + "Objective: assess progenitor and retinal ganglion cell markers after SAG treatment. "
+      + "Organoid batch RO-SAG-24A. Markers SIX6, BRN3B, DAPI. "
+      + "Conditions: vehicle and SAG-treated. Planned readouts confocal imaging and marker localization. "
+      + "Observations: SIX6 was broad in outer neuroepithelium and BRN3B-positive cells were sparse but organized near the inner surface. "
+      + "Issues: BRN3B background was higher than expected. Next steps repeat with longer blocking and secondary-only control."
+    ),
+  },
+  imaging: {
+    template: "imaging_session",
+    text: (
+      "Create imaging session IS-04. Date today. Researcher Nathan. Objective: capture D24 brightfield and fluorescence overview images. "
+      + "Cell line SIX6 reporter iPSC line. Organoid batch RO-SAG-24A. Differentiation day D24. "
+      + "Conditions: vehicle, SAG, and SAG plus GRKi. Planned readouts brightfield morphology and SIX6 fluorescence. "
+      + "Observations: SAG plus GRKi wells had smoother rims, but one field was out of focus. "
+      + "Issues: autofocus drift on the last plate. Next steps reimage plate two tomorrow and export representative TIFFs."
+    ),
+  },
+};
+
+$$(".sample-dictation").forEach((button) => {
+  button.addEventListener("click", () => {
+    const sample = sampleDictations[button.dataset.sample];
+    if (!sample) return;
+    $("#entryTemplateSelect").value = sample.template;
+    $("#entryDictation").value = sample.text;
+    $("#entryDictation").focus();
+  });
 });
 
 $("#entryDraftForm").addEventListener("submit", (event) => {

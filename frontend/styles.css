@@ -170,6 +170,7 @@ a {
 .mini-chip,
 .compound-chip,
 .settings-link,
+select,
 button {
   border-radius: 8px;
 }
@@ -684,6 +685,12 @@ button {
   align-items: center;
 }
 
+.sample-dictation-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .preview-actions {
   margin: 0 0 12px;
 }
@@ -726,7 +733,8 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -737,6 +745,10 @@ textarea {
 }
 
 input {
+  min-height: 42px;
+}
+
+select {
   min-height: 42px;
 }
 
@@ -753,7 +765,8 @@ textarea {
 }
 
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   border-color: var(--accent);
   outline: 3px solid color-mix(in srgb, var(--accent) 18%, transparent);
 }
@@ -933,6 +946,7 @@ mark {
   .hero-actions,
   .settings-actions,
   .entry-actions,
+  .sample-dictation-row,
   .prompt-row,
   .search-form,
   .chat-form,
@@ -951,6 +965,7 @@ mark {
   .hero-actions,
   .settings-actions,
   .entry-actions,
+  .sample-dictation-row,
   .prompt-row {
     justify-content: stretch;
   }

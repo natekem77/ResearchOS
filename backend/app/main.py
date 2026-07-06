@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
-from app.entry_drafting import draft_entry_from_notes
+from app.entry_drafting import available_entry_templates, draft_entry_from_notes
 from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
@@ -232,7 +232,17 @@ class DraftEntryRequest(BaseModel):
 
     dictation: str | None = None
     notes: str | None = None
+    template: str | None = None
     use_ai: bool = True
+
+
+class EntryTemplateResponse(BaseModel):
+    """Available notebook-entry template metadata."""
+
+    id: str
+    name: str
+    description: str
+    sections: list[str]
 
 
 class DraftEntryResponse(BaseModel):
@@ -240,6 +250,7 @@ class DraftEntryResponse(BaseModel):
 
     structured: dict[str, object]
     markdown: str
+    template: str
     confidence: float
     missing_fields: list[str]
     ai_used: bool
@@ -1071,8 +1082,20 @@ def draft_entry(request: DraftEntryRequest) -> DraftEntryResponse:
     if not notes:
         raise HTTPException(status_code=400, detail="Draft entry dictation or notes must not be empty.")
 
-    draft = draft_entry_from_notes(raw_notes=notes, settings=settings, use_ai=request.use_ai)
+    draft = draft_entry_from_notes(
+        raw_notes=notes,
+        template=request.template,
+        settings=settings,
+        use_ai=request.use_ai,
+    )
     return DraftEntryResponse(**draft.__dict__)
+
+
+@app.get("/entry-templates", response_model=list[EntryTemplateResponse], tags=["entries"])
+def entry_templates() -> list[EntryTemplateResponse]:
+    """Return available reusable lab notebook entry templates."""
+
+    return [EntryTemplateResponse(**template) for template in available_entry_templates()]
 
 
 @app.post("/entries/export-markdown", response_model=ExportMarkdownResponse, tags=["entries"])
