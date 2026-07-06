@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -377,6 +377,8 @@ class DemoStatusResponse(BaseModel):
     experiment_count: int
     papers_loaded: bool
     paper_count: int
+    pending_entry_count: int
+    drafts_ready_for_onenote: int
     assistant_available: bool
     onenote_status: dict[str, object]
     ai_provider_status: dict[str, object]
@@ -406,6 +408,8 @@ class ProviderStatusResponse(BaseModel):
     vector_index: dict[str, object]
     document_count: int
     experiment_count: int
+    pending_entry_count: int
+    drafts_ready_for_onenote: int
 
 
 class GraphEntityResponse(BaseModel):
@@ -550,6 +554,15 @@ def _paper_summary(document: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _safe_markdown_filename(title: str | None, fallback: str = "researchos-entry") -> str:
+    """Build a conservative Markdown filename for local downloads."""
+
+    raw = (title or fallback).strip() or fallback
+    safe = "".join(char.lower() if char.isalnum() else "-" for char in raw)
+    safe = "-".join(part for part in safe.split("-") if part)
+    return f"{safe or fallback}.md"
+
+
 def _ontology() -> dict[str, list[dict[str, object]]]:
     """Build the current local retinal organoid ontology."""
 
@@ -632,11 +645,13 @@ def provider_status() -> ProviderStatusResponse:
     token_status = get_token_status(settings=settings)
     documents: list[dict[str, object]] = []
     experiments_list: list[dict[str, object]] = []
+    pending_entries_list: list[dict[str, object]] = []
     database_status: dict[str, object]
     try:
         store = SQLiteStore(settings=settings)
         documents = store.list_documents()
         experiments_list = store.list_experiments()
+        pending_entries_list = store.list_pending_entries()
         database_status = {
             "status": "active",
             "message": "SQLite local database is active.",
@@ -719,6 +734,10 @@ def provider_status() -> ProviderStatusResponse:
         vector_index=vector_status,
         document_count=len(documents),
         experiment_count=len(experiments_list),
+        pending_entry_count=len(pending_entries_list),
+        drafts_ready_for_onenote=sum(
+            1 for entry in pending_entries_list if entry.get("status") == "ready_for_onenote"
+        ),
     )
 
 
@@ -954,6 +973,7 @@ def demo_status() -> DemoStatusResponse:
     store = SQLiteStore(settings=settings)
     documents_list = store.list_documents()
     experiments_list = store.list_experiments()
+    pending_entries_list = store.list_pending_entries()
     sample_path = str(PROJECT_ROOT / "samples" / "lab_notes")
 
     demo_note_count = 0
@@ -987,6 +1007,10 @@ def demo_status() -> DemoStatusResponse:
         experiment_count=len(experiments_list),
         papers_loaded=paper_count > 0,
         paper_count=paper_count,
+        pending_entry_count=len(pending_entries_list),
+        drafts_ready_for_onenote=sum(
+            1 for entry in pending_entries_list if entry.get("status") == "ready_for_onenote"
+        ),
         assistant_available=True,
         onenote_status={
             "status": onenote_state,
@@ -1157,6 +1181,39 @@ def pending_entries() -> list[PendingEntrySummaryResponse]:
 
     store = SQLiteStore(settings=settings)
     return [PendingEntrySummaryResponse(**entry) for entry in store.list_pending_entries()]
+
+
+@app.get("/entries/{entry_id}/markdown", response_model=ExportMarkdownResponse, tags=["entries"])
+def pending_entry_markdown(entry_id: str) -> ExportMarkdownResponse:
+    """Return one pending entry's Markdown for copy/export workflows."""
+
+    store = SQLiteStore(settings=settings)
+    entry = store.get_pending_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Pending entry not found: {entry_id}")
+
+    return ExportMarkdownResponse(
+        filename=_safe_markdown_filename(str(entry.get("title") or "")),
+        content_type="text/markdown",
+        content=f"{entry['markdown'].rstrip()}\n",
+    )
+
+
+@app.get("/entries/{entry_id}/download", tags=["entries"])
+def download_pending_entry(entry_id: str) -> Response:
+    """Download one pending entry as a Markdown file."""
+
+    store = SQLiteStore(settings=settings)
+    entry = store.get_pending_entry(entry_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Pending entry not found: {entry_id}")
+
+    filename = _safe_markdown_filename(str(entry.get("title") or ""))
+    return Response(
+        content=f"{entry['markdown'].rstrip()}\n",
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/entries/{entry_id}", response_model=PendingEntryResponse, tags=["entries"])

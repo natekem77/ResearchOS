@@ -24,6 +24,7 @@ const views = {
   dashboard: $("#dashboardView"),
   "new-experiment": $("#newExperimentView"),
   "saved-drafts": $("#savedDraftsView"),
+  savedDraftDetail: $("#savedDraftDetailView"),
   experiments: $("#experimentsView"),
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
@@ -178,6 +179,14 @@ function route() {
     return;
   }
 
+  if (view === "saved-drafts" && id) {
+    views.savedDraftDetail.classList.add("active");
+    $("[data-nav='saved-drafts']").classList.add("active");
+    renderSavedDraftDetail(decodeURIComponent(id));
+    setHeader("Saved Drafts", "Draft Export");
+    return;
+  }
+
   if (view === "graph") {
     if (id && rest.length) {
       views.graphDetail.classList.add("active");
@@ -253,6 +262,7 @@ function renderMetrics() {
   $("#metricMarkers").textContent = allMarkers().length;
   $("#metricCellLines").textContent = (state.ontology["cell-lines"] || []).length;
   $("#metricOrganoidBatches").textContent = (state.ontology["organoid-batches"] || []).length;
+  $("#metricReadyDrafts").textContent = state.pendingEntries.filter((entry) => entry.status === "ready_for_onenote").length;
 }
 
 function renderTimeline() {
