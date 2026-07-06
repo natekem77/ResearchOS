@@ -245,6 +245,21 @@ class DraftEntryResponse(BaseModel):
     provider: str
 
 
+class ExportMarkdownRequest(BaseModel):
+    """Markdown export request for a reviewed draft entry."""
+
+    markdown: str
+    filename: str | None = None
+
+
+class ExportMarkdownResponse(BaseModel):
+    """Downloadable Markdown content metadata."""
+
+    filename: str
+    content_type: Literal["text/markdown"]
+    content: str
+
+
 class ExtractRequest(BaseModel):
     """Request body for structured experiment extraction."""
 
@@ -928,6 +943,26 @@ def draft_entry(request: DraftEntryRequest) -> DraftEntryResponse:
 
     draft = draft_entry_from_notes(raw_notes=notes, settings=settings, use_ai=request.use_ai)
     return DraftEntryResponse(**draft.__dict__)
+
+
+@app.post("/entries/export-markdown", response_model=ExportMarkdownResponse, tags=["entries"])
+def export_markdown(request: ExportMarkdownRequest) -> ExportMarkdownResponse:
+    """Return reviewed draft Markdown as local-download content metadata."""
+
+    markdown = request.markdown.strip()
+    if not markdown:
+        raise HTTPException(status_code=400, detail="Markdown content must not be empty.")
+
+    raw_filename = (request.filename or "researchos-entry.md").strip() or "researchos-entry.md"
+    safe_filename = "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in raw_filename)
+    if not safe_filename.endswith(".md"):
+        safe_filename = f"{safe_filename}.md"
+
+    return ExportMarkdownResponse(
+        filename=safe_filename,
+        content_type="text/markdown",
+        content=f"{markdown}\n",
+    )
 
 
 @app.post("/assistant/ask", response_model=AssistantResponse, tags=["ai"])

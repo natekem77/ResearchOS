@@ -10,6 +10,7 @@ const state = {
   lastSync: null,
   searchTerms: [],
   activity: [],
+  currentEntryDraft: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -565,6 +566,7 @@ function formatComparisonValue(value) {
 
 function renderEntryDraft(payload) {
   const structured = payload.structured || {};
+  state.currentEntryDraft = payload;
   const fields = [
     ["Title", structured.title],
     ["Experiment ID", structured.experiment_id],
@@ -586,6 +588,9 @@ function renderEntryDraft(payload) {
     .map(([label, value]) => detailField(label, formatComparisonValue(value)))
     .join("");
   $("#entryMarkdownPreview").textContent = payload.markdown || "No Markdown generated.";
+  $("#oneNoteEntryPreview").hidden = true;
+  $("#oneNoteEntryPreview").innerHTML = "";
+  $("#entryExportStatus").textContent = "";
   $("#entryDraftStatus").textContent = `Confidence ${Math.round((payload.confidence || 0) * 100)}% · ${payload.provider}`;
   $("#entryDraftStatus").className = `status-pill ${(payload.confidence || 0) >= 0.55 ? "ok" : ""}`;
 
@@ -595,6 +600,89 @@ function renderEntryDraft(payload) {
       detailField("Missing fields", payload.missing_fields.join(", ")),
     );
   }
+}
+
+function currentDraftMarkdown() {
+  const markdown = state.currentEntryDraft?.markdown || $("#entryMarkdownPreview").textContent || "";
+  return markdown.includes("Generate a structured entry") ? "" : markdown.trim();
+}
+
+function entryFilename() {
+  const title = state.currentEntryDraft?.structured?.title || "researchos-entry";
+  return `${String(title).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "researchos-entry"}.md`;
+}
+
+async function copyEntryMarkdown() {
+  const markdown = currentDraftMarkdown();
+  if (!markdown) {
+    $("#entryExportStatus").textContent = "Generate a draft before copying Markdown.";
+    return;
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(markdown);
+  } else {
+    const textarea = document.createElement("textarea");
+    textarea.value = markdown;
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+  $("#entryExportStatus").textContent = "Markdown copied locally. OneNote write-back was not used.";
+}
+
+async function downloadEntryMarkdown() {
+  const markdown = currentDraftMarkdown();
+  if (!markdown) {
+    $("#entryExportStatus").textContent = "Generate a draft before downloading Markdown.";
+    return;
+  }
+  const payload = await requestJson("/entries/export-markdown", {
+    method: "POST",
+    body: JSON.stringify({ markdown, filename: entryFilename() }),
+  });
+  const blob = new Blob([payload.content], { type: payload.content_type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = payload.filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  $("#entryExportStatus").textContent = `Downloaded ${payload.filename}. OneNote write-back was not used.`;
+}
+
+function markdownToPreviewHtml(markdown) {
+  return markdown
+    .split("\n")
+    .map((line) => {
+      if (line.startsWith("# ")) return `<h1>${escapeHtml(line.slice(2))}</h1>`;
+      if (line.startsWith("## ")) return `<h2>${escapeHtml(line.slice(3))}</h2>`;
+      if (line.startsWith("- ")) return `<li>${escapeHtml(line.slice(2))}</li>`;
+      if (!line.trim()) return "";
+      return `<p>${escapeHtml(line)}</p>`;
+    })
+    .join("");
+}
+
+function previewOneNoteEntry() {
+  const markdown = currentDraftMarkdown();
+  if (!markdown) {
+    $("#entryExportStatus").textContent = "Generate a draft before previewing the OneNote entry.";
+    return;
+  }
+  const preview = $("#oneNoteEntryPreview");
+  preview.hidden = false;
+  preview.innerHTML = `
+    <div class="provider-card-header">
+      <span>OneNote entry preview</span>
+      <strong class="status-pill">Write-back disabled</strong>
+    </div>
+    <p class="card-copy">This preview shows what would be reviewed before a future OneNote create/write workflow. No OneNote API call was made.</p>
+    <div class="onenote-page-preview">${markdownToPreviewHtml(markdown)}</div>
+  `;
+  $("#entryExportStatus").textContent = "Preview generated locally. Saving to OneNote still requires UCSD approval.";
 }
 
 async function generateEntryDraft() {
@@ -1219,6 +1307,22 @@ $("#entryDraftForm").addEventListener("submit", (event) => {
     $("#entryDraftStatus").textContent = `Draft failed: ${error.message}`;
     $("#entryDraftStatus").className = "status-pill";
   });
+});
+
+$("#copyMarkdownButton").addEventListener("click", () => {
+  copyEntryMarkdown().catch((error) => {
+    $("#entryExportStatus").textContent = `Copy failed: ${error.message}`;
+  });
+});
+
+$("#downloadMarkdownButton").addEventListener("click", () => {
+  downloadEntryMarkdown().catch((error) => {
+    $("#entryExportStatus").textContent = `Download failed: ${error.message}`;
+  });
+});
+
+$("#previewOneNoteButton").addEventListener("click", () => {
+  previewOneNoteEntry();
 });
 
 $("#extractButton").addEventListener("click", () => {

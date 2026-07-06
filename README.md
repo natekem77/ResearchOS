@@ -318,7 +318,16 @@ structured Markdown preview, and disabled **Save to OneNote** placeholder.
 Write-back requires UCSD IT approval and Microsoft Graph permissions such as
 `Notes.Create` or `Notes.ReadWrite`.
 
-See [docs/VOICE_ENTRY_DESIGN.md](docs/VOICE_ENTRY_DESIGN.md).
+Export a reviewed draft as local Markdown:
+
+```bash
+curl -X POST http://127.0.0.1:8001/entries/export-markdown \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"nk-expt-31.md","markdown":"# NK-EXPT-31\n\nReviewed local draft."}'
+```
+
+See [docs/VOICE_ENTRY_DESIGN.md](docs/VOICE_ENTRY_DESIGN.md) and
+[docs/ONENOTE_WRITEBACK_DESIGN.md](docs/ONENOTE_WRITEBACK_DESIGN.md).
 
 ## Retinal Organoid Intelligence
 
@@ -416,6 +425,7 @@ Presentation-ready materials:
 - [AI research assistant](docs/AI_RESEARCH_ASSISTANT.md)
 - [Literature ingestion](docs/LITERATURE_INGESTION.md)
 - [Voice entry design](docs/VOICE_ENTRY_DESIGN.md)
+- [OneNote write-back design](docs/ONENOTE_WRITEBACK_DESIGN.md)
 
 ## Microsoft Graph Auth Setup
 

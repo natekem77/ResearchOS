@@ -34,6 +34,11 @@ delete, or annotate OneNote pages. It will read notebook content that the
 signed-in user is already allowed to access, then index it locally for search and
 experiment extraction.
 
+Optional future write-back, such as saving a reviewed dictated experiment entry
+back to OneNote, is not part of this request. That workflow would require a
+separate approval later for create/write permissions such as `Notes.Create` or
+`Notes.ReadWrite`.
+
 The prototype is local-first. Notebook content is stored on the user's local
 machine in SQLite and a local vector index. No secrets are hardcoded. Tokens and
 configuration values are not committed to source control. Optional cloud AI
@@ -65,6 +70,8 @@ preserving the lab's existing OneNote workflow.
 
 ## Requested Microsoft Graph Permissions
 
+For the read-only MVP:
+
 - `User.Read`: sign in and read basic user profile.
 - `Notes.Read`: read OneNote notebooks and pages available to the user.
 - `openid`: OpenID Connect sign-in.
@@ -72,6 +79,21 @@ preserving the lab's existing OneNote workflow.
 - `offline_access`: refresh delegated access during local development sessions.
 
 No write permissions are requested.
+
+## Optional Future Write-Back
+
+ResearchOS may later support a PI-requested workflow where a researcher dictates
+an experiment, reviews a structured draft, and explicitly saves it to OneNote.
+That is intentionally separate from the read-only MVP.
+
+Future write-back would require separate UCSD IT and lab approval before any
+scope changes. Potential future delegated permissions include:
+
+- `Notes.Create`
+- `Notes.ReadWrite`
+
+ResearchOS should not request those permissions in the current read-only app
+registration.
 
 ## Data Handling And Privacy
 

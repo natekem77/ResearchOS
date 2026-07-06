@@ -215,7 +215,7 @@
                 <div class="entry-actions">
                   <button type="submit">Generate structured entry</button>
                   <button type="button" disabled>Save to OneNote</button>
-                  <span class="muted">requires UCSD IT approval + Notes.ReadWrite</span>
+                  <span class="muted">Write-back is intentionally disabled until UCSD IT approves OneNote create/write permissions.</span>
                 </div>
               </form>
             </article>
@@ -229,7 +229,14 @@
                 <span class="status-pill" id="entryDraftStatus">No draft yet</span>
               </div>
               <div class="detail-grid" id="entryStructuredPreview"></div>
+              <div class="entry-actions preview-actions">
+                <button type="button" id="copyMarkdownButton" class="secondary-button">Copy Markdown</button>
+                <button type="button" id="downloadMarkdownButton" class="secondary-button">Download .md</button>
+                <button type="button" id="previewOneNoteButton" class="secondary-button">Preview OneNote Entry</button>
+              </div>
+              <p class="demo-status" id="entryExportStatus"></p>
               <pre class="markdown-preview" id="entryMarkdownPreview">Generate a structured entry to preview the notebook Markdown.</pre>
+              <div class="onenote-preview" id="oneNoteEntryPreview" hidden></div>
             </article>
           </section>
 

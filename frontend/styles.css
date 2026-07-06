@@ -590,6 +590,10 @@ button {
   align-items: center;
 }
 
+.preview-actions {
+  margin: 0 0 12px;
+}
+
 .markdown-preview {
   min-height: 280px;
   max-height: 520px;
@@ -601,6 +605,30 @@ button {
   background: var(--surface-2);
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+.onenote-preview {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 14px;
+  background: var(--surface-2);
+}
+
+.onenote-page-preview {
+  margin-top: 12px;
+  border-left: 4px solid var(--accent);
+  padding-left: 14px;
+}
+
+.onenote-page-preview h1,
+.onenote-page-preview h2,
+.onenote-page-preview p {
+  margin: 0 0 10px;
+}
+
+.onenote-page-preview li {
+  margin: 4px 0;
 }
 
 input,
