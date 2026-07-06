@@ -24,6 +24,7 @@
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
           <a href="#/literature" data-nav="literature">Literature</a>
+          <a href="#/graph" data-nav="graph">Graph Explorer</a>
           <a href="#/compounds" data-nav="compounds">Compounds</a>
           <a href="#/markers" data-nav="markers">Markers</a>
           <a href="#/cell-lines" data-nav="cell-lines">Cell Lines</a>
@@ -328,6 +329,27 @@
               <p class="demo-status" id="literatureStatus"></p>
               <div class="item-list" id="papersList"></div>
             </article>
+          </section>
+
+          <section class="view" id="graphView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Knowledge Graph</p>
+                  <h2>Graph Explorer</h2>
+                </div>
+                <button type="button" id="refreshGraphButton" class="secondary-button">Refresh graph</button>
+              </div>
+              <div class="graph-stat-grid" id="graphStats"></div>
+              <div class="graph-layout">
+                <div class="graph-canvas" id="graphCanvas"></div>
+                <div class="graph-entity-list" id="graphEntityList"></div>
+              </div>
+            </article>
+          </section>
+
+          <section class="view" id="graphDetailView">
+            <article class="panel" id="graphDetail"></article>
           </section>
 
           <section class="view" id="searchView">

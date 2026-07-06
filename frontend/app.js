@@ -7,6 +7,7 @@ const state = {
   auth: null,
   providerStatus: null,
   ontology: {},
+  graphStats: null,
   lastSync: null,
   searchTerms: [],
   activity: [],
@@ -24,6 +25,8 @@ const views = {
   protocols: $("#protocolsView"),
   documents: $("#documentsView"),
   literature: $("#literatureView"),
+  graph: $("#graphView"),
+  graphDetail: $("#graphDetailView"),
   entityList: $("#entityListView"),
   entityDetail: $("#entityDetailView"),
   search: $("#searchView"),
@@ -59,6 +62,11 @@ function formatDate(value) {
 
 function pathForDocument(documentId) {
   return state.documents.find((document) => document.id === documentId);
+}
+
+function graphEntityLink(type, name, label = name) {
+  if (!name) return "";
+  return `#/graph/${encodeURIComponent(type)}/${encodeURIComponent(name)}`;
 }
 
 async function requestJson(path, options = {}) {
@@ -153,7 +161,7 @@ function newestPaper() {
 function route() {
   const pathView = window.location.pathname.replace(/^\//, "");
   const raw = window.location.hash.replace(/^#\/?/, "") || pathView || "dashboard";
-  const [view, id] = raw.split("/");
+  const [view, id, ...rest] = raw.split("/");
 
   $$(".view").forEach((node) => node.classList.remove("active"));
   $$(".side-nav a").forEach((node) => node.classList.remove("active"));
@@ -163,6 +171,22 @@ function route() {
     $("[data-nav='experiments']").classList.add("active");
     renderExperimentDetail(decodeURIComponent(id));
     setHeader("Experiment Detail", "Experiment record");
+    return;
+  }
+
+  if (view === "graph") {
+    if (id && rest.length) {
+      views.graphDetail.classList.add("active");
+      $("[data-nav='graph']").classList.add("active");
+      const entityName = decodeURIComponent(rest.join("/"));
+      renderGraphEntity(decodeURIComponent(id), entityName);
+      setHeader("Knowledge Graph", entityName);
+      return;
+    }
+    views.graph.classList.add("active");
+    $("[data-nav='graph']").classList.add("active");
+    renderGraphExplorer();
+    setHeader("Knowledge Graph", "Graph Explorer");
     return;
   }
 
@@ -196,6 +220,7 @@ function route() {
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
     literature: ["Literature", "Paper Library"],
+    graph: ["Knowledge Graph", "Graph Explorer"],
     search: ["Search", "Search Research Notes"],
     chat: ["AI Chat", "Ask ResearchOS"],
     settings: ["Settings", "Workspace Settings"],
@@ -286,7 +311,7 @@ function renderPopularCompounds() {
     ? compounds
         .map(
           ([name, count]) =>
-            `<a class="compound-chip" href="#/compounds/${encodeURIComponent(name)}">${escapeHtml(name)} <small>${count}</small></a>`,
+            `<a class="compound-chip" href="${graphEntityLink("compounds", name)}">${escapeHtml(name)} <small>${count}</small></a>`,
         )
         .join("")
     : `<div class="empty-state">No compounds detected.</div>`;
@@ -348,7 +373,7 @@ function renderPapers() {
         .map(
           (paper) => `
             <article class="record-card">
-              <h3>${escapeHtml(paper.title)}</h3>
+              <h3><a href="${graphEntityLink("papers", paper.id, paper.title)}">${escapeHtml(paper.title)}</a></h3>
               <p>${escapeHtml(shortText(paper.abstract || paper.source_path || "No abstract detected.", 260))}</p>
               <div class="meta">
                 ${paper.year ? `<span class="tag">${escapeHtml(paper.year)}</span>` : ""}
@@ -356,8 +381,9 @@ function renderPapers() {
                 ${paper.doi ? `<span class="tag">${escapeHtml(paper.doi)}</span>` : ""}
               </div>
               <div class="meta">
-                ${(paper.compounds || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}
-                ${(paper.markers || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}
+                ${(paper.compounds || []).map((value) => graphChip("compounds", value)).join("")}
+                ${(paper.markers || []).map((value) => graphChip("markers", value)).join("")}
+                ${(paper.genes || []).slice(0, 6).map((value) => graphChip("genes", value)).join("")}
                 ${(paper.methods || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}
               </div>
             </article>
@@ -374,7 +400,7 @@ function renderProtocols() {
         .map(
           (document) => `
             <article class="record-card">
-              <h3>${escapeHtml(document.title)}</h3>
+              <h3><a href="${graphEntityLink("protocols", document.id, document.title)}">${escapeHtml(document.title)}</a></h3>
               <p>${escapeHtml(document.source_path || document.source_id)}</p>
               <div class="meta"><span class="tag">${escapeHtml(document.provider)}</span></div>
             </article>
@@ -477,8 +503,8 @@ function renderExperimentsTable() {
               <td><a href="#/experiments/${encodeURIComponent(experiment.id)}">${escapeHtml(experiment.experiment_id || experiment.id)}</a></td>
               <td>${escapeHtml(formatDate(experiment.date))}</td>
               <td>${escapeHtml(experiment.title)}</td>
-              <td>${(experiment.compounds || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}</td>
-              <td>${(experiment.markers || []).map((value) => `<span class="mini-chip">${escapeHtml(value)}</span>`).join("")}</td>
+              <td>${(experiment.compounds || []).map((value) => graphChip("compounds", value)).join("")}</td>
+              <td>${(experiment.markers || []).map((value) => graphChip("markers", value)).join("")}</td>
               <td>${escapeHtml(experiment.source_provider)}</td>
             </tr>
           `,
@@ -728,7 +754,7 @@ function renderExperimentDetail(experimentId) {
         <p class="eyebrow">${escapeHtml(experiment.experiment_id || experiment.id)}</p>
         <h2>${escapeHtml(experiment.title)}</h2>
       </div>
-      <span class="status-pill ok">${escapeHtml(experiment.source_provider)}</span>
+      <a class="status-pill ok" href="${graphEntityLink("experiments", experiment.id)}">Open graph</a>
     </div>
     <div class="detail-grid">
       ${detailField("Date", formatDate(experiment.date))}
@@ -737,8 +763,8 @@ function renderExperimentDetail(experimentId) {
       ${detailField("Organoid batch", experiment.organoid_batch)}
       ${detailField("Original document", source?.source_path || source?.source_id || experiment.source_document_id)}
     </div>
-    ${tagSection("Compounds", experiment.compounds)}
-    ${tagSection("Markers", experiment.markers)}
+    ${tagSection("Compounds", experiment.compounds, "compounds")}
+    ${tagSection("Markers", experiment.markers, "markers")}
     ${tagSection("Time points", experiment.time_points)}
     ${textSection("Notes", experiment.notes)}
     ${textSection("Conclusions", experiment.conclusions)}
@@ -765,6 +791,7 @@ function renderEntityList(entityType) {
             <a class="entity-card" href="#/${entityType}/${encodeURIComponent(entity.name)}">
               <strong>${escapeHtml(entity.name)}</strong>
               <span>${entity.experiments.length} experiments · ${entity.protocols.length} protocols · ${entity.documents.length} documents</span>
+              <small>Open local graph</small>
             </a>
           `,
         )
@@ -782,6 +809,7 @@ function renderEntityDetail(entityType, name) {
   }
   $("#entityDetail").innerHTML = `
     <a class="inline-link" href="#/${entityType}">Back to ${escapeHtml(entityTitle(entityType))}</a>
+    <a class="inline-link" href="${graphEntityLink(entityType, entity.name)}">Open in Graph Explorer</a>
     <div class="detail-header">
       <div>
         <p class="eyebrow">${escapeHtml(entityTitle(entityType))}</p>
@@ -832,11 +860,237 @@ function detailField(label, value) {
   return `<div class="detail-field"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || "Not captured")}</strong></div>`;
 }
 
-function tagSection(title, values = []) {
+function graphChip(type, value) {
+  return `<a class="mini-chip" href="${graphEntityLink(type, value)}">${escapeHtml(value)}</a>`;
+}
+
+function tagSection(title, values = [], graphType = "") {
   return `
     <section class="detail-section">
       <h3>${escapeHtml(title)}</h3>
-      <div class="tag-row">${values.length ? values.map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("") : `<span class="muted">None captured</span>`}</div>
+      <div class="tag-row">${values.length ? values.map((value) => graphType ? graphChip(graphType, value) : `<span class="tag">${escapeHtml(value)}</span>`).join("") : `<span class="muted">None captured</span>`}</div>
+    </section>
+  `;
+}
+
+function renderGraphExplorer() {
+  const stats = state.graphStats;
+  if (!stats) {
+    $("#graphStats").innerHTML = `<div class="empty-state">Graph statistics are loading.</div>`;
+    $("#graphCanvas").innerHTML = "";
+    $("#graphEntityList").innerHTML = "";
+    return;
+  }
+
+  const entityCounts = stats.entity_counts || {};
+  $("#graphStats").innerHTML = Object.entries(entityCounts).length
+    ? Object.entries(entityCounts)
+        .map(([label, count]) => `<article class="metric-card compact-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(count)}</strong></article>`)
+        .join("")
+    : `<div class="empty-state">No graph entities detected.</div>`;
+
+  renderGraphVisualization(stats);
+  const nodes = (stats.nodes || []).slice(0, 36);
+  $("#graphEntityList").innerHTML = nodes.length
+    ? nodes
+        .map((node) => {
+          const routeType = graphRouteType(node.type);
+          return `
+            <a class="item-link" href="${graphEntityLink(routeType, node.label)}">
+              <strong>${escapeHtml(node.label)}</strong>
+              <span>${escapeHtml(node.type)}</span>
+            </a>
+          `;
+        })
+        .join("")
+    : `<div class="empty-state">Load demo notes to populate the graph.</div>`;
+}
+
+function graphRouteType(nodeType) {
+  return {
+    compound: "compounds",
+    marker: "markers",
+    gene: "genes",
+    paper: "papers",
+    protocol: "protocols",
+    experiment: "experiments",
+    "cell-line": "cell-lines",
+    "organoid-batch": "organoid-batches",
+  }[nodeType] || `${nodeType}s`;
+}
+
+function renderGraphVisualization(stats) {
+  const rawNodes = (stats.nodes || []).slice(0, 55);
+  const rawLinks = (stats.links || []).filter((link) =>
+    rawNodes.some((node) => node.id === link.source) && rawNodes.some((node) => node.id === link.target),
+  ).slice(0, 110);
+  if (!rawNodes.length) {
+    $("#graphCanvas").innerHTML = `<div class="empty-state">No graph data yet.</div>`;
+    return;
+  }
+
+  const width = 720;
+  const height = 430;
+  const nodes = rawNodes.map((node, index) => {
+    const angle = (index / rawNodes.length) * Math.PI * 2;
+    return {
+      ...node,
+      x: width / 2 + Math.cos(angle) * (120 + (index % 5) * 24),
+      y: height / 2 + Math.sin(angle) * (90 + (index % 4) * 22),
+      vx: 0,
+      vy: 0,
+    };
+  });
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+
+  for (let tick = 0; tick < 80; tick += 1) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const dx = a.x - b.x || 0.01;
+        const dy = a.y - b.y || 0.01;
+        const distanceSquared = Math.max(dx * dx + dy * dy, 120);
+        const force = 900 / distanceSquared;
+        a.vx += dx * force;
+        a.vy += dy * force;
+        b.vx -= dx * force;
+        b.vy -= dy * force;
+      }
+    }
+    for (const link of rawLinks) {
+      const a = byId.get(link.source);
+      const b = byId.get(link.target);
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      a.vx += dx * 0.006;
+      a.vy += dy * 0.006;
+      b.vx -= dx * 0.006;
+      b.vy -= dy * 0.006;
+    }
+    for (const node of nodes) {
+      node.vx += (width / 2 - node.x) * 0.004;
+      node.vy += (height / 2 - node.y) * 0.004;
+      node.x = Math.min(width - 28, Math.max(28, node.x + node.vx));
+      node.y = Math.min(height - 28, Math.max(28, node.y + node.vy));
+      node.vx *= 0.72;
+      node.vy *= 0.72;
+    }
+  }
+
+  const colorFor = (type) => ({
+    experiment: "var(--accent)",
+    compound: "#2c7be5",
+    marker: "#b54708",
+    gene: "#7c3aed",
+    paper: "#0f766e",
+    protocol: "#64748b",
+    "cell-line": "#be185d",
+    "organoid-batch": "#15803d",
+  }[type] || "var(--muted)");
+
+  $("#graphCanvas").innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="ResearchOS force-directed knowledge graph">
+      ${rawLinks
+        .map((link) => {
+          const a = byId.get(link.source);
+          const b = byId.get(link.target);
+          if (!a || !b) return "";
+          return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(1)}" />`;
+        })
+        .join("")}
+      ${nodes
+        .map((node) => `
+          <a href="${graphEntityLink(graphRouteType(node.type), node.label)}">
+            <circle cx="${node.x.toFixed(1)}" cy="${node.y.toFixed(1)}" r="${node.type === "experiment" ? 8 : 6}" fill="${colorFor(node.type)}" />
+            <text x="${(node.x + 9).toFixed(1)}" y="${(node.y + 4).toFixed(1)}">${escapeHtml(shortText(node.label, 24))}</text>
+          </a>
+        `)
+        .join("")}
+    </svg>
+  `;
+}
+
+async function renderGraphEntity(entityType, name) {
+  const target = $("#graphDetail");
+  target.innerHTML = `<div class="empty-state">Loading graph entity...</div>`;
+  try {
+    const entity = await requestJson(`/graph/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(name)}`);
+    target.innerHTML = `
+      <a class="inline-link" href="#/graph">Back to Graph Explorer</a>
+      <div class="detail-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(entity.type)}</p>
+          <h2>${escapeHtml(entity.name)}</h2>
+        </div>
+        <span class="status-pill ok">${escapeHtml(entity.relationship_counts.citations || 0)} citations</span>
+      </div>
+      <p class="card-copy">${escapeHtml(entity.overview)}</p>
+      <section class="detail-section">
+        <h3>AI summary</h3>
+        <p>${escapeHtml(entity.ai_summary)}</p>
+      </section>
+      ${relationshipCountGrid(entity.relationship_counts)}
+      ${linkedSection("Related experiments", entity.related_experiments, (experiment) => `
+        <a class="item-link" href="#/experiments/${encodeURIComponent(experiment.id)}">
+          <strong>${escapeHtml(experiment.experiment_id || experiment.title || experiment.id)}</strong>
+          <span>${escapeHtml(formatDate(experiment.date))} · ${escapeHtml(experiment.provider || "unknown")}</span>
+        </a>
+      `)}
+      ${graphTermSection("Related compounds", "compounds", entity.related_compounds)}
+      ${graphTermSection("Related markers", "markers", entity.related_markers)}
+      ${graphTermSection("Related genes", "genes", entity.related_genes)}
+      ${graphTermSection("Related cell lines", "cell-lines", entity.related_cell_lines)}
+      ${graphTermSection("Related batches", "organoid-batches", entity.related_batches)}
+      ${linkedSection("Related papers", entity.related_papers, (paper) => `
+        <a class="item-link" href="${graphEntityLink("papers", paper.id)}">
+          <strong>${escapeHtml(paper.title)}</strong>
+          <span>${escapeHtml([paper.year, paper.journal, paper.doi].filter(Boolean).join(" · ") || "local literature")}</span>
+        </a>
+      `)}
+      ${linkedSection("Related protocols", entity.related_protocols, (protocol) => `
+        <a class="item-link" href="${graphEntityLink("protocols", protocol.id)}">
+          <strong>${escapeHtml(protocol.title)}</strong>
+          <span>${escapeHtml(protocol.source_path || protocol.source_url || protocol.id)}</span>
+        </a>
+      `)}
+      ${linkedSection("Timeline", entity.timeline, (item) => `
+        <article class="timeline-item">
+          <strong>${escapeHtml(item.title)}</strong>
+          <span>${escapeHtml(item.kind)} · ${escapeHtml(formatDate(item.date))}</span>
+        </article>
+      `)}
+      ${linkedSection("Source citations", entity.source_citations, (source) => `
+        <article class="result">
+          <h3>${escapeHtml(source.title)}</h3>
+          <p>${escapeHtml(shortText(source.snippet, 260))}</p>
+          <div class="meta"><span class="tag">${escapeHtml(source.provider || "unknown")}</span></div>
+        </article>
+      `)}
+    `;
+  } catch (error) {
+    target.innerHTML = `<div class="empty-state">Graph entity unavailable: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function relationshipCountGrid(counts = {}) {
+  return `
+    <section class="graph-stat-grid">
+      ${Object.entries(counts)
+        .map(([label, count]) => `<article class="metric-card compact-metric"><span>${escapeHtml(label.replaceAll("_", " "))}</span><strong>${escapeHtml(count)}</strong></article>`)
+        .join("")}
+    </section>
+  `;
+}
+
+function graphTermSection(title, type, values = []) {
+  return `
+    <section class="detail-section">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="tag-row">
+        ${values.length ? values.map((value) => graphChip(type, value)).join("") : `<span class="muted">None linked.</span>`}
+      </div>
     </section>
   `;
 }
@@ -1172,7 +1426,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, experiments, compounds, markers, cellLines, organoidBatches] = await Promise.all([
+  const [documents, papers, experiments, compounds, markers, cellLines, organoidBatches, graphStats] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/experiments"),
@@ -1180,10 +1434,12 @@ async function refreshData() {
     requestJson("/api/markers"),
     requestJson("/api/cell-lines"),
     requestJson("/api/organoid-batches"),
+    requestJson("/graph/stats"),
   ]);
   state.documents = documents;
   state.papers = papers;
   state.experiments = experiments;
+  state.graphStats = graphStats;
   state.ontology = {
     compounds,
     markers,
@@ -1340,6 +1596,12 @@ $("#compareSelectedButton").addEventListener("click", () => {
 $("#ingestPapersButton").addEventListener("click", () => {
   ingestPapers().catch((error) => {
     $("#literatureStatus").textContent = `Paper ingestion failed: ${error.message}`;
+  });
+});
+
+$("#refreshGraphButton").addEventListener("click", () => {
+  refreshData().catch(() => {
+    $("#graphStats").innerHTML = `<div class="empty-state">Graph refresh failed.</div>`;
   });
 });
 

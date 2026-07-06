@@ -74,6 +74,7 @@ For the PI/lab walkthrough, use [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md)
 - Local chunking, vector indexing, and keyword fallback search.
 - Structured experiment extraction.
 - Retinal organoid entity pages for compounds, markers, cell lines, and batches.
+- Knowledge Graph Explorer for connected experiments, papers, protocols, and entities.
 - Local literature ingestion for paper notes and PDFs.
 - Scientific research assistant with local fallback answers.
 - Provider status Settings page.
@@ -219,6 +220,25 @@ curl -X POST http://127.0.0.1:8001/ingest/markdown \
 Then open `http://127.0.0.1:8001` in a browser. The dashboard includes top
 navigation, provider/sync status, sidebar navigation, metrics, recent activity,
 experiments, documents, search, and AI chat when a provider is configured.
+
+## Knowledge Graph Explorer
+
+The dashboard includes a Graph Explorer page at:
+
+```text
+http://127.0.0.1:8001/#/graph
+```
+
+Useful local graph endpoints:
+
+```bash
+curl http://127.0.0.1:8001/graph/stats
+curl http://127.0.0.1:8001/graph/entity/compounds/SAG
+curl http://127.0.0.1:8001/graph/entity/markers/BRN3B
+```
+
+The graph is local-first and derived from SQLite documents, extracted
+experiments, ingested literature, and protocol notes.
 
 ## Provider Status
 

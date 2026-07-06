@@ -17,6 +17,7 @@ from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
+from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
 from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
@@ -365,6 +366,37 @@ class ProviderStatusResponse(BaseModel):
     experiment_count: int
 
 
+class GraphEntityResponse(BaseModel):
+    """Knowledge graph neighborhood for one local ResearchOS entity."""
+
+    type: str
+    name: str
+    overview: str
+    related_experiments: list[dict[str, object]]
+    related_papers: list[dict[str, object]]
+    related_protocols: list[dict[str, object]]
+    related_compounds: list[str]
+    related_markers: list[str]
+    related_cell_lines: list[str]
+    related_batches: list[str]
+    related_genes: list[str]
+    timeline: list[dict[str, object]]
+    ai_summary: str
+    source_citations: list[dict[str, object]]
+    relationship_counts: dict[str, int]
+
+
+class GraphStatsResponse(BaseModel):
+    """Graph-wide entity and relationship statistics."""
+
+    entity_counts: dict[str, int]
+    relationship_counts: dict[str, int]
+    node_count: int
+    edge_count: int
+    nodes: list[dict[str, object]]
+    links: list[dict[str, object]]
+
+
 def _handle_graph_error(exc: Exception) -> HTTPException:
     """Convert provider-level Graph errors into helpful API responses."""
 
@@ -519,6 +551,28 @@ def _ontology_entity(entity_type: str, entity_name: str) -> OntologyEntityRespon
             return OntologyEntityResponse(**entity)
 
     raise HTTPException(status_code=404, detail=f"Ontology entity not found: {entity_name}")
+
+
+@app.get("/graph/stats", response_model=GraphStatsResponse, tags=["graph"])
+def graph_stats() -> GraphStatsResponse:
+    """Return local knowledge graph counts and visualization data."""
+
+    store = SQLiteStore(settings=settings)
+    return GraphStatsResponse(**build_knowledge_graph_stats(store))
+
+
+@app.get("/graph/entity/{entity_type}/{entity_name:path}", response_model=GraphEntityResponse, tags=["graph"])
+def graph_entity(entity_type: str, entity_name: str) -> GraphEntityResponse:
+    """Return a local graph neighborhood for a clickable ResearchOS entity."""
+
+    store = SQLiteStore(settings=settings)
+    try:
+        entity = build_knowledge_graph_entity(store, entity_type, entity_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return GraphEntityResponse(**entity)
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])

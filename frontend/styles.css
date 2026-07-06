@@ -305,6 +305,17 @@ button {
   font-size: clamp(1.5rem, 3vw, 2.1rem);
 }
 
+.compact-metric {
+  min-height: 78px;
+  padding: 12px;
+  box-shadow: none;
+}
+
+.compact-metric strong {
+  margin-top: 8px;
+  font-size: 1.35rem;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -479,6 +490,58 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.graph-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.graph-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 0.9fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.graph-canvas {
+  min-height: 430px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+
+.graph-canvas svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.graph-canvas line {
+  stroke: color-mix(in srgb, var(--muted) 42%, transparent);
+  stroke-width: 1;
+}
+
+.graph-canvas circle {
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+
+.graph-canvas text {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 750;
+  pointer-events: none;
+}
+
+.graph-entity-list {
+  display: grid;
+  gap: 8px;
+  max-height: 430px;
+  overflow: auto;
 }
 
 .entity-grid {
@@ -846,8 +909,14 @@ mark {
   .metric-grid,
   .dashboard-grid,
   .suggested-question-grid,
-  .detail-grid {
+  .detail-grid,
+  .graph-stat-grid,
+  .graph-layout {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .graph-layout {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -868,6 +937,8 @@ mark {
   .suggested-question-grid,
   .detail-grid,
   .settings-grid,
+  .graph-stat-grid,
+  .graph-layout,
   .side-nav {
     grid-template-columns: 1fr;
   }
