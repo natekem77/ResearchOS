@@ -160,6 +160,8 @@ class AssistantResponse(BaseModel):
 
     question: str
     direct_answer: str
+    direct_matches: list[dict[str, object]]
+    related_context: list[dict[str, object]]
     evidence_from_experiments: list[dict[str, object]]
     source_document_citations: list[dict[str, object]]
     extracted_facts: dict[str, list[str]]

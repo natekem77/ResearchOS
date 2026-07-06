@@ -519,7 +519,8 @@ async function runSearch(query, target) {
 
 function renderChatResponse(target, payload) {
   const sources = payload.source_document_citations || payload.sources || [];
-  const evidence = payload.evidence_from_experiments || [];
+  const directMatches = payload.direct_matches || payload.evidence_from_experiments || [];
+  const relatedContext = payload.related_context || [];
   const limitations = payload.limitations_uncertainties || [];
   target.innerHTML = `
     <div class="assistant-answer">
@@ -532,16 +533,36 @@ function renderChatResponse(target, payload) {
       </div>
     </div>
     ${payload.ai_synthesis ? `<div class="assistant-answer"><h3>Synthesis</h3><p>${escapeHtml(payload.ai_synthesis)}</p></div>` : ""}
-    ${evidence.length ? `
+    ${directMatches.length ? `
       <div class="source-list">
-        <h3>Experiment Evidence</h3>
-        ${evidence
+        <h3>Direct Matches</h3>
+        ${directMatches
           .map(
             (experiment) => `
               <article class="result">
                 <h3>${escapeHtml(experiment.experiment_id || experiment.title || experiment.id)}</h3>
                 <p>${escapeHtml(shortText(experiment.conclusions || experiment.notes || "Structured experiment metadata available.", 220))}</p>
                 <div class="meta">
+                  ${(experiment.compounds || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+                  ${(experiment.markers || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+                </div>
+              </article>
+            `,
+          )
+          .join("")}
+      </div>
+    ` : ""}
+    ${relatedContext.length ? `
+      <div class="source-list">
+        <h3>Related Context</h3>
+        ${relatedContext
+          .map(
+            (experiment) => `
+              <article class="result">
+                <h3>${escapeHtml(experiment.experiment_id || experiment.title || experiment.id)}</h3>
+                <p>${escapeHtml(shortText(experiment.conclusions || experiment.notes || "Related structured metadata available.", 220))}</p>
+                <div class="meta">
+                  <span class="tag">related</span>
                   ${(experiment.compounds || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
                   ${(experiment.markers || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
                 </div>

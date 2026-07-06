@@ -253,6 +253,9 @@ entities, and source snippets. If an AI provider is configured, it adds AI
 synthesis. If no AI provider is configured, it still returns a local evidence
 answer.
 
+Entity-specific questions are filtered for direct matches first. For example,
+SAG questions only include SAG experiments unless the user asks for a comparison.
+
 Suggested demo prompts:
 
 - Which experiments used SAG?
