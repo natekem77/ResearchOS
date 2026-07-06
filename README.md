@@ -174,6 +174,28 @@ Then open `http://127.0.0.1:8001` in a browser. The dashboard includes top
 navigation, provider/sync status, sidebar navigation, metrics, recent activity,
 experiments, documents, search, and AI chat when a provider is configured.
 
+## Provider Status
+
+ResearchOS exposes a provider status endpoint for the dashboard Settings page:
+
+```bash
+curl http://127.0.0.1:8001/status/providers
+```
+
+It reports backend health, Markdown demo provider status, Microsoft Graph
+OneNote auth state, OneNote sync availability, AI provider configuration, local
+database status, vector index status, document count, and experiment count.
+
+The Settings page uses this endpoint to show integration cards and actions:
+
+- Load demo notes
+- Sync OneNote
+- Test AI chat
+- Show UCSD IT approval instructions
+
+If OneNote sync is blocked because Microsoft Graph is not connected or UCSD
+tenant approval is still pending, the UI shows the returned message directly.
+
 ## Retinal Organoid Intelligence
 
 ResearchOS now builds a retinal organoid ontology from provider-agnostic

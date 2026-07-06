@@ -3,6 +3,7 @@ const state = {
   experiments: [],
   health: null,
   auth: null,
+  providerStatus: null,
   ontology: {},
   lastSync: null,
   searchTerms: [],
@@ -96,10 +97,14 @@ function setHeader(viewName, title) {
 }
 
 function setStatus() {
-  const providerText = state.auth?.authenticated ? "OneNote connected" : "Markdown local";
+  const oneNoteStatus = state.providerStatus?.onenote_auth?.status;
+  const providerText = oneNoteStatus === "connected" ? "OneNote connected" : "Markdown local";
   $("#providerStatus").textContent = `Provider: ${providerText}`;
   $("#providerStatus").className = `status-pill ${state.health ? "ok" : "warn"}`;
-  $("#syncStatus").textContent = state.lastSync
+  const syncStatus = state.providerStatus?.onenote_sync?.status;
+  $("#syncStatus").textContent = syncStatus === "available"
+    ? "Sync: OneNote ready"
+    : state.lastSync
     ? `Sync: ${state.lastSync.toLocaleTimeString()}`
     : "Sync: not loaded";
 }
@@ -253,6 +258,78 @@ function renderProtocols() {
         )
         .join("")
     : `<div class="empty-state">No protocols detected yet.</div>`;
+}
+
+function statusLabel(status) {
+  return {
+    active: "Active",
+    ok: "Active",
+    connected: "Connected",
+    configured: "Configured",
+    available: "Available",
+    not_connected: "Not connected",
+    auth_required: "Not connected",
+    pending_ucsd_approval: "Pending UCSD approval",
+    not_configured: "Not configured",
+    error: "Error",
+  }[status] || String(status || "Unknown");
+}
+
+function statusClass(status) {
+  return ["active", "ok", "connected", "configured", "available"].includes(status) ? "ok" : "warn";
+}
+
+function providerCard(title, status, message, meta = "") {
+  return `
+    <article class="provider-card">
+      <div class="provider-card-header">
+        <span>${escapeHtml(title)}</span>
+        <strong class="status-pill ${statusClass(status)}">${escapeHtml(statusLabel(status))}</strong>
+      </div>
+      <p>${escapeHtml(message || "")}</p>
+      ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+    </article>
+  `;
+}
+
+function renderProviderSettings() {
+  const status = state.providerStatus;
+  if (!status) {
+    $("#providerCards").innerHTML = `<div class="empty-state">Provider status is not available.</div>`;
+    return;
+  }
+
+  $("#providerCards").innerHTML = [
+    providerCard(
+      "Markdown demo provider",
+      status.markdown_provider.status,
+      status.markdown_provider.message,
+      `${status.document_count} documents indexed`,
+    ),
+    providerCard(
+      "OneNote provider",
+      status.onenote_auth.status,
+      status.onenote_auth.message,
+      `Sync: ${statusLabel(status.onenote_sync.status)}`,
+    ),
+    providerCard(
+      "AI provider",
+      status.ai_provider.status,
+      status.ai_provider.message,
+      status.ai_provider.configured ? `${status.ai_provider.provider} / ${status.ai_provider.model}` : "",
+    ),
+    providerCard(
+      "Local database",
+      status.database.status,
+      status.database.message,
+      `${status.experiment_count} experiments indexed`,
+    ),
+    providerCard(
+      "Vector index",
+      status.vector_index.status,
+      status.vector_index.message,
+    ),
+  ].join("");
 }
 
 function renderExperimentsTable() {
@@ -524,6 +601,11 @@ async function loadStatus() {
   } catch (error) {
     state.auth = null;
   }
+  try {
+    state.providerStatus = await requestJson("/status/providers");
+  } catch (error) {
+    state.providerStatus = null;
+  }
   setStatus();
 }
 
@@ -557,14 +639,20 @@ function renderAll() {
   renderDocuments();
   renderProtocols();
   renderExperimentsTable();
+  renderProviderSettings();
   route();
 }
 
 async function loadDemo() {
   $("#demoStatus").textContent = "Loading demo notes...";
   const result = await requestJson("/demo/reset", { method: "POST" });
+  await loadStatus();
   await refreshData();
   $("#demoStatus").textContent = `Loaded ${result.documents_ingested} notes and ${result.experiments_extracted} experiments.`;
+  const settingsStatus = $("#settingsActionStatus");
+  if (settingsStatus) {
+    settingsStatus.textContent = `Loaded ${result.documents_ingested} demo notes.`;
+  }
 }
 
 async function extractExperiments() {
@@ -577,6 +665,40 @@ async function extractExperiments() {
   $("#demoStatus").textContent = `Scanned ${result.documents_scanned} documents and extracted ${result.experiments_extracted} experiments.`;
 }
 
+async function syncOneNoteFromSettings() {
+  const target = $("#settingsActionStatus");
+  target.textContent = "Starting read-only OneNote sync...";
+  try {
+    const result = await requestJson("/sync/onenote", { method: "POST" });
+    await loadStatus();
+    await refreshData();
+    target.textContent = `Synced ${result.documents_ingested} OneNote pages and extracted ${result.experiments_extracted} experiments.`;
+  } catch (error) {
+    await loadStatus();
+    renderProviderSettings();
+    target.textContent = `OneNote sync failed: ${error.message}`;
+  }
+}
+
+async function testAiFromSettings() {
+  const target = $("#settingsActionStatus");
+  target.textContent = "Testing AI chat...";
+  try {
+    const payload = await requestJson("/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        message: "Reply with one short sentence confirming ResearchOS AI chat is configured.",
+        use_search_context: false,
+      }),
+    });
+    target.textContent = `AI provider responded: ${shortText(payload.answer, 180)}`;
+  } catch (error) {
+    await loadStatus();
+    renderProviderSettings();
+    target.textContent = `AI test failed: ${error.message}`;
+  }
+}
+
 $("#loadDemoButton").addEventListener("click", () => {
   loadDemo().catch((error) => {
     $("#demoStatus").textContent = `Demo load failed: ${error.message}`;
@@ -587,6 +709,25 @@ $("#extractButton").addEventListener("click", () => {
   extractExperiments().catch((error) => {
     $("#demoStatus").textContent = `Extraction failed: ${error.message}`;
   });
+});
+
+$("#settingsLoadDemoButton").addEventListener("click", () => {
+  loadDemo().catch((error) => {
+    $("#settingsActionStatus").textContent = `Demo load failed: ${error.message}`;
+  });
+});
+
+$("#settingsSyncOneNoteButton").addEventListener("click", () => {
+  syncOneNoteFromSettings();
+});
+
+$("#settingsTestAiButton").addEventListener("click", () => {
+  testAiFromSettings();
+});
+
+$("#settingsApprovalButton").addEventListener("click", () => {
+  const approvalInfo = $("#approvalInfo");
+  approvalInfo.hidden = !approvalInfo.hidden;
 });
 
 bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchResults");

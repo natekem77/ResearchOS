@@ -393,6 +393,70 @@ button {
   font-size: 0.88rem;
 }
 
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.provider-card {
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 14px;
+  background: var(--surface-2);
+}
+
+.provider-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.provider-card-header span {
+  font-weight: 850;
+}
+
+.provider-card p {
+  margin: 10px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.provider-card small {
+  display: block;
+  margin-top: 10px;
+  color: var(--muted);
+  font-weight: 750;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.settings-message,
+.approval-note {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 13px;
+  color: var(--muted);
+  background: var(--surface-2);
+  line-height: 1.5;
+}
+
+.approval-note h3,
+.approval-note p {
+  margin: 0;
+}
+
+.approval-note p {
+  margin-top: 8px;
+}
+
 .compound-chip small {
   margin-left: 6px;
   color: var(--muted);
@@ -580,17 +644,20 @@ mark {
 
   .topbar-status,
   .hero-actions,
+  .settings-actions,
   .search-form,
   .chat-form,
   .metric-grid,
   .dashboard-grid,
   .detail-grid,
+  .settings-grid,
   .side-nav {
     grid-template-columns: 1fr;
   }
 
   .topbar-status,
-  .hero-actions {
+  .hero-actions,
+  .settings-actions {
     justify-content: stretch;
   }
 

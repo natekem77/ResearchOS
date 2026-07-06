@@ -202,6 +202,20 @@ class OntologyEntityResponse(BaseModel):
     ai_summaries: list[dict[str, object]]
 
 
+class ProviderStatusResponse(BaseModel):
+    """Current status of local and external ResearchOS providers."""
+
+    backend: dict[str, object]
+    markdown_provider: dict[str, object]
+    onenote_auth: dict[str, object]
+    onenote_sync: dict[str, object]
+    ai_provider: dict[str, object]
+    database: dict[str, object]
+    vector_index: dict[str, object]
+    document_count: int
+    experiment_count: int
+
+
 def _handle_graph_error(exc: Exception) -> HTTPException:
     """Convert provider-level Graph errors into helpful API responses."""
 
@@ -277,6 +291,19 @@ def _ontology() -> dict[str, list[dict[str, object]]]:
     return build_retinal_ontology(experiments=experiments, documents=documents)
 
 
+def _ai_provider_configured() -> bool:
+    """Return whether chat has enough provider settings to attempt a call."""
+
+    provider = settings.ai_provider.lower().strip()
+    if provider in {"", "none"}:
+        return False
+    if not settings.ai_base_url.strip() or not settings.ai_model.strip():
+        return False
+    if settings.ai_base_url.startswith("https://") and not settings.ai_api_key.strip():
+        return False
+    return True
+
+
 def _ontology_entities(entity_type: str) -> list[OntologyEntityResponse]:
     """Return linked ontology entities for a known entity type."""
 
@@ -306,6 +333,103 @@ def health() -> HealthResponse:
 
     logger.debug("Health check requested.")
     return HealthResponse(status="ok", project="ResearchOS")
+
+
+@app.get("/status/providers", response_model=ProviderStatusResponse, tags=["system"])
+def provider_status() -> ProviderStatusResponse:
+    """Return integration and local provider status for the dashboard."""
+
+    token_status = get_token_status(settings=settings)
+    documents: list[dict[str, object]] = []
+    experiments_list: list[dict[str, object]] = []
+    database_status: dict[str, object]
+    try:
+        store = SQLiteStore(settings=settings)
+        documents = store.list_documents()
+        experiments_list = store.list_experiments()
+        database_status = {
+            "status": "active",
+            "message": "SQLite local database is active.",
+            "path": str(store.path),
+        }
+    except Exception as exc:
+        logger.warning("Provider status database check failed: %s", exc)
+        database_status = {
+            "status": "error",
+            "message": f"SQLite database check failed: {exc}",
+        }
+
+    try:
+        ChromaVectorIndex(settings=settings)
+        vector_status = {
+            "status": "active",
+            "message": "Local vector index is active.",
+        }
+    except Exception as exc:
+        logger.warning("Provider status vector index check failed: %s", exc)
+        vector_status = {
+            "status": "error",
+            "message": f"Vector index check failed: {exc}",
+        }
+
+    if token_status.authenticated:
+        onenote_state = "connected"
+        onenote_message = "Microsoft Graph is connected for this local session."
+        sync_state = "available"
+        sync_message = "Read-only OneNote sync can run."
+    elif settings.microsoft_client_id.strip():
+        onenote_state = "not_connected"
+        onenote_message = "Microsoft Graph is configured but not connected. Use /auth/login."
+        sync_state = "auth_required"
+        sync_message = "Connect Microsoft Graph before syncing OneNote."
+    else:
+        onenote_state = "pending_ucsd_approval"
+        onenote_message = "OneNote integration is pending UCSD IT approval or app registration."
+        sync_state = "pending_ucsd_approval"
+        sync_message = "UCSD tenant approval is needed before real OneNote sync."
+
+    ai_configured = _ai_provider_configured()
+
+    return ProviderStatusResponse(
+        backend={
+            "status": "ok",
+            "project": "ResearchOS",
+            "message": "Backend API is healthy.",
+        },
+        markdown_provider={
+            "status": "active",
+            "message": "Local Markdown demo provider is active.",
+            "sample_path": str(PROJECT_ROOT / "samples" / "lab_notes"),
+        },
+        onenote_auth={
+            "status": onenote_state,
+            "authenticated": token_status.authenticated,
+            "expires_at": token_status.expires_at,
+            "scopes": token_status.scopes,
+            "message": onenote_message,
+        },
+        onenote_sync={
+            "status": sync_state,
+            "available": token_status.authenticated,
+            "read_only": True,
+            "message": sync_message,
+        },
+        ai_provider={
+            "status": "configured" if ai_configured else "not_configured",
+            "configured": ai_configured,
+            "provider": settings.ai_provider,
+            "model": settings.ai_model if ai_configured else None,
+            "message": (
+                "AI chat provider is configured."
+                if ai_configured
+                else "AI chat is not configured. Search still works locally."
+            ),
+        },
+        database=database_status,
+        vector_index=vector_status,
+        document_count=len(documents),
+        experiment_count=len(experiments_list),
+    )
 
 
 @app.get("/api/compounds", response_model=list[OntologyEntityResponse], tags=["ontology"])

@@ -260,27 +260,18 @@
                   <h2>Settings</h2>
                 </div>
               </div>
-              <div class="settings-grid">
-                <div>
-                  <span>OneNote integration</span>
-                  <strong>Pending UCSD IT approval</strong>
-                </div>
-                <div>
-                  <span>Markdown demo provider</span>
-                  <strong>Active</strong>
-                </div>
-                <div>
-                  <span>ResearchOS core</span>
-                  <strong>Working locally</strong>
-                </div>
-                <div>
-                  <span>AI provider</span>
-                  <strong>OpenAI-compatible via environment</strong>
-                </div>
-                <div>
-                  <span>Storage</span>
-                  <strong>SQLite + ChromaDB local-first</strong>
-                </div>
+              <div class="settings-grid" id="providerCards"></div>
+              <div class="settings-actions">
+                <button type="button" id="settingsLoadDemoButton">Load demo notes</button>
+                <button type="button" id="settingsSyncOneNoteButton" class="secondary-button">Sync OneNote</button>
+                <button type="button" id="settingsTestAiButton" class="secondary-button">Test AI chat</button>
+                <button type="button" id="settingsApprovalButton" class="secondary-button">IT approval info</button>
+              </div>
+              <div class="settings-message" id="settingsActionStatus"></div>
+              <div class="approval-note" id="approvalInfo" hidden>
+                <h3>UCSD IT approval</h3>
+                <p>OneNote sync requires a Microsoft Entra app approved for UCSD with delegated read-only permissions: User.Read, Notes.Read, openid, profile, and offline_access.</p>
+                <p>Use docs/UCSD_IT_APPROVAL_REQUEST.md for the copy/paste email and approval package.</p>
               </div>
             </article>
           </section>
