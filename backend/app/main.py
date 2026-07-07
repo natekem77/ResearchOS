@@ -1,6 +1,8 @@
 """FastAPI entrypoint for the ResearchOS backend."""
 
 import logging
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -1465,12 +1467,42 @@ def _asset_with_link_info(
 
 
 def _timeline_timestamp(*values: object) -> str:
-    """Return the first useful timestamp-like value for timeline ordering."""
+    """Return the first useful timestamp as a readable ISO-like value."""
 
     for value in values:
-        if value:
-            return str(value)
+        normalized = _normalize_timeline_timestamp(value)
+        if normalized:
+            return normalized
     return "unknown"
+
+
+def _normalize_timeline_timestamp(value: object) -> str | None:
+    """Normalize Unix, SQLite, and date-only timestamps for API output."""
+
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if raw.lower() in {"unknown", "none", "null"}:
+        return None
+
+    if re.fullmatch(r"\d{10,13}", raw):
+        timestamp = int(raw)
+        if len(raw) == 13:
+            timestamp = timestamp // 1000
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(raw, pattern)
+        except ValueError:
+            continue
+        if pattern == "%Y-%m-%d":
+            return parsed.date().isoformat()
+        return parsed.isoformat(timespec="seconds")
+
+    return raw.replace(" ", "T", 1) if re.match(r"^\d{4}-\d{2}-\d{2} ", raw) else raw
 
 
 def _timeline_sort_key(event: dict[str, object]) -> str:
@@ -1489,8 +1521,7 @@ def _experiment_timeline(
     """Build a unified local timeline for one experiment."""
 
     events: list[dict[str, object]] = []
-    experiment_reference = str(experiment["id"])
-    human_reference = str(experiment.get("experiment_id") or "")
+    experiment_references = _experiment_reference_aliases(experiment)
 
     events.append(
         {
@@ -1530,12 +1561,12 @@ def _experiment_timeline(
 
     for entry in store.list_pending_entries():
         entry_experiment_id = str(entry.get("experiment_id") or "")
-        if entry_experiment_id not in {experiment_reference, human_reference}:
+        if entry_experiment_id not in experiment_references:
             continue
         events.append(
             {
                 "timestamp": _timeline_timestamp(entry.get("updated_at"), entry.get("created_at")),
-                "event_type": "notebook_entry",
+                "event_type": "pending_entry",
                 "title": str(entry.get("title") or "Pending notebook entry"),
                 "description": f"Local ResearchOS draft entry with status {entry.get('status') or 'draft'}.",
                 "source": "pending_entries",
@@ -1590,16 +1621,16 @@ def _asset_timeline_event_type(asset: dict[str, object], has_statistics: bool) -
     """Map asset metadata to a timeline event type."""
 
     if has_statistics:
-        return "statistics_asset"
+        return "statistics_result"
     asset_type = str(asset.get("asset_type") or "other")
     if asset_type in {"image", "microscopy"}:
-        return "image"
+        return "image_asset"
     if asset_type == "pdf":
-        return "pdf"
+        return "literature_reference" if asset.get("provider") == "literature" else "pdf_asset"
     if asset_type == "literature":
         return "literature_reference"
     if asset_type == "graphpad":
-        return "graphpad_asset"
+        return "graphpad_analysis"
     return f"{asset_type}_asset"
 
 
@@ -1612,14 +1643,42 @@ def _asset_timeline_description(
     if isinstance(statistics, dict):
         variables = ", ".join(str(value) for value in statistics.get("variables", []) if value)
         groups = ", ".join(str(value) for value in statistics.get("group_names", []) if value)
+        p_values = ", ".join(str(value) for value in statistics.get("p_values", []) if value is not None)
         tests = ", ".join(str(value) for value in statistics.get("statistical_tests", []) if value)
-        parts = [part for part in [variables, groups, tests] if part]
+        parts = []
+        if variables:
+            parts.append(f"variables {variables}")
+        if groups:
+            parts.append(f"groups {groups}")
+        if p_values:
+            parts.append(f"p-values {p_values}")
+        if tests:
+            parts.append(f"test {tests}")
         return f"Parsed GraphPad CSV statistics: {'; '.join(parts)}." if parts else "Parsed GraphPad CSV statistics."
 
     return (
         f"{asset.get('asset_type') or 'Asset'} file {asset.get('filename') or ''} "
         f"registered from {asset.get('provider') or 'local'}."
     ).strip()
+
+
+def _experiment_reference_aliases(experiment: dict[str, object]) -> set[str]:
+    """Return internal and human experiment references visible in a record."""
+
+    candidates = [
+        str(experiment.get("id") or ""),
+        str(experiment.get("experiment_id") or ""),
+        str(experiment.get("title") or ""),
+        str(experiment.get("notes") or ""),
+        str(experiment.get("conclusions") or ""),
+    ]
+    aliases = {value for value in candidates if value and not value.startswith("None")}
+    haystack = " ".join(candidates)
+    for match in re.finditer(r"(?:^|[^A-Za-z0-9])NK[_-]?Expt[_-]?(\d+)(?=$|[^A-Za-z0-9])", haystack, flags=re.IGNORECASE):
+        aliases.add(f"NK_Expt_{match.group(1)}")
+    for match in re.finditer(r"(?:^|[^A-Za-z0-9])EXP[_-]?(\d+)(?=$|[^A-Za-z0-9])", haystack, flags=re.IGNORECASE):
+        aliases.add(f"EXP_{match.group(1)}")
+    return aliases
 
 
 @app.get("/providers/graphpad/status", response_model=GraphPadStatusResponse, tags=["providers"])

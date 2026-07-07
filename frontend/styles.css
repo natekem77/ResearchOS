@@ -446,6 +446,51 @@ button {
   line-height: 1.5;
 }
 
+.timeline-item-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.event-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 7px;
+  padding: 0 8px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  font-size: 0.74rem;
+  font-weight: 850;
+}
+
+.event-statistics_result {
+  color: #7a4a00;
+  background: #fff1c7;
+}
+
+.event-graphpad_analysis {
+  color: #6d28d9;
+  background: #ede9fe;
+}
+
+.event-image_asset {
+  color: #075985;
+  background: #e0f2fe;
+}
+
+.event-literature_reference {
+  color: #0f766e;
+  background: #ccfbf1;
+}
+
+.event-pending_entry {
+  color: #854d0e;
+  background: #fef3c7;
+}
+
 .item-link span,
 .record-card p,
 .result p,

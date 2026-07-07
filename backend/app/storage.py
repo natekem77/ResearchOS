@@ -682,10 +682,7 @@ class SQLiteStore:
     def list_assets_for_experiment(self, experiment: dict[str, Any]) -> list[dict[str, Any]]:
         """Return assets linked by internal or human experiment reference."""
 
-        references = [str(experiment["id"])]
-        human_id = experiment.get("experiment_id")
-        if human_id:
-            references.append(str(human_id))
+        references = sorted(_experiment_asset_references(experiment))
 
         placeholders = ", ".join("?" for _ in references)
         with self._connect() as connection:
@@ -792,3 +789,22 @@ class SQLiteStore:
         record = dict(row)
         record["metadata"] = json.loads(record.pop("metadata_json") or "{}")
         return record
+
+
+def _experiment_asset_references(experiment: dict[str, Any]) -> set[str]:
+    """Return internal and human experiment references for asset matching."""
+
+    candidates = [
+        str(experiment.get("id") or ""),
+        str(experiment.get("experiment_id") or ""),
+        str(experiment.get("title") or ""),
+        str(experiment.get("notes") or ""),
+        str(experiment.get("conclusions") or ""),
+    ]
+    references = {value for value in candidates if value and not value.startswith("None")}
+    haystack = " ".join(candidates)
+    for match in re.finditer(r"(?:^|[^A-Za-z0-9])NK[_-]?Expt[_-]?(\d+)(?=$|[^A-Za-z0-9])", haystack, flags=re.IGNORECASE):
+        references.add(f"NK_Expt_{match.group(1)}")
+    for match in re.finditer(r"(?:^|[^A-Za-z0-9])EXP[_-]?(\d+)(?=$|[^A-Za-z0-9])", haystack, flags=re.IGNORECASE):
+        references.add(f"EXP_{match.group(1)}")
+    return references

@@ -365,6 +365,21 @@ function renderRecentExperimentTimeline() {
     : `<div class="empty-state">No experiment timeline events yet.</div>`;
 }
 
+function timelineBadge(eventType) {
+  const type = String(eventType || "event");
+  const label = {
+    notebook_entry: "Notebook",
+    extracted_experiment: "Experiment",
+    graphpad_analysis: "GraphPad",
+    statistics_result: "Statistics",
+    image_asset: "Image",
+    literature_reference: "Literature",
+    pending_entry: "Draft",
+    pdf_asset: "PDF",
+  }[type] || type.replaceAll("_", " ");
+  return `<span class="event-badge event-${escapeHtml(type)}">${escapeHtml(label)}</span>`;
+}
+
 function renderRecentExperiments() {
   $("#recentExperiments").innerHTML = state.experiments.length
     ? state.experiments
@@ -1439,8 +1454,11 @@ async function loadExperimentTimeline(experimentId) {
     target.innerHTML = (timeline.events || []).length
       ? timeline.events.map((event) => `
         <article class="timeline-item">
-          <strong>${escapeHtml(event.title)}</strong>
-          <span>${escapeHtml(formatDate(event.timestamp))} · ${escapeHtml(event.event_type)} · ${escapeHtml(event.source)}</span>
+          <div class="timeline-item-header">
+            ${timelineBadge(event.event_type)}
+            <strong>${escapeHtml(event.title)}</strong>
+          </div>
+          <span>${escapeHtml(formatDate(event.timestamp))} · ${escapeHtml(event.source)}</span>
           <p>${escapeHtml(event.description)}</p>
           <div class="meta">
             ${(event.linked_asset_ids || []).map((assetId) => `<a class="mini-chip" href="#/assets/${encodeURIComponent(assetId)}">${escapeHtml(assetId)}</a>`).join("")}

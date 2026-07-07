@@ -22,6 +22,16 @@ Each event contains:
 - `linked_asset_ids`
 - `linked_document_ids`
 
+Event types used by the current UI:
+
+- `notebook_entry`
+- `extracted_experiment`
+- `graphpad_analysis`
+- `statistics_result`
+- `image_asset`
+- `literature_reference`
+- `pending_entry`
+
 ## Event Sources
 
 The timeline currently includes:
@@ -36,6 +46,44 @@ The timeline currently includes:
 
 Events are sorted chronologically using the best available timestamp. Unknown
 timestamps are placed at the end.
+
+Timestamps are normalized into readable ISO-style values when possible. Unix
+timestamps, SQLite timestamps such as `2026-07-07 01:32:42`, and date-only
+values are all converted before returning the timeline.
+
+## Examples
+
+Example extracted experiment event:
+
+```json
+{
+  "timestamp": "2026-07-07T01:32:42",
+  "event_type": "extracted_experiment",
+  "title": "SAG rescue experiment",
+  "description": "Structured experiment extracted from markdown.",
+  "source": "markdown",
+  "linked_asset_ids": [],
+  "linked_document_ids": ["doc:example"]
+}
+```
+
+Example GraphPad statistics event:
+
+```json
+{
+  "timestamp": "2026-07-07T01:40:11",
+  "event_type": "statistics_result",
+  "title": "NK Expt 31 SIX6 BRN3B stats",
+  "description": "Parsed GraphPad CSV statistics: variables SIX6, BRN3B; groups DMSO, SAG, SAG + GRKi; p-values 0.018, 0.006; test one-way ANOVA with Tukey correction.",
+  "source": "graphpad",
+  "linked_asset_ids": ["asset:example"],
+  "linked_document_ids": []
+}
+```
+
+Assets linked to human experiment IDs, such as `NK_Expt_31`, are included when
+that human ID matches the extracted experiment record or appears in the
+extracted experiment title, notes, or conclusions.
 
 ## UI
 
