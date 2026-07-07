@@ -97,6 +97,39 @@ def _paper_summary(document: dict[str, Any]) -> dict[str, object]:
     }
 
 
+def _asset_markers(asset: dict[str, Any]) -> list[str]:
+    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    raw_markers = metadata.get("markers") if isinstance(metadata, dict) else []
+    if isinstance(raw_markers, list):
+        return _unique([str(marker) for marker in raw_markers if str(marker).strip()])
+    if isinstance(raw_markers, str):
+        return _unique([marker.strip() for marker in raw_markers.split(",") if marker.strip()])
+    return []
+
+
+def _is_image_asset(asset: dict[str, Any]) -> bool:
+    return str(asset.get("provider") or "") == "microscopy" or str(asset.get("asset_type") or "") in {
+        "image",
+        "microscopy",
+    }
+
+
+def _image_asset_summary(asset: dict[str, Any]) -> dict[str, object]:
+    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    return {
+        "asset_id": asset.get("asset_id"),
+        "asset_type": asset.get("asset_type"),
+        "title": asset.get("title"),
+        "filename": asset.get("filename"),
+        "provider": asset.get("provider"),
+        "path": asset.get("path"),
+        "experiment_id": asset.get("experiment_id"),
+        "markers": _asset_markers(asset),
+        "timepoint": metadata.get("timepoint") if isinstance(metadata, dict) else None,
+        "updated_at": asset.get("updated_at"),
+    }
+
+
 def _experiment_summary(experiment: dict[str, Any]) -> dict[str, object]:
     return {
         "id": experiment["id"],
@@ -255,6 +288,7 @@ def build_knowledge_graph_entity(store: SQLiteStore, entity_type: str, entity_na
     documents = [document.__dict__ for document in store.get_all_research_documents()]
     documents_by_id = {document["id"]: document for document in documents}
     experiments = store.list_experiments()
+    assets = store.list_assets()
 
     matched_experiments = []
     matched_documents = []
@@ -279,6 +313,15 @@ def build_knowledge_graph_entity(store: SQLiteStore, entity_type: str, entity_na
         if "protocol" in _document_text(document).lower()
     ]
     related_experiments = [_experiment_summary(experiment) for experiment in matched_experiments]
+    related_images = []
+    if normalized_type in {"markers", "genes"}:
+        key_name = _normalize(entity_name)
+        related_images = [
+            _image_asset_summary(asset)
+            for asset in assets
+            if _is_image_asset(asset)
+            and any(_normalize(marker) == key_name for marker in _asset_markers(asset))
+        ]
 
     related_terms = {"compounds": [], "markers": [], "genes": [], "cell_lines": [], "batches": []}
     for experiment in matched_experiments:
@@ -311,6 +354,15 @@ def build_knowledge_graph_entity(store: SQLiteStore, entity_type: str, entity_na
                 str(document.get("id")),
             )
         )
+    for image in related_images:
+        timeline.append(
+            _timeline_item(
+                "image",
+                str(image.get("title") or image.get("filename") or "Microscopy image"),
+                image.get("updated_at"),
+                str(image.get("asset_id") or ""),
+            )
+        )
     timeline = sorted(timeline, key=lambda item: str(item.get("date") or ""), reverse=True)[:20]
 
     citations = [_citation(document, entity_name) for document in matched_documents[:12]]
@@ -323,10 +375,11 @@ def build_knowledge_graph_entity(store: SQLiteStore, entity_type: str, entity_na
         "genes": len(related_terms["genes"]),
         "cell_lines": len(related_terms["cell_lines"]),
         "batches": len(related_terms["batches"]),
+        "images": len(related_images),
         "citations": len(citations),
     }
 
-    if not related_experiments and not related_papers and not related_protocols and not citations:
+    if not related_experiments and not related_papers and not related_protocols and not related_images and not citations:
         raise LookupError(f"Graph entity not found: {entity_type}/{entity_name}")
 
     return {
@@ -341,6 +394,7 @@ def build_knowledge_graph_entity(store: SQLiteStore, entity_type: str, entity_na
         "related_cell_lines": related_terms["cell_lines"],
         "related_batches": related_terms["batches"],
         "related_genes": related_terms["genes"],
+        "related_images": related_images,
         "timeline": timeline,
         "ai_summary": _ai_summary(entity_name, related_experiments, related_papers, related_protocols),
         "source_citations": citations,

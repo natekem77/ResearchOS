@@ -542,19 +542,39 @@ function renderImages() {
   const target = $("#imagesList");
   if (!target) return;
   const images = microscopyImageAssets();
+  const markerFilter = $("#imageMarkerFilter");
+  const selectedMarker = markerFilter?.value || "";
+  if (markerFilter) {
+    const markers = [...new Set(images.flatMap((asset) => asset.metadata?.markers || []))].sort();
+    const previous = markerFilter.value;
+    markerFilter.innerHTML = `<option value="">All markers</option>${markers
+      .map((marker) => `<option value="${escapeHtml(marker)}">${escapeHtml(marker)}</option>`)
+      .join("")}`;
+    markerFilter.value = markers.includes(previous) ? previous : selectedMarker;
+  }
+  const filteredImages = selectedMarker
+    ? images.filter((asset) => (asset.metadata?.markers || []).some((marker) => marker.toLowerCase() === selectedMarker.toLowerCase()))
+    : images;
   target.innerHTML = images.length
-    ? images.map((asset) => `
-      <article class="record-card">
-        <h3><a href="#/assets/${encodeURIComponent(asset.asset_id)}">${escapeHtml(asset.title)}</a></h3>
-        <p>${escapeHtml(asset.filename)} · ${escapeHtml(asset.experiment_id || "No experiment reference")}</p>
-        <div class="meta">
-          <span class="tag">${escapeHtml(asset.asset_type)}</span>
-          <span class="tag">${escapeHtml(asset.metadata?.timepoint || "No timepoint")}</span>
-          ${(asset.metadata?.markers || []).map((marker) => `<span class="tag">${escapeHtml(marker)}</span>`).join("")}
-        </div>
-      </article>
-    `).join("")
+    ? filteredImages.length
+      ? filteredImages.map(renderImageAssetCard).join("")
+      : `<div class="empty-state">No images match this marker filter.</div>`
     : `<div class="empty-state">No microscopy/image assets registered yet. Scan image folders to import sample image metadata.</div>`;
+}
+
+function renderImageAssetCard(asset) {
+  return `
+    <article class="record-card">
+      <h3><a href="#/assets/${encodeURIComponent(asset.asset_id)}">${escapeHtml(asset.title || asset.filename || "Image")}</a></h3>
+      <p>${escapeHtml(asset.filename)} · ${escapeHtml(asset.experiment_id || "No experiment reference")}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(asset.provider || "microscopy")}</span>
+        <span class="tag">${escapeHtml(asset.asset_type || "image")}</span>
+        <span class="tag">${escapeHtml(asset.metadata?.timepoint || asset.timepoint || "No timepoint")}</span>
+        ${(asset.metadata?.markers || asset.markers || []).map((marker) => `<a class="mini-chip" href="#/markers/${encodeURIComponent(marker)}">${escapeHtml(marker)}</a>`).join("")}
+      </div>
+    </article>
+  `;
 }
 
 function renderAssetDetail(assetId) {
@@ -1426,6 +1446,9 @@ function renderExperimentDetail(experimentId) {
     return;
   }
   const source = pathForDocument(experiment.source_document_id);
+  const imageAssets = (experiment.linked_assets || []).filter(
+    (asset) => asset.provider === "microscopy" || ["image", "microscopy"].includes(asset.asset_type),
+  );
   $("#experimentDetail").innerHTML = `
     <a class="inline-link" href="#/experiments">Back to experiments</a>
     <div class="detail-header">
@@ -1459,6 +1482,7 @@ function renderExperimentDetail(experimentId) {
           <span>${escapeHtml((asset.metadata?.statistics?.variables || []).join(", "))} · ${escapeHtml((asset.metadata?.statistics?.statistical_tests || []).join(", "))}</span>
         </a>
       `)}
+      ${linkedSection("Images", imageAssets, renderImageAssetCard)}
       ${tagSection("Compounds", experiment.compounds, "compounds")}
       ${tagSection("Markers", experiment.markers, "markers")}
       ${tagSection("Time points", experiment.time_points)}
@@ -1577,7 +1601,7 @@ function renderEntityDetail(entityType, name) {
         <p>${escapeHtml(document.source_path || document.source_url || document.id)}</p>
       </article>
     `)}
-    ${linkedSection("Images", entity.images, (image) => `<article class="record-card"><h3>${escapeHtml(image.title || "Image")}</h3></article>`)}
+    ${linkedSection("Images", entity.images, renderImageAssetCard)}
     ${linkedSection("AI summaries", entity.ai_summaries, (summary) => `
       <article class="record-card">
         <h3>${escapeHtml(summary.title || "Summary")}</h3>
@@ -1785,6 +1809,7 @@ async function renderGraphEntity(entityType, name) {
       ${graphTermSection("Related genes", "genes", entity.related_genes)}
       ${graphTermSection("Related cell lines", "cell-lines", entity.related_cell_lines)}
       ${graphTermSection("Related batches", "organoid-batches", entity.related_batches)}
+      ${linkedSection("Related images", entity.related_images || [], renderImageAssetCard)}
       ${linkedSection("Related papers", entity.related_papers, (paper) => `
         <a class="item-link" href="${graphEntityLink("papers", paper.id)}">
           <strong>${escapeHtml(paper.title)}</strong>
@@ -2443,6 +2468,7 @@ $("#settingsApprovalButton").addEventListener("click", () => {
 
 $("#assetTypeFilter")?.addEventListener("change", renderAssets);
 $("#assetSearchInput")?.addEventListener("input", renderAssets);
+$("#imageMarkerFilter")?.addEventListener("change", renderImages);
 $("#scanGraphPadButton")?.addEventListener("click", () => {
   scanGraphPadAssets().catch((error) => {
     $("#graphPadScanStatus").textContent = `GraphPad scan failed: ${error.message}`;

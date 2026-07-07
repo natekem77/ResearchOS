@@ -596,6 +596,7 @@ class GraphEntityResponse(BaseModel):
     related_cell_lines: list[str]
     related_batches: list[str]
     related_genes: list[str]
+    related_images: list[dict[str, object]] = Field(default_factory=list)
     timeline: list[dict[str, object]]
     ai_summary: str
     source_citations: list[dict[str, object]]
@@ -739,7 +740,15 @@ def _ontology() -> dict[str, list[dict[str, object]]]:
     store = SQLiteStore(settings=settings)
     experiments = store.list_experiments()
     documents = [document.__dict__ for document in store.get_all_research_documents()]
-    return build_retinal_ontology(experiments=experiments, documents=documents)
+    ontology = build_retinal_ontology(experiments=experiments, documents=documents)
+    image_assets = [
+        _asset_with_link_info(store, asset)
+        for asset in microscopy_assets(settings=settings)
+    ]
+    for entity in ontology.get("markers", []):
+        marker = str(entity.get("name") or "")
+        entity["images"] = _image_assets_for_marker(image_assets, marker)
+    return ontology
 
 
 def _ai_provider_configured() -> bool:
@@ -1498,6 +1507,55 @@ def _asset_with_link_info(
     }
 
 
+def _is_microscopy_asset(asset: dict[str, object]) -> bool:
+    """Return whether an asset is a microscopy/image record."""
+
+    return str(asset.get("provider") or "") == "microscopy" or str(asset.get("asset_type") or "") in {
+        "image",
+        "microscopy",
+    }
+
+
+def _asset_markers(asset: dict[str, object]) -> list[str]:
+    """Read marker names from image asset metadata."""
+
+    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    raw_markers = metadata.get("markers") if isinstance(metadata, dict) else []
+    if isinstance(raw_markers, list):
+        return [str(marker) for marker in raw_markers if str(marker).strip()]
+    if isinstance(raw_markers, str):
+        return [marker.strip() for marker in raw_markers.split(",") if marker.strip()]
+    return []
+
+
+def _image_assets_for_marker(
+    assets: list[dict[str, object]],
+    marker: str,
+) -> list[dict[str, object]]:
+    """Return microscopy/image assets whose filename metadata includes a marker."""
+
+    marker_key = marker.lower()
+    return [
+        asset
+        for asset in assets
+        if _is_microscopy_asset(asset)
+        and any(image_marker.lower() == marker_key for image_marker in _asset_markers(asset))
+    ]
+
+
+def _image_assets_for_experiment_reference(
+    store: SQLiteStore,
+    experiment_reference: str,
+) -> list[dict[str, object]]:
+    """Return microscopy assets exactly linked to a human/internal experiment reference."""
+
+    return [
+        _asset_with_link_info(store, asset)
+        for asset in store.list_assets(experiment_id=experiment_reference)
+        if _is_microscopy_asset(asset)
+    ]
+
+
 def _timeline_timestamp(*values: object) -> str:
     """Return the first useful timestamp as a readable ISO-like value."""
 
@@ -1649,6 +1707,38 @@ def _experiment_timeline(
     }
 
 
+def _virtual_experiment_timeline(
+    store: SQLiteStore,
+    experiment_reference: str,
+) -> dict[str, object]:
+    """Build a timeline for a human experiment ID that only has linked assets."""
+
+    events = []
+    for asset in store.list_assets(experiment_id=experiment_reference):
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        statistics = metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else None
+        asset_type = str(asset.get("asset_type") or "other")
+        events.append(
+            {
+                "timestamp": _timeline_timestamp(asset.get("updated_at"), asset.get("created_at")),
+                "event_type": _asset_timeline_event_type(asset, statistics is not None),
+                "title": str(asset.get("title") or asset.get("filename") or "Research asset"),
+                "description": _asset_timeline_description(asset, statistics),
+                "source": str(asset.get("provider") or asset_type),
+                "linked_asset_ids": [str(asset.get("asset_id"))],
+                "linked_document_ids": [],
+            }
+        )
+
+    events.sort(key=_timeline_sort_key)
+    return {
+        "experiment_id": experiment_reference,
+        "human_experiment_id": experiment_reference,
+        "title": f"Timeline for {experiment_reference}",
+        "events": events,
+    }
+
+
 def _asset_timeline_event_type(asset: dict[str, object], has_statistics: bool) -> str:
     """Map asset metadata to a timeline event type."""
 
@@ -1687,6 +1777,21 @@ def _asset_timeline_description(
         if tests:
             parts.append(f"test {tests}")
         return f"Parsed GraphPad CSV statistics: {'; '.join(parts)}." if parts else "Parsed GraphPad CSV statistics."
+
+    if _is_microscopy_asset(asset):
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        markers = ", ".join(_asset_markers(asset))
+        timepoint = str(metadata.get("timepoint") or "") if isinstance(metadata, dict) else ""
+        details = [
+            f"filename {asset.get('filename') or ''}",
+            f"provider {asset.get('provider') or 'microscopy'}",
+            f"path {asset.get('path') or ''}",
+        ]
+        if timepoint:
+            details.insert(1, f"timepoint {timepoint}")
+        if markers:
+            details.insert(2 if timepoint else 1, f"markers {markers}")
+        return f"Microscopy/image asset: {'; '.join(details)}."
 
     return (
         f"{asset.get('asset_type') or 'Asset'} file {asset.get('filename') or ''} "
@@ -1809,6 +1914,18 @@ def images() -> list[AssetResponse]:
         AssetResponse(**_asset_with_link_info(store, asset))
         for asset in microscopy_assets(settings=settings)
     ]
+
+
+@app.get("/images/by-marker/{marker}", response_model=list[AssetResponse], tags=["images"])
+def images_by_marker(marker: str) -> list[AssetResponse]:
+    """Return registered microscopy/image assets that mention a marker."""
+
+    store = SQLiteStore(settings=settings)
+    assets = [
+        _asset_with_link_info(store, asset)
+        for asset in microscopy_assets(settings=settings)
+    ]
+    return [AssetResponse(**asset) for asset in _image_assets_for_marker(assets, marker)]
 
 
 @app.get("/assets", response_model=list[AssetResponse], tags=["assets"])
@@ -1946,8 +2063,28 @@ def experiment_timeline(experiment_id: str) -> ExperimentTimelineResponse:
     store = SQLiteStore(settings=settings)
     experiment = store.find_experiment_by_reference(experiment_id)
     if experiment is None:
-        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+        assets = store.list_assets(experiment_id=experiment_id)
+        if not assets:
+            raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+        return ExperimentTimelineResponse(**_virtual_experiment_timeline(store, experiment_id))
     return ExperimentTimelineResponse(**_experiment_timeline(store, experiment))
+
+
+@app.get("/experiments/{experiment_id}/images", response_model=list[AssetResponse], tags=["experiments"])
+def experiment_images(experiment_id: str) -> list[AssetResponse]:
+    """Return microscopy/image assets linked to an extracted or human experiment ID."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        assets = _image_assets_for_experiment_reference(store, experiment_id)
+    else:
+        assets = [
+            _asset_with_link_info(store, asset)
+            for asset in store.list_assets_for_experiment(experiment)
+            if _is_microscopy_asset(asset)
+        ]
+    return [AssetResponse(**asset) for asset in assets]
 
 
 @app.get("/experiments/{experiment_id}", response_model=ExperimentResponse, tags=["experiments"])

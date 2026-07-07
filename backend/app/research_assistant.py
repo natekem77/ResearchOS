@@ -8,7 +8,7 @@ from typing import Any
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import Settings, get_settings
-from app.retinal_ontology import build_retinal_ontology
+from app.retinal_ontology import KNOWN_MARKERS, build_retinal_ontology
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -352,6 +352,63 @@ def _source_citations(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return citations
 
 
+def _asset_markers(asset: dict[str, Any]) -> list[str]:
+    """Read marker names from microscopy asset metadata."""
+
+    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    raw_markers = metadata.get("markers") if isinstance(metadata, dict) else []
+    if isinstance(raw_markers, list):
+        return [str(marker) for marker in raw_markers if str(marker).strip()]
+    if isinstance(raw_markers, str):
+        return [marker.strip() for marker in raw_markers.split(",") if marker.strip()]
+    return []
+
+
+def _is_microscopy_asset(asset: dict[str, Any]) -> bool:
+    """Return whether an asset is an image/microscopy record."""
+
+    return str(asset.get("provider") or "") == "microscopy" or str(asset.get("asset_type") or "") in {
+        "image",
+        "microscopy",
+    }
+
+
+def _image_asset_summary(asset: dict[str, Any]) -> dict[str, Any]:
+    """Return assistant-friendly image asset metadata."""
+
+    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    return {
+        "asset_id": asset.get("asset_id"),
+        "title": asset.get("title"),
+        "filename": asset.get("filename"),
+        "provider": asset.get("provider"),
+        "path": asset.get("path"),
+        "experiment_id": asset.get("experiment_id"),
+        "markers": _asset_markers(asset),
+        "timepoint": metadata.get("timepoint") if isinstance(metadata, dict) else None,
+    }
+
+
+def _relevant_image_assets(question: str, store: SQLiteStore) -> list[dict[str, Any]]:
+    """Return microscopy assets relevant to image/staining/marker questions."""
+
+    lower_question = question.lower()
+    marker_terms = [marker for marker in KNOWN_MARKERS if re.search(rf"\b{re.escape(marker)}\b", question, re.I)]
+    asks_about_images = bool(re.search(r"\b(image|images|microscopy|staining|stain|imaging)\b", lower_question))
+    if not marker_terms and not asks_about_images:
+        return []
+
+    image_assets = [asset for asset in store.list_assets() if _is_microscopy_asset(asset)]
+    if marker_terms:
+        marker_keys = {marker.lower() for marker in marker_terms}
+        image_assets = [
+            asset
+            for asset in image_assets
+            if any(marker.lower() in marker_keys for marker in _asset_markers(asset))
+        ]
+    return [_image_asset_summary(asset) for asset in image_assets[:8]]
+
+
 def _literature_context(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return retrieved literature chunks separately from lab notebook evidence."""
 
@@ -444,11 +501,13 @@ def _local_direct_answer(
     related_evidence: list[dict[str, Any]],
     facts: dict[str, list[str]],
     intent: QueryIntent,
+    image_assets: list[dict[str, Any]] | None = None,
 ) -> str:
     """Create a deterministic local answer when no AI provider is configured."""
 
     lower_question = question.lower()
-    if not direct_evidence and not related_evidence:
+    image_assets = image_assets or []
+    if not direct_evidence and not related_evidence and not image_assets:
         return (
             "I did not find matching structured experiments in the local ResearchOS data. "
             "Try loading demo notes or syncing a notebook, then ask again."
@@ -469,7 +528,10 @@ def _local_direct_answer(
             if item.get("experiment_id") or item.get("title")
         ]
         scope = f" containing {entity_text}" if entity_text and direct_evidence else ""
-        return f"I found {len(names)} experiment(s){scope}: {', '.join(names)}."
+        image_note = ""
+        if image_assets:
+            image_note = f" I also found {len(image_assets)} relevant microscopy/image asset(s)."
+        return f"I found {len(names)} experiment(s){scope}: {', '.join(names)}.{image_note}"
 
     if "compare" in lower_question:
         titles = [str(item.get("title")) for item in evidence if item.get("title")]
@@ -487,7 +549,14 @@ def _local_direct_answer(
                 summaries.append(f"{label}: {summary}")
         if summaries:
             scope = f" for {entity_text}" if entity_text and direct_evidence else ""
-            return f"I found {len(summaries)} direct result(s){scope}. " + " ".join(summaries)
+            image_note = ""
+            if image_assets:
+                labels = [
+                    f"{asset.get('filename')} ({', '.join(asset.get('markers') or []) or 'no marker metadata'})"
+                    for asset in image_assets[:4]
+                ]
+                image_note = f" Relevant microscopy/image assets: {'; '.join(labels)}."
+            return f"I found {len(summaries)} direct result(s){scope}. " + " ".join(summaries) + image_note
 
     compounds = facts.get("compounds", [])
     markers = facts.get("markers", [])
@@ -499,6 +568,12 @@ def _local_direct_answer(
         pieces.append(f"Compounds mentioned: {', '.join(compounds)}.")
     if markers:
         pieces.append(f"Markers mentioned: {', '.join(markers)}.")
+    if image_assets:
+        labels = [
+            f"{asset.get('filename')} ({', '.join(asset.get('markers') or []) or 'no marker metadata'})"
+            for asset in image_assets[:4]
+        ]
+        pieces.append(f"Relevant microscopy/image assets: {'; '.join(labels)}.")
     return " ".join(pieces)
 
 
@@ -507,10 +582,12 @@ def _local_synthesis(
     related_evidence: list[dict[str, Any]],
     citations: list[dict[str, Any]],
     facts: dict[str, list[str]],
+    image_assets: list[dict[str, Any]] | None = None,
 ) -> str:
     """Summarize retrieved evidence without calling an AI provider."""
 
     lines = []
+    image_assets = image_assets or []
     if direct_evidence:
         lines.append("Direct experiment matches:")
         for item in direct_evidence:
@@ -538,6 +615,16 @@ def _local_synthesis(
         for citation in citations[:3]:
             lines.append(f"- {citation['citation']} {citation.get('title')}: {citation.get('snippet')}")
 
+    if image_assets:
+        lines.append("Relevant microscopy/image assets:")
+        for asset in image_assets:
+            markers = ", ".join(asset.get("markers") or [])
+            timepoint = asset.get("timepoint") or "no timepoint"
+            lines.append(
+                f"- {asset.get('filename')}: experiment={asset.get('experiment_id') or 'unlinked'}; "
+                f"timepoint={timepoint}; markers={markers or 'not detected'}"
+            )
+
     if not lines:
         facts_text = ", ".join(f"{key}: {', '.join(values)}" for key, values in facts.items() if values)
         return facts_text or "No local evidence was retrieved."
@@ -552,6 +639,7 @@ def _assistant_prompt(
     literature: list[dict[str, Any]],
     facts: dict[str, list[str]],
     entities: dict[str, list[dict[str, Any]]],
+    image_assets: list[dict[str, Any]],
 ) -> str:
     """Build a structured prompt for optional AI synthesis."""
 
@@ -563,7 +651,8 @@ def _assistant_prompt(
         f"Source citations:\n{citations}\n\n"
         f"Literature context:\n{literature}\n\n"
         f"Extracted facts:\n{facts}\n\n"
-        f"Ontology entities:\n{entities}"
+        f"Ontology entities:\n{entities}\n\n"
+        f"Microscopy/image assets:\n{image_assets}"
     )
 
 
@@ -595,11 +684,19 @@ def ask_research_assistant(
 
     direct_matches = _experiment_evidence(direct_experiments, relevance="direct")
     related_context = _experiment_evidence(related_experiments, relevance="related")
+    image_assets = _relevant_image_assets(clean_question, store)
     evidence = direct_matches + related_context
     citations = _source_citations(sources)
     facts = _extracted_facts(direct_experiments or related_experiments, relevant_entities)
-    local_answer = _local_direct_answer(clean_question, direct_matches, related_context, facts, intent)
-    local_synthesis = _local_synthesis(direct_matches, related_context, citations, facts)
+    local_answer = _local_direct_answer(
+        clean_question,
+        direct_matches,
+        related_context,
+        facts,
+        intent,
+        image_assets,
+    )
+    local_synthesis = _local_synthesis(direct_matches, related_context, citations, facts, image_assets)
     limitations = [
         "This answer is based only on documents currently ingested into local ResearchOS storage.",
         "Regex-based experiment extraction may miss fields that are phrased unusually.",
@@ -615,7 +712,15 @@ def ask_research_assistant(
         try:
             provider = get_ai_provider(settings=resolved_settings)
             ai_synthesis = provider.chat(
-                _assistant_prompt(clean_question, evidence, citations, literature, facts, relevant_entities)
+                _assistant_prompt(
+                    clean_question,
+                    evidence,
+                    citations,
+                    literature,
+                    facts,
+                    relevant_entities,
+                    image_assets,
+                )
             )
             ai_used = True
             provider_name = provider.provider_name

@@ -52,7 +52,27 @@ This registers a microscopy asset linked to `NK_Expt_31` with markers
 curl http://127.0.0.1:8001/providers/images/status
 curl -X POST http://127.0.0.1:8001/providers/images/scan
 curl http://127.0.0.1:8001/images
+curl http://127.0.0.1:8001/images/by-marker/SIX6
+curl http://127.0.0.1:8001/experiments/NK_Expt_31/images
+curl http://127.0.0.1:8001/experiments/NK_Expt_31/timeline
 ```
+
+## Timeline, Graph, and Assistant Integration
+
+Scanned image assets are now connected to the rest of ResearchOS by filename
+metadata:
+
+- Experiment timelines include microscopy/image events inferred from
+  `experiment_id`, including unresolved human IDs such as `NK_Expt_31`.
+- Timeline image events expose filename, provider, path, markers, and timepoint.
+- Marker graph pages include related image assets. For example, the `SIX6`
+  graph entity shows images whose filename metadata includes `SIX6`.
+- The local assistant fallback mentions relevant image assets when the question
+  asks about images, microscopy, staining, or known retinal markers.
+
+This is intentionally metadata-only. ResearchOS is not interpreting image
+content yet; it is organizing files and linking them to experiments so future
+image analysis has a stable asset graph to attach to.
 
 ## Future Work
 
