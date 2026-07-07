@@ -188,8 +188,13 @@ function route() {
   if (view === "experiments" && id) {
     views.experimentDetail.classList.add("active");
     $("[data-nav='experiments']").classList.add("active");
-    renderExperimentDetail(decodeURIComponent(id));
-    setHeader("Experiment Detail", "Experiment record");
+    if (rest[0] === "workspace") {
+      renderExperimentWorkspace(decodeURIComponent(id));
+      setHeader("Experiment Workspace", "Unified research record");
+    } else {
+      renderExperimentDetail(decodeURIComponent(id));
+      setHeader("Experiment Detail", "Experiment record");
+    }
     return;
   }
 
@@ -1616,7 +1621,10 @@ function renderExperimentDetail(experimentId) {
         <p class="eyebrow">${escapeHtml(experiment.experiment_id || experiment.id)}</p>
         <h2>${escapeHtml(experiment.title)}</h2>
       </div>
-      <a class="status-pill ok" href="${graphEntityLink("experiments", experiment.id)}">Open graph</a>
+      <div class="prompt-row">
+        <a class="status-pill ok" href="#/experiments/${encodeURIComponent(experiment.id)}/workspace">Open workspace</a>
+        <a class="status-pill ok" href="${graphEntityLink("experiments", experiment.id)}">Open graph</a>
+      </div>
     </div>
     <div class="tab-row" role="tablist" aria-label="Experiment detail tabs">
       <button type="button" class="tab-button active" data-experiment-tab="overview">Overview</button>
@@ -1657,6 +1665,166 @@ function renderExperimentDetail(experimentId) {
   `;
   bindExperimentDetailTabs();
   loadExperimentTimeline(experiment.id);
+}
+
+async function renderExperimentWorkspace(experimentId) {
+  const target = $("#experimentDetail");
+  target.innerHTML = `<div class="empty-state">Loading experiment workspace...</div>`;
+  try {
+    const workspace = await requestJson(`/experiments/${encodeURIComponent(experimentId)}/workspace?use_ai=false`);
+    const experiment = workspace.experiment || {};
+    const summary = workspace.ai_summary || {};
+    target.innerHTML = `
+      <a class="inline-link" href="#/experiments/${encodeURIComponent(experiment.id || experimentId)}">Back to experiment detail</a>
+      <div class="detail-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(experiment.experiment_id || experiment.id || experimentId)}</p>
+          <h2>${escapeHtml(experiment.title || "Experiment Workspace")}</h2>
+        </div>
+        <span class="status-pill ok">Workspace</span>
+      </div>
+      <section class="detail-section">
+        <h3>AI Summary</h3>
+        <p>${escapeHtml(summary.text || "No workspace summary available.")}</p>
+        <div class="meta"><span class="tag">${escapeHtml(summary.provider || "local-fallback")}</span></div>
+      </section>
+      <div class="detail-grid">
+        ${detailField("Date", formatDate(experiment.date))}
+        ${detailField("Researcher", experiment.researcher)}
+        ${detailField("Cell line", experiment.cell_line)}
+        ${detailField("Organoid batch", experiment.organoid_batch)}
+      </div>
+      ${tagSection("Compounds", workspace.compounds || [], "compounds")}
+      ${tagSection("Markers", workspace.markers || [], "markers")}
+      ${tagSection("Genes", workspace.genes || [], "genes")}
+      ${workspaceSection("Timeline", workspace.timeline?.events || [], renderWorkspaceTimelineEvent)}
+      ${workspaceSection("Microscopy / Images", workspace.microscopy || [], renderImageAssetCard)}
+      ${workspaceSection("GraphPad Analyses", workspace.graphpad || [], renderWorkspaceAsset)}
+      ${workspaceSection("Spreadsheets", workspace.spreadsheets || [], renderWorkspaceSpreadsheet)}
+      ${workspaceSection("Statistics", workspace.statistics || [], renderWorkspaceStatistic)}
+      ${workspaceSection("Literature", workspace.literature || [], renderWorkspaceDocument)}
+      ${workspaceSection("Connected Experiments", workspace.related_experiments || [], renderWorkspaceExperiment)}
+      ${workspaceSection("Related Entities", workspace.related_entities || [], renderWorkspaceEntity)}
+      ${workspaceSection("Files", workspace.sections?.files || [], renderWorkspaceFile)}
+      <section class="detail-section">
+        <h3>Conclusions</h3>
+        <h4>Observed</h4>
+        <ul>${listItems(workspace.conclusions?.observed || [])}</ul>
+        <h4>Inferred</h4>
+        <ul>${listItems(workspace.conclusions?.inferred || [])}</ul>
+        <h4>Referenced from literature</h4>
+        <ul>${listItems(workspace.conclusions?.referenced_from_literature || [])}</ul>
+      </section>
+      <section class="detail-section">
+        <h3>Limitations</h3>
+        <ul>${listItems(workspace.limitations || [])}</ul>
+      </section>
+      ${workspaceSection("Provenance", workspace.provenance || [], renderWorkspaceProvenance)}
+    `;
+  } catch (error) {
+    target.innerHTML = `<div class="empty-state">Experiment workspace unavailable: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function workspaceSection(title, items, renderer) {
+  return `
+    <details class="detail-section" open>
+      <summary><h3>${escapeHtml(title)}</h3></summary>
+      ${items.length ? `<div class="source-list">${items.map(renderer).join("")}</div>` : `<div class="empty-state">No ${escapeHtml(title.toLowerCase())} linked.</div>`}
+    </details>
+  `;
+}
+
+function renderWorkspaceTimelineEvent(event) {
+  return `
+    <article class="timeline-item">
+      <div class="timeline-item-header">${timelineBadge(event.event_type)}<strong>${escapeHtml(event.title)}</strong></div>
+      <span>${escapeHtml(formatDate(event.timestamp))} · ${escapeHtml(event.source || "")}</span>
+      <p>${escapeHtml(event.description || "")}</p>
+    </article>
+  `;
+}
+
+function renderWorkspaceAsset(asset) {
+  return `
+    <a class="item-link" href="#/assets/${encodeURIComponent(asset.asset_id || "")}">
+      <strong>${escapeHtml(asset.title || asset.filename || asset.asset_id)}</strong>
+      <span>${escapeHtml(asset.provider || "")} · ${escapeHtml(asset.filename || "")}</span>
+    </a>
+  `;
+}
+
+function renderWorkspaceSpreadsheet(asset) {
+  const compact = asset.compact_summary || {};
+  return `
+    <article class="result">
+      <h3>${escapeHtml(asset.title || asset.filename || asset.asset_id)}</h3>
+      <p>${escapeHtml(compact.short_interpretation || asset.path || "Spreadsheet metadata available.")}</p>
+      <div class="meta"><span class="tag">${escapeHtml(asset.provider || "spreadsheet")}</span></div>
+    </article>
+  `;
+}
+
+function renderWorkspaceStatistic(asset) {
+  const compact = asset.compact_summary || {};
+  const interpretation = asset.interpretation || {};
+  return `
+    <article class="result">
+      <h3>${escapeHtml(asset.title || asset.filename || asset.asset_id)}</h3>
+      <p>${escapeHtml(compact.short_interpretation || interpretation.summary || "Statistics interpretation available.")}</p>
+      <div class="meta"><span class="tag">${escapeHtml(asset.provider || "statistics")}</span></div>
+    </article>
+  `;
+}
+
+function renderWorkspaceDocument(document) {
+  return `
+    <article class="result">
+      <h3>${escapeHtml(document.title || document.id)}</h3>
+      <p>${escapeHtml(document.source_path || document.source_url || document.provider || "")}</p>
+    </article>
+  `;
+}
+
+function renderWorkspaceExperiment(experiment) {
+  return `
+    <a class="item-link" href="#/experiments/${encodeURIComponent(experiment.id || "")}/workspace">
+      <strong>${escapeHtml(experiment.experiment_id || experiment.title || experiment.id)}</strong>
+      <span>${escapeHtml(experiment.source_provider || experiment.provider || "")}</span>
+    </a>
+  `;
+}
+
+function renderWorkspaceEntity(entity) {
+  return `
+    <a class="item-link" href="#/graph/${encodeURIComponent(entity.entity_type || "entity")}/${encodeURIComponent(entity.entity || "")}">
+      <strong>${escapeHtml(entity.entity)}</strong>
+      <span>${escapeHtml(entity.entity_type || "")} · ${escapeHtml(entity.reference_count || 0)} references</span>
+    </a>
+  `;
+}
+
+function renderWorkspaceFile(file) {
+  return `
+    <article class="result">
+      <h3>${escapeHtml(file.title || file.filename || file.asset_id)}</h3>
+      <p>${escapeHtml(file.path || "")}</p>
+      <div class="meta"><span class="tag">${escapeHtml(file.provider || "")}</span></div>
+    </article>
+  `;
+}
+
+function renderWorkspaceProvenance(item) {
+  return `
+    <article class="result">
+      <h3>${escapeHtml(item.fact)} · ${escapeHtml(item.source)}</h3>
+      <p>${escapeHtml([item.provider, item.document, item.asset, item.timestamp].filter(Boolean).join(" · "))}</p>
+    </article>
+  `;
+}
+
+function listItems(items) {
+  return items.length ? items.map((item) => `<li>${escapeHtml(item)}</li>`).join("") : "<li>None captured.</li>";
 }
 
 function bindExperimentDetailTabs() {
@@ -1736,6 +1904,7 @@ function renderEntityDetail(entityType, name) {
   $("#entityDetail").innerHTML = `
     <a class="inline-link" href="#/${entityType}">Back to ${escapeHtml(entityTitle(entityType))}</a>
     <a class="inline-link" href="${graphEntityLink(entityType, entity.name)}">Open in Graph Explorer</a>
+    <button type="button" class="secondary-button ask-kg-button" data-question="What do we know about ${escapeHtml(entity.name)}?">Ask about this entity</button>
     <div class="detail-header">
       <div>
         <p class="eyebrow">${escapeHtml(entityTitle(entityType))}</p>
@@ -1945,6 +2114,7 @@ async function renderGraphEntity(entityType, name) {
     const entity = await requestJson(`/graph/entity/${encodeURIComponent(entityType)}/${encodeURIComponent(name)}`);
     target.innerHTML = `
       <a class="inline-link" href="#/graph">Back to Graph Explorer</a>
+      <button type="button" class="secondary-button ask-kg-button" data-question="What do we know about ${escapeHtml(entity.name)}?">Ask about this entity</button>
       <div class="detail-header">
         <div>
           <p class="eyebrow">${escapeHtml(entity.type)}</p>
@@ -2150,6 +2320,58 @@ function renderChatResponse(target, payload) {
         .join("")}
     </div>
     ${limitations.length ? `<div class="empty-state"><strong>Limitations:</strong> ${escapeHtml(limitations.join(" "))}</div>` : ""}
+  `;
+}
+
+function renderKnowledgeGraphAssistantResponse(target, payload) {
+  const cardList = (title, items, renderer) => `
+    <div class="source-list">
+      <h3>${escapeHtml(title)}</h3>
+      ${items?.length ? items.map(renderer).join("") : `<div class="empty-state">No ${escapeHtml(title.toLowerCase())} linked in the Knowledge Graph.</div>`}
+    </div>
+  `;
+  const evidenceCard = (item) => `
+    <article class="result">
+      <h3>${escapeHtml(item.experiment_id || item.title || item.filename || item.id || item.asset_id || item.entity || "Evidence")}</h3>
+      <p>${escapeHtml(shortText(item.summary || item.snippet || item.path || item.provider || JSON.stringify(item), 240))}</p>
+      <div class="meta">
+        ${item.provider ? `<span class="tag">${escapeHtml(item.provider)}</span>` : ""}
+        ${item.entity_type ? `<span class="tag">${escapeHtml(item.entity_type)}</span>` : ""}
+        ${item.source_section ? `<span class="tag">${escapeHtml(item.source_section)}</span>` : ""}
+      </div>
+    </article>
+  `;
+  target.innerHTML = `
+    <div class="assistant-answer">
+      <h3>Knowledge Graph Answer</h3>
+      <p>${escapeHtml(payload.direct_answer)}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(payload.provider)}</span>
+        <span class="tag">${payload.ai_used ? "AI synthesis" : "local graph fallback"}</span>
+        ${payload.entity ? `<span class="tag">${escapeHtml(payload.entity)}</span>` : ""}
+        ${payload.entity_type ? `<span class="tag">${escapeHtml(payload.entity_type)}</span>` : ""}
+      </div>
+    </div>
+    <section class="detail-section">
+      <h3>Knowledge Graph Summary</h3>
+      <p>${escapeHtml(payload.knowledge_graph_summary || "No graph summary available.")}</p>
+    </section>
+    ${cardList("Experiments", payload.experiments || [], evidenceCard)}
+    ${cardList("Notebook Entries", payload.notebook_entries || [], evidenceCard)}
+    ${cardList("Literature", payload.literature || [], evidenceCard)}
+    ${cardList("GraphPad / Statistics", payload.graphpad_statistics || [], evidenceCard)}
+    ${cardList("Spreadsheets", payload.spreadsheets || [], evidenceCard)}
+    ${cardList("Microscopy / Images", payload.microscopy_images || [], evidenceCard)}
+    ${cardList("Related Entities", payload.related_entities || [], (item) => `
+      <a class="item-link" href="#/graph/${encodeURIComponent(item.entity_type || "entities")}/${encodeURIComponent(item.entity || item.name || "")}">
+        <strong>${escapeHtml(item.entity || item.name)}</strong>
+        <span>${escapeHtml(item.entity_type || "entity")} · ${escapeHtml(item.count ?? item.reference_count ?? "")}</span>
+      </a>
+    `)}
+    <section class="detail-section">
+      <h3>Limitations</h3>
+      <ul>${(payload.limitations || []).map((item) => `<li>${escapeHtml(item)}</li>`).join("") || "<li>None listed.</li>"}</ul>
+    </section>
   `;
 }
 
@@ -2383,6 +2605,19 @@ async function runChat(message, target) {
   }
 }
 
+async function runKnowledgeGraphAssistant(message, target) {
+  target.innerHTML = `<div class="empty-state">Querying the Knowledge Graph...</div>`;
+  try {
+    const payload = await requestJson("/assistant/knowledge", {
+      method: "POST",
+      body: JSON.stringify({ question: message }),
+    });
+    renderKnowledgeGraphAssistantResponse(target, payload);
+  } catch (error) {
+    target.innerHTML = `<div class="result"><h3>Knowledge Graph assistant failed</h3><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
 async function runExperimentPlanner(message, target) {
   $("#plannerStatus").textContent = "Planning follow-up experiment from local evidence...";
   target.innerHTML = `<div class="empty-state">Planning...</div>`;
@@ -2461,6 +2696,10 @@ function bindChat(formSelector, inputSelector, outputSelector) {
       runScientificReasoning(message, output);
       return;
     }
+    if (formSelector === "#chatForm" && state.assistantMode === "knowledge") {
+      runKnowledgeGraphAssistant(message, output);
+      return;
+    }
     runChat(message, output);
   });
 }
@@ -2472,6 +2711,21 @@ function bindAssistantModeToggle() {
       $$(".assistant-mode").forEach((node) => node.classList.remove("active"));
       button.classList.add("active");
     });
+  });
+}
+
+function bindKnowledgeGraphQuestionButtons() {
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest(".ask-kg-button");
+    if (!button) return;
+    const question = button.dataset.question || "What do we know about this entity?";
+    window.location.hash = "#/chat";
+    state.assistantMode = "knowledge";
+    $$(".assistant-mode").forEach((node) => {
+      node.classList.toggle("active", node.dataset.assistantMode === "knowledge");
+    });
+    $("#chatInput").value = question;
+    runKnowledgeGraphAssistant(question, $("#chatOutput"));
   });
 }
 
@@ -2900,6 +3154,7 @@ bindLiteratureComparison("#compareLiteratureButton", "#chatInput", "#chatOutput"
 bindDashboardSuggestedQuestions();
 bindSuggestedPrompts();
 bindAssistantModeToggle();
+bindKnowledgeGraphQuestionButtons();
 setupVoiceDictation();
 
 window.addEventListener("hashchange", route);

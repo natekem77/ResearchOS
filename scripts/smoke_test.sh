@@ -150,6 +150,7 @@ PY
 )"
 request POST "/assets/link" "$IMAGE_LINK_BODY" >/dev/null
 request GET "/experiments/$FIRST_EXPERIMENT_ID/timeline" >/dev/null
+request GET "/experiments/$FIRST_EXPERIMENT_ID/workspace?use_ai=false" >/dev/null
 request GET "/knowledgegraph/experiment/$FIRST_EXPERIMENT_ID" >/dev/null
 ASSET_FILE="$(
   request POST "/assets/register" '{"asset_type":"image","title":"Smoke Test Research Asset","filename":"smoke-test-image.tif","provider":"local","path":"data/assets/smoke-test-image.tif","metadata":{"source":"smoke_test"}}'
@@ -188,6 +189,8 @@ request GET "/experiments" >/dev/null
 request DELETE "/assets/$ASSET_ID" >/dev/null
 
 request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
+request POST "/assistant/knowledge" '{"question":"What do we know about SAG?","use_ai":false}' >/dev/null
+request POST "/assistant/reason" '{"question":"Which experiments involve BRN3B?","use_ai":false}' >/dev/null
 
 COMPARE_BODY="$(
   python3 - "$EXPERIMENTS_FILE" <<'PY'

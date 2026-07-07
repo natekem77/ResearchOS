@@ -9,6 +9,7 @@ from typing import Any
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import Settings, get_settings
 from app.graphpad_provider import compact_graphpad_statistics_summary
+from app.knowledge_graph_assistant import answer_with_knowledge_graph
 from app.retinal_ontology import KNOWN_MARKERS, build_retinal_ontology
 from app.spreadsheet_provider import compact_spreadsheet_summary
 from app.storage import SQLiteStore
@@ -819,6 +820,38 @@ def ask_research_assistant(
         "This answer is based only on documents currently ingested into local ResearchOS storage.",
         "Regex-based experiment extraction may miss fields that are phrased unusually.",
     ]
+    knowledge_answer = answer_with_knowledge_graph(clean_question, settings=resolved_settings, use_ai=False)
+    knowledge_has_evidence = bool(
+        knowledge_answer.experiments
+        or knowledge_answer.notebook_entries
+        or knowledge_answer.literature
+        or knowledge_answer.graphpad_statistics
+        or knowledge_answer.spreadsheets
+        or knowledge_answer.microscopy_images
+    )
+    if knowledge_has_evidence:
+        local_answer = knowledge_answer.direct_answer
+        local_synthesis = "\n".join(
+            [
+                f"Knowledge Graph summary: {knowledge_answer.knowledge_graph_summary}",
+                f"Experiments: {len(knowledge_answer.experiments)}",
+                f"Notebook entries: {len(knowledge_answer.notebook_entries)}",
+                f"Literature: {len(knowledge_answer.literature)}",
+                f"GraphPad/statistics: {len(knowledge_answer.graphpad_statistics)}",
+                f"Spreadsheets: {len(knowledge_answer.spreadsheets)}",
+                f"Microscopy/images: {len(knowledge_answer.microscopy_images)}",
+                f"Related entities: {', '.join(str(item.get('entity') or item.get('name')) for item in knowledge_answer.related_entities[:8])}",
+            ]
+        )
+        if not direct_matches and knowledge_answer.experiments:
+            direct_matches = _experiment_evidence(knowledge_answer.experiments, relevance="knowledge_graph")
+            evidence = direct_matches + related_context
+        sources = sources + [source | {"source": "knowledge_graph"} for source in knowledge_answer.sources[:12]]
+        citations = _source_citations(sources)
+        facts.setdefault("knowledge_graph_entities", [])
+        if knowledge_answer.entity:
+            facts["knowledge_graph_entities"].append(knowledge_answer.entity)
+        limitations.append("Knowledge Graph evidence was consulted before local search fallback.")
     if related_context:
         limitations.append("Related context is separated from direct matches to avoid overstating relevance.")
 

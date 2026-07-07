@@ -17,6 +17,7 @@ from app.entry_drafting import available_entry_templates, draft_entry_from_notes
 from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
 from app.experiment_planner import plan_follow_up_experiment
+from app.experiment_workspace import build_experiment_workspace
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.global_knowledge_graph import KnowledgeGraphService
@@ -28,6 +29,7 @@ from app.graphpad_provider import (
     scan_graphpad_assets,
 )
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
+from app.knowledge_graph_assistant import answer_with_knowledge_graph
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
 from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
@@ -238,6 +240,29 @@ class ScientificReasoningResponse(BaseModel):
     answer: str
     reasoning: dict[str, object]
     sources: list[dict[str, object]]
+    ai_used: bool
+    provider: str
+
+
+class KnowledgeAssistantResponse(BaseModel):
+    """Knowledge Graph grounded assistant response."""
+
+    question: str
+    direct_answer: str
+    knowledge_graph_summary: str
+    experiments: list[dict[str, object]]
+    notebook_entries: list[dict[str, object]]
+    literature: list[dict[str, object]]
+    graphpad_statistics: list[dict[str, object]]
+    spreadsheets: list[dict[str, object]]
+    microscopy_images: list[dict[str, object]]
+    related_entities: list[dict[str, object]]
+    limitations: list[str]
+    sources: list[dict[str, object]]
+    entity: str | None = None
+    entity_type: str | None = None
+    experiment: dict[str, object] | None = None
+    ai_synthesis: str | None = None
     ai_used: bool
     provider: str
 
@@ -1630,6 +1655,18 @@ def assistant_reason(request: AssistantRequest) -> ScientificReasoningResponse:
     return ScientificReasoningResponse(**answer.__dict__)
 
 
+@app.post("/assistant/knowledge", response_model=KnowledgeAssistantResponse, tags=["ai"])
+def assistant_knowledge(request: AssistantRequest) -> KnowledgeAssistantResponse:
+    """Answer a question using the Global Knowledge Graph as first-class evidence."""
+
+    question = _assistant_question(request)
+    if not question:
+        raise HTTPException(status_code=400, detail="Knowledge Graph assistant question must not be empty.")
+
+    answer = answer_with_knowledge_graph(question=question, settings=settings, use_ai=request.use_ai)
+    return KnowledgeAssistantResponse(**answer.__dict__)
+
+
 @app.post("/assistant/plan-experiment", response_model=ExperimentPlanResponse, tags=["ai"])
 def assistant_plan_experiment(request: AssistantRequest) -> ExperimentPlanResponse:
     """Suggest a concrete follow-up experiment from ResearchOS evidence."""
@@ -2376,6 +2413,32 @@ def experiment_timeline(experiment_id: str) -> ExperimentTimelineResponse:
             raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
         return ExperimentTimelineResponse(**_virtual_experiment_timeline(store, experiment_id))
     return ExperimentTimelineResponse(**_experiment_timeline(store, experiment))
+
+
+@app.get("/experiments/{experiment_id}/workspace", tags=["experiments"])
+def experiment_workspace(experiment_id: str, use_ai: bool = Query(True)) -> dict[str, object]:
+    """Return the unified workspace for one experiment."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        linked_assets = store.list_assets(experiment_id=experiment_id)
+        if not linked_assets:
+            raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+        timeline = _virtual_experiment_timeline(store, experiment_id)
+    else:
+        timeline = _experiment_timeline(store, experiment)
+
+    workspace = build_experiment_workspace(
+        experiment_id=experiment_id,
+        timeline=timeline,
+        settings=settings,
+        use_ai=use_ai,
+        knowledge_graph=knowledge_graph_service,
+    )
+    if workspace is None:
+        raise HTTPException(status_code=404, detail=f"Experiment workspace not found: {experiment_id}")
+    return workspace
 
 
 @app.get("/experiments/{experiment_id}/images", response_model=list[AssetResponse], tags=["experiments"])

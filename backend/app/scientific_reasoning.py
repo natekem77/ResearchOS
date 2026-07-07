@@ -16,6 +16,7 @@ from typing import Any
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import Settings, get_settings
 from app.experiment_comparison import compare_experiments
+from app.knowledge_graph_assistant import answer_with_knowledge_graph
 from app.storage import SQLiteStore
 
 STOPWORDS = {
@@ -202,7 +203,7 @@ def _timeline_events_for_reference(store: SQLiteStore, reference: str) -> list[d
     return events
 
 
-def _collect_evidence(question: str, store: SQLiteStore) -> dict[str, Any]:
+def _collect_evidence(question: str, store: SQLiteStore, settings: Settings) -> dict[str, Any]:
     """Gather unified local evidence for scientific reasoning."""
 
     terms = _terms(question)
@@ -252,12 +253,21 @@ def _collect_evidence(question: str, store: SQLiteStore) -> dict[str, Any]:
     if len(scored_experiments) >= 2:
         selected = [experiment for _, experiment in scored_experiments[:3]]
         try:
-            comparison = compare_experiments(selected, settings=get_settings(), use_ai=False).__dict__
+            comparison = compare_experiments(selected, settings=settings, use_ai=False).__dict__
         except ValueError:
             comparison = None
+    knowledge = answer_with_knowledge_graph(question, settings=settings, use_ai=False)
+    knowledge_sources = [
+        {"kind": "knowledge_graph", "title": knowledge.entity or (knowledge.experiment or {}).get("experiment_id"), "snippet": knowledge.knowledge_graph_summary},
+        *[item | {"kind": "knowledge_graph_experiment"} for item in knowledge.experiments[:5]],
+        *[item | {"kind": "knowledge_graph_asset"} for item in knowledge.graphpad_statistics[:4]],
+        *[item | {"kind": "knowledge_graph_asset"} for item in knowledge.spreadsheets[:4]],
+        *[item | {"kind": "knowledge_graph_asset"} for item in knowledge.microscopy_images[:4]],
+    ]
 
     return {
         "terms": terms,
+        "knowledge_graph": knowledge.__dict__,
         "notebook_entries": notebook_entries,
         "experiments": matched_experiments,
         "graphpad_statistics": graphpad_statistics,
@@ -266,7 +276,7 @@ def _collect_evidence(question: str, store: SQLiteStore) -> dict[str, Any]:
         "literature_matches": literature_matches,
         "experiment_comparison": comparison,
         "timeline_events": timeline_events[:12],
-        "sources": (matched_experiments + notebook_entries + literature_matches + graphpad_statistics + spreadsheet_data + microscopy_assets)[:20],
+        "sources": (knowledge_sources + matched_experiments + notebook_entries + literature_matches + graphpad_statistics + spreadsheet_data + microscopy_assets)[:30],
     }
 
 
@@ -303,8 +313,11 @@ def _build_reasoning(question: str, evidence: dict[str, Any]) -> dict[str, Any]:
     literature = evidence["literature_matches"]
     notebook_entries = evidence["notebook_entries"]
     timeline_events = evidence["timeline_events"]
+    knowledge = evidence.get("knowledge_graph") if isinstance(evidence.get("knowledge_graph"), dict) else {}
 
     observations: list[str] = []
+    if knowledge.get("knowledge_graph_summary"):
+        observations.append(f"Knowledge Graph: {knowledge['knowledge_graph_summary']}")
     for experiment in experiments[:4]:
         label = experiment.get("experiment_id") or experiment.get("title") or experiment.get("id")
         snippet = experiment.get("snippet") or "Structured experiment metadata matched the question."
@@ -322,6 +335,7 @@ def _build_reasoning(question: str, evidence: dict[str, Any]) -> dict[str, Any]:
         )
 
     supporting = []
+    supporting.extend(knowledge.get("sources") or [])
     supporting.extend(experiments[:5])
     supporting.extend(stats[:4])
     supporting.extend(spreadsheets[:4])
@@ -346,6 +360,8 @@ def _build_reasoning(question: str, evidence: dict[str, Any]) -> dict[str, Any]:
         limitations.append("No matching parsed GraphPad statistics were found.")
     if not experiments:
         limitations.append("No matching structured experiments were found.")
+    if not knowledge.get("sources"):
+        limitations.append("No matching Knowledge Graph evidence was found.")
 
     if experiments and (stats or images or literature):
         confidence = "medium"
@@ -371,6 +387,7 @@ def _build_reasoning(question: str, evidence: dict[str, Any]) -> dict[str, Any]:
         "recommended_next_experiments": followups[:4],
         "timeline_events": timeline_events,
         "experiment_comparison": evidence.get("experiment_comparison"),
+        "knowledge_graph": knowledge,
     }
 
 
@@ -412,7 +429,7 @@ def reason_scientifically(
     resolved_settings = settings or get_settings()
     clean_question = question.strip()
     store = SQLiteStore(settings=resolved_settings)
-    evidence = _collect_evidence(clean_question, store)
+    evidence = _collect_evidence(clean_question, store, resolved_settings)
     reasoning = _build_reasoning(clean_question, evidence)
     answer = _local_answer(clean_question, reasoning)
     ai_used = False

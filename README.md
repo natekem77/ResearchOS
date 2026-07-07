@@ -101,6 +101,8 @@ Release notes:
 - [docs/QUANTITATIVE_SUMMARIES.md](docs/QUANTITATIVE_SUMMARIES.md)
 - [docs/STATISTICS_ENGINE.md](docs/STATISTICS_ENGINE.md)
 - [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md)
+- [docs/KNOWLEDGE_GRAPH_ASSISTANT.md](docs/KNOWLEDGE_GRAPH_ASSISTANT.md)
+- [docs/EXPERIMENT_WORKSPACE.md](docs/EXPERIMENT_WORKSPACE.md)
 
 ## What Works Today
 
@@ -121,6 +123,8 @@ Release notes:
 - Pending notebook-entry drafts saved locally before OneNote write-back approval.
 - Local literature ingestion for paper notes and PDFs.
 - Scientific research assistant with local fallback answers.
+- Knowledge Graph powered assistant for entity and experiment questions.
+- Unified Experiment Workspace aggregating notebook, timeline, Knowledge Graph, microscopy, GraphPad, spreadsheet, statistics, literature, provenance, and summaries.
 - Provider status Settings page.
 - Read-only Microsoft Graph auth and OneNote sync pipeline scaffolding.
 - Optional OpenAI-compatible AI chat when configured.
@@ -306,6 +310,37 @@ proteins, markers, antibodies, cell lines, samples, batches, treatments, and
 new lab-specific entity types are automatically indexed.
 
 See [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md).
+
+## Knowledge Graph Assistant
+
+Ask graph-grounded questions:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assistant/knowledge \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What do we know about SAG?","use_ai":false}'
+```
+
+The endpoint returns direct answer, graph summary, experiments, notebook
+entries, literature, GraphPad/statistics, spreadsheets, microscopy/images,
+related entities, and limitations. The standard `/assistant/ask` and
+`/assistant/reason` routes also include Knowledge Graph evidence.
+
+See [docs/KNOWLEDGE_GRAPH_ASSISTANT.md](docs/KNOWLEDGE_GRAPH_ASSISTANT.md).
+
+## Experiment Workspace
+
+Each experiment has a central workspace:
+
+```bash
+curl "http://127.0.0.1:8001/experiments/NK_Expt_31/workspace?use_ai=false"
+```
+
+The workspace aggregates notebook entries, timeline, microscopy, GraphPad,
+spreadsheets, statistics, literature, Knowledge Graph entities, conclusions,
+limitations, provenance, and AI/local summary.
+
+See [docs/EXPERIMENT_WORKSPACE.md](docs/EXPERIMENT_WORKSPACE.md).
 
 ## Provider Status
 
