@@ -1,5 +1,7 @@
-condition,marker,mean_intensity,n
-vehicle,SIX6,0.42,3
-SAG,SIX6,0.67,3
-vehicle,BRN3B,0.18,3
-SAG,BRN3B,0.26,3
+group,marker,n,mean,sem,p_value,test,comparison
+DMSO,SIX6,3,0.42,0.04,,
+SAG,SIX6,3,0.67,0.05,0.018,one-way ANOVA with Tukey correction,DMSO vs SAG
+SAG + GRKi,SIX6,3,0.78,0.06,0.006,one-way ANOVA with Tukey correction,DMSO vs SAG + GRKi
+DMSO,BRN3B,3,0.18,0.03,,
+SAG,BRN3B,3,0.26,0.04,0.041,one-way ANOVA with Tukey correction,DMSO vs SAG
+SAG + GRKi,BRN3B,3,0.31,0.05,0.022,one-way ANOVA with Tukey correction,DMSO vs SAG + GRKi

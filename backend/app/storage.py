@@ -741,6 +741,27 @@ class SQLiteStore:
             return None
         return self.get_asset(asset_id)
 
+    def update_asset_metadata(
+        self,
+        asset_id: str,
+        metadata: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Replace asset metadata JSON and refresh the update timestamp."""
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE assets
+                SET metadata_json = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE asset_id = ?
+                """,
+                (json.dumps(metadata, sort_keys=True), asset_id),
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self.get_asset(asset_id)
+
     def delete_asset(self, asset_id: str) -> bool:
         """Delete one local asset registration."""
 

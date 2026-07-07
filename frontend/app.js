@@ -2,6 +2,7 @@ const state = {
   documents: [],
   papers: [],
   assets: [],
+  statistics: [],
   experiments: [],
   selectedExperimentIds: new Set(),
   health: null,
@@ -32,6 +33,7 @@ const views = {
   documents: $("#documentsView"),
   assets: $("#assetsView"),
   assetDetail: $("#assetDetailView"),
+  statistics: $("#statisticsView"),
   literature: $("#literatureView"),
   graph: $("#graphView"),
   graphDetail: $("#graphDetailView"),
@@ -245,6 +247,7 @@ function route() {
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
     assets: ["Assets", "Research Asset Graph"],
+    statistics: ["Statistics", "GraphPad Statistics"],
     literature: ["Literature", "Paper Library"],
     graph: ["Knowledge Graph", "Graph Explorer"],
     search: ["Search", "Search Research Notes"],
@@ -268,6 +271,12 @@ function protocolDocuments() {
 
 function graphPadAssets() {
   return state.assets.filter((asset) => asset.provider === "graphpad");
+}
+
+function statisticsAssets() {
+  return state.statistics.length
+    ? state.statistics
+    : state.assets.filter((asset) => asset.metadata?.statistics);
 }
 
 function renderMetrics() {
@@ -317,6 +326,43 @@ function renderTimeline() {
   $("#activityTimeline").innerHTML = items.length
     ? items.map((item) => `<div class="timeline-item"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.meta)}</span></div>`).join("")
     : `<div class="empty-state">No recent activity. Load demo notes to begin.</div>`;
+}
+
+function renderRecentExperimentTimeline() {
+  const target = $("#recentExperimentTimeline");
+  if (!target) return;
+  const events = [
+    ...state.assets.map((asset) => ({
+      timestamp: asset.updated_at || asset.created_at,
+      title: asset.metadata?.statistics ? `Statistics linked: ${asset.title}` : `Asset linked: ${asset.title}`,
+      meta: `${asset.asset_type} · ${asset.provider}${asset.experiment_id ? ` · ${asset.experiment_id}` : ""}`,
+      href: `#/assets/${encodeURIComponent(asset.asset_id)}`,
+    })),
+    ...state.experiments.map((experiment) => ({
+      timestamp: experiment.date || experiment.extracted_at,
+      title: `Experiment extracted: ${experiment.experiment_id || experiment.title}`,
+      meta: `${formatDate(experiment.date)} · ${experiment.source_provider}`,
+      href: `#/experiments/${encodeURIComponent(experiment.id)}`,
+    })),
+    ...state.documents.slice(0, 6).map((document) => ({
+      timestamp: document.updated_at || document.created_at || document.ingested_at,
+      title: `Document indexed: ${document.title}`,
+      meta: `${formatDate(document.updated_at || document.ingested_at)} · ${document.provider}`,
+      href: "#/documents",
+    })),
+  ]
+    .filter((event) => event.timestamp)
+    .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+    .slice(0, 6);
+
+  target.innerHTML = events.length
+    ? events.map((event) => `
+      <a class="timeline-item" href="${event.href}">
+        <strong>${escapeHtml(event.title)}</strong>
+        <span>${escapeHtml(formatDate(event.timestamp))} · ${escapeHtml(event.meta)}</span>
+      </a>
+    `).join("")
+    : `<div class="empty-state">No experiment timeline events yet.</div>`;
 }
 
 function renderRecentExperiments() {
@@ -456,6 +502,7 @@ function renderAssets() {
                 <div class="meta">
                   <span class="tag">${escapeHtml(asset.asset_type)}</span>
                   <span class="tag">${escapeHtml(asset.link_status || "unlinked")}</span>
+                  ${asset.metadata?.statistics ? `<a class="mini-chip" href="#/statistics">parsed statistics</a>` : ""}
                   <span class="tag">updated ${escapeHtml(formatDate(asset.updated_at))}</span>
                   ${experiment ? `<a class="mini-chip" href="#/experiments/${encodeURIComponent(experiment.id)}">${escapeHtml(experiment.experiment_id || experiment.title)}</a>` : asset.experiment_id ? `<span class="tag">ref ${escapeHtml(asset.experiment_id)}</span>` : ""}
                 </div>
@@ -475,6 +522,7 @@ function renderAssetDetail(assetId) {
   }
   const experiment = asset.linked_experiment;
   const metadata = Object.entries(asset.metadata || {});
+  const statistics = asset.metadata?.statistics;
   $("#assetDetail").innerHTML = `
     <a class="inline-link" href="#/assets">Back to assets</a>
     <div class="detail-header">
@@ -522,6 +570,7 @@ function renderAssetDetail(assetId) {
           : `<div class="empty-state">This asset is not linked to an experiment yet.</div>`}
       </div>
     </section>
+    ${statistics ? statisticsSummarySection(statistics, asset.asset_id) : ""}
     <section class="detail-section">
       <h3>Metadata</h3>
       <div class="detail-grid">
@@ -543,6 +592,51 @@ function renderAssetDetail(assetId) {
       $("#assetLinkStatus").textContent = `Unlink failed: ${error.message}`;
     });
   });
+}
+
+function statisticsSummarySection(statistics, assetId = "") {
+  return `
+    <section class="detail-section">
+      <h3>Parsed statistics</h3>
+      <div class="detail-grid">
+        ${detailField("Groups", (statistics.group_names || []).join(", "))}
+        ${detailField("Variables", (statistics.variables || []).join(", "))}
+        ${detailField("Tests", (statistics.statistical_tests || []).join(", "))}
+        ${detailField("Comparisons", (statistics.comparison_labels || []).join(", "))}
+      </div>
+      <div class="table-wrap">
+        <table class="comparison-table">
+          <thead>
+            <tr>
+              <th>Group</th>
+              <th>Variable</th>
+              <th>n</th>
+              <th>Mean</th>
+              <th>SEM</th>
+              <th>p-value</th>
+              <th>Test</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(statistics.rows || []).length
+              ? statistics.rows.map((row) => `
+                <tr>
+                  <td>${escapeHtml(row.group || "")}</td>
+                  <td>${escapeHtml(row.variable || "")}</td>
+                  <td>${escapeHtml(row.n ?? "")}</td>
+                  <td>${escapeHtml(row.mean ?? "")}</td>
+                  <td>${escapeHtml(row.sem ?? "")}</td>
+                  <td>${escapeHtml(row.p_value ?? "")}</td>
+                  <td>${escapeHtml(row.test || "")}</td>
+                </tr>
+              `).join("")
+              : `<tr><td colspan="7">No parsed rows available.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      ${assetId ? `<p class="card-copy">API summary: /providers/graphpad/assets/${escapeHtml(assetId)}/summary</p>` : ""}
+    </section>
+  `;
 }
 
 async function linkAssetToExperiment(assetId, experimentReference) {
@@ -580,7 +674,34 @@ async function scanGraphPadAssets() {
   if (target) {
     target.textContent = `GraphPad scan found ${result.files_found} file(s), registered ${result.assets_registered}, skipped ${result.assets_skipped}.`;
   }
+  const statisticsTarget = $("#statisticsStatus");
+  if (statisticsTarget) {
+    statisticsTarget.textContent = `GraphPad scan found ${result.files_found} file(s), registered ${result.assets_registered}, skipped ${result.assets_skipped}.`;
+  }
   recordActivity("GraphPad scan", `${result.assets_registered} registered · ${result.assets_skipped} skipped`);
+}
+
+function renderStatistics() {
+  const target = $("#statisticsList");
+  if (!target) return;
+  const assets = statisticsAssets();
+  target.innerHTML = assets.length
+    ? assets.map((asset) => {
+        const stats = asset.metadata?.statistics || {};
+        return `
+          <article class="record-card">
+            <h3><a href="#/assets/${encodeURIComponent(asset.asset_id)}">${escapeHtml(asset.title)}</a></h3>
+            <p>${escapeHtml(asset.filename)} · ${escapeHtml(asset.experiment_id || "No experiment reference")}</p>
+            <div class="meta">
+              ${(stats.group_names || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+              ${(stats.variables || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+              ${(stats.statistical_tests || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+            </div>
+            ${statisticsSummarySection(stats, asset.asset_id)}
+          </article>
+        `;
+      }).join("")
+    : `<div class="empty-state">No parsed GraphPad CSV statistics yet. Scan the GraphPad folder to import sample statistics.</div>`;
 }
 
 function renderPapers() {
@@ -1258,25 +1379,79 @@ function renderExperimentDetail(experimentId) {
       </div>
       <a class="status-pill ok" href="${graphEntityLink("experiments", experiment.id)}">Open graph</a>
     </div>
-    <div class="detail-grid">
-      ${detailField("Date", formatDate(experiment.date))}
-      ${detailField("Researcher", experiment.researcher)}
-      ${detailField("Cell line", experiment.cell_line)}
-      ${detailField("Organoid batch", experiment.organoid_batch)}
-      ${detailField("Original document", source?.source_path || source?.source_id || experiment.source_document_id)}
+    <div class="tab-row" role="tablist" aria-label="Experiment detail tabs">
+      <button type="button" class="tab-button active" data-experiment-tab="overview">Overview</button>
+      <button type="button" class="tab-button" data-experiment-tab="timeline">Timeline</button>
     </div>
-    ${linkedSection("Linked assets", experiment.linked_assets || [], (asset) => `
-      <a class="item-link" href="#/assets/${encodeURIComponent(asset.asset_id)}">
-        <strong>${escapeHtml(asset.title)}</strong>
-        <span>${escapeHtml(asset.asset_type)} · ${escapeHtml(asset.filename)} · ${escapeHtml(asset.provider)}</span>
-      </a>
-    `)}
-    ${tagSection("Compounds", experiment.compounds, "compounds")}
-    ${tagSection("Markers", experiment.markers, "markers")}
-    ${tagSection("Time points", experiment.time_points)}
-    ${textSection("Notes", experiment.notes)}
-    ${textSection("Conclusions", experiment.conclusions)}
+    <section id="experimentOverviewTab">
+      <div class="detail-grid">
+        ${detailField("Date", formatDate(experiment.date))}
+        ${detailField("Researcher", experiment.researcher)}
+        ${detailField("Cell line", experiment.cell_line)}
+        ${detailField("Organoid batch", experiment.organoid_batch)}
+        ${detailField("Original document", source?.source_path || source?.source_id || experiment.source_document_id)}
+      </div>
+      ${linkedSection("Linked assets", experiment.linked_assets || [], (asset) => `
+        <a class="item-link" href="#/assets/${encodeURIComponent(asset.asset_id)}">
+          <strong>${escapeHtml(asset.title)}</strong>
+          <span>${escapeHtml(asset.asset_type)} · ${escapeHtml(asset.filename)} · ${escapeHtml(asset.provider)}</span>
+        </a>
+      `)}
+      ${linkedSection("Linked statistics assets", (experiment.linked_assets || []).filter((asset) => asset.metadata?.statistics), (asset) => `
+        <a class="item-link" href="#/assets/${encodeURIComponent(asset.asset_id)}">
+          <strong>${escapeHtml(asset.title)}</strong>
+          <span>${escapeHtml((asset.metadata?.statistics?.variables || []).join(", "))} · ${escapeHtml((asset.metadata?.statistics?.statistical_tests || []).join(", "))}</span>
+        </a>
+      `)}
+      ${tagSection("Compounds", experiment.compounds, "compounds")}
+      ${tagSection("Markers", experiment.markers, "markers")}
+      ${tagSection("Time points", experiment.time_points)}
+      ${textSection("Notes", experiment.notes)}
+      ${textSection("Conclusions", experiment.conclusions)}
+    </section>
+    <section id="experimentTimelineTab" hidden>
+      <div class="timeline experiment-timeline" id="experimentTimeline">
+        <div class="empty-state">Loading experiment timeline...</div>
+      </div>
+    </section>
   `;
+  bindExperimentDetailTabs();
+  loadExperimentTimeline(experiment.id);
+}
+
+function bindExperimentDetailTabs() {
+  $$(".tab-button[data-experiment-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = button.dataset.experimentTab;
+      $$(".tab-button[data-experiment-tab]").forEach((node) => node.classList.remove("active"));
+      button.classList.add("active");
+      $("#experimentOverviewTab").hidden = tab !== "overview";
+      $("#experimentTimelineTab").hidden = tab !== "timeline";
+    });
+  });
+}
+
+async function loadExperimentTimeline(experimentId) {
+  const target = $("#experimentTimeline");
+  if (!target) return;
+  try {
+    const timeline = await requestJson(`/experiments/${encodeURIComponent(experimentId)}/timeline`);
+    target.innerHTML = (timeline.events || []).length
+      ? timeline.events.map((event) => `
+        <article class="timeline-item">
+          <strong>${escapeHtml(event.title)}</strong>
+          <span>${escapeHtml(formatDate(event.timestamp))} · ${escapeHtml(event.event_type)} · ${escapeHtml(event.source)}</span>
+          <p>${escapeHtml(event.description)}</p>
+          <div class="meta">
+            ${(event.linked_asset_ids || []).map((assetId) => `<a class="mini-chip" href="#/assets/${encodeURIComponent(assetId)}">${escapeHtml(assetId)}</a>`).join("")}
+            ${(event.linked_document_ids || []).map((documentId) => `<span class="tag">${escapeHtml(documentId)}</span>`).join("")}
+          </div>
+        </article>
+      `).join("")
+      : `<div class="empty-state">No timeline events found for this experiment.</div>`;
+  } catch (error) {
+    target.innerHTML = `<div class="empty-state">Timeline unavailable: ${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function entityTitle(entityType) {
@@ -1934,10 +2109,11 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
+  const [documents, papers, assets, statistics, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
+    requestJson("/statistics"),
     requestJson("/experiments"),
     requestJson("/entries"),
     requestJson("/api/compounds"),
@@ -1950,6 +2126,7 @@ async function refreshData() {
   state.documents = documents;
   state.papers = papers;
   state.assets = assets;
+  state.statistics = statistics;
   state.experiments = experiments;
   state.pendingEntries = pendingEntries;
   state.graphStats = graphStats;
@@ -1968,6 +2145,7 @@ function renderAll() {
   setStatus();
   renderMetrics();
   renderTimeline();
+  renderRecentExperimentTimeline();
   renderRecentExperiments();
   renderPopularCompounds();
   renderOneNoteStatusCard();
@@ -1975,6 +2153,7 @@ function renderAll() {
   renderAssetStatusCard();
   renderDocuments();
   renderAssets();
+  renderStatistics();
   renderPapers();
   renderProtocols();
   renderExperimentsTable();
@@ -2205,6 +2384,11 @@ $("#assetSearchInput")?.addEventListener("input", renderAssets);
 $("#scanGraphPadButton")?.addEventListener("click", () => {
   scanGraphPadAssets().catch((error) => {
     $("#graphPadScanStatus").textContent = `GraphPad scan failed: ${error.message}`;
+  });
+});
+$("#scanGraphPadStatsButton")?.addEventListener("click", () => {
+  scanGraphPadAssets().catch((error) => {
+    $("#statisticsStatus").textContent = `GraphPad scan failed: ${error.message}`;
   });
 });
 

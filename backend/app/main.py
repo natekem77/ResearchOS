@@ -16,7 +16,12 @@ from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
-from app.graphpad_provider import graphpad_status, scan_graphpad_assets
+from app.graphpad_provider import (
+    graphpad_asset_statistics_summary,
+    graphpad_statistics_assets,
+    graphpad_status,
+    scan_graphpad_assets,
+)
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
 from app.literature_comparison import compare_lab_with_literature
@@ -386,6 +391,51 @@ class GraphPadScanResponse(BaseModel):
     assets_skipped: int
     registered_assets: list[AssetResponse]
     skipped_assets: list[AssetResponse]
+
+
+class GraphPadStatisticsSummaryResponse(BaseModel):
+    """Parsed GraphPad CSV statistics summary for one asset."""
+
+    asset_id: str
+    title: str
+    filename: str
+    provider: str
+    experiment_id: str | None = None
+    parsed: bool
+    message: str | None = None
+    group_names: list[str] = Field(default_factory=list)
+    variables: list[str] = Field(default_factory=list)
+    sample_sizes: list[float] = Field(default_factory=list)
+    means: list[float] = Field(default_factory=list)
+    standard_deviations: list[float] = Field(default_factory=list)
+    standard_errors: list[float] = Field(default_factory=list)
+    p_values: list[float] = Field(default_factory=list)
+    statistical_tests: list[str] = Field(default_factory=list)
+    comparison_labels: list[str] = Field(default_factory=list)
+    rows: list[dict[str, object]] = Field(default_factory=list)
+    row_count: int = 0
+    limitations: list[str] = Field(default_factory=list)
+
+
+class ExperimentTimelineEventResponse(BaseModel):
+    """One chronological event in an experiment timeline."""
+
+    timestamp: str
+    event_type: str
+    title: str
+    description: str
+    source: str
+    linked_asset_ids: list[str] = Field(default_factory=list)
+    linked_document_ids: list[str] = Field(default_factory=list)
+
+
+class ExperimentTimelineResponse(BaseModel):
+    """Unified timeline for one experiment and its linked research assets."""
+
+    experiment_id: str
+    human_experiment_id: str | None = None
+    title: str
+    events: list[ExperimentTimelineEventResponse]
 
 
 class ExtractRequest(BaseModel):
@@ -1414,6 +1464,164 @@ def _asset_with_link_info(
     }
 
 
+def _timeline_timestamp(*values: object) -> str:
+    """Return the first useful timestamp-like value for timeline ordering."""
+
+    for value in values:
+        if value:
+            return str(value)
+    return "unknown"
+
+
+def _timeline_sort_key(event: dict[str, object]) -> str:
+    """Sort unknown timestamps last while keeping stable text ordering."""
+
+    timestamp = str(event.get("timestamp") or "")
+    if timestamp == "unknown":
+        return "9999-99-99 99:99:99"
+    return timestamp
+
+
+def _experiment_timeline(
+    store: SQLiteStore,
+    experiment: dict[str, object],
+) -> dict[str, object]:
+    """Build a unified local timeline for one experiment."""
+
+    events: list[dict[str, object]] = []
+    experiment_reference = str(experiment["id"])
+    human_reference = str(experiment.get("experiment_id") or "")
+
+    events.append(
+        {
+            "timestamp": _timeline_timestamp(experiment.get("date"), experiment.get("extracted_at")),
+            "event_type": "extracted_experiment",
+            "title": str(experiment.get("title") or "Extracted experiment"),
+            "description": (
+                f"Structured experiment extracted from {experiment.get('source_provider') or 'unknown'}."
+            ),
+            "source": str(experiment.get("source_provider") or "researchos"),
+            "linked_asset_ids": [],
+            "linked_document_ids": [str(experiment.get("source_document_id"))],
+        }
+    )
+
+    source_document_id = str(experiment.get("source_document_id") or "")
+    if source_document_id:
+        document = store.get_document(source_document_id)
+        if document is not None:
+            provider = str(document.get("provider") or "")
+            event_type = "literature_reference" if provider == "literature" else "notebook_entry"
+            events.append(
+                {
+                    "timestamp": _timeline_timestamp(
+                        document.get("updated_at"),
+                        document.get("created_at"),
+                        document.get("ingested_at"),
+                    ),
+                    "event_type": event_type,
+                    "title": str(document.get("title") or "Source document"),
+                    "description": str(document.get("source_path") or document.get("source_url") or "Source document indexed in ResearchOS."),
+                    "source": provider or "document",
+                    "linked_asset_ids": [],
+                    "linked_document_ids": [source_document_id],
+                }
+            )
+
+    for entry in store.list_pending_entries():
+        entry_experiment_id = str(entry.get("experiment_id") or "")
+        if entry_experiment_id not in {experiment_reference, human_reference}:
+            continue
+        events.append(
+            {
+                "timestamp": _timeline_timestamp(entry.get("updated_at"), entry.get("created_at")),
+                "event_type": "notebook_entry",
+                "title": str(entry.get("title") or "Pending notebook entry"),
+                "description": f"Local ResearchOS draft entry with status {entry.get('status') or 'draft'}.",
+                "source": "pending_entries",
+                "linked_asset_ids": [],
+                "linked_document_ids": [],
+            }
+        )
+
+    for asset in store.list_assets_for_experiment(experiment):
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        assert isinstance(metadata, dict)
+        statistics = metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else None
+        asset_type = str(asset.get("asset_type") or "other")
+        event_type = _asset_timeline_event_type(asset, statistics is not None)
+        description = _asset_timeline_description(asset, statistics)
+        events.append(
+            {
+                "timestamp": _timeline_timestamp(asset.get("updated_at"), asset.get("created_at")),
+                "event_type": event_type,
+                "title": str(asset.get("title") or asset.get("filename") or "Research asset"),
+                "description": description,
+                "source": str(asset.get("provider") or asset_type),
+                "linked_asset_ids": [str(asset.get("asset_id"))],
+                "linked_document_ids": [],
+            }
+        )
+
+        ai_summary = metadata.get("ai_summary") or metadata.get("ai_synthesis")
+        if ai_summary:
+            events.append(
+                {
+                    "timestamp": _timeline_timestamp(asset.get("updated_at"), asset.get("created_at")),
+                    "event_type": "ai_summary",
+                    "title": f"AI summary for {asset.get('title') or asset.get('filename')}",
+                    "description": str(ai_summary),
+                    "source": "asset_metadata",
+                    "linked_asset_ids": [str(asset.get("asset_id"))],
+                    "linked_document_ids": [],
+                }
+            )
+
+    events.sort(key=_timeline_sort_key)
+    return {
+        "experiment_id": experiment["id"],
+        "human_experiment_id": experiment.get("experiment_id"),
+        "title": experiment.get("title") or "Experiment timeline",
+        "events": events,
+    }
+
+
+def _asset_timeline_event_type(asset: dict[str, object], has_statistics: bool) -> str:
+    """Map asset metadata to a timeline event type."""
+
+    if has_statistics:
+        return "statistics_asset"
+    asset_type = str(asset.get("asset_type") or "other")
+    if asset_type in {"image", "microscopy"}:
+        return "image"
+    if asset_type == "pdf":
+        return "pdf"
+    if asset_type == "literature":
+        return "literature_reference"
+    if asset_type == "graphpad":
+        return "graphpad_asset"
+    return f"{asset_type}_asset"
+
+
+def _asset_timeline_description(
+    asset: dict[str, object],
+    statistics: object,
+) -> str:
+    """Build concise timeline text for a linked asset."""
+
+    if isinstance(statistics, dict):
+        variables = ", ".join(str(value) for value in statistics.get("variables", []) if value)
+        groups = ", ".join(str(value) for value in statistics.get("group_names", []) if value)
+        tests = ", ".join(str(value) for value in statistics.get("statistical_tests", []) if value)
+        parts = [part for part in [variables, groups, tests] if part]
+        return f"Parsed GraphPad CSV statistics: {'; '.join(parts)}." if parts else "Parsed GraphPad CSV statistics."
+
+    return (
+        f"{asset.get('asset_type') or 'Asset'} file {asset.get('filename') or ''} "
+        f"registered from {asset.get('provider') or 'local'}."
+    ).strip()
+
+
 @app.get("/providers/graphpad/status", response_model=GraphPadStatusResponse, tags=["providers"])
 def graphpad_provider_status() -> GraphPadStatusResponse:
     """Return local GraphPad provider configuration and asset count."""
@@ -1443,6 +1651,31 @@ def graphpad_provider_scan() -> GraphPadScanResponse:
             for asset in result.skipped_assets
         ],
     )
+
+
+@app.get(
+    "/providers/graphpad/assets/{asset_id}/summary",
+    response_model=GraphPadStatisticsSummaryResponse,
+    tags=["providers"],
+)
+def graphpad_asset_summary(asset_id: str) -> GraphPadStatisticsSummaryResponse:
+    """Return parsed statistics summary for one GraphPad CSV asset."""
+
+    summary = graphpad_asset_statistics_summary(asset_id=asset_id, settings=settings)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"GraphPad asset not found: {asset_id}")
+    return GraphPadStatisticsSummaryResponse(**summary)
+
+
+@app.get("/statistics", response_model=list[AssetResponse], tags=["statistics"])
+def statistics() -> list[AssetResponse]:
+    """Return assets containing extracted statistics metadata."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        AssetResponse(**_asset_with_link_info(store, asset))
+        for asset in graphpad_statistics_assets(settings=settings)
+    ]
 
 
 @app.get("/assets", response_model=list[AssetResponse], tags=["assets"])
@@ -1567,6 +1800,21 @@ def experiment_compare(request: ExperimentCompareRequest) -> ExperimentCompareRe
         use_ai=request.use_ai,
     )
     return ExperimentCompareResponse(**comparison.__dict__)
+
+
+@app.get(
+    "/experiments/{experiment_id}/timeline",
+    response_model=ExperimentTimelineResponse,
+    tags=["experiments"],
+)
+def experiment_timeline(experiment_id: str) -> ExperimentTimelineResponse:
+    """Return a unified chronological timeline for one experiment."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    return ExperimentTimelineResponse(**_experiment_timeline(store, experiment))
 
 
 @app.get("/experiments/{experiment_id}", response_model=ExperimentResponse, tags=["experiments"])

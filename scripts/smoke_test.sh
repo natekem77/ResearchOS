@@ -43,6 +43,22 @@ request GET "/documents" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/providers/graphpad/status" >/dev/null
 request POST "/providers/graphpad/scan" "{}" >/dev/null
+STATISTICS_FILE="$(request GET "/statistics")"
+GRAPH_PAD_STAT_ASSET_ID="$(
+  python3 - "$STATISTICS_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    assets = json.load(handle)
+
+if not assets:
+    raise SystemExit("Need at least one parsed GraphPad statistics asset.")
+
+print(assets[0]["asset_id"])
+PY
+)"
+request GET "/providers/graphpad/assets/$GRAPH_PAD_STAT_ASSET_ID/summary" >/dev/null
 request GET "/assets" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null
@@ -78,6 +94,7 @@ if not experiments:
 print(experiments[0]["id"])
 PY
 )"
+request GET "/experiments/$FIRST_EXPERIMENT_ID/timeline" >/dev/null
 ASSET_FILE="$(
   request POST "/assets/register" '{"asset_type":"image","title":"Smoke Test Research Asset","filename":"smoke-test-image.tif","provider":"local","path":"data/assets/smoke-test-image.tif","metadata":{"source":"smoke_test"}}'
 )"

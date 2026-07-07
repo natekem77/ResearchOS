@@ -92,6 +92,8 @@ Release notes:
 - [docs/LAB_NOTE_TEMPLATES.md](docs/LAB_NOTE_TEMPLATES.md)
 - [docs/ASSET_GRAPH.md](docs/ASSET_GRAPH.md)
 - [docs/GRAPHPAD_PROVIDER.md](docs/GRAPHPAD_PROVIDER.md)
+- [docs/GRAPHPAD_STATISTICS_EXTRACTION.md](docs/GRAPHPAD_STATISTICS_EXTRACTION.md)
+- [docs/EXPERIMENT_TIMELINES.md](docs/EXPERIMENT_TIMELINES.md)
 
 ## What Works Today
 
@@ -104,6 +106,8 @@ Release notes:
 - Knowledge Graph Explorer for connected experiments, papers, protocols, and entities.
 - Research Asset Graph registration/linking for notebooks, protocols, literature, images, GraphPad files, spreadsheets, PDFs, presentations, sequencing, microscopy, and other local assets.
 - GraphPad provider skeleton for discovering Prism files and exported analysis assets.
+- GraphPad CSV statistics extraction for simple Prism exports.
+- Experiment timelines combining notebook records and linked research assets.
 - Lab notebook templates for polished structured entry drafts from dictation.
 - Pending notebook-entry drafts saved locally before OneNote write-back approval.
 - Local literature ingestion for paper notes and PDFs.

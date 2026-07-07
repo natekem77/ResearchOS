@@ -25,6 +25,7 @@
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
           <a href="#/assets" data-nav="assets">Assets</a>
+          <a href="#/statistics" data-nav="statistics">Statistics</a>
           <a href="#/literature" data-nav="literature">Literature</a>
           <a href="#/graph" data-nav="graph">Graph Explorer</a>
           <a href="#/compounds" data-nav="compounds">Compounds</a>
@@ -144,6 +145,16 @@
               <article class="panel status-card" id="literatureStatusCard"></article>
 
               <article class="panel status-card" id="assetStatusCard"></article>
+
+              <article class="panel">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">Recent Timeline</p>
+                    <h2>Experiment events</h2>
+                  </div>
+                </div>
+                <div class="timeline" id="recentExperimentTimeline"></div>
+              </article>
 
               <article class="panel demo-mode-card">
                 <div class="panel-heading">
@@ -403,6 +414,20 @@
 
           <section class="view" id="assetDetailView">
             <article class="panel" id="assetDetail"></article>
+          </section>
+
+          <section class="view" id="statisticsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">GraphPad CSV</p>
+                  <h2>Statistics</h2>
+                </div>
+                <button type="button" id="scanGraphPadStatsButton" class="secondary-button">Scan GraphPad Folder</button>
+              </div>
+              <p class="demo-status" id="statisticsStatus"></p>
+              <div class="item-list" id="statisticsList"></div>
+            </article>
           </section>
 
           <section class="view" id="literatureView">

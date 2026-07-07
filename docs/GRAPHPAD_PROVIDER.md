@@ -35,6 +35,10 @@ Files are registered as assets with provider `graphpad`:
 
 Duplicate registrations are avoided by provider plus absolute path.
 
+CSV exports are parsed for basic statistics when possible. See
+[GRAPHPAD_STATISTICS_EXTRACTION.md](GRAPHPAD_STATISTICS_EXTRACTION.md) for
+supported columns and recommended export format.
+
 ## Experiment Linking
 
 The provider tries to infer a human experiment ID from filenames:

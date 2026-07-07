@@ -440,6 +440,12 @@ button {
   gap: 4px;
 }
 
+.timeline-item p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .item-link span,
 .record-card p,
 .result p,
@@ -848,6 +854,26 @@ button:disabled {
   cursor: not-allowed;
   color: var(--muted);
   background: var(--line);
+}
+
+.tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+
+.tab-button {
+  min-height: 36px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.tab-button.active {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
 }
 
 .table-wrap {
