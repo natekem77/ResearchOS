@@ -66,6 +66,7 @@ PY
 )"
 request GET "/providers/graphpad/assets/$GRAPH_PAD_STAT_ASSET_ID/summary" >/dev/null
 request GET "/statistics/$GRAPH_PAD_STAT_ASSET_ID/compact-summary" >/dev/null
+request GET "/statistics/$GRAPH_PAD_STAT_ASSET_ID/interpretation" >/dev/null
 SPREADSHEET_ASSET_ID="$(
   python3 - "$SPREADSHEETS_FILE" <<'PY'
 import json
@@ -87,6 +88,10 @@ request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/download" >/dev/null
 request GET "/assets" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null
+request GET "/knowledgegraph" >/dev/null
+request GET "/knowledgegraph/search?q=SAG" >/dev/null
+request GET "/knowledgegraph/entity/SAG" >/dev/null
+request GET "/knowledgegraph/type/marker" >/dev/null
 request GET "/entry-templates" >/dev/null
 request POST "/entries/draft" '{"template":"retinal_organoid","dictation":"Create NK Expt 31. Date today. Researcher Nathan. D18 SAG plus GRKi rescue with 100 nM SAG and 250 nM GRK inhibitor. DMSO control. Readouts SIX6 and BRN3B. Next steps quantify SIX6 intensity.","use_ai":false}' >/dev/null
 SAVED_ENTRY_FILE="$(request POST "/entries/save-draft" '{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1","template":"general_experiment","structured":{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1"},"markdown":"# Smoke Test Pending Entry\n\nLocal pending entry smoke test.","status":"draft"}')"
@@ -145,6 +150,7 @@ PY
 )"
 request POST "/assets/link" "$IMAGE_LINK_BODY" >/dev/null
 request GET "/experiments/$FIRST_EXPERIMENT_ID/timeline" >/dev/null
+request GET "/knowledgegraph/experiment/$FIRST_EXPERIMENT_ID" >/dev/null
 ASSET_FILE="$(
   request POST "/assets/register" '{"asset_type":"image","title":"Smoke Test Research Asset","filename":"smoke-test-image.tif","provider":"local","path":"data/assets/smoke-test-image.tif","metadata":{"source":"smoke_test"}}'
 )"

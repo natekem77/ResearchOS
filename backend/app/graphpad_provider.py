@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings, get_settings
+from app.statistics_engine import interpret_statistics_asset
 from app.storage import PROJECT_ROOT, SQLiteStore
 
 GRAPHPAD_PROVIDER = "graphpad"
@@ -224,6 +225,8 @@ def compact_graphpad_statistics_summary(
             "source": "graphpad_statistics",
         }
 
+    interpreted = interpret_statistics_asset(asset_id=asset_id, settings=settings)
+    interpreted_results = interpreted.get("results", []) if isinstance(interpreted, dict) else []
     variables = [str(value) for value in summary.get("variables", []) if value]
     groups = [str(value) for value in summary.get("group_names", []) if value]
     rows = summary.get("rows") if isinstance(summary.get("rows"), list) else []
@@ -251,14 +254,16 @@ def compact_graphpad_statistics_summary(
 
     p_values = [value for value in summary.get("p_values", []) if value is not None]
     tests = [str(value) for value in summary.get("statistical_tests", []) if value]
-    interpretation = (
-        f"{summary.get('title') or summary.get('filename')} reports {len(variables)} variable(s)"
-        f" across {len(groups)} group(s)."
-    )
-    if p_values:
-        interpretation += f" Parsed p-values include {', '.join(str(value) for value in p_values[:4])}."
-    if tests:
-        interpretation += f" Statistical test: {', '.join(tests[:3])}."
+    interpretation = interpreted.get("summary") if isinstance(interpreted, dict) else ""
+    if not interpretation:
+        interpretation = (
+            f"{summary.get('title') or summary.get('filename')} reports {len(variables)} variable(s)"
+            f" across {len(groups)} group(s)."
+        )
+        if p_values:
+            interpretation += f" Parsed p-values include {', '.join(str(value) for value in p_values[:4])}."
+        if tests:
+            interpretation += f" Statistical test: {', '.join(tests[:3])}."
     return {
         "asset_id": summary.get("asset_id"),
         "title": summary.get("title"),
@@ -270,6 +275,7 @@ def compact_graphpad_statistics_summary(
         "n_per_group": n_per_group,
         "p_values": p_values,
         "short_interpretation": interpretation,
+        "statistical_results": interpreted_results,
         "limitations": summary.get("limitations") or ["GraphPad summary depends on exported CSV structure."],
         "source": "graphpad_statistics",
     }
@@ -410,10 +416,32 @@ def _statistics_row(row: dict[str, str]) -> dict[str, Any]:
         "comparison": _comparison_label(row),
         "n": _float_value(_first_value(row, "n", "sample_size", "sample_n")),
         "mean": _float_value(_first_value(row, "mean", "mean_intensity", "average")),
+        "median": _float_value(_first_value(row, "median")),
         "sd": _float_value(_first_value(row, "sd", "standard_deviation", "stdev")),
         "sem": _float_value(_first_value(row, "sem", "standard_error", "standard_error_of_mean")),
-        "p_value": _float_value(_first_value(row, "p_value", "p", "adjusted_p_value", "adj_p")),
+        "confidence_interval": _first_value(row, "confidence_interval", "ci", "95_ci", "ci_95"),
+        "effect_size": _float_value(_first_value(row, "effect_size", "cohens_d", "hedges_g", "eta_squared")),
+        "p_value": _float_value(_first_value(row, "p_value", "p", "pvalue", "p_val", "prob_gt", "pr_gt")),
+        "adjusted_p_value": _float_value(
+            _first_value(
+                row,
+                "adjusted_p",
+                "adjusted_p_value",
+                "adj_p",
+                "adj_p_value",
+                "padj",
+                "p_adj",
+                "fdr",
+                "q_value",
+                "qvalue",
+                "bonferroni",
+                "holm",
+                "bh",
+                "benjamini_hochberg",
+            )
+        ),
         "test": _first_value(row, "test", "statistical_test", "analysis"),
+        "notes": _first_value(row, "notes", "note", "summary"),
     }
 
 

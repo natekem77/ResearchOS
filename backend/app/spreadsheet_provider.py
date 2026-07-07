@@ -22,6 +22,7 @@ from xml.etree import ElementTree
 
 from app.config import Settings, get_settings
 from app.graphpad_provider import infer_experiment_id_from_filename
+from app.statistics_engine import interpret_statistics_asset
 from app.storage import PROJECT_ROOT, SQLiteStore
 
 SPREADSHEET_PROVIDER = "spreadsheet"
@@ -30,6 +31,7 @@ GROUP_COLUMN_HINTS = {"group", "treatment", "condition", "dose", "timepoint", "t
 IDENTIFIER_HINTS = {"id", "sample", "animal", "patient", "cluster", "well", "replicate", "experiment", "batch"}
 DATE_HINTS = {"date", "time", "timestamp", "day"}
 TEXT_ENTITY_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9+./_-]{2,}\b")
+P_VALUE_COLUMN_KEYS = {"p", "p_value", "adjusted_p", "padj", "q_value", "fdr"}
 
 
 @dataclass(frozen=True)
@@ -170,7 +172,7 @@ def compact_spreadsheet_summary(asset_id: str, settings: Settings | None = None)
     key_numeric_measurements: list[dict[str, Any]] = []
     per_group_means: dict[str, Any] = {}
     n_per_group: dict[str, Any] = {}
-    p_values: list[Any] = []
+    p_values: list[float] = []
 
     for table in tables:
         if not isinstance(table, dict):
@@ -188,8 +190,9 @@ def compact_spreadsheet_summary(asset_id: str, settings: Settings | None = None)
                         "max": values.get("max"),
                     }
                 )
-                if "p" in str(column).lower():
-                    p_values.append(values.get("mean"))
+                p_value = _valid_p_value_for_column(str(column), values.get("mean"))
+                if p_value is not None:
+                    p_values.append(p_value)
         for group_column, groups in (table.get("grouped_summaries") or {}).items():
             if not isinstance(groups, dict):
                 continue
@@ -225,6 +228,14 @@ def compact_spreadsheet_summary(asset_id: str, settings: Settings | None = None)
         group_names=group_names,
         detected_markers=detected_markers,
     )
+    interpreted = interpret_statistics_asset(asset_id=asset_id, settings=settings)
+    interpreted_results = interpreted.get("results", []) if isinstance(interpreted, dict) else []
+    if isinstance(interpreted, dict) and interpreted.get("summary"):
+        interpretation = str(interpreted["summary"])
+    if p_values:
+        interpretation = f"{interpretation} Detected p-values: {', '.join(_format_compact_number(value) for value in p_values[:6])}."
+    else:
+        interpretation = f"{interpretation} No p-values detected."
     return {
         "asset_id": summary.get("asset_id"),
         "title": summary.get("title"),
@@ -234,8 +245,9 @@ def compact_spreadsheet_summary(asset_id: str, settings: Settings | None = None)
         "key_numeric_measurements": key_numeric_measurements[:12],
         "per_group_means": per_group_means,
         "n_per_group": n_per_group,
-        "p_values": [value for value in p_values if value is not None],
+        "p_values": p_values,
         "short_interpretation": interpretation,
+        "statistical_results": interpreted_results,
         "limitations": summary.get("limitations") or [],
         "source": "spreadsheet",
     }
@@ -257,6 +269,23 @@ def _compact_interpretation(
     if measurements:
         pieces.append(f"with {len(measurements)} numeric measurement(s)")
     return " ".join(pieces) + ". Review source rows before drawing conclusions."
+
+
+def _valid_p_value_for_column(column: str, value: Any) -> float | None:
+    """Return a p-value only from explicit p-value columns in the valid range."""
+
+    if _normalized(column) not in P_VALUE_COLUMN_KEYS:
+        return None
+    numeric_value = _to_float(value)
+    if numeric_value is None or numeric_value < 0 or numeric_value > 1:
+        return None
+    return numeric_value
+
+
+def _format_compact_number(value: float) -> str:
+    """Format compact summary numbers without excessive decimal noise."""
+
+    return f"{value:.4g}"
 
 
 def parse_spreadsheet(

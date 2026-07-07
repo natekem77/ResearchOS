@@ -636,7 +636,10 @@ def _local_direct_answer(
                 spreadsheet_note = f" Relevant spreadsheet evidence: {'; '.join(labels)}."
             statistics_note = ""
             if statistics_assets:
-                labels = [str(asset.get("title") or asset.get("asset_id")) for asset in statistics_assets[:4]]
+                labels = [
+                    str(asset.get("short_interpretation") or asset.get("title") or asset.get("asset_id"))
+                    for asset in statistics_assets[:4]
+                ]
                 statistics_note = f" Relevant statistics summaries: {'; '.join(labels)}."
             return f"I found {len(summaries)} direct result(s){scope}. " + " ".join(summaries) + image_note + spreadsheet_note + statistics_note
 
@@ -660,7 +663,10 @@ def _local_direct_answer(
         labels = [str(asset.get("title") or asset.get("asset_id")) for asset in spreadsheet_assets[:4]]
         pieces.append(f"Relevant spreadsheet evidence: {'; '.join(labels)}.")
     if statistics_assets:
-        labels = [str(asset.get("title") or asset.get("asset_id")) for asset in statistics_assets[:4]]
+        labels = [
+            str(asset.get("short_interpretation") or asset.get("title") or asset.get("asset_id"))
+            for asset in statistics_assets[:4]
+        ]
         pieces.append(f"Relevant statistics summaries: {'; '.join(labels)}.")
     return " ".join(pieces)
 

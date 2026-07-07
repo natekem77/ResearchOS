@@ -19,6 +19,7 @@ from app.experiment_extraction import extract_experiment
 from app.experiment_planner import plan_follow_up_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
+from app.global_knowledge_graph import KnowledgeGraphService
 from app.graphpad_provider import (
     compact_graphpad_statistics_summary,
     graphpad_asset_statistics_summary,
@@ -42,6 +43,7 @@ from app.spreadsheet_provider import (
     spreadsheet_status,
     spreadsheet_summary,
 )
+from app.statistics_engine import interpret_statistics_asset
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -50,6 +52,7 @@ configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
+knowledge_graph_service = KnowledgeGraphService(settings=settings)
 
 app = FastAPI(
     title=settings.project_name,
@@ -535,8 +538,21 @@ class CompactQuantitativeSummaryResponse(BaseModel):
     n_per_group: dict[str, object] = Field(default_factory=dict)
     p_values: list[object] = Field(default_factory=list)
     short_interpretation: str
+    statistical_results: list[dict[str, object]] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     source: str
+
+
+class StatisticsInterpretationResponse(BaseModel):
+    """Standardized statistics interpretation for one quantitative asset."""
+
+    asset_id: str
+    title: str | None = None
+    experiment_id: str | None = None
+    provider: str | None = None
+    results: list[dict[str, object]] = Field(default_factory=list)
+    summary: str
+    limitations: list[str] = Field(default_factory=list)
 
 
 class GraphPadStatisticsSummaryResponse(BaseModel):
@@ -919,6 +935,47 @@ def graph_entity(entity_type: str, entity_name: str) -> GraphEntityResponse:
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return GraphEntityResponse(**entity)
+
+
+@app.get("/knowledgegraph", tags=["knowledgegraph"])
+def global_knowledge_graph() -> dict[str, object]:
+    """Return global provider-agnostic knowledge graph statistics."""
+
+    return knowledge_graph_service.summary()
+
+
+@app.get("/knowledgegraph/search", tags=["knowledgegraph"])
+def global_knowledge_graph_search(q: str = Query(..., min_length=1), limit: int = Query(25, ge=1, le=100)) -> list[dict[str, object]]:
+    """Search scientific entities with case-insensitive partial matching."""
+
+    return knowledge_graph_service.search(q, limit=limit)
+
+
+@app.get("/knowledgegraph/type/{entity_type}", tags=["knowledgegraph"])
+def global_knowledge_graph_type(entity_type: str) -> list[dict[str, object]]:
+    """Return every indexed entity of one entity type."""
+
+    return knowledge_graph_service.entities_by_type(entity_type)
+
+
+@app.get("/knowledgegraph/entity/{entity:path}", tags=["knowledgegraph"])
+def global_knowledge_graph_entity(entity: str) -> dict[str, object]:
+    """Return all local objects and co-occurring entities linked to one entity."""
+
+    detail = knowledge_graph_service.entity_detail(entity)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Knowledge graph entity not found: {entity}")
+    return detail
+
+
+@app.get("/knowledgegraph/experiment/{experiment_id:path}", tags=["knowledgegraph"])
+def global_knowledge_graph_experiment(experiment_id: str) -> dict[str, object]:
+    """Return all graph objects connected to one experiment."""
+
+    neighborhood = knowledge_graph_service.experiment_neighborhood(experiment_id)
+    if neighborhood is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found in knowledge graph: {experiment_id}")
+    return neighborhood
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
@@ -2011,6 +2068,20 @@ def statistics_compact_summary(asset_id: str) -> CompactQuantitativeSummaryRespo
     if summary is None:
         raise HTTPException(status_code=404, detail=f"Statistics asset not found: {asset_id}")
     return CompactQuantitativeSummaryResponse(**summary)
+
+
+@app.get(
+    "/statistics/{asset_id}/interpretation",
+    response_model=StatisticsInterpretationResponse,
+    tags=["statistics"],
+)
+def statistics_interpretation(asset_id: str) -> StatisticsInterpretationResponse:
+    """Return standardized scientific interpretation for one quantitative asset."""
+
+    interpretation = interpret_statistics_asset(asset_id=asset_id, settings=settings)
+    if interpretation is None:
+        raise HTTPException(status_code=404, detail=f"Statistics asset not found: {asset_id}")
+    return StatisticsInterpretationResponse(**interpretation)
 
 
 @app.get("/statistics", response_model=list[AssetResponse], tags=["statistics"])

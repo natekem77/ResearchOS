@@ -746,6 +746,7 @@ async function loadAssetCompactSummary(asset) {
 }
 
 function compactSummarySection(summary) {
+  const statisticalResults = summary.statistical_results || [];
   return `
     <h3>Compact quantitative summary</h3>
     <p>${escapeHtml(summary.short_interpretation)}</p>
@@ -753,7 +754,22 @@ function compactSummarySection(summary) {
       ${(summary.detected_markers_entities || []).slice(0, 12).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
       ${(summary.detected_treatments_groups || []).slice(0, 12).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
       ${(summary.p_values || []).slice(0, 6).map((value) => `<span class="tag">p=${escapeHtml(value)}</span>`).join("")}
+      ${statisticalResults.slice(0, 6).map((result) => `<span class="tag">${escapeHtml(result.significance || "unavailable")}</span>`).join("")}
     </div>
+    ${statisticalResults.length ? `
+      <div class="source-list">
+        ${statisticalResults.slice(0, 6).map((result) => `
+          <article class="result">
+            <h3>${escapeHtml(result.variable || "Statistical result")}</h3>
+            <p>${escapeHtml(result.interpretation || result.notes || "")}</p>
+            <div class="meta">
+              <span class="tag">${escapeHtml(result.test_used || "test unavailable")}</span>
+              <span class="tag">${escapeHtml(result.significance || "unavailable")}</span>
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    ` : ""}
     <div class="detail-grid">
       ${detailField("Experiment ID", summary.experiment_id)}
       ${detailField("Source", summary.source)}
@@ -906,6 +922,7 @@ function statisticsCompactCard(asset) {
   const variables = stats.variables || [];
   const groups = stats.group_names || [];
   const pValues = stats.p_values || [];
+  const significantCount = pValues.filter((value) => Number(value) < 0.05).length;
   const means = rows
     .filter((row) => row.mean !== undefined && row.mean !== null)
     .slice(0, 6)
@@ -913,10 +930,11 @@ function statisticsCompactCard(asset) {
   return `
     <section class="compact-summary-card">
       <h4>Compact summary</h4>
-      <p>${escapeHtml(asset.title)} reports ${escapeHtml(variables.length)} variable(s) across ${escapeHtml(groups.length)} group(s).</p>
+      <p>${escapeHtml(asset.title)} reports ${escapeHtml(variables.length)} variable(s) across ${escapeHtml(groups.length)} group(s). ${escapeHtml(significantCount)} parsed result(s) are statistically significant at p &lt; 0.05.</p>
       <div class="meta">
         ${means.map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
         ${pValues.slice(0, 6).map((value) => `<span class="tag">p=${escapeHtml(value)}</span>`).join("")}
+        <span class="tag">${escapeHtml(significantCount)} significant</span>
       </div>
     </section>
   `;

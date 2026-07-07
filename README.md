@@ -99,6 +99,8 @@ Release notes:
 - [docs/EXPERIMENT_PLANNER.md](docs/EXPERIMENT_PLANNER.md)
 - [docs/SPREADSHEET_PROVIDER.md](docs/SPREADSHEET_PROVIDER.md)
 - [docs/QUANTITATIVE_SUMMARIES.md](docs/QUANTITATIVE_SUMMARIES.md)
+- [docs/STATISTICS_ENGINE.md](docs/STATISTICS_ENGINE.md)
+- [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md)
 
 ## What Works Today
 
@@ -108,6 +110,7 @@ Release notes:
 - Local chunking, vector indexing, and keyword fallback search.
 - Structured experiment extraction.
 - Retinal organoid entity pages for compounds, markers, cell lines, and batches.
+- Global Knowledge Graph indexing entities across notebooks, experiments, literature, microscopy, GraphPad, spreadsheets, statistics, and pending entries.
 - Knowledge Graph Explorer for connected experiments, papers, protocols, and entities.
 - Research Asset Graph registration/linking for notebooks, protocols, literature, images, GraphPad files, spreadsheets, PDFs, presentations, sequencing, microscopy, and other local assets.
 - GraphPad provider skeleton for discovering Prism files and exported analysis assets.
@@ -280,6 +283,29 @@ curl http://127.0.0.1:8001/graph/entity/markers/BRN3B
 
 The graph is local-first and derived from SQLite documents, extracted
 experiments, ingested literature, and protocol notes.
+
+## Global Knowledge Graph
+
+Milestone 46 adds a provider-agnostic global knowledge graph at
+`/knowledgegraph`. It dynamically builds entity relationships from existing
+SQLite records and provider metadata instead of maintaining a duplicate graph
+database.
+
+Useful endpoints:
+
+```bash
+curl http://127.0.0.1:8001/knowledgegraph
+curl "http://127.0.0.1:8001/knowledgegraph/search?q=SAG"
+curl http://127.0.0.1:8001/knowledgegraph/entity/SIX6
+curl http://127.0.0.1:8001/knowledgegraph/type/marker
+curl http://127.0.0.1:8001/knowledgegraph/experiment/NK_Expt_31
+```
+
+Future providers should emit `metadata["entities"]` so compounds, genes,
+proteins, markers, antibodies, cell lines, samples, batches, treatments, and
+new lab-specific entity types are automatically indexed.
+
+See [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md).
 
 ## Provider Status
 
