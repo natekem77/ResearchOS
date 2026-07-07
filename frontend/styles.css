@@ -743,6 +743,11 @@ button {
   font-weight: 800;
 }
 
+.prompt-chip.active {
+  color: #ffffff;
+  background: var(--accent);
+}
+
 .entry-draft-form {
   grid-template-columns: 1fr;
   align-items: stretch;

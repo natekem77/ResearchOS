@@ -32,6 +32,7 @@ from app.microscopy_provider import microscopy_assets, microscopy_status, scan_m
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
+from app.scientific_reasoning import reason_scientifically
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -213,6 +214,17 @@ class AssistantResponse(BaseModel):
     extracted_facts: dict[str, list[str]]
     ai_synthesis: str | None
     limitations_uncertainties: list[str]
+    sources: list[dict[str, object]]
+    ai_used: bool
+    provider: str
+
+
+class ScientificReasoningResponse(BaseModel):
+    """Structured scientific reasoning response."""
+
+    question: str
+    answer: str
+    reasoning: dict[str, object]
     sources: list[dict[str, object]]
     ai_used: bool
     provider: str
@@ -1447,6 +1459,18 @@ def assistant_ask(request: AssistantRequest) -> AssistantResponse:
 
     answer = ask_research_assistant(question=question, settings=settings, use_ai=request.use_ai)
     return AssistantResponse(**answer.__dict__)
+
+
+@app.post("/assistant/reason", response_model=ScientificReasoningResponse, tags=["ai"])
+def assistant_reason(request: AssistantRequest) -> ScientificReasoningResponse:
+    """Reason across experiments, statistics, literature, timelines, and assets."""
+
+    question = _assistant_question(request)
+    if not question:
+        raise HTTPException(status_code=400, detail="Scientific reasoning question must not be empty.")
+
+    answer = reason_scientifically(question=question, settings=settings, use_ai=request.use_ai)
+    return ScientificReasoningResponse(**answer.__dict__)
 
 
 @app.post("/assistant/compare-literature", response_model=LiteratureComparisonResponse, tags=["ai"])

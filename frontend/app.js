@@ -18,6 +18,7 @@ const state = {
   activity: [],
   currentEntryDraft: null,
   currentSavedEntryId: null,
+  assistantMode: "search",
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -43,6 +44,7 @@ const views = {
   entityDetail: $("#entityDetailView"),
   search: $("#searchView"),
   chat: $("#chatView"),
+  reasoning: $("#reasoningView"),
   settings: $("#settingsView"),
 };
 
@@ -255,6 +257,7 @@ function route() {
     graph: ["Knowledge Graph", "Graph Explorer"],
     search: ["Search", "Search Research Notes"],
     chat: ["AI Chat", "Ask ResearchOS"],
+    reasoning: ["Scientific Reasoning", "Evidence-Based Reasoning"],
     settings: ["Settings", "Workspace Settings"],
   };
   setHeader(...titles[target]);
@@ -2070,6 +2073,69 @@ function renderLiteratureComparisonResponse(target, payload) {
   `;
 }
 
+function renderScientificReasoningResponse(target, payload) {
+  const reasoning = payload.reasoning || {};
+  const sources = payload.sources || [];
+  const listItems = (items) => items?.length
+    ? items.map((item) => `<li>${escapeHtml(typeof item === "string" ? item : item.title || item.filename || item.snippet || item.id || JSON.stringify(item))}</li>`).join("")
+    : `<li>None detected in local evidence.</li>`;
+  const evidenceCards = (items) => items?.length
+    ? items.map((item) => `
+      <article class="result">
+        <h3>${escapeHtml(item.title || item.filename || item.experiment_id || item.id || item.kind || "Evidence")}</h3>
+        <p>${escapeHtml(shortText(item.snippet || item.path || item.provider || JSON.stringify(item), 240))}</p>
+        <div class="meta">
+          <span class="tag">${escapeHtml(item.kind || item.provider || "evidence")}</span>
+          ${item.score !== undefined ? `<span class="tag">score ${escapeHtml(item.score)}</span>` : ""}
+        </div>
+      </article>
+    `).join("")
+    : `<div class="empty-state">No evidence in this category.</div>`;
+
+  target.innerHTML = `
+    <div class="assistant-answer">
+      <h3>Scientific Answer</h3>
+      <p>${escapeHtml(payload.answer)}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(payload.provider)}</span>
+        <span class="tag">${payload.ai_used ? "AI synthesis" : "local deterministic reasoning"}</span>
+        <span class="tag">confidence ${escapeHtml(reasoning.confidence || "unknown")}</span>
+        <span class="tag">${sources.length} source${sources.length === 1 ? "" : "s"}</span>
+      </div>
+    </div>
+    <div class="detail-grid comparison-summary-grid">
+      <section class="detail-field">
+        <span>Observations</span>
+        <ul>${listItems(reasoning.observations || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Suggested follow-up experiments</span>
+        <ul>${listItems(reasoning.recommended_next_experiments || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Limitations</span>
+        <ul>${listItems(reasoning.limitations || [])}</ul>
+      </section>
+    </div>
+    <div class="source-list">
+      <h3>Supporting Evidence</h3>
+      ${evidenceCards(reasoning.supporting_evidence || [])}
+    </div>
+    <div class="source-list">
+      <h3>Conflicting Evidence</h3>
+      ${evidenceCards(reasoning.conflicting_evidence || [])}
+    </div>
+    <div class="source-list">
+      <h3>Timeline Context</h3>
+      ${evidenceCards(reasoning.timeline_events || [])}
+    </div>
+    <div class="source-list">
+      <h3>Sources</h3>
+      ${evidenceCards(sources)}
+    </div>
+  `;
+}
+
 async function runChat(message, target) {
   target.innerHTML = `<div class="empty-state">Thinking...</div>`;
   try {
@@ -2080,6 +2146,19 @@ async function runChat(message, target) {
     renderChatResponse(target, payload);
   } catch (error) {
     target.innerHTML = `<div class="result"><h3>Chat setup required</h3><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
+async function runScientificReasoning(message, target) {
+  target.innerHTML = `<div class="empty-state">Reasoning across local evidence...</div>`;
+  try {
+    const payload = await requestJson("/assistant/reason", {
+      method: "POST",
+      body: JSON.stringify({ question: message }),
+    });
+    renderScientificReasoningResponse(target, payload);
+  } catch (error) {
+    target.innerHTML = `<div class="result"><h3>Scientific reasoning failed</h3><p>${escapeHtml(error.message)}</p></div>`;
   }
 }
 
@@ -2126,7 +2205,34 @@ function bindChat(formSelector, inputSelector, outputSelector) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const message = input.value.trim();
-    if (message) runChat(message, output);
+    if (!message) return;
+    if (formSelector === "#chatForm" && state.assistantMode === "reasoning") {
+      runScientificReasoning(message, output);
+      return;
+    }
+    runChat(message, output);
+  });
+}
+
+function bindAssistantModeToggle() {
+  $$(".assistant-mode").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.assistantMode = button.dataset.assistantMode || "search";
+      $$(".assistant-mode").forEach((node) => node.classList.remove("active"));
+      button.classList.add("active");
+    });
+  });
+}
+
+function bindReasoning(formSelector, inputSelector, outputSelector) {
+  const form = $(formSelector);
+  const input = $(inputSelector);
+  const output = $(outputSelector);
+  if (!form || !input || !output) return;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (message) runScientificReasoning(message, output);
   });
 }
 
@@ -2489,10 +2595,12 @@ bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchRes
 bindSearch("#searchForm", "#searchInput", "#searchResults");
 bindChat("#dashboardChatForm", "#dashboardChatInput", "#dashboardChatOutput");
 bindChat("#chatForm", "#chatInput", "#chatOutput");
+bindReasoning("#reasoningForm", "#reasoningInput", "#reasoningOutput");
 bindLiteratureComparison("#dashboardCompareLiteratureButton", "#dashboardChatInput", "#dashboardChatOutput");
 bindLiteratureComparison("#compareLiteratureButton", "#chatInput", "#chatOutput");
 bindDashboardSuggestedQuestions();
 bindSuggestedPrompts();
+bindAssistantModeToggle();
 setupVoiceDictation();
 
 window.addEventListener("hashchange", route);
