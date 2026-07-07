@@ -28,9 +28,12 @@ def build_experiment_workspace(
     neighborhood = service.experiment_neighborhood(experiment_id)
     if neighborhood is None:
         experiment = store.find_experiment_by_reference(experiment_id)
-        if experiment is None:
-            return None
-        neighborhood = service.experiment_neighborhood(str(experiment["id"]))
+        if experiment is not None:
+            neighborhood = service.experiment_neighborhood(str(experiment["id"]))
+        else:
+            linked_assets = store.list_assets(experiment_id=experiment_id)
+            if linked_assets:
+                neighborhood = _asset_only_neighborhood(experiment_id, linked_assets)
     if neighborhood is None:
         return None
 
@@ -100,6 +103,84 @@ def build_experiment_workspace(
         },
         "ai_summary": ai_summary,
     }
+
+
+def _asset_only_neighborhood(experiment_id: str, linked_assets: list[dict[str, Any]]) -> dict[str, Any]:
+    """Create a workspace neighborhood for human IDs that only have assets."""
+
+    return {
+        "experiment": {
+            "id": experiment_id,
+            "experiment_id": experiment_id,
+            "title": f"Workspace for {experiment_id}",
+            "source_provider": "asset_graph",
+        },
+        "notebook": None,
+        "images": [asset for asset in linked_assets if _workspace_asset_kind(asset) == "image"],
+        "graphpad": [asset for asset in linked_assets if _workspace_asset_kind(asset) == "graphpad"],
+        "statistics": [asset for asset in linked_assets if _workspace_asset_has_statistics(asset)],
+        "spreadsheets": [asset for asset in linked_assets if _workspace_asset_kind(asset) == "spreadsheet"],
+        "literature": [],
+        "entities": _asset_only_entities(linked_assets),
+    }
+
+
+def _workspace_asset_kind(asset: dict[str, Any]) -> str:
+    """Classify assets for workspace sections without provider-specific calls."""
+
+    provider = str(asset.get("provider") or "").lower()
+    asset_type = str(asset.get("asset_type") or "").lower()
+    if provider == "microscopy" or asset_type in {"image", "microscopy"}:
+        return "image"
+    if provider == "graphpad" or asset_type == "graphpad":
+        return "graphpad"
+    if asset_type in {"spreadsheet", "csv"}:
+        return "spreadsheet"
+    return "asset"
+
+
+def _workspace_asset_has_statistics(asset: dict[str, Any]) -> bool:
+    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+    return bool(isinstance(metadata, dict) and metadata.get("statistics"))
+
+
+def _asset_only_entities(linked_assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Surface provider-emitted entities for asset-only human-ID workspaces."""
+
+    values: dict[tuple[str, str], int] = {}
+    for asset in linked_assets:
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        if not isinstance(metadata, dict):
+            continue
+        entities = metadata.get("entities") if isinstance(metadata.get("entities"), dict) else {}
+        for entity_type, raw_values in entities.items():
+            if isinstance(raw_values, str):
+                iterable = [raw_values]
+            elif isinstance(raw_values, list):
+                iterable = raw_values
+            else:
+                continue
+            for raw_value in iterable:
+                name = str(raw_value).strip()
+                if not name:
+                    continue
+                key = (str(entity_type).strip().rstrip("s") or "unknown_scientific_term", name)
+                values[key] = values.get(key, 0) + 1
+        for marker in metadata.get("markers", []) if isinstance(metadata.get("markers"), list) else []:
+            name = str(marker).strip()
+            if name:
+                key = ("marker", name)
+                values[key] = values.get(key, 0) + 1
+
+    return [
+        {
+            "entity": name,
+            "entity_type": entity_type,
+            "reference_count": count,
+            "relationship_counts": {"asset": count},
+        }
+        for (entity_type, name), count in sorted(values.items(), key=lambda item: (item[0][0], item[0][1].lower()))
+    ]
 
 
 def _spreadsheet_workspace_summary(asset: dict[str, Any], settings: Settings) -> dict[str, Any]:

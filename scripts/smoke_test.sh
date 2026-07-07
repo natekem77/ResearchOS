@@ -53,6 +53,7 @@ request GET "/providers/images/status" >/dev/null
 request POST "/providers/images/scan" "{}" >/dev/null
 request GET "/providers/spreadsheets/status" >/dev/null
 request POST "/providers/spreadsheets/scan" "{}" >/dev/null
+request GET "/experiments/NK_Expt_31/workspace?use_ai=false" >/dev/null
 SPREADSHEETS_FILE="$(request GET "/spreadsheets")"
 IMAGES_FILE="$(request GET "/images")"
 STATISTICS_FILE="$(request GET "/statistics")"

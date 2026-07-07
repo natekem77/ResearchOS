@@ -182,6 +182,42 @@ class ExperimentWorkspaceTests(unittest.TestCase):
         self.assertEqual(workspace["microscopy"], [])
         self.assertTrue(workspace["limitations"])
 
+    def test_workspace_handles_human_id_with_assets_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(tmpdir)
+            store = SQLiteStore(settings=settings)
+            store.register_asset(
+                asset_id="asset:image-only",
+                asset_type="microscopy",
+                experiment_id="NK_Expt_31",
+                title="SIX6 BRN3B image",
+                filename="NK_Expt_31_SIX6_BRN3B.tif",
+                provider="microscopy",
+                path="samples/images/NK_Expt_31_SIX6_BRN3B.tif",
+                metadata={"markers": ["SIX6", "BRN3B"]},
+            )
+            store.register_asset(
+                asset_id="asset:stats-only",
+                asset_type="spreadsheet",
+                experiment_id="NK_Expt_31",
+                title="GraphPad stats",
+                filename="NK_Expt_31_stats.csv",
+                provider="graphpad",
+                path="samples/graphpad/NK_Expt_31_stats.csv",
+                metadata={"statistics": {"variables": ["SIX6"], "rows": [{"p_value": 0.01}]}},
+            )
+            timeline = {"experiment_id": "NK_Expt_31", "title": "Timeline", "events": []}
+
+            workspace = build_experiment_workspace("NK_Expt_31", timeline, settings=settings, use_ai=False)
+
+        self.assertIsNotNone(workspace)
+        assert workspace is not None
+        self.assertEqual(workspace["experiment"]["experiment_id"], "NK_Expt_31")
+        self.assertTrue(workspace["microscopy"])
+        self.assertTrue(workspace["graphpad"])
+        self.assertTrue(workspace["statistics"])
+        self.assertIn("SIX6", workspace["markers"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -66,6 +66,47 @@ http://127.0.0.1:8001
 
 For the PI/lab walkthrough, use [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md).
 
+## ResearchOS v0.2 Preview Release
+
+ResearchOS is currently a `v0.2 preview`: a local-first, demo-ready laboratory
+knowledge system with provider scaffolds, Knowledge Graph exploration,
+Experiment Workspaces, mobile/PWA support, lab-server deployment diagnostics,
+and OneNote readiness validation.
+
+Run the demo in one command:
+
+```bash
+./scripts/demo.sh
+```
+
+Then open the dashboard:
+
+```text
+http://127.0.0.1:8001
+```
+
+Mobile/PWA access works when phones or tablets can reach the backend URL. For
+shared lab access, configure `PUBLIC_BASE_URL`, serve over HTTPS, and use
+`scripts/run_server.sh`. See [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md) and
+[docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md).
+
+OneNote integration is read-only and OneNote write-back remains disabled.
+Real UCSD OneNote sync still requires Microsoft tenant approval or a UCSD-owned
+app registration. Use [docs/UCSD_IT_APPROVAL_REQUEST.md](docs/UCSD_IT_APPROVAL_REQUEST.md)
+and [docs/ONENOTE_READINESS_CHECKLIST.md](docs/ONENOTE_READINESS_CHECKLIST.md).
+
+Still local/demo-only in this preview:
+
+- Bundled Markdown notes, sample literature, GraphPad exports, spreadsheets,
+  and image placeholders.
+- Local SQLite/Chroma state without production user accounts.
+- Temporary in-memory Microsoft token storage.
+- PWA service worker skeleton.
+- Optional AI provider configuration.
+- OneNote write-back and write permissions.
+
+See [docs/V0_2_PREVIEW_RELEASE_NOTES.md](docs/V0_2_PREVIEW_RELEASE_NOTES.md).
+
 ## ResearchOS v0.1 Demo Release
 
 This repository is prepared as a `v0.1 demo` for PI/lab discussion and UCSD IT
@@ -86,6 +127,7 @@ Run the endpoint smoke test after the backend is running:
 
 Release notes:
 
+- [docs/V0_2_PREVIEW_RELEASE_NOTES.md](docs/V0_2_PREVIEW_RELEASE_NOTES.md)
 - [docs/V0_1_DEMO_RELEASE_NOTES.md](docs/V0_1_DEMO_RELEASE_NOTES.md)
 - [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md)
 - [docs/UCSD_IT_APPROVAL_REQUEST.md](docs/UCSD_IT_APPROVAL_REQUEST.md)
