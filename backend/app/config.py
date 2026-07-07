@@ -25,6 +25,16 @@ class Settings(BaseSettings):
 
     api_host: str = Field(default="0.0.0.0", description="Host used by local API runners.")
     api_port: int = Field(default=8000, description="Port used by local API runners.")
+    public_base_url: str = Field(
+        default="",
+        description="Public URL users should open from phones, tablets, and lab computers.",
+        validation_alias=AliasChoices("PUBLIC_BASE_URL", "RESEARCHOS_PUBLIC_BASE_URL"),
+    )
+    data_dir: str = Field(
+        default="./data",
+        description="Base directory for ResearchOS local state and lab data.",
+        validation_alias=AliasChoices("DATA_DIR", "RESEARCHOS_DATA_DIR"),
+    )
 
     database_url: str = Field(
         default="sqlite:///./data/researchos.db",
@@ -103,6 +113,7 @@ class Settings(BaseSettings):
         env_prefix="RESEARCHOS_",
         case_sensitive=False,
         extra="ignore",
+        populate_by_name=True,
     )
 
 

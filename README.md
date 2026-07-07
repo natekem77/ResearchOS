@@ -104,6 +104,7 @@ Release notes:
 - [docs/KNOWLEDGE_GRAPH_ASSISTANT.md](docs/KNOWLEDGE_GRAPH_ASSISTANT.md)
 - [docs/EXPERIMENT_WORKSPACE.md](docs/EXPERIMENT_WORKSPACE.md)
 - [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md)
+- [docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md)
 
 ## What Works Today
 
@@ -127,6 +128,7 @@ Release notes:
 - Knowledge Graph powered assistant for entity and experiment questions.
 - Unified Experiment Workspace aggregating notebook, timeline, Knowledge Graph, microscopy, GraphPad, spreadsheet, statistics, literature, provenance, and summaries.
 - Mobile-first PWA foundation with responsive layout, bottom mobile navigation, manifest, and service worker skeleton.
+- Lab-server deployment foundation for shared phone/tablet/laptop access.
 - Provider status Settings page.
 - Read-only Microsoft Graph auth and OneNote sync pipeline scaffolding.
 - Optional OpenAI-compatible AI chat when configured.
@@ -236,6 +238,7 @@ port `8001`:
 ./scripts/status.sh
 ./scripts/stop.sh
 ./scripts/restart.sh
+./scripts/run_server.sh --help
 ```
 
 The scripts use `backend/.venv`, start Uvicorn on `127.0.0.1:8001`, print the
@@ -244,6 +247,8 @@ experiments with `RESEARCHOS_DEV_PORT`.
 
 For Windows setup, see [docs/INSTALL_WINDOWS_WSL.md](docs/INSTALL_WINDOWS_WSL.md).
 For common failure modes, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+For shared lab server deployment, see [docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md).
 
 ## Web UI Demo
 
@@ -354,6 +359,24 @@ http://127.0.0.1:8001
 
 Phones and tablets need a URL that can reach the FastAPI server; `127.0.0.1`
 only works on the device running the backend. See [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md).
+
+## Lab Server Deployment
+
+Run a production-like foreground server for shared lab access:
+
+```bash
+PUBLIC_BASE_URL=https://researchos.lab.example.edu ./scripts/run_server.sh --host 0.0.0.0 --port 8001
+```
+
+Check deployment status:
+
+```bash
+curl http://127.0.0.1:8001/status/deployment
+```
+
+Use HTTPS for shared mobile/PWA access and make sure
+`MICROSOFT_REDIRECT_URI` matches the deployed callback URL before using OneNote
+auth. See [docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md).
 
 ## Provider Status
 

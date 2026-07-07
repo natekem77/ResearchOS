@@ -40,6 +40,7 @@ request GET "/health" >/dev/null
 request GET "/" >/dev/null
 request GET "/service-worker.js" >/dev/null
 request GET "/frontend-assets/manifest.webmanifest" >/dev/null
+request GET "/status/deployment" >/dev/null
 request GET "/demo/status" >/dev/null
 request POST "/demo/reset" "{}" >/dev/null
 request GET "/documents" >/dev/null

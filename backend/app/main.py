@@ -735,6 +735,22 @@ class ProviderStatusResponse(BaseModel):
     drafts_ready_for_onenote: int
 
 
+class DeploymentStatusResponse(BaseModel):
+    """Deployment readiness information safe for Settings UI display."""
+
+    host: str
+    port: int
+    public_base_url: str | None
+    public_base_url_configured: bool
+    https_enabled: bool
+    data_dir: str
+    mode: str
+    server_url: str
+    mobile_pwa_url: str
+    microsoft_redirect_uri: str
+    warnings: list[str]
+
+
 class GraphEntityResponse(BaseModel):
     """Knowledge graph neighborhood for one local ResearchOS entity."""
 
@@ -1009,6 +1025,48 @@ def health() -> HealthResponse:
 
     logger.debug("Health check requested.")
     return HealthResponse(status="ok", project="ResearchOS")
+
+
+def _deployment_status() -> dict[str, object]:
+    """Return sanitized deployment information for shared-lab-server setup."""
+
+    host = settings.api_host
+    port = settings.api_port
+    public_base_url = settings.public_base_url.strip().rstrip("/")
+    server_url = public_base_url or f"http://{host}:{port}"
+    https_enabled = server_url.startswith("https://")
+    localhost_only = host in {"127.0.0.1", "localhost"}
+    warnings: list[str] = []
+    if localhost_only:
+        warnings.append("Server is bound to localhost only; phones and other lab devices cannot connect.")
+    if not public_base_url:
+        warnings.append("PUBLIC_BASE_URL is not configured; mobile/PWA users need a reachable server URL.")
+    if not https_enabled:
+        warnings.append("HTTPS is not enabled. Use HTTPS for shared lab access and production-like OneNote auth.")
+    if settings.microsoft_redirect_uri and public_base_url and not settings.microsoft_redirect_uri.startswith(public_base_url):
+        warnings.append("MICROSOFT_REDIRECT_URI does not match PUBLIC_BASE_URL; OneNote auth may fail after deployment.")
+
+    mode = "local_dev" if localhost_only or not public_base_url else "lab_server"
+    return {
+        "host": host,
+        "port": port,
+        "public_base_url": public_base_url or None,
+        "public_base_url_configured": bool(public_base_url),
+        "https_enabled": https_enabled,
+        "data_dir": settings.data_dir,
+        "mode": mode,
+        "server_url": server_url,
+        "mobile_pwa_url": server_url,
+        "microsoft_redirect_uri": settings.microsoft_redirect_uri,
+        "warnings": warnings,
+    }
+
+
+@app.get("/status/deployment", response_model=DeploymentStatusResponse, tags=["system"])
+def deployment_status() -> DeploymentStatusResponse:
+    """Return lab-server deployment status without exposing secrets."""
+
+    return DeploymentStatusResponse(**_deployment_status())
 
 
 @app.get("/status/providers", response_model=ProviderStatusResponse, tags=["system"])

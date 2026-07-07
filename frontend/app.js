@@ -10,6 +10,7 @@ const state = {
   health: null,
   auth: null,
   providerStatus: null,
+  deploymentStatus: null,
   ontology: {},
   graphStats: null,
   entryTemplates: [],
@@ -1066,6 +1067,51 @@ function renderProviderSettings() {
       status.vector_index.message,
     ),
   ].join("");
+  renderDeploymentSettings();
+}
+
+function renderDeploymentSettings() {
+  const deployment = state.deploymentStatus;
+  const cards = $("#deploymentCards");
+  const mobileCopy = $("#mobileAccessCopy");
+  if (!cards || !mobileCopy) return;
+  if (!deployment) {
+    cards.innerHTML = `<div class="empty-state">Deployment status is not available.</div>`;
+    mobileCopy.textContent = "Deployment status is not available.";
+    return;
+  }
+
+  cards.innerHTML = [
+    providerCard(
+      "Deployment mode",
+      deployment.mode === "lab_server" ? "active" : "warn",
+      deployment.mode === "lab_server" ? "Lab server mode is configured." : "Local development mode.",
+      `Bind ${deployment.host}:${deployment.port}`,
+    ),
+    providerCard(
+      "Server URL",
+      deployment.public_base_url_configured ? "configured" : "warn",
+      deployment.server_url,
+      deployment.https_enabled ? "HTTPS enabled" : "HTTPS disabled",
+    ),
+    providerCard(
+      "Data directory",
+      "active",
+      deployment.data_dir,
+      "Local-first ResearchOS state",
+    ),
+    providerCard(
+      "OneNote redirect",
+      deployment.microsoft_redirect_uri?.startsWith(deployment.public_base_url || "") && deployment.public_base_url ? "configured" : "warn",
+      deployment.microsoft_redirect_uri || "Not configured",
+      "Must match the deployed callback URL",
+    ),
+  ].join("");
+
+  const warningText = (deployment.warnings || []).length
+    ? `Warnings: ${deployment.warnings.join(" ")}`
+    : "Deployment status looks ready for shared lab access.";
+  mobileCopy.textContent = `Open ${deployment.mobile_pwa_url} from phones, tablets, or laptops on the same reachable network. Use HTTPS for installable PWA behavior and OneNote auth. ${warningText}`;
 }
 
 function renderEntryTemplates() {
@@ -2841,6 +2887,11 @@ async function loadStatus() {
     state.providerStatus = await requestJson("/status/providers");
   } catch (error) {
     state.providerStatus = null;
+  }
+  try {
+    state.deploymentStatus = await requestJson("/status/deployment");
+  } catch (error) {
+    state.deploymentStatus = null;
   }
   setStatus();
 }
