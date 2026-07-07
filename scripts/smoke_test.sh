@@ -41,6 +41,7 @@ request GET "/demo/status" >/dev/null
 request POST "/demo/reset" "{}" >/dev/null
 request GET "/documents" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
+request GET "/assets" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null
 request GET "/entry-templates" >/dev/null
@@ -60,6 +61,46 @@ request GET "/entries/$SAVED_ENTRY_ID" >/dev/null
 request GET "/entries/$SAVED_ENTRY_ID/markdown" >/dev/null
 request GET "/entries/$SAVED_ENTRY_ID/download" >/dev/null
 request DELETE "/entries/$SAVED_ENTRY_ID" >/dev/null
+
+FIRST_EXPERIMENT_ID="$(
+  python3 - "$EXPERIMENTS_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    experiments = json.load(handle)
+
+if not experiments:
+    raise SystemExit("Need at least one experiment for asset link smoke test.")
+
+print(experiments[0]["id"])
+PY
+)"
+ASSET_FILE="$(
+  request POST "/assets/register" '{"asset_type":"image","title":"Smoke Test Research Asset","filename":"smoke-test-image.tif","provider":"local","path":"data/assets/smoke-test-image.tif","metadata":{"source":"smoke_test"}}'
+)"
+ASSET_ID="$(
+  python3 - "$ASSET_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["asset_id"])
+PY
+)"
+request GET "/assets/$ASSET_ID" >/dev/null
+ASSET_LINK_BODY="$(
+  python3 - "$ASSET_ID" "$FIRST_EXPERIMENT_ID" <<'PY'
+import json
+import sys
+
+print(json.dumps({"asset_id": sys.argv[1], "experiment_id": sys.argv[2]}))
+PY
+)"
+request POST "/assets/link" "$ASSET_LINK_BODY" >/dev/null
+request GET "/experiments" >/dev/null
+request DELETE "/assets/$ASSET_ID" >/dev/null
+
 request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
 
 COMPARE_BODY="$(

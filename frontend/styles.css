@@ -288,7 +288,7 @@ button {
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 12px;
   margin: 16px 0;
 }
@@ -464,6 +464,18 @@ button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   align-items: center;
+}
+
+.asset-filters {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.asset-card {
+  display: grid;
+  gap: 8px;
 }
 
 .record-card p,
@@ -992,6 +1004,7 @@ mark {
   .settings-grid,
   .graph-stat-grid,
   .graph-layout,
+  .asset-filters,
   .saved-draft-card,
   .side-nav {
     grid-template-columns: 1fr;

@@ -121,6 +121,26 @@ class SQLiteStore:
                     ON pending_entries(status);
                 CREATE INDEX IF NOT EXISTS idx_pending_entries_updated_at
                     ON pending_entries(updated_at);
+
+                CREATE TABLE IF NOT EXISTS assets (
+                    asset_id TEXT PRIMARY KEY,
+                    asset_type TEXT NOT NULL,
+                    experiment_id TEXT,
+                    title TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_assets_type
+                    ON assets(asset_type);
+                CREATE INDEX IF NOT EXISTS idx_assets_experiment_id
+                    ON assets(experiment_id);
+                CREATE INDEX IF NOT EXISTS idx_assets_provider
+                    ON assets(provider);
                 """
             )
 
@@ -530,6 +550,151 @@ class SQLiteStore:
             cursor = connection.execute("DELETE FROM pending_entries WHERE id = ?", (entry_id,))
         return cursor.rowcount > 0
 
+    def register_asset(
+        self,
+        asset_type: str,
+        experiment_id: str | None,
+        title: str,
+        filename: str,
+        provider: str,
+        path: str,
+        metadata: dict[str, Any] | None = None,
+        asset_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a local research asset registration.
+
+        Assets are metadata records only at this milestone. ResearchOS records
+        where a file came from and how it links to experiments without parsing
+        provider-specific formats such as GraphPad, microscopy, or sequencing.
+        """
+
+        resolved_id = asset_id or f"asset:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM assets WHERE asset_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO assets (
+                        asset_id, asset_type, experiment_id, title, filename,
+                        provider, path, metadata_json
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        asset_type,
+                        experiment_id,
+                        title,
+                        filename,
+                        provider,
+                        path,
+                        json.dumps(metadata or {}, sort_keys=True),
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE assets
+                    SET asset_type = ?,
+                        experiment_id = ?,
+                        title = ?,
+                        filename = ?,
+                        provider = ?,
+                        path = ?,
+                        metadata_json = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE asset_id = ?
+                    """,
+                    (
+                        asset_type,
+                        experiment_id,
+                        title,
+                        filename,
+                        provider,
+                        path,
+                        json.dumps(metadata or {}, sort_keys=True),
+                        resolved_id,
+                    ),
+                )
+
+        saved = self.get_asset(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Asset was not saved: {resolved_id}")
+        return saved
+
+    def list_assets(
+        self,
+        asset_type: str | None = None,
+        query: str | None = None,
+        experiment_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return registered research assets, optionally filtered."""
+
+        clauses: list[str] = []
+        values: list[str] = []
+        if asset_type:
+            clauses.append("asset_type = ?")
+            values.append(asset_type)
+        if experiment_id:
+            clauses.append("experiment_id = ?")
+            values.append(experiment_id)
+        if query:
+            clauses.append("(LOWER(title) LIKE ? OR LOWER(filename) LIKE ? OR LOWER(path) LIKE ?)")
+            needle = f"%{query.lower()}%"
+            values.extend([needle, needle, needle])
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM assets
+                {where}
+                ORDER BY updated_at DESC, created_at DESC, title ASC
+                """,
+                values,
+            ).fetchall()
+        return [self._asset_row_to_dict(row) for row in rows]
+
+    def get_asset(self, asset_id: str) -> dict[str, Any] | None:
+        """Return one registered research asset."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM assets WHERE asset_id = ?",
+                (asset_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._asset_row_to_dict(row)
+
+    def link_asset(self, asset_id: str, experiment_id: str | None) -> dict[str, Any] | None:
+        """Attach an asset to an experiment, or clear the link with null."""
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE assets
+                SET experiment_id = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE asset_id = ?
+                """,
+                (experiment_id, asset_id),
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self.get_asset(asset_id)
+
+    def delete_asset(self, asset_id: str) -> bool:
+        """Delete one local asset registration."""
+
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM assets WHERE asset_id = ?", (asset_id,))
+        return cursor.rowcount > 0
+
     def _experiment_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Deserialize an experiment row into API-ready fields."""
 
@@ -545,4 +710,11 @@ class SQLiteStore:
             "sequencing",
         ]:
             record[key] = json.loads(record.pop(f"{key}_json") or "[]")
+        return record
+
+    def _asset_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Deserialize an asset row into API-ready fields."""
+
+        record = dict(row)
+        record["metadata"] = json.loads(record.pop("metadata_json") or "{}")
         return record

@@ -24,6 +24,7 @@
           <a href="#/experiments" data-nav="experiments">Experiments</a>
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
+          <a href="#/assets" data-nav="assets">Assets</a>
           <a href="#/literature" data-nav="literature">Literature</a>
           <a href="#/graph" data-nav="graph">Graph Explorer</a>
           <a href="#/compounds" data-nav="compounds">Compounds</a>
@@ -90,6 +91,10 @@
                 <strong id="metricPapers">0</strong>
               </article>
               <article class="metric-card">
+                <span>Research Assets</span>
+                <strong id="metricAssets">0</strong>
+              </article>
+              <article class="metric-card">
                 <span>Compounds</span>
                 <strong id="metricCompounds">0</strong>
               </article>
@@ -133,6 +138,8 @@
               <article class="panel status-card" id="oneNoteStatusCard"></article>
 
               <article class="panel status-card" id="literatureStatusCard"></article>
+
+              <article class="panel status-card" id="assetStatusCard"></article>
 
               <article class="panel demo-mode-card">
                 <div class="panel-heading">
@@ -354,6 +361,42 @@
               </div>
               <div class="item-list" id="documentsList"></div>
             </article>
+          </section>
+
+          <section class="view" id="assetsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Research Asset Graph</p>
+                  <h2>Assets</h2>
+                </div>
+              </div>
+              <div class="asset-filters">
+                <label class="sr-only" for="assetTypeFilter">Asset type</label>
+                <select id="assetTypeFilter">
+                  <option value="">All asset types</option>
+                  <option value="notebook">Notebook</option>
+                  <option value="protocol">Protocol</option>
+                  <option value="literature">Literature</option>
+                  <option value="image">Image</option>
+                  <option value="graphpad">GraphPad</option>
+                  <option value="spreadsheet">Spreadsheet</option>
+                  <option value="csv">CSV</option>
+                  <option value="pdf">PDF</option>
+                  <option value="presentation">Presentation</option>
+                  <option value="sequencing">Sequencing</option>
+                  <option value="microscopy">Microscopy</option>
+                  <option value="other">Other</option>
+                </select>
+                <label class="sr-only" for="assetSearchInput">Search assets</label>
+                <input id="assetSearchInput" type="search" placeholder="Search title, filename, provider, path..." />
+              </div>
+              <div class="item-list" id="assetsList"></div>
+            </article>
+          </section>
+
+          <section class="view" id="assetDetailView">
+            <article class="panel" id="assetDetail"></article>
           </section>
 
           <section class="view" id="literatureView">

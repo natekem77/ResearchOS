@@ -1,6 +1,7 @@
 const state = {
   documents: [],
   papers: [],
+  assets: [],
   experiments: [],
   selectedExperimentIds: new Set(),
   health: null,
@@ -29,6 +30,8 @@ const views = {
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
   documents: $("#documentsView"),
+  assets: $("#assetsView"),
+  assetDetail: $("#assetDetailView"),
   literature: $("#literatureView"),
   graph: $("#graphView"),
   graphDetail: $("#graphDetailView"),
@@ -187,6 +190,14 @@ function route() {
     return;
   }
 
+  if (view === "assets" && id) {
+    views.assetDetail.classList.add("active");
+    $("[data-nav='assets']").classList.add("active");
+    renderAssetDetail(decodeURIComponent(id));
+    setHeader("Assets", "Asset Detail");
+    return;
+  }
+
   if (view === "graph") {
     if (id && rest.length) {
       views.graphDetail.classList.add("active");
@@ -233,6 +244,7 @@ function route() {
     experiments: ["Experiments", "Experiment Index"],
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
+    assets: ["Assets", "Research Asset Graph"],
     literature: ["Literature", "Paper Library"],
     graph: ["Knowledge Graph", "Graph Explorer"],
     search: ["Search", "Search Research Notes"],
@@ -258,6 +270,7 @@ function renderMetrics() {
   $("#metricExperiments").textContent = state.experiments.length;
   $("#metricDocuments").textContent = state.documents.length;
   $("#metricPapers").textContent = state.papers.length;
+  $("#metricAssets").textContent = state.assets.length;
   $("#metricCompounds").textContent = allCompounds().length;
   $("#metricMarkers").textContent = allMarkers().length;
   $("#metricCellLines").textContent = (state.ontology["cell-lines"] || []).length;
@@ -363,6 +376,33 @@ function renderLiteratureStatusCard() {
   `;
 }
 
+function assetTypeCounts() {
+  return state.assets.reduce((counts, asset) => {
+    const type = asset.asset_type || "other";
+    counts[type] = (counts[type] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+function renderAssetStatusCard() {
+  const counts = assetTypeCounts();
+  const grouped = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  $("#assetStatusCard").innerHTML = `
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Research Assets</p>
+        <h2>${state.assets.length} total</h2>
+      </div>
+      <a class="status-pill ${state.assets.length ? "ok" : ""}" href="#/assets">Open assets</a>
+    </div>
+    <div class="tag-row">
+      ${grouped.length
+        ? grouped.map(([type, count]) => `<span class="tag">${escapeHtml(type)}: ${count}</span>`).join("")
+        : `<span class="muted">No assets registered yet.</span>`}
+    </div>
+  `;
+}
+
 function renderDocuments() {
   $("#documentsList").innerHTML = state.documents.length
     ? state.documents
@@ -380,6 +420,87 @@ function renderDocuments() {
         )
         .join("")
     : `<div class="empty-state">No documents have been indexed.</div>`;
+}
+
+function renderAssets() {
+  const type = $("#assetTypeFilter")?.value || "";
+  const query = ($("#assetSearchInput")?.value || "").trim().toLowerCase();
+  const assets = state.assets.filter((asset) => {
+    const matchesType = !type || asset.asset_type === type;
+    const haystack = [
+      asset.title,
+      asset.filename,
+      asset.provider,
+      asset.path,
+      asset.experiment_id,
+    ].join(" ").toLowerCase();
+    return matchesType && (!query || haystack.includes(query));
+  });
+
+  $("#assetsList").innerHTML = assets.length
+    ? assets
+        .map((asset) => {
+          const experiment = state.experiments.find((item) => item.id === asset.experiment_id);
+          return `
+            <article class="record-card asset-card">
+              <div>
+                <h3><a href="#/assets/${encodeURIComponent(asset.asset_id)}">${escapeHtml(asset.title)}</a></h3>
+                <p>${escapeHtml(asset.filename)} · ${escapeHtml(asset.provider)} · ${escapeHtml(asset.path)}</p>
+                <div class="meta">
+                  <span class="tag">${escapeHtml(asset.asset_type)}</span>
+                  <span class="tag">updated ${escapeHtml(formatDate(asset.updated_at))}</span>
+                  ${experiment ? `<a class="mini-chip" href="#/experiments/${encodeURIComponent(experiment.id)}">${escapeHtml(experiment.experiment_id || experiment.title)}</a>` : `<span class="tag">unlinked</span>`}
+                </div>
+              </div>
+            </article>
+          `;
+        })
+        .join("")
+    : `<div class="empty-state">No assets match this filter.</div>`;
+}
+
+function renderAssetDetail(assetId) {
+  const asset = state.assets.find((item) => item.asset_id === assetId);
+  if (!asset) {
+    $("#assetDetail").innerHTML = `<div class="empty-state">Asset not found.</div>`;
+    return;
+  }
+  const experiment = state.experiments.find((item) => item.id === asset.experiment_id);
+  const metadata = Object.entries(asset.metadata || {});
+  $("#assetDetail").innerHTML = `
+    <a class="inline-link" href="#/assets">Back to assets</a>
+    <div class="detail-header">
+      <div>
+        <p class="eyebrow">${escapeHtml(asset.asset_type)}</p>
+        <h2>${escapeHtml(asset.title)}</h2>
+      </div>
+      <span class="status-pill ${experiment ? "ok" : ""}">${experiment ? "Linked" : "Unlinked"}</span>
+    </div>
+    <div class="detail-grid">
+      ${detailField("Asset ID", asset.asset_id)}
+      ${detailField("Filename", asset.filename)}
+      ${detailField("Provider", asset.provider)}
+      ${detailField("Path", asset.path)}
+      ${detailField("Created", formatDate(asset.created_at))}
+      ${detailField("Updated", formatDate(asset.updated_at))}
+    </div>
+    <section class="detail-section">
+      <h3>Linked experiment</h3>
+      <div class="item-list">
+        ${experiment
+          ? `<a class="item-link" href="#/experiments/${encodeURIComponent(experiment.id)}"><strong>${escapeHtml(experiment.experiment_id || experiment.title)}</strong><span>${escapeHtml(formatDate(experiment.date))} · ${escapeHtml(experiment.source_provider)}</span></a>`
+          : `<div class="empty-state">This asset is not linked to an experiment yet.</div>`}
+      </div>
+    </section>
+    <section class="detail-section">
+      <h3>Metadata</h3>
+      <div class="detail-grid">
+        ${metadata.length
+          ? metadata.map(([key, value]) => detailField(key, formatComparisonValue(value))).join("")
+          : `<div class="empty-state">No metadata registered.</div>`}
+      </div>
+    </section>
+  `;
 }
 
 function renderPapers() {
@@ -1064,6 +1185,12 @@ function renderExperimentDetail(experimentId) {
       ${detailField("Organoid batch", experiment.organoid_batch)}
       ${detailField("Original document", source?.source_path || source?.source_id || experiment.source_document_id)}
     </div>
+    ${linkedSection("Linked assets", experiment.linked_assets || [], (asset) => `
+      <a class="item-link" href="#/assets/${encodeURIComponent(asset.asset_id)}">
+        <strong>${escapeHtml(asset.title)}</strong>
+        <span>${escapeHtml(asset.asset_type)} · ${escapeHtml(asset.filename)} · ${escapeHtml(asset.provider)}</span>
+      </a>
+    `)}
     ${tagSection("Compounds", experiment.compounds, "compounds")}
     ${tagSection("Markers", experiment.markers, "markers")}
     ${tagSection("Time points", experiment.time_points)}
@@ -1727,9 +1854,10 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
+  const [documents, papers, assets, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
+    requestJson("/assets"),
     requestJson("/experiments"),
     requestJson("/entries"),
     requestJson("/api/compounds"),
@@ -1741,6 +1869,7 @@ async function refreshData() {
   ]);
   state.documents = documents;
   state.papers = papers;
+  state.assets = assets;
   state.experiments = experiments;
   state.pendingEntries = pendingEntries;
   state.graphStats = graphStats;
@@ -1763,7 +1892,9 @@ function renderAll() {
   renderPopularCompounds();
   renderOneNoteStatusCard();
   renderLiteratureStatusCard();
+  renderAssetStatusCard();
   renderDocuments();
+  renderAssets();
   renderPapers();
   renderProtocols();
   renderExperimentsTable();
@@ -1988,6 +2119,9 @@ $("#settingsApprovalButton").addEventListener("click", () => {
   const approvalInfo = $("#approvalInfo");
   approvalInfo.hidden = !approvalInfo.hidden;
 });
+
+$("#assetTypeFilter")?.addEventListener("change", renderAssets);
+$("#assetSearchInput")?.addEventListener("input", renderAssets);
 
 bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchResults");
 bindSearch("#searchForm", "#searchInput", "#searchResults");

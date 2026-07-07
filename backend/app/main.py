@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
@@ -303,6 +303,57 @@ class PendingEntryResponse(PendingEntrySummaryResponse):
     markdown: str
 
 
+AssetType = Literal[
+    "notebook",
+    "protocol",
+    "literature",
+    "image",
+    "graphpad",
+    "spreadsheet",
+    "csv",
+    "pdf",
+    "presentation",
+    "sequencing",
+    "microscopy",
+    "other",
+]
+
+
+class AssetRegisterRequest(BaseModel):
+    """Local research asset registration request."""
+
+    asset_id: str | None = None
+    asset_type: AssetType = "other"
+    experiment_id: str | None = None
+    title: str
+    filename: str
+    provider: str = "local"
+    path: str
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class AssetLinkRequest(BaseModel):
+    """Request to link or unlink an asset from an experiment."""
+
+    asset_id: str
+    experiment_id: str | None = None
+
+
+class AssetResponse(BaseModel):
+    """Registered research asset metadata."""
+
+    asset_id: str
+    asset_type: AssetType
+    experiment_id: str | None = None
+    title: str
+    filename: str
+    provider: str
+    path: str
+    created_at: str
+    updated_at: str
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
 class ExtractRequest(BaseModel):
     """Request body for structured experiment extraction."""
 
@@ -339,6 +390,7 @@ class ExperimentResponse(BaseModel):
     notes: str | None = None
     conclusions: str | None = None
     extracted_at: str
+    linked_assets: list[AssetResponse] = Field(default_factory=list)
 
 
 class ExperimentCompareRequest(BaseModel):
@@ -1282,12 +1334,98 @@ def assistant_compare_literature(request: AssistantRequest) -> LiteratureCompari
     return LiteratureComparisonResponse(**answer.__dict__)
 
 
+def _experiment_with_assets(
+    store: SQLiteStore,
+    experiment: dict[str, object],
+) -> dict[str, object]:
+    """Attach registered assets to an experiment API record."""
+
+    return experiment | {"linked_assets": store.list_assets(experiment_id=str(experiment["id"]))}
+
+
+def _validate_asset_experiment(store: SQLiteStore, experiment_id: str | None) -> None:
+    """Ensure an asset link targets a known experiment when provided."""
+
+    if experiment_id and store.get_experiment(experiment_id) is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+
+
+@app.get("/assets", response_model=list[AssetResponse], tags=["assets"])
+def assets(
+    asset_type: AssetType | None = Query(default=None),
+    query: str | None = Query(default=None),
+) -> list[AssetResponse]:
+    """List registered research assets with optional type/search filters."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        AssetResponse(**asset)
+        for asset in store.list_assets(asset_type=asset_type, query=query)
+    ]
+
+
+@app.post("/assets/register", response_model=AssetResponse, tags=["assets"])
+def register_asset(request: AssetRegisterRequest) -> AssetResponse:
+    """Register a local research asset without parsing provider-specific content."""
+
+    store = SQLiteStore(settings=settings)
+    _validate_asset_experiment(store, request.experiment_id)
+    asset = store.register_asset(
+        asset_id=request.asset_id,
+        asset_type=request.asset_type,
+        experiment_id=request.experiment_id,
+        title=request.title.strip(),
+        filename=request.filename.strip(),
+        provider=request.provider.strip() or "local",
+        path=request.path.strip(),
+        metadata=request.metadata,
+    )
+    return AssetResponse(**asset)
+
+
+@app.post("/assets/link", response_model=AssetResponse, tags=["assets"])
+def link_asset(request: AssetLinkRequest) -> AssetResponse:
+    """Link a registered asset to an experiment, or unlink it with null."""
+
+    store = SQLiteStore(settings=settings)
+    _validate_asset_experiment(store, request.experiment_id)
+    asset = store.link_asset(request.asset_id, request.experiment_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"Asset not found: {request.asset_id}")
+    return AssetResponse(**asset)
+
+
+@app.get("/assets/{asset_id}", response_model=AssetResponse, tags=["assets"])
+def asset_detail(asset_id: str) -> AssetResponse:
+    """Return one registered research asset."""
+
+    store = SQLiteStore(settings=settings)
+    asset = store.get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+    return AssetResponse(**asset)
+
+
+@app.delete("/assets/{asset_id}", tags=["assets"])
+def delete_asset(asset_id: str) -> dict[str, object]:
+    """Delete a local asset registration without deleting the underlying file."""
+
+    store = SQLiteStore(settings=settings)
+    deleted = store.delete_asset(asset_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+    return {"deleted": True, "asset_id": asset_id}
+
+
 @app.get("/experiments", response_model=list[ExperimentResponse], tags=["experiments"])
 def experiments() -> list[ExperimentResponse]:
     """List structured experiments extracted from research documents."""
 
     store = SQLiteStore(settings=settings)
-    return [ExperimentResponse(**experiment) for experiment in store.list_experiments()]
+    return [
+        ExperimentResponse(**_experiment_with_assets(store, experiment))
+        for experiment in store.list_experiments()
+    ]
 
 
 @app.post("/experiments/compare", response_model=ExperimentCompareResponse, tags=["experiments"])
@@ -1308,7 +1446,7 @@ def experiment_compare(request: ExperimentCompareRequest) -> ExperimentCompareRe
         if experiment is None:
             missing_ids.append(experiment_id)
         else:
-            selected_experiments.append(experiment)
+            selected_experiments.append(_experiment_with_assets(store, experiment))
 
     if missing_ids:
         raise HTTPException(status_code=404, detail=f"Experiment not found: {', '.join(missing_ids)}")
@@ -1330,7 +1468,7 @@ def experiment_detail(experiment_id: str) -> ExperimentResponse:
     if experiment is None:
         raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
 
-    return ExperimentResponse(**experiment)
+    return ExperimentResponse(**_experiment_with_assets(store, experiment))
 
 
 @app.get("/ontology", tags=["ontology"])

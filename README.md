@@ -90,6 +90,7 @@ Release notes:
 - [docs/DEMO_CHECKLIST.md](docs/DEMO_CHECKLIST.md)
 - [docs/UCSD_IT_APPROVAL_REQUEST.md](docs/UCSD_IT_APPROVAL_REQUEST.md)
 - [docs/LAB_NOTE_TEMPLATES.md](docs/LAB_NOTE_TEMPLATES.md)
+- [docs/ASSET_GRAPH.md](docs/ASSET_GRAPH.md)
 
 ## What Works Today
 
@@ -100,6 +101,7 @@ Release notes:
 - Structured experiment extraction.
 - Retinal organoid entity pages for compounds, markers, cell lines, and batches.
 - Knowledge Graph Explorer for connected experiments, papers, protocols, and entities.
+- Research Asset Graph registration/linking for notebooks, protocols, literature, images, GraphPad files, spreadsheets, PDFs, presentations, sequencing, microscopy, and other local assets.
 - Lab notebook templates for polished structured entry drafts from dictation.
 - Pending notebook-entry drafts saved locally before OneNote write-back approval.
 - Local literature ingestion for paper notes and PDFs.
