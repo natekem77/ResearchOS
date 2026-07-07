@@ -3,7 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0f6b5b" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="ResearchOS" />
     <title>ResearchOS</title>
+    <link rel="manifest" href="/frontend-assets/manifest.webmanifest" />
+    <link rel="icon" href="/frontend-assets/icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/frontend-assets/icons/icon.svg" />
     <link rel="stylesheet" href="/frontend-assets/styles.css" />
   </head>
   <body>
@@ -651,6 +657,14 @@
         </main>
       </div>
     </div>
+
+    <nav class="mobile-bottom-nav" aria-label="Mobile primary navigation">
+      <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+      <a href="#/experiments" data-nav="experiments">Experiments</a>
+      <a href="#/new-experiment" data-nav="new-experiment">New Entry</a>
+      <a href="#/chat" data-nav="chat">Assistant</a>
+      <a href="#/graph" data-nav="graph">Graph</a>
+    </nav>
 
     <script src="/frontend-assets/app.js" defer></script>
   </body>

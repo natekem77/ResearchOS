@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ResearchOS maskable icon">
+  <rect width="512" height="512" fill="#0f6b5b"/>
+  <circle cx="256" cy="256" r="202" fill="#094b40"/>
+  <path d="M135 145h141c71 0 110 36 110 94 0 38-18 68-50 83l61 91h-87l-50-77h-52v77h-73V145Zm73 61v73h62c27 0 41-14 41-36 0-24-14-37-41-37h-62Z" fill="#ffffff"/>
+  <circle cx="376" cy="142" r="34" fill="#59c2ad"/>
+</svg>

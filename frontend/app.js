@@ -71,6 +71,13 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/service-worker.js").catch(() => undefined);
+  });
+}
+
 function formatDate(value) {
   if (!value) return "No date";
   if (/^\d+$/.test(String(value))) {
@@ -177,17 +184,21 @@ function newestPaper() {
   return [...state.papers].sort((a, b) => String(b.ingested_at).localeCompare(String(a.ingested_at)))[0];
 }
 
+function activateNav(name) {
+  $$(`[data-nav='${name}']`).forEach((node) => node.classList.add("active"));
+}
+
 function route() {
   const pathView = window.location.pathname.replace(/^\//, "");
   const raw = window.location.hash.replace(/^#\/?/, "") || pathView || "dashboard";
   const [view, id, ...rest] = raw.split("/");
 
   $$(".view").forEach((node) => node.classList.remove("active"));
-  $$(".side-nav a").forEach((node) => node.classList.remove("active"));
+  $$(".side-nav a, .mobile-bottom-nav a").forEach((node) => node.classList.remove("active"));
 
   if (view === "experiments" && id) {
     views.experimentDetail.classList.add("active");
-    $("[data-nav='experiments']").classList.add("active");
+    activateNav("experiments");
     if (rest[0] === "workspace") {
       renderExperimentWorkspace(decodeURIComponent(id));
       setHeader("Experiment Workspace", "Unified research record");
@@ -200,7 +211,7 @@ function route() {
 
   if (view === "saved-drafts" && id) {
     views.savedDraftDetail.classList.add("active");
-    $("[data-nav='saved-drafts']").classList.add("active");
+    activateNav("saved-drafts");
     renderSavedDraftDetail(decodeURIComponent(id));
     setHeader("Saved Drafts", "Draft Export");
     return;
@@ -208,7 +219,7 @@ function route() {
 
   if (view === "assets" && id) {
     views.assetDetail.classList.add("active");
-    $("[data-nav='assets']").classList.add("active");
+    activateNav("assets");
     renderAssetDetail(decodeURIComponent(id));
     setHeader("Assets", "Asset Detail");
     return;
@@ -217,14 +228,14 @@ function route() {
   if (view === "graph") {
     if (id && rest.length) {
       views.graphDetail.classList.add("active");
-      $("[data-nav='graph']").classList.add("active");
+      activateNav("graph");
       const entityName = decodeURIComponent(rest.join("/"));
       renderGraphEntity(decodeURIComponent(id), entityName);
       setHeader("Knowledge Graph", entityName);
       return;
     }
     views.graph.classList.add("active");
-    $("[data-nav='graph']").classList.add("active");
+    activateNav("graph");
     renderGraphExplorer();
     setHeader("Knowledge Graph", "Graph Explorer");
     return;
@@ -234,15 +245,13 @@ function route() {
     const entityType = view;
     if (id) {
       views.entityDetail.classList.add("active");
-      const nav = $(`[data-nav='${entityType}']`);
-      if (nav) nav.classList.add("active");
+      activateNav(entityType);
       renderEntityDetail(entityType, decodeURIComponent(id));
       setHeader("Retinal Ontology", decodeURIComponent(id));
       return;
     }
     views.entityList.classList.add("active");
-    const nav = $(`[data-nav='${entityType}']`);
-    if (nav) nav.classList.add("active");
+    activateNav(entityType);
     renderEntityList(entityType);
     setHeader("Retinal Ontology", entityTitle(entityType));
     return;
@@ -250,8 +259,7 @@ function route() {
 
   const target = views[view] ? view : "dashboard";
   views[target].classList.add("active");
-  const nav = $(`[data-nav='${target}']`);
-  if (nav) nav.classList.add("active");
+  activateNav(target);
 
   const titles = {
     dashboard: ["Dashboard", "ResearchOS Dashboard"],
@@ -3156,6 +3164,7 @@ bindSuggestedPrompts();
 bindAssistantModeToggle();
 bindKnowledgeGraphQuestionButtons();
 setupVoiceDictation();
+registerServiceWorker();
 
 window.addEventListener("hashchange", route);
 

@@ -103,6 +103,7 @@ Release notes:
 - [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md)
 - [docs/KNOWLEDGE_GRAPH_ASSISTANT.md](docs/KNOWLEDGE_GRAPH_ASSISTANT.md)
 - [docs/EXPERIMENT_WORKSPACE.md](docs/EXPERIMENT_WORKSPACE.md)
+- [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md)
 
 ## What Works Today
 
@@ -125,6 +126,7 @@ Release notes:
 - Scientific research assistant with local fallback answers.
 - Knowledge Graph powered assistant for entity and experiment questions.
 - Unified Experiment Workspace aggregating notebook, timeline, Knowledge Graph, microscopy, GraphPad, spreadsheet, statistics, literature, provenance, and summaries.
+- Mobile-first PWA foundation with responsive layout, bottom mobile navigation, manifest, and service worker skeleton.
 - Provider status Settings page.
 - Read-only Microsoft Graph auth and OneNote sync pipeline scaffolding.
 - Optional OpenAI-compatible AI chat when configured.
@@ -341,6 +343,17 @@ spreadsheets, statistics, literature, Knowledge Graph entities, conclusions,
 limitations, provenance, and AI/local summary.
 
 See [docs/EXPERIMENT_WORKSPACE.md](docs/EXPERIMENT_WORKSPACE.md).
+
+## Mobile PWA
+
+ResearchOS can be installed from a mobile browser as a PWA shell:
+
+```text
+http://127.0.0.1:8001
+```
+
+Phones and tablets need a URL that can reach the FastAPI server; `127.0.0.1`
+only works on the device running the backend. See [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md).
 
 ## Provider Status
 

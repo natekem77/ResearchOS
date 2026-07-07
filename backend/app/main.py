@@ -1190,6 +1190,16 @@ def homepage() -> FileResponse:
     return FileResponse(index_path)
 
 
+@app.get("/service-worker.js", include_in_schema=False)
+def service_worker() -> FileResponse:
+    """Serve the PWA service worker at root scope."""
+
+    worker_path = FRONTEND_DIR / "service-worker.js"
+    if not worker_path.exists():
+        raise HTTPException(status_code=404, detail="ResearchOS service worker is not available.")
+    return FileResponse(worker_path, media_type="application/javascript")
+
+
 @app.get("/auth/login", tags=["auth"])
 def auth_login() -> RedirectResponse:
     """Redirect the user to Microsoft login for delegated Graph consent."""
