@@ -105,6 +105,7 @@ Release notes:
 - [docs/EXPERIMENT_WORKSPACE.md](docs/EXPERIMENT_WORKSPACE.md)
 - [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md)
 - [docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md)
+- [docs/ONENOTE_READINESS_CHECKLIST.md](docs/ONENOTE_READINESS_CHECKLIST.md)
 
 ## What Works Today
 
@@ -372,11 +373,13 @@ Check deployment status:
 
 ```bash
 curl http://127.0.0.1:8001/status/deployment
+curl http://127.0.0.1:8001/status/onenote-readiness
 ```
 
 Use HTTPS for shared mobile/PWA access and make sure
 `MICROSOFT_REDIRECT_URI` matches the deployed callback URL before using OneNote
-auth. See [docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md).
+auth. See [docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md) and
+[docs/ONENOTE_READINESS_CHECKLIST.md](docs/ONENOTE_READINESS_CHECKLIST.md).
 
 ## Provider Status
 
@@ -388,7 +391,16 @@ curl http://127.0.0.1:8001/status/providers
 
 It reports backend health, Markdown demo provider status, Microsoft Graph
 OneNote auth state, OneNote sync availability, AI provider configuration, local
-database status, vector index status, document count, and experiment count.
+database status, and document/experiment counts. For detailed Microsoft Graph
+redirect validation, use:
+
+```bash
+curl http://127.0.0.1:8001/status/onenote-readiness
+```
+
+This reports the current redirect URI, the Azure redirect URI to register, the
+required read-only delegated permissions, UCSD approval guidance, and confirms
+that OneNote write-back remains disabled.
 
 The Settings page uses this endpoint to show integration cards and actions:
 

@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, Response
@@ -751,6 +752,29 @@ class DeploymentStatusResponse(BaseModel):
     warnings: list[str]
 
 
+class OneNoteReadinessResponse(BaseModel):
+    """OneNote auth/sync readiness details safe for Settings UI display."""
+
+    microsoft_client_id_configured: bool
+    tenant_configured: bool
+    redirect_uri_configured: bool
+    current_redirect_uri: str | None
+    required_azure_redirect_uri: str
+    configured_scopes: list[str]
+    required_scopes: list[str]
+    missing_required_scopes: list[str]
+    current_auth_status: dict[str, object]
+    current_deployment_public_url: str | None
+    redirect_uri_compatible: bool
+    redirect_uri_message: str
+    ucsd_approval_status: str
+    ucsd_approval_message: str
+    read_only_sync_ready: bool
+    read_only_sync_message: str
+    write_back_disabled: bool
+    write_back_message: str
+
+
 class GraphEntityResponse(BaseModel):
     """Knowledge graph neighborhood for one local ResearchOS entity."""
 
@@ -1062,11 +1086,154 @@ def _deployment_status() -> dict[str, object]:
     }
 
 
+def _normalized_scope_set(scopes: list[str]) -> set[str]:
+    """Normalize Graph scopes for case-insensitive readiness comparison."""
+
+    return {scope.strip().lower() for scope in scopes if scope.strip()}
+
+
+def _expected_onenote_redirect_uri(deployment: dict[str, object]) -> str:
+    """Return the Azure redirect URI that should match the current mode."""
+
+    public_base_url = str(deployment.get("public_base_url") or "").strip().rstrip("/")
+    if public_base_url:
+        return f"{public_base_url}/auth/callback"
+    return settings.microsoft_redirect_uri or "http://localhost:8001/auth/callback"
+
+
+def _redirect_uri_readiness(current_redirect_uri: str, expected_redirect_uri: str, deployment: dict[str, object]) -> tuple[bool, str]:
+    """Validate whether the configured callback fits local/dev/server mode."""
+
+    if not current_redirect_uri:
+        return False, "MICROSOFT_REDIRECT_URI is not configured."
+
+    parsed_current = urlparse(current_redirect_uri)
+    parsed_expected = urlparse(expected_redirect_uri)
+    if parsed_current.path.rstrip("/") != "/auth/callback":
+        return False, "MICROSOFT_REDIRECT_URI must end with /auth/callback."
+
+    public_base_url = str(deployment.get("public_base_url") or "").strip().rstrip("/")
+    if public_base_url:
+        if current_redirect_uri.rstrip("/") == expected_redirect_uri.rstrip("/"):
+            return True, "Redirect URI matches PUBLIC_BASE_URL for lab-server/PWA mode."
+        return (
+            False,
+            "MICROSOFT_REDIRECT_URI must exactly match the Azure redirect URI for this PUBLIC_BASE_URL.",
+        )
+
+    localhost_hosts = {"localhost", "127.0.0.1"}
+    if parsed_current.scheme == "http" and parsed_current.hostname in localhost_hosts:
+        return True, "Redirect URI is compatible with local development mode."
+
+    if parsed_current.scheme == "https" and parsed_expected.netloc and parsed_current.netloc == parsed_expected.netloc:
+        return True, "Redirect URI appears compatible with the configured deployment host."
+
+    return False, "Redirect URI does not look compatible with local development or the configured public URL."
+
+
+def _onenote_readiness() -> dict[str, object]:
+    """Build a safe OneNote readiness report without changing auth state."""
+
+    deployment = _deployment_status()
+    token_status = get_token_status(settings=settings)
+    configured_scopes = settings.graph_scope_list
+    required_scopes = ["User.Read", "Notes.Read", "openid", "profile", "offline_access"]
+    configured_scope_set = _normalized_scope_set(configured_scopes)
+    missing_required_scopes = [
+        scope for scope in required_scopes if scope.lower() not in configured_scope_set
+    ]
+    expected_redirect_uri = _expected_onenote_redirect_uri(deployment)
+    redirect_compatible, redirect_message = _redirect_uri_readiness(
+        current_redirect_uri=settings.microsoft_redirect_uri,
+        expected_redirect_uri=expected_redirect_uri,
+        deployment=deployment,
+    )
+
+    client_id_configured = bool(settings.microsoft_client_id.strip())
+    tenant_configured = bool(settings.microsoft_tenant_id.strip())
+    redirect_uri_configured = bool(settings.microsoft_redirect_uri.strip())
+    notes_read_configured = "notes.read" in configured_scope_set
+
+    if token_status.authenticated:
+        ucsd_status = "connected"
+        ucsd_message = "Microsoft Graph is connected for the current local session."
+    elif not client_id_configured:
+        ucsd_status = "not_configured"
+        ucsd_message = "Register or obtain a Microsoft Entra app before OneNote login."
+    elif settings.microsoft_tenant_id.strip().lower() == "common":
+        ucsd_status = "prototype_common_tenant"
+        ucsd_message = (
+            "Tenant is set to common for prototype login. UCSD deployment should use an approved "
+            "UCSD tenant app or UCSD-owned registration."
+        )
+    else:
+        ucsd_status = "pending_or_not_connected"
+        ucsd_message = (
+            "App settings exist, but Graph login is not connected. If UCSD blocks consent, "
+            "request tenant approval for delegated read-only Notes.Read access."
+        )
+
+    read_only_ready = (
+        client_id_configured
+        and tenant_configured
+        and redirect_uri_configured
+        and redirect_compatible
+        and notes_read_configured
+        and token_status.authenticated
+    )
+    if read_only_ready:
+        read_only_message = "Read-only OneNote sync is ready for this session."
+    elif not token_status.authenticated:
+        read_only_message = "Read-only sync is not ready until Microsoft Graph login succeeds."
+    elif not notes_read_configured:
+        read_only_message = "Read-only sync requires the Notes.Read delegated permission."
+    elif not redirect_compatible:
+        read_only_message = "Read-only sync is blocked by redirect URI mismatch."
+    else:
+        read_only_message = "Read-only sync needs completed Microsoft app configuration."
+
+    return {
+        "microsoft_client_id_configured": client_id_configured,
+        "tenant_configured": tenant_configured,
+        "redirect_uri_configured": redirect_uri_configured,
+        "current_redirect_uri": settings.microsoft_redirect_uri or None,
+        "required_azure_redirect_uri": expected_redirect_uri,
+        "configured_scopes": configured_scopes,
+        "required_scopes": required_scopes,
+        "missing_required_scopes": missing_required_scopes,
+        "current_auth_status": {
+            "authenticated": token_status.authenticated,
+            "expires_at": token_status.expires_at,
+            "scopes": token_status.scopes,
+            "token_type": token_status.token_type,
+        },
+        "current_deployment_public_url": deployment.get("public_base_url"),
+        "redirect_uri_compatible": redirect_compatible,
+        "redirect_uri_message": redirect_message,
+        "ucsd_approval_status": ucsd_status,
+        "ucsd_approval_message": ucsd_message,
+        "read_only_sync_ready": read_only_ready,
+        "read_only_sync_message": read_only_message,
+        "write_back_disabled": True,
+        "write_back_message": (
+            "OneNote write-back is intentionally disabled. Future create/write support would "
+            "need separate UCSD IT approval for Notes.Create or Notes.ReadWrite."
+        ),
+    }
+
+
 @app.get("/status/deployment", response_model=DeploymentStatusResponse, tags=["system"])
 def deployment_status() -> DeploymentStatusResponse:
     """Return lab-server deployment status without exposing secrets."""
 
     return DeploymentStatusResponse(**_deployment_status())
+
+
+@app.get("/status/onenote-readiness", response_model=OneNoteReadinessResponse, tags=["system"])
+def onenote_readiness() -> OneNoteReadinessResponse:
+    """Return OneNote local/server/PWA readiness without exposing secrets."""
+
+    return OneNoteReadinessResponse(**_onenote_readiness())
 
 
 @app.get("/status/providers", response_model=ProviderStatusResponse, tags=["system"])

@@ -11,6 +11,7 @@ const state = {
   auth: null,
   providerStatus: null,
   deploymentStatus: null,
+  oneNoteReadiness: null,
   ontology: {},
   graphStats: null,
   entryTemplates: [],
@@ -1008,6 +1009,7 @@ function statusLabel(status) {
     auth_required: "Not connected",
     pending_ucsd_approval: "Pending UCSD approval",
     not_configured: "Not configured",
+    warn: "Needs attention",
     error: "Error",
   }[status] || String(status || "Unknown");
 }
@@ -1033,6 +1035,8 @@ function renderProviderSettings() {
   const status = state.providerStatus;
   if (!status) {
     $("#providerCards").innerHTML = `<div class="empty-state">Provider status is not available.</div>`;
+    renderOneNoteReadinessSettings();
+    renderDeploymentSettings();
     return;
   }
 
@@ -1067,7 +1071,68 @@ function renderProviderSettings() {
       status.vector_index.message,
     ),
   ].join("");
+  renderOneNoteReadinessSettings();
   renderDeploymentSettings();
+}
+
+function renderOneNoteReadinessSettings() {
+  const readiness = state.oneNoteReadiness;
+  const cards = $("#oneNoteReadinessCards");
+  const copy = $("#oneNoteReadinessCopy");
+  if (!cards || !copy) return;
+  if (!readiness) {
+    cards.innerHTML = `<div class="empty-state">OneNote readiness status is not available.</div>`;
+    copy.textContent = "OneNote readiness status is not available.";
+    return;
+  }
+
+  const readOnlyStatus = readiness.read_only_sync_ready ? "available" : "warn";
+  const redirectStatus = readiness.redirect_uri_compatible ? "configured" : "warn";
+  const clientStatus = readiness.microsoft_client_id_configured ? "configured" : "not_configured";
+  const permissionStatus = readiness.missing_required_scopes.length ? "warn" : "configured";
+
+  cards.innerHTML = [
+    providerCard(
+      "OneNote Readiness",
+      readOnlyStatus,
+      readiness.read_only_sync_message,
+      readiness.ucsd_approval_message,
+    ),
+    providerCard(
+      "Azure app",
+      clientStatus,
+      readiness.microsoft_client_id_configured ? "Microsoft client ID is configured." : "Microsoft client ID is not configured.",
+      readiness.tenant_configured ? "Tenant configured" : "Tenant missing",
+    ),
+    providerCard(
+      "Current redirect URI",
+      redirectStatus,
+      readiness.current_redirect_uri || "Not configured",
+      readiness.redirect_uri_message,
+    ),
+    providerCard(
+      "Required Azure redirect URI",
+      redirectStatus,
+      readiness.required_azure_redirect_uri,
+      "Register this exact callback URI in Microsoft Entra.",
+    ),
+    providerCard(
+      "Delegated permissions",
+      permissionStatus,
+      readiness.required_scopes.join(", "),
+      readiness.missing_required_scopes.length
+        ? `Missing from GRAPH_SCOPES: ${readiness.missing_required_scopes.join(", ")}`
+        : "Configured scopes include the read-only MVP permissions.",
+    ),
+    providerCard(
+      "Future write-back",
+      "warn",
+      readiness.write_back_message,
+      "Current MVP remains read-only.",
+    ),
+  ].join("");
+
+  copy.textContent = `Read-only MVP uses delegated ${readiness.required_scopes.join(", ")}. Future OneNote write-back remains disabled and would require separate Notes.Create or Notes.ReadWrite approval.`;
 }
 
 function renderDeploymentSettings() {
@@ -2892,6 +2957,11 @@ async function loadStatus() {
     state.deploymentStatus = await requestJson("/status/deployment");
   } catch (error) {
     state.deploymentStatus = null;
+  }
+  try {
+    state.oneNoteReadiness = await requestJson("/status/onenote-readiness");
+  } catch (error) {
+    state.oneNoteReadiness = null;
   }
   setStatus();
 }
