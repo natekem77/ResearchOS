@@ -16,6 +16,7 @@ from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
+from app.graphpad_provider import graphpad_status, scan_graphpad_assets
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
 from app.literature_comparison import compare_lab_with_literature
@@ -354,6 +355,37 @@ class AssetResponse(BaseModel):
     created_at: str
     updated_at: str
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class GraphPadFolderStatusResponse(BaseModel):
+    """Configured GraphPad scan folder status."""
+
+    path: str
+    exists: bool
+
+
+class GraphPadStatusResponse(BaseModel):
+    """GraphPad provider readiness and local asset count."""
+
+    provider: Literal["graphpad"]
+    status: str
+    folders: list[GraphPadFolderStatusResponse]
+    supported_extensions: list[str]
+    asset_count: int
+    message: str
+
+
+class GraphPadScanResponse(BaseModel):
+    """Summary of a GraphPad provider scan."""
+
+    provider: Literal["graphpad"]
+    folders: list[str]
+    supported_extensions: list[str]
+    files_found: int
+    assets_registered: int
+    assets_skipped: int
+    registered_assets: list[AssetResponse]
+    skipped_assets: list[AssetResponse]
 
 
 class ExtractRequest(BaseModel):
@@ -1380,6 +1412,37 @@ def _asset_with_link_info(
         "link_status": "resolved",
         "linked_experiment": _asset_experiment_summary(experiment),
     }
+
+
+@app.get("/providers/graphpad/status", response_model=GraphPadStatusResponse, tags=["providers"])
+def graphpad_provider_status() -> GraphPadStatusResponse:
+    """Return local GraphPad provider configuration and asset count."""
+
+    return GraphPadStatusResponse(**graphpad_status(settings=settings))
+
+
+@app.post("/providers/graphpad/scan", response_model=GraphPadScanResponse, tags=["providers"])
+def graphpad_provider_scan() -> GraphPadScanResponse:
+    """Scan configured GraphPad folders and register discovered files as assets."""
+
+    store = SQLiteStore(settings=settings)
+    result = scan_graphpad_assets(settings=settings)
+    return GraphPadScanResponse(
+        provider=result.provider,
+        folders=result.folders,
+        supported_extensions=result.supported_extensions,
+        files_found=result.files_found,
+        assets_registered=result.assets_registered,
+        assets_skipped=result.assets_skipped,
+        registered_assets=[
+            AssetResponse(**_asset_with_link_info(store, asset))
+            for asset in result.registered_assets
+        ],
+        skipped_assets=[
+            AssetResponse(**_asset_with_link_info(store, asset))
+            for asset in result.skipped_assets
+        ],
+    )
 
 
 @app.get("/assets", response_model=list[AssetResponse], tags=["assets"])

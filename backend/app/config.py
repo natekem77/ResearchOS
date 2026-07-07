@@ -34,6 +34,11 @@ class Settings(BaseSettings):
         default="./data/chroma",
         description="Local persistence directory for ChromaDB collections.",
     )
+    graphpad_scan_folders: str = Field(
+        default="./data/graphpad,./samples/graphpad",
+        description="Comma-separated local folders scanned for GraphPad-related assets.",
+        validation_alias=AliasChoices("GRAPHPAD_SCAN_FOLDERS", "RESEARCHOS_GRAPHPAD_SCAN_FOLDERS"),
+    )
 
     microsoft_client_id: str = Field(
         default="",

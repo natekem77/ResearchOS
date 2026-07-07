@@ -712,6 +712,18 @@ class SQLiteStore:
             return None
         return self._asset_row_to_dict(row)
 
+    def get_asset_by_provider_path(self, provider: str, path: str) -> dict[str, Any] | None:
+        """Return one asset by provider/path for duplicate prevention."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM assets WHERE provider = ? AND path = ?",
+                (provider, path),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._asset_row_to_dict(row)
+
     def link_asset(self, asset_id: str, experiment_id: str | None) -> dict[str, Any] | None:
         """Attach an asset to an experiment, or clear the link with null."""
 

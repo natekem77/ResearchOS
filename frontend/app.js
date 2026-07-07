@@ -266,11 +266,16 @@ function protocolDocuments() {
   return state.documents.filter((document) => /protocol/i.test(document.title));
 }
 
+function graphPadAssets() {
+  return state.assets.filter((asset) => asset.provider === "graphpad");
+}
+
 function renderMetrics() {
   $("#metricExperiments").textContent = state.experiments.length;
   $("#metricDocuments").textContent = state.documents.length;
   $("#metricPapers").textContent = state.papers.length;
   $("#metricAssets").textContent = state.assets.length;
+  $("#metricGraphPadAssets").textContent = graphPadAssets().length;
   $("#metricCompounds").textContent = allCompounds().length;
   $("#metricMarkers").textContent = allMarkers().length;
   $("#metricCellLines").textContent = (state.ontology["cell-lines"] || []).length;
@@ -387,6 +392,7 @@ function assetTypeCounts() {
 function renderAssetStatusCard() {
   const counts = assetTypeCounts();
   const grouped = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const graphpadCount = graphPadAssets().length;
   $("#assetStatusCard").innerHTML = `
     <div class="panel-heading">
       <div>
@@ -395,6 +401,7 @@ function renderAssetStatusCard() {
       </div>
       <a class="status-pill ${state.assets.length ? "ok" : ""}" href="#/assets">Open assets</a>
     </div>
+    <p class="card-copy">${graphpadCount} GraphPad provider asset${graphpadCount === 1 ? "" : "s"} registered.</p>
     <div class="tag-row">
       ${grouped.length
         ? grouped.map(([type, count]) => `<span class="tag">${escapeHtml(type)}: ${count}</span>`).join("")
@@ -561,6 +568,19 @@ async function linkAssetToExperiment(assetId, experimentReference) {
       : "Asset unlinked.";
   }
   recordActivity("Asset link updated", `${payload.title} · ${payload.link_status}`);
+}
+
+async function scanGraphPadAssets() {
+  const target = $("#graphPadScanStatus");
+  if (target) {
+    target.textContent = "Scanning configured GraphPad folders...";
+  }
+  const result = await requestJson("/providers/graphpad/scan", { method: "POST" });
+  await refreshData();
+  if (target) {
+    target.textContent = `GraphPad scan found ${result.files_found} file(s), registered ${result.assets_registered}, skipped ${result.assets_skipped}.`;
+  }
+  recordActivity("GraphPad scan", `${result.assets_registered} registered · ${result.assets_skipped} skipped`);
 }
 
 function renderPapers() {
@@ -2182,6 +2202,11 @@ $("#settingsApprovalButton").addEventListener("click", () => {
 
 $("#assetTypeFilter")?.addEventListener("change", renderAssets);
 $("#assetSearchInput")?.addEventListener("input", renderAssets);
+$("#scanGraphPadButton")?.addEventListener("click", () => {
+  scanGraphPadAssets().catch((error) => {
+    $("#graphPadScanStatus").textContent = `GraphPad scan failed: ${error.message}`;
+  });
+});
 
 bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchResults");
 bindSearch("#searchForm", "#searchInput", "#searchResults");

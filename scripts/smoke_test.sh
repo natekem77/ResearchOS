@@ -41,6 +41,8 @@ request GET "/demo/status" >/dev/null
 request POST "/demo/reset" "{}" >/dev/null
 request GET "/documents" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
+request GET "/providers/graphpad/status" >/dev/null
+request POST "/providers/graphpad/scan" "{}" >/dev/null
 request GET "/assets" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null
