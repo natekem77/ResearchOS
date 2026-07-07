@@ -161,6 +161,8 @@ def _asset_source(asset: dict[str, Any], score: float) -> dict[str, Any]:
     kind = "asset"
     if statistics:
         kind = "graphpad_statistics"
+    elif asset.get("provider") == "spreadsheet" or asset.get("asset_type") == "spreadsheet":
+        kind = "spreadsheet_quantitative_data"
     elif asset.get("provider") == "microscopy" or asset.get("asset_type") in {"image", "microscopy"}:
         kind = "microscopy_asset"
     return {
@@ -221,6 +223,7 @@ def _collect_evidence(question: str, store: SQLiteStore) -> dict[str, Any]:
 
     assets = []
     graphpad_statistics = []
+    spreadsheet_data = []
     microscopy_assets = []
     for asset in store.list_assets():
         score = _text_score(_asset_text(asset), terms)
@@ -230,6 +233,8 @@ def _collect_evidence(question: str, store: SQLiteStore) -> dict[str, Any]:
         assets.append(source)
         if source["kind"] == "graphpad_statistics":
             graphpad_statistics.append(source)
+        if source["kind"] == "spreadsheet_quantitative_data":
+            spreadsheet_data.append(source)
         if source["kind"] == "microscopy_asset":
             microscopy_assets.append(source)
 
@@ -256,11 +261,12 @@ def _collect_evidence(question: str, store: SQLiteStore) -> dict[str, Any]:
         "notebook_entries": notebook_entries,
         "experiments": matched_experiments,
         "graphpad_statistics": graphpad_statistics,
+        "spreadsheet_data": spreadsheet_data,
         "microscopy_assets": microscopy_assets,
         "literature_matches": literature_matches,
         "experiment_comparison": comparison,
         "timeline_events": timeline_events[:12],
-        "sources": (matched_experiments + notebook_entries + literature_matches + graphpad_statistics + microscopy_assets)[:20],
+        "sources": (matched_experiments + notebook_entries + literature_matches + graphpad_statistics + spreadsheet_data + microscopy_assets)[:20],
     }
 
 
@@ -293,6 +299,7 @@ def _build_reasoning(question: str, evidence: dict[str, Any]) -> dict[str, Any]:
     experiments = evidence["experiments"]
     stats = evidence["graphpad_statistics"]
     images = evidence["microscopy_assets"]
+    spreadsheets = evidence.get("spreadsheet_data", [])
     literature = evidence["literature_matches"]
     notebook_entries = evidence["notebook_entries"]
     timeline_events = evidence["timeline_events"]
@@ -303,6 +310,10 @@ def _build_reasoning(question: str, evidence: dict[str, Any]) -> dict[str, Any]:
         snippet = experiment.get("snippet") or "Structured experiment metadata matched the question."
         observations.append(f"{label}: {snippet}")
     observations.extend(_statistics_observations(stats))
+    for spreadsheet in spreadsheets[:3]:
+        observations.append(
+            f"Spreadsheet {spreadsheet.get('filename')} matched the question with parsed quantitative metadata."
+        )
     for image in images[:3]:
         markers = ", ".join(image.get("markers") or [])
         observations.append(
@@ -313,6 +324,7 @@ def _build_reasoning(question: str, evidence: dict[str, Any]) -> dict[str, Any]:
     supporting = []
     supporting.extend(experiments[:5])
     supporting.extend(stats[:4])
+    supporting.extend(spreadsheets[:4])
     supporting.extend(images[:4])
     supporting.extend(notebook_entries[:4])
     supporting.extend(literature[:4])

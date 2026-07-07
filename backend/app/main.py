@@ -34,6 +34,12 @@ from app.onenote_provider import list_notebooks, list_pages, list_sections, sync
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
 from app.scientific_reasoning import reason_scientifically
+from app.spreadsheet_provider import (
+    scan_spreadsheet_assets,
+    spreadsheet_assets,
+    spreadsheet_status,
+    spreadsheet_summary,
+)
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -460,6 +466,58 @@ class ImageProviderScanResponse(BaseModel):
     assets_skipped: int
     registered_assets: list[AssetResponse]
     skipped_assets: list[AssetResponse]
+
+
+class SpreadsheetProviderFolderStatusResponse(BaseModel):
+    """Configured spreadsheet scan folder status."""
+
+    path: str
+    exists: bool
+
+
+class SpreadsheetProviderStatusResponse(BaseModel):
+    """Generic spreadsheet provider readiness and local asset count."""
+
+    provider: Literal["spreadsheet"]
+    status: str
+    folders: list[SpreadsheetProviderFolderStatusResponse]
+    supported_extensions: list[str]
+    asset_count: int
+    message: str
+
+
+class SpreadsheetProviderScanResponse(BaseModel):
+    """Summary of a generic spreadsheet provider scan."""
+
+    provider: Literal["spreadsheet"]
+    folders: list[str]
+    supported_extensions: list[str]
+    files_found: int
+    assets_registered: int
+    assets_skipped: int
+    registered_assets: list[AssetResponse]
+    skipped_assets: list[AssetResponse]
+
+
+class SpreadsheetSummaryResponse(BaseModel):
+    """Parsed generic spreadsheet summary for one asset."""
+
+    asset_id: str
+    title: str
+    filename: str
+    provider: str
+    experiment_id: str | None = None
+    path: str
+    extension: str | None = None
+    sheet_names: list[str] = Field(default_factory=list)
+    row_count: int = 0
+    column_count: int = 0
+    detected_tables: list[dict[str, object]] = Field(default_factory=list)
+    entities: dict[str, list[str]] = Field(default_factory=dict)
+    created_timestamp: str | None = None
+    modified_timestamp: str | None = None
+    limitations: list[str] = Field(default_factory=list)
+    ontology_source: str | None = None
 
 
 class GraphPadStatisticsSummaryResponse(BaseModel):
@@ -1985,6 +2043,83 @@ def images_by_marker(marker: str) -> list[AssetResponse]:
         for asset in microscopy_assets(settings=settings)
     ]
     return [AssetResponse(**asset) for asset in _image_assets_for_marker(assets, marker)]
+
+
+@app.get("/providers/spreadsheets/status", response_model=SpreadsheetProviderStatusResponse, tags=["providers"])
+def spreadsheets_provider_status() -> SpreadsheetProviderStatusResponse:
+    """Return generic spreadsheet provider configuration and asset count."""
+
+    return SpreadsheetProviderStatusResponse(**spreadsheet_status(settings=settings))
+
+
+@app.post("/providers/spreadsheets/scan", response_model=SpreadsheetProviderScanResponse, tags=["providers"])
+def spreadsheets_provider_scan() -> SpreadsheetProviderScanResponse:
+    """Scan configured spreadsheet folders and register quantitative assets."""
+
+    store = SQLiteStore(settings=settings)
+    result = scan_spreadsheet_assets(settings=settings)
+    return SpreadsheetProviderScanResponse(
+        provider=result.provider,
+        folders=result.folders,
+        supported_extensions=result.supported_extensions,
+        files_found=result.files_found,
+        assets_registered=result.assets_registered,
+        assets_skipped=result.assets_skipped,
+        registered_assets=[
+            AssetResponse(**_asset_with_link_info(store, asset))
+            for asset in result.registered_assets
+        ],
+        skipped_assets=[
+            AssetResponse(**_asset_with_link_info(store, asset))
+            for asset in result.skipped_assets
+        ],
+    )
+
+
+@app.get("/spreadsheets", response_model=list[AssetResponse], tags=["spreadsheets"])
+def spreadsheets() -> list[AssetResponse]:
+    """Return registered generic spreadsheet assets."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        AssetResponse(**_asset_with_link_info(store, asset))
+        for asset in spreadsheet_assets(settings=settings)
+    ]
+
+
+@app.get("/spreadsheets/{asset_id}/summary", response_model=SpreadsheetSummaryResponse, tags=["spreadsheets"])
+def spreadsheet_asset_summary(asset_id: str) -> SpreadsheetSummaryResponse:
+    """Return parsed generic spreadsheet metadata and summaries."""
+
+    summary = spreadsheet_summary(asset_id=asset_id, settings=settings)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"Spreadsheet asset not found: {asset_id}")
+    return SpreadsheetSummaryResponse(**summary)
+
+
+@app.get("/spreadsheets/{asset_id}/download", tags=["spreadsheets"])
+def download_spreadsheet_asset(asset_id: str) -> FileResponse:
+    """Download one registered local spreadsheet file."""
+
+    store = SQLiteStore(settings=settings)
+    asset = store.get_asset(asset_id)
+    if asset is None or asset.get("provider") != "spreadsheet":
+        raise HTTPException(status_code=404, detail=f"Spreadsheet asset not found: {asset_id}")
+    path = Path(str(asset.get("path") or ""))
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Spreadsheet file not found on disk: {asset_id}")
+    return FileResponse(path=path, filename=str(asset.get("filename") or path.name))
+
+
+@app.get("/spreadsheets/{asset_id}", response_model=AssetResponse, tags=["spreadsheets"])
+def spreadsheet_asset_detail(asset_id: str) -> AssetResponse:
+    """Return one registered spreadsheet asset."""
+
+    store = SQLiteStore(settings=settings)
+    asset = store.get_asset(asset_id)
+    if asset is None or asset.get("provider") != "spreadsheet":
+        raise HTTPException(status_code=404, detail=f"Spreadsheet asset not found: {asset_id}")
+    return AssetResponse(**_asset_with_link_info(store, asset))
 
 
 @app.get("/assets", response_model=list[AssetResponse], tags=["assets"])

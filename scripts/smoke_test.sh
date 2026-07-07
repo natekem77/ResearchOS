@@ -45,6 +45,9 @@ request GET "/providers/graphpad/status" >/dev/null
 request POST "/providers/graphpad/scan" "{}" >/dev/null
 request GET "/providers/images/status" >/dev/null
 request POST "/providers/images/scan" "{}" >/dev/null
+request GET "/providers/spreadsheets/status" >/dev/null
+request POST "/providers/spreadsheets/scan" "{}" >/dev/null
+SPREADSHEETS_FILE="$(request GET "/spreadsheets")"
 IMAGES_FILE="$(request GET "/images")"
 STATISTICS_FILE="$(request GET "/statistics")"
 GRAPH_PAD_STAT_ASSET_ID="$(
@@ -62,6 +65,23 @@ print(assets[0]["asset_id"])
 PY
 )"
 request GET "/providers/graphpad/assets/$GRAPH_PAD_STAT_ASSET_ID/summary" >/dev/null
+SPREADSHEET_ASSET_ID="$(
+  python3 - "$SPREADSHEETS_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    assets = json.load(handle)
+
+if not assets:
+    raise SystemExit("Need at least one spreadsheet asset.")
+
+print(assets[0]["asset_id"])
+PY
+)"
+request GET "/spreadsheets/$SPREADSHEET_ASSET_ID" >/dev/null
+request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/summary" >/dev/null
+request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/download" >/dev/null
 request GET "/assets" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null

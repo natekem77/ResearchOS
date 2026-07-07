@@ -1,0 +1,7 @@
+Sample_ID,Experiment_ID,Organoid_Batch,Treatment,Condition,Day,Marker,Measurement,Intensity,Cell_Count,Percent_Positive,Notes
+S1,NK_Expt_31,RO-NK-31,DMSO,Vehicle,D32,SIX6,fluorescence_intensity,112.4,843,38.2,baseline control
+S2,NK_Expt_31,RO-NK-31,DMSO,Vehicle,D32,BRN3B,fluorescence_intensity,76.8,843,18.5,baseline control
+S3,NK_Expt_31,RO-NK-31,SAG,Treatment,D32,SIX6,fluorescence_intensity,151.7,801,55.1,stronger reporter signal
+S4,NK_Expt_31,RO-NK-31,SAG,Treatment,D32,BRN3B,fluorescence_intensity,91.2,801,24.9,modest increase
+S5,NK_Expt_31,RO-NK-31,SAG + GRKi,Rescue,D32,SIX6,fluorescence_intensity,164.9,822,59.4,rescue candidate
+S6,NK_Expt_31,RO-NK-31,SAG + GRKi,Rescue,D32,BRN3B,fluorescence_intensity,104.5,822,31.7,rescue candidate

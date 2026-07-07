@@ -2,6 +2,7 @@ const state = {
   documents: [],
   papers: [],
   assets: [],
+  spreadsheets: [],
   images: [],
   statistics: [],
   experiments: [],
@@ -36,6 +37,7 @@ const views = {
   documents: $("#documentsView"),
   assets: $("#assetsView"),
   assetDetail: $("#assetDetailView"),
+  data: $("#dataView"),
   images: $("#imagesView"),
   statistics: $("#statisticsView"),
   literature: $("#literatureView"),
@@ -253,6 +255,7 @@ function route() {
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
     assets: ["Assets", "Research Asset Graph"],
+    data: ["Data", "Quantitative Spreadsheets"],
     images: ["Images", "Microscopy Assets"],
     statistics: ["Statistics", "GraphPad Statistics"],
     literature: ["Literature", "Paper Library"],
@@ -568,6 +571,41 @@ function renderImages() {
     : `<div class="empty-state">No microscopy/image assets registered yet. Scan image folders to import sample image metadata.</div>`;
 }
 
+function renderSpreadsheets() {
+  const target = $("#spreadsheetsList");
+  if (!target) return;
+  target.innerHTML = state.spreadsheets.length
+    ? state.spreadsheets.map((asset) => {
+      const metadata = asset.metadata || {};
+      const entities = metadata.entities || {};
+      const entityCount = Object.values(entities).flat().length;
+      return `
+        <article class="record-card">
+          <h3><a href="#/assets/${encodeURIComponent(asset.asset_id)}">${escapeHtml(asset.title || asset.filename)}</a></h3>
+          <p>${escapeHtml(asset.filename)} · ${escapeHtml(asset.experiment_id || "No experiment link")} · ${escapeHtml(asset.path)}</p>
+          <div class="meta">
+            <span class="tag">${escapeHtml((metadata.sheet_names || []).join(", ") || "No sheets")}</span>
+            <span class="tag">${escapeHtml(metadata.row_count ?? 0)} rows</span>
+            <span class="tag">${escapeHtml(metadata.column_count ?? 0)} columns</span>
+            <span class="tag">${escapeHtml(entityCount)} entities</span>
+            ${asset.linked_experiment ? `<a class="mini-chip" href="#/experiments/${encodeURIComponent(asset.linked_experiment.id)}">${escapeHtml(asset.linked_experiment.experiment_id || asset.linked_experiment.title)}</a>` : ""}
+            <a class="mini-chip" href="/spreadsheets/${encodeURIComponent(asset.asset_id)}/download">Download file</a>
+          </div>
+          ${spreadsheetEntitySummary(entities)}
+          <p class="card-copy">Summary API: /spreadsheets/${escapeHtml(asset.asset_id)}/summary</p>
+        </article>
+      `;
+    }).join("")
+    : `<div class="empty-state">No spreadsheets imported. Scan spreadsheet folders to register quantitative data files.</div>`;
+}
+
+function spreadsheetEntitySummary(entities) {
+  const chips = Object.entries(entities || {})
+    .flatMap(([category, values]) => (values || []).slice(0, 6).map((value) => `<span class="tag">${escapeHtml(category)}: ${escapeHtml(value)}</span>`))
+    .slice(0, 18);
+  return chips.length ? `<div class="meta">${chips.join("")}</div>` : "";
+}
+
 function renderImageAssetCard(asset) {
   return `
     <article class="record-card">
@@ -761,6 +799,19 @@ async function scanImageAssets() {
     target.textContent = `Image scan found ${result.files_found} file(s), registered ${result.assets_registered}, skipped ${result.assets_skipped}.`;
   }
   recordActivity("Image scan", `${result.assets_registered} registered · ${result.assets_skipped} skipped`);
+}
+
+async function scanSpreadsheetAssets() {
+  const target = $("#spreadsheetsStatus");
+  if (target) {
+    target.textContent = "Scanning configured spreadsheet folders...";
+  }
+  const result = await requestJson("/providers/spreadsheets/scan", { method: "POST" });
+  await refreshData();
+  if (target) {
+    target.textContent = `Spreadsheet scan found ${result.files_found} file(s), registered ${result.assets_registered}, skipped ${result.assets_skipped}.`;
+  }
+  recordActivity("Spreadsheet scan", `${result.assets_registered} registered · ${result.assets_skipped} skipped`);
 }
 
 function renderStatistics() {
@@ -2430,10 +2481,11 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, images, statistics, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
+    requestJson("/spreadsheets"),
     requestJson("/images"),
     requestJson("/statistics"),
     requestJson("/experiments"),
@@ -2448,6 +2500,7 @@ async function refreshData() {
   state.documents = documents;
   state.papers = papers;
   state.assets = assets;
+  state.spreadsheets = spreadsheets;
   state.images = images;
   state.statistics = statistics;
   state.experiments = experiments;
@@ -2476,6 +2529,7 @@ function renderAll() {
   renderAssetStatusCard();
   renderDocuments();
   renderAssets();
+  renderSpreadsheets();
   renderImages();
   renderStatistics();
   renderPapers();
@@ -2719,6 +2773,11 @@ $("#scanGraphPadStatsButton")?.addEventListener("click", () => {
 $("#scanImagesButton")?.addEventListener("click", () => {
   scanImageAssets().catch((error) => {
     $("#imagesScanStatus").textContent = `Image scan failed: ${error.message}`;
+  });
+});
+$("#scanSpreadsheetsButton")?.addEventListener("click", () => {
+  scanSpreadsheetAssets().catch((error) => {
+    $("#spreadsheetsStatus").textContent = `Spreadsheet scan failed: ${error.message}`;
   });
 });
 $("#savePlanDraftButton")?.addEventListener("click", () => {

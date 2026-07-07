@@ -44,6 +44,11 @@ class Settings(BaseSettings):
         description="Comma-separated local folders scanned for microscopy/image assets.",
         validation_alias=AliasChoices("MICROSCOPY_SCAN_FOLDERS", "RESEARCHOS_MICROSCOPY_SCAN_FOLDERS"),
     )
+    spreadsheet_scan_folders: str = Field(
+        default="./data/spreadsheets,./samples/spreadsheets",
+        description="Comma-separated local folders scanned for generic quantitative spreadsheets.",
+        validation_alias=AliasChoices("SPREADSHEET_SCAN_FOLDERS", "RESEARCHOS_SPREADSHEET_SCAN_FOLDERS"),
+    )
 
     microsoft_client_id: str = Field(
         default="",
