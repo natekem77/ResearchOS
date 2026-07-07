@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.entry_drafting import available_entry_templates, draft_entry_from_notes
 from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
+from app.experiment_planner import plan_follow_up_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.graphpad_provider import (
@@ -225,6 +226,28 @@ class ScientificReasoningResponse(BaseModel):
     question: str
     answer: str
     reasoning: dict[str, object]
+    sources: list[dict[str, object]]
+    ai_used: bool
+    provider: str
+
+
+class ExperimentPlanResponse(BaseModel):
+    """Concrete follow-up experiment plan response."""
+
+    question: str
+    proposed_experiment_title: str
+    hypothesis: str
+    rationale: str
+    experimental_groups: list[str]
+    treatment_schedule: list[str]
+    controls: list[str]
+    planned_readouts: list[str]
+    suggested_markers: list[str]
+    statistical_analysis_plan: str
+    risks_confounders: list[str]
+    expected_outcomes: list[str]
+    suggested_onenote_draft_entry: str
+    structured: dict[str, object]
     sources: list[dict[str, object]]
     ai_used: bool
     provider: str
@@ -1471,6 +1494,18 @@ def assistant_reason(request: AssistantRequest) -> ScientificReasoningResponse:
 
     answer = reason_scientifically(question=question, settings=settings, use_ai=request.use_ai)
     return ScientificReasoningResponse(**answer.__dict__)
+
+
+@app.post("/assistant/plan-experiment", response_model=ExperimentPlanResponse, tags=["ai"])
+def assistant_plan_experiment(request: AssistantRequest) -> ExperimentPlanResponse:
+    """Suggest a concrete follow-up experiment from ResearchOS evidence."""
+
+    question = _assistant_question(request)
+    if not question:
+        raise HTTPException(status_code=400, detail="Experiment planning question must not be empty.")
+
+    plan = plan_follow_up_experiment(question=question, settings=settings, use_ai=request.use_ai)
+    return ExperimentPlanResponse(**plan.__dict__)
 
 
 @app.post("/assistant/compare-literature", response_model=LiteratureComparisonResponse, tags=["ai"])

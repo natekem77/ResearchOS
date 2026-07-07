@@ -19,6 +19,7 @@ const state = {
   currentEntryDraft: null,
   currentSavedEntryId: null,
   assistantMode: "search",
+  currentExperimentPlan: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -45,6 +46,7 @@ const views = {
   search: $("#searchView"),
   chat: $("#chatView"),
   reasoning: $("#reasoningView"),
+  planner: $("#plannerView"),
   settings: $("#settingsView"),
 };
 
@@ -258,6 +260,7 @@ function route() {
     search: ["Search", "Search Research Notes"],
     chat: ["AI Chat", "Ask ResearchOS"],
     reasoning: ["Scientific Reasoning", "Evidence-Based Reasoning"],
+    planner: ["Experiment Planner", "Plan Follow-up Experiment"],
     settings: ["Settings", "Workspace Settings"],
   };
   setHeader(...titles[target]);
@@ -2136,6 +2139,83 @@ function renderScientificReasoningResponse(target, payload) {
   `;
 }
 
+function renderExperimentPlan(target, payload) {
+  const listItems = (items) => items?.length
+    ? items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
+    : `<li>Not specified.</li>`;
+  const sourceCards = (items) => items?.length
+    ? items.map((item) => `
+      <article class="result">
+        <h3>${escapeHtml(item.title || item.filename || item.experiment_id || item.id || item.kind || "Source")}</h3>
+        <p>${escapeHtml(shortText(item.snippet || item.path || item.provider || JSON.stringify(item), 220))}</p>
+        <div class="meta">
+          <span class="tag">${escapeHtml(item.kind || item.provider || "source")}</span>
+          ${item.score !== undefined ? `<span class="tag">score ${escapeHtml(item.score)}</span>` : ""}
+        </div>
+      </article>
+    `).join("")
+    : `<div class="empty-state">No sources matched this planning question.</div>`;
+
+  target.innerHTML = `
+    <div class="assistant-answer">
+      <h3>${escapeHtml(payload.proposed_experiment_title)}</h3>
+      <p>${escapeHtml(payload.hypothesis)}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(payload.provider)}</span>
+        <span class="tag">${payload.ai_used ? "AI synthesis" : "local deterministic plan"}</span>
+        <span class="tag">${(payload.sources || []).length} source${(payload.sources || []).length === 1 ? "" : "s"}</span>
+      </div>
+    </div>
+    <section class="detail-section">
+      <h3>Rationale</h3>
+      <p>${escapeHtml(payload.rationale)}</p>
+    </section>
+    <div class="detail-grid comparison-summary-grid">
+      <section class="detail-field">
+        <span>Experimental groups</span>
+        <ul>${listItems(payload.experimental_groups || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Treatment schedule</span>
+        <ul>${listItems(payload.treatment_schedule || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Controls</span>
+        <ul>${listItems(payload.controls || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Planned readouts</span>
+        <ul>${listItems(payload.planned_readouts || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Suggested markers</span>
+        <ul>${listItems(payload.suggested_markers || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Risks / confounders</span>
+        <ul>${listItems(payload.risks_confounders || [])}</ul>
+      </section>
+      <section class="detail-field">
+        <span>Expected outcomes</span>
+        <ul>${listItems(payload.expected_outcomes || [])}</ul>
+      </section>
+    </div>
+    <section class="detail-section">
+      <h3>Statistical analysis plan</h3>
+      <p>${escapeHtml(payload.statistical_analysis_plan)}</p>
+    </section>
+    <section class="detail-section">
+      <h3>Suggested OneNote draft entry</h3>
+      <p class="demo-status">Write-back is disabled. Save this as a local ResearchOS draft for review/export.</p>
+      <pre class="markdown-preview">${escapeHtml(payload.suggested_onenote_draft_entry)}</pre>
+    </section>
+    <div class="source-list">
+      <h3>Sources</h3>
+      ${sourceCards(payload.sources || [])}
+    </div>
+  `;
+}
+
 async function runChat(message, target) {
   target.innerHTML = `<div class="empty-state">Thinking...</div>`;
   try {
@@ -2146,6 +2226,23 @@ async function runChat(message, target) {
     renderChatResponse(target, payload);
   } catch (error) {
     target.innerHTML = `<div class="result"><h3>Chat setup required</h3><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
+async function runExperimentPlanner(message, target) {
+  $("#plannerStatus").textContent = "Planning follow-up experiment from local evidence...";
+  target.innerHTML = `<div class="empty-state">Planning...</div>`;
+  try {
+    const payload = await requestJson("/assistant/plan-experiment", {
+      method: "POST",
+      body: JSON.stringify({ question: message }),
+    });
+    state.currentExperimentPlan = payload;
+    $("#plannerStatus").textContent = "Plan generated. Review before saving as a ResearchOS draft.";
+    renderExperimentPlan(target, payload);
+  } catch (error) {
+    $("#plannerStatus").textContent = `Planning failed: ${error.message}`;
+    target.innerHTML = `<div class="result"><h3>Planner unavailable</h3><p>${escapeHtml(error.message)}</p></div>`;
   }
 }
 
@@ -2234,6 +2331,40 @@ function bindReasoning(formSelector, inputSelector, outputSelector) {
     const message = input.value.trim();
     if (message) runScientificReasoning(message, output);
   });
+}
+
+function bindExperimentPlanner() {
+  const form = $("#plannerForm");
+  const input = $("#plannerInput");
+  const output = $("#plannerOutput");
+  if (!form || !input || !output) return;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const message = input.value.trim();
+    if (message) runExperimentPlanner(message, output);
+  });
+}
+
+async function saveExperimentPlanDraft() {
+  const plan = state.currentExperimentPlan;
+  if (!plan) {
+    $("#plannerStatus").textContent = "Generate a plan before saving it as a draft.";
+    return;
+  }
+  const payload = await requestJson("/entries/save-draft", {
+    method: "POST",
+    body: JSON.stringify({
+      title: plan.proposed_experiment_title,
+      experiment_id: plan.structured?.experiment_id || null,
+      template: "retinal_organoid",
+      structured: plan.structured || {},
+      markdown: plan.suggested_onenote_draft_entry,
+      status: "draft",
+    }),
+  });
+  await refreshData();
+  $("#plannerStatus").textContent = `Saved local ResearchOS draft: ${payload.title}. OneNote write-back was not used.`;
+  recordActivity("Saved planned experiment draft", payload.title);
 }
 
 function bindLiteratureComparison(buttonSelector, inputSelector, outputSelector) {
@@ -2590,12 +2721,18 @@ $("#scanImagesButton")?.addEventListener("click", () => {
     $("#imagesScanStatus").textContent = `Image scan failed: ${error.message}`;
   });
 });
+$("#savePlanDraftButton")?.addEventListener("click", () => {
+  saveExperimentPlanDraft().catch((error) => {
+    $("#plannerStatus").textContent = `Could not save plan draft: ${error.message}`;
+  });
+});
 
 bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchResults");
 bindSearch("#searchForm", "#searchInput", "#searchResults");
 bindChat("#dashboardChatForm", "#dashboardChatInput", "#dashboardChatOutput");
 bindChat("#chatForm", "#chatInput", "#chatOutput");
 bindReasoning("#reasoningForm", "#reasoningInput", "#reasoningOutput");
+bindExperimentPlanner();
 bindLiteratureComparison("#dashboardCompareLiteratureButton", "#dashboardChatInput", "#dashboardChatOutput");
 bindLiteratureComparison("#compareLiteratureButton", "#chatInput", "#chatOutput");
 bindDashboardSuggestedQuestions();

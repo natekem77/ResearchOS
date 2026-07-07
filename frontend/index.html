@@ -36,6 +36,7 @@
           <a href="#/search" data-nav="search">Search</a>
           <a href="#/chat" data-nav="chat">AI Chat</a>
           <a href="#/reasoning" data-nav="reasoning">Scientific Reasoning</a>
+          <a href="#/planner" data-nav="planner">Experiment Planner</a>
           <a href="#/settings" data-nav="settings">Settings</a>
         </nav>
       </aside>
@@ -76,6 +77,7 @@
                 <button type="button" id="extractButton" class="secondary-button">
                   Extract experiments
                 </button>
+                <a class="secondary-link-button" href="#/planner">Plan Follow-up Experiment</a>
               </div>
               <p class="demo-status" id="demoStatus"></p>
             </section>
@@ -572,6 +574,31 @@
                 <button type="button" class="prompt-chip">What follow-up experiment should we run for SAG?</button>
               </div>
               <div class="chat-output" id="reasoningOutput"></div>
+            </article>
+          </section>
+
+          <section class="view" id="plannerView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Follow-up Experiment Planner</p>
+                  <h2>Plan a concrete next experiment from ResearchOS evidence</h2>
+                </div>
+              </div>
+              <form class="chat-form" id="plannerForm">
+                <label class="sr-only" for="plannerInput">Follow-up experiment question</label>
+                <textarea id="plannerInput" rows="4" placeholder="What should we test next for early SAG + GRKi retinal rescue?"></textarea>
+                <button type="submit">Plan</button>
+                <button type="button" id="savePlanDraftButton" class="secondary-button">Save as Draft</button>
+              </form>
+              <div class="prompt-row" data-prompt-target="plannerInput">
+                <button type="button" class="prompt-chip">What should we test next for early SAG + GRKi retinal rescue?</button>
+                <button type="button" class="prompt-chip">Plan a BMP4 timing follow-up experiment.</button>
+                <button type="button" class="prompt-chip">Design a follow-up for SIX6/BRN3B staining quantification.</button>
+                <button type="button" class="prompt-chip">What experiment should validate our GraphPad statistics?</button>
+              </div>
+              <p class="demo-status" id="plannerStatus"></p>
+              <div class="chat-output" id="plannerOutput"></div>
             </article>
           </section>
 
