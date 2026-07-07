@@ -28,6 +28,7 @@ from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_f
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
 from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
+from app.microscopy_provider import microscopy_assets, microscopy_status, scan_microscopy_assets
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
@@ -386,6 +387,37 @@ class GraphPadScanResponse(BaseModel):
     """Summary of a GraphPad provider scan."""
 
     provider: Literal["graphpad"]
+    folders: list[str]
+    supported_extensions: list[str]
+    files_found: int
+    assets_registered: int
+    assets_skipped: int
+    registered_assets: list[AssetResponse]
+    skipped_assets: list[AssetResponse]
+
+
+class ImageProviderFolderStatusResponse(BaseModel):
+    """Configured microscopy/image scan folder status."""
+
+    path: str
+    exists: bool
+
+
+class ImageProviderStatusResponse(BaseModel):
+    """Microscopy/image provider readiness and local asset count."""
+
+    provider: Literal["microscopy"]
+    status: str
+    folders: list[ImageProviderFolderStatusResponse]
+    supported_extensions: list[str]
+    asset_count: int
+    message: str
+
+
+class ImageProviderScanResponse(BaseModel):
+    """Summary of a microscopy/image provider scan."""
+
+    provider: Literal["microscopy"]
     folders: list[str]
     supported_extensions: list[str]
     files_found: int
@@ -1734,6 +1766,48 @@ def statistics() -> list[AssetResponse]:
     return [
         AssetResponse(**_asset_with_link_info(store, asset))
         for asset in graphpad_statistics_assets(settings=settings)
+    ]
+
+
+@app.get("/providers/images/status", response_model=ImageProviderStatusResponse, tags=["providers"])
+def images_provider_status() -> ImageProviderStatusResponse:
+    """Return microscopy/image provider configuration and asset count."""
+
+    return ImageProviderStatusResponse(**microscopy_status(settings=settings))
+
+
+@app.post("/providers/images/scan", response_model=ImageProviderScanResponse, tags=["providers"])
+def images_provider_scan() -> ImageProviderScanResponse:
+    """Scan configured image folders and register discovered files as assets."""
+
+    store = SQLiteStore(settings=settings)
+    result = scan_microscopy_assets(settings=settings)
+    return ImageProviderScanResponse(
+        provider=result.provider,
+        folders=result.folders,
+        supported_extensions=result.supported_extensions,
+        files_found=result.files_found,
+        assets_registered=result.assets_registered,
+        assets_skipped=result.assets_skipped,
+        registered_assets=[
+            AssetResponse(**_asset_with_link_info(store, asset))
+            for asset in result.registered_assets
+        ],
+        skipped_assets=[
+            AssetResponse(**_asset_with_link_info(store, asset))
+            for asset in result.skipped_assets
+        ],
+    )
+
+
+@app.get("/images", response_model=list[AssetResponse], tags=["images"])
+def images() -> list[AssetResponse]:
+    """Return registered microscopy/image assets."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        AssetResponse(**_asset_with_link_info(store, asset))
+        for asset in microscopy_assets(settings=settings)
     ]
 
 

@@ -43,6 +43,9 @@ request GET "/documents" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/providers/graphpad/status" >/dev/null
 request POST "/providers/graphpad/scan" "{}" >/dev/null
+request GET "/providers/images/status" >/dev/null
+request POST "/providers/images/scan" "{}" >/dev/null
+IMAGES_FILE="$(request GET "/images")"
 STATISTICS_FILE="$(request GET "/statistics")"
 GRAPH_PAD_STAT_ASSET_ID="$(
   python3 - "$STATISTICS_FILE" <<'PY'
@@ -94,6 +97,31 @@ if not experiments:
 print(experiments[0]["id"])
 PY
 )"
+IMAGE_ASSET_ID="$(
+  python3 - "$IMAGES_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    assets = json.load(handle)
+
+for asset in assets:
+    if asset.get("provider") == "microscopy":
+        print(asset["asset_id"])
+        break
+else:
+    raise SystemExit("Need at least one microscopy asset for timeline smoke test.")
+PY
+)"
+IMAGE_LINK_BODY="$(
+  python3 - "$IMAGE_ASSET_ID" "$FIRST_EXPERIMENT_ID" <<'PY'
+import json
+import sys
+
+print(json.dumps({"asset_id": sys.argv[1], "experiment_id": sys.argv[2]}))
+PY
+)"
+request POST "/assets/link" "$IMAGE_LINK_BODY" >/dev/null
 request GET "/experiments/$FIRST_EXPERIMENT_ID/timeline" >/dev/null
 ASSET_FILE="$(
   request POST "/assets/register" '{"asset_type":"image","title":"Smoke Test Research Asset","filename":"smoke-test-image.tif","provider":"local","path":"data/assets/smoke-test-image.tif","metadata":{"source":"smoke_test"}}'

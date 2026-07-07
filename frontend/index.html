@@ -25,6 +25,7 @@
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
           <a href="#/assets" data-nav="assets">Assets</a>
+          <a href="#/images" data-nav="images">Images</a>
           <a href="#/statistics" data-nav="statistics">Statistics</a>
           <a href="#/literature" data-nav="literature">Literature</a>
           <a href="#/graph" data-nav="graph">Graph Explorer</a>
@@ -414,6 +415,20 @@
 
           <section class="view" id="assetDetailView">
             <article class="panel" id="assetDetail"></article>
+          </section>
+
+          <section class="view" id="imagesView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Microscopy</p>
+                  <h2>Images</h2>
+                </div>
+                <button type="button" id="scanImagesButton" class="secondary-button">Scan Image Folders</button>
+              </div>
+              <p class="demo-status" id="imagesScanStatus"></p>
+              <div class="item-list" id="imagesList"></div>
+            </article>
           </section>
 
           <section class="view" id="statisticsView">

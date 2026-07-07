@@ -94,6 +94,7 @@ Release notes:
 - [docs/GRAPHPAD_PROVIDER.md](docs/GRAPHPAD_PROVIDER.md)
 - [docs/GRAPHPAD_STATISTICS_EXTRACTION.md](docs/GRAPHPAD_STATISTICS_EXTRACTION.md)
 - [docs/EXPERIMENT_TIMELINES.md](docs/EXPERIMENT_TIMELINES.md)
+- [docs/MICROSCOPY_PROVIDER.md](docs/MICROSCOPY_PROVIDER.md)
 
 ## What Works Today
 
@@ -108,6 +109,7 @@ Release notes:
 - GraphPad provider skeleton for discovering Prism files and exported analysis assets.
 - GraphPad CSV statistics extraction for simple Prism exports.
 - Experiment timelines combining notebook records and linked research assets.
+- Microscopy/image provider skeleton with filename-based marker and timepoint metadata.
 - Lab notebook templates for polished structured entry drafts from dictation.
 - Pending notebook-entry drafts saved locally before OneNote write-back approval.
 - Local literature ingestion for paper notes and PDFs.

@@ -39,6 +39,11 @@ class Settings(BaseSettings):
         description="Comma-separated local folders scanned for GraphPad-related assets.",
         validation_alias=AliasChoices("GRAPHPAD_SCAN_FOLDERS", "RESEARCHOS_GRAPHPAD_SCAN_FOLDERS"),
     )
+    microscopy_scan_folders: str = Field(
+        default="./data/images,./samples/images",
+        description="Comma-separated local folders scanned for microscopy/image assets.",
+        validation_alias=AliasChoices("MICROSCOPY_SCAN_FOLDERS", "RESEARCHOS_MICROSCOPY_SCAN_FOLDERS"),
+    )
 
     microsoft_client_id: str = Field(
         default="",
