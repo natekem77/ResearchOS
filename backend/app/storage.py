@@ -356,6 +356,26 @@ class SQLiteStore:
 
         return self._experiment_row_to_dict(row)
 
+    def find_experiment_by_reference(self, experiment_reference: str) -> dict[str, Any] | None:
+        """Return an experiment by internal ID or human experiment ID."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM experiments
+                WHERE id = ? OR experiment_id = ?
+                ORDER BY extracted_at DESC
+                LIMIT 1
+                """,
+                (experiment_reference, experiment_reference),
+            ).fetchone()
+
+        if row is None:
+            return None
+
+        return self._experiment_row_to_dict(row)
+
     def get_all_research_documents(self) -> list[ResearchDocument]:
         """Return stored documents as ResearchDocument objects for extraction."""
 
@@ -656,6 +676,27 @@ class SQLiteStore:
                 ORDER BY updated_at DESC, created_at DESC, title ASC
                 """,
                 values,
+            ).fetchall()
+        return [self._asset_row_to_dict(row) for row in rows]
+
+    def list_assets_for_experiment(self, experiment: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return assets linked by internal or human experiment reference."""
+
+        references = [str(experiment["id"])]
+        human_id = experiment.get("experiment_id")
+        if human_id:
+            references.append(str(human_id))
+
+        placeholders = ", ".join("?" for _ in references)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM assets
+                WHERE experiment_id IN ({placeholders})
+                ORDER BY updated_at DESC, created_at DESC, title ASC
+                """,
+                references,
             ).fetchall()
         return [self._asset_row_to_dict(row) for row in rows]
 

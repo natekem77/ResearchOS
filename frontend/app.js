@@ -440,7 +440,7 @@ function renderAssets() {
   $("#assetsList").innerHTML = assets.length
     ? assets
         .map((asset) => {
-          const experiment = state.experiments.find((item) => item.id === asset.experiment_id);
+          const experiment = asset.linked_experiment;
           return `
             <article class="record-card asset-card">
               <div>
@@ -448,8 +448,9 @@ function renderAssets() {
                 <p>${escapeHtml(asset.filename)} · ${escapeHtml(asset.provider)} · ${escapeHtml(asset.path)}</p>
                 <div class="meta">
                   <span class="tag">${escapeHtml(asset.asset_type)}</span>
+                  <span class="tag">${escapeHtml(asset.link_status || "unlinked")}</span>
                   <span class="tag">updated ${escapeHtml(formatDate(asset.updated_at))}</span>
-                  ${experiment ? `<a class="mini-chip" href="#/experiments/${encodeURIComponent(experiment.id)}">${escapeHtml(experiment.experiment_id || experiment.title)}</a>` : `<span class="tag">unlinked</span>`}
+                  ${experiment ? `<a class="mini-chip" href="#/experiments/${encodeURIComponent(experiment.id)}">${escapeHtml(experiment.experiment_id || experiment.title)}</a>` : asset.experiment_id ? `<span class="tag">ref ${escapeHtml(asset.experiment_id)}</span>` : ""}
                 </div>
               </div>
             </article>
@@ -465,7 +466,7 @@ function renderAssetDetail(assetId) {
     $("#assetDetail").innerHTML = `<div class="empty-state">Asset not found.</div>`;
     return;
   }
-  const experiment = state.experiments.find((item) => item.id === asset.experiment_id);
+  const experiment = asset.linked_experiment;
   const metadata = Object.entries(asset.metadata || {});
   $("#assetDetail").innerHTML = `
     <a class="inline-link" href="#/assets">Back to assets</a>
@@ -474,21 +475,43 @@ function renderAssetDetail(assetId) {
         <p class="eyebrow">${escapeHtml(asset.asset_type)}</p>
         <h2>${escapeHtml(asset.title)}</h2>
       </div>
-      <span class="status-pill ${experiment ? "ok" : ""}">${experiment ? "Linked" : "Unlinked"}</span>
+      <span class="status-pill ${asset.link_status === "resolved" ? "ok" : ""}">${escapeHtml(asset.link_status || "unlinked")}</span>
     </div>
     <div class="detail-grid">
       ${detailField("Asset ID", asset.asset_id)}
       ${detailField("Filename", asset.filename)}
       ${detailField("Provider", asset.provider)}
       ${detailField("Path", asset.path)}
+      ${detailField("Experiment reference", asset.experiment_id)}
+      ${detailField("Link status", asset.link_status)}
       ${detailField("Created", formatDate(asset.created_at))}
       ${detailField("Updated", formatDate(asset.updated_at))}
     </div>
+    <section class="detail-section">
+      <h3>Link asset to experiment</h3>
+      <form class="asset-link-form" id="assetLinkForm">
+        <label class="sr-only" for="assetExperimentInput">Experiment ID</label>
+        <input id="assetExperimentInput" list="assetExperimentOptions" type="text" placeholder="experiment:... or NK_Expt_31" value="${escapeHtml(asset.experiment_id || "")}" />
+        <datalist id="assetExperimentOptions">
+          ${state.experiments
+            .map((item) => `
+              <option value="${escapeHtml(item.id)}">${escapeHtml(item.experiment_id || item.title)}</option>
+              ${item.experiment_id ? `<option value="${escapeHtml(item.experiment_id)}">${escapeHtml(item.title)}</option>` : ""}
+            `)
+            .join("")}
+        </datalist>
+        <button type="submit">Link asset</button>
+        <button type="button" class="secondary-button" id="unlinkAssetButton">Unlink</button>
+      </form>
+      <p class="demo-status" id="assetLinkStatus">${asset.link_status === "unresolved" ? "This reference is saved but does not match an extracted experiment yet." : ""}</p>
+    </section>
     <section class="detail-section">
       <h3>Linked experiment</h3>
       <div class="item-list">
         ${experiment
           ? `<a class="item-link" href="#/experiments/${encodeURIComponent(experiment.id)}"><strong>${escapeHtml(experiment.experiment_id || experiment.title)}</strong><span>${escapeHtml(formatDate(experiment.date))} · ${escapeHtml(experiment.source_provider)}</span></a>`
+          : asset.experiment_id
+          ? `<div class="empty-state">Unresolved reference: ${escapeHtml(asset.experiment_id)}. It will resolve automatically when a matching experiment is ingested.</div>`
           : `<div class="empty-state">This asset is not linked to an experiment yet.</div>`}
       </div>
     </section>
@@ -501,6 +524,43 @@ function renderAssetDetail(assetId) {
       </div>
     </section>
   `;
+
+  $("#assetLinkForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    linkAssetToExperiment(asset.asset_id, $("#assetExperimentInput").value.trim()).catch((error) => {
+      $("#assetLinkStatus").textContent = `Link failed: ${error.message}`;
+    });
+  });
+  $("#unlinkAssetButton").addEventListener("click", () => {
+    linkAssetToExperiment(asset.asset_id, null).catch((error) => {
+      $("#assetLinkStatus").textContent = `Unlink failed: ${error.message}`;
+    });
+  });
+}
+
+async function linkAssetToExperiment(assetId, experimentReference) {
+  const target = $("#assetLinkStatus");
+  if (target) {
+    target.textContent = experimentReference ? "Linking asset..." : "Removing experiment link...";
+  }
+  const payload = await requestJson("/assets/link", {
+    method: "POST",
+    body: JSON.stringify({
+      asset_id: assetId,
+      experiment_id: experimentReference || null,
+    }),
+  });
+  await refreshData();
+  renderAssetDetail(assetId);
+  const refreshedTarget = $("#assetLinkStatus");
+  if (refreshedTarget) {
+    refreshedTarget.textContent = payload.link_status === "unresolved"
+      ? `Saved unresolved reference: ${payload.experiment_id}. It will resolve after a matching experiment is ingested.`
+      : payload.link_status === "resolved"
+      ? "Asset linked to an extracted experiment."
+      : "Asset unlinked.";
+  }
+  recordActivity("Asset link updated", `${payload.title} · ${payload.link_status}`);
 }
 
 function renderPapers() {

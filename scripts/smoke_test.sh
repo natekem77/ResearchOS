@@ -89,6 +89,17 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 PY
 )"
 request GET "/assets/$ASSET_ID" >/dev/null
+request GET "/assets/$ASSET_ID/links" >/dev/null
+ASSET_UNRESOLVED_BODY="$(
+  python3 - "$ASSET_ID" <<'PY'
+import json
+import sys
+
+print(json.dumps({"asset_id": sys.argv[1], "experiment_id": "NK_Expt_31"}))
+PY
+)"
+request POST "/assets/link" "$ASSET_UNRESOLVED_BODY" >/dev/null
+request GET "/assets/$ASSET_ID/links" >/dev/null
 ASSET_LINK_BODY="$(
   python3 - "$ASSET_ID" "$FIRST_EXPERIMENT_ID" <<'PY'
 import json

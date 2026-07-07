@@ -345,6 +345,8 @@ class AssetResponse(BaseModel):
     asset_id: str
     asset_type: AssetType
     experiment_id: str | None = None
+    link_status: Literal["unlinked", "resolved", "unresolved"] = "unlinked"
+    linked_experiment: dict[str, object] | None = None
     title: str
     filename: str
     provider: str
@@ -1340,14 +1342,44 @@ def _experiment_with_assets(
 ) -> dict[str, object]:
     """Attach registered assets to an experiment API record."""
 
-    return experiment | {"linked_assets": store.list_assets(experiment_id=str(experiment["id"]))}
+    return experiment | {
+        "linked_assets": [
+            _asset_with_link_info(store, asset)
+            for asset in store.list_assets_for_experiment(experiment)
+        ]
+    }
 
 
-def _validate_asset_experiment(store: SQLiteStore, experiment_id: str | None) -> None:
-    """Ensure an asset link targets a known experiment when provided."""
+def _asset_experiment_summary(experiment: dict[str, object]) -> dict[str, object]:
+    """Return compact experiment metadata for asset link displays."""
 
-    if experiment_id and store.get_experiment(experiment_id) is None:
-        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    return {
+        "id": experiment["id"],
+        "experiment_id": experiment.get("experiment_id"),
+        "title": experiment.get("title"),
+        "date": experiment.get("date"),
+        "source_provider": experiment.get("source_provider"),
+    }
+
+
+def _asset_with_link_info(
+    store: SQLiteStore,
+    asset: dict[str, object],
+) -> dict[str, object]:
+    """Attach resolved/unresolved experiment-link metadata to an asset."""
+
+    experiment_reference = asset.get("experiment_id")
+    if not experiment_reference:
+        return asset | {"link_status": "unlinked", "linked_experiment": None}
+
+    experiment = store.find_experiment_by_reference(str(experiment_reference))
+    if experiment is None:
+        return asset | {"link_status": "unresolved", "linked_experiment": None}
+
+    return asset | {
+        "link_status": "resolved",
+        "linked_experiment": _asset_experiment_summary(experiment),
+    }
 
 
 @app.get("/assets", response_model=list[AssetResponse], tags=["assets"])
@@ -1359,7 +1391,7 @@ def assets(
 
     store = SQLiteStore(settings=settings)
     return [
-        AssetResponse(**asset)
+        AssetResponse(**_asset_with_link_info(store, asset))
         for asset in store.list_assets(asset_type=asset_type, query=query)
     ]
 
@@ -1369,7 +1401,6 @@ def register_asset(request: AssetRegisterRequest) -> AssetResponse:
     """Register a local research asset without parsing provider-specific content."""
 
     store = SQLiteStore(settings=settings)
-    _validate_asset_experiment(store, request.experiment_id)
     asset = store.register_asset(
         asset_id=request.asset_id,
         asset_type=request.asset_type,
@@ -1380,7 +1411,7 @@ def register_asset(request: AssetRegisterRequest) -> AssetResponse:
         path=request.path.strip(),
         metadata=request.metadata,
     )
-    return AssetResponse(**asset)
+    return AssetResponse(**_asset_with_link_info(store, asset))
 
 
 @app.post("/assets/link", response_model=AssetResponse, tags=["assets"])
@@ -1388,11 +1419,27 @@ def link_asset(request: AssetLinkRequest) -> AssetResponse:
     """Link a registered asset to an experiment, or unlink it with null."""
 
     store = SQLiteStore(settings=settings)
-    _validate_asset_experiment(store, request.experiment_id)
     asset = store.link_asset(request.asset_id, request.experiment_id)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"Asset not found: {request.asset_id}")
-    return AssetResponse(**asset)
+    return AssetResponse(**_asset_with_link_info(store, asset))
+
+
+@app.get("/assets/{asset_id}/links", tags=["assets"])
+def asset_links(asset_id: str) -> dict[str, object]:
+    """Return link resolution details for one registered asset."""
+
+    store = SQLiteStore(settings=settings)
+    asset = store.get_asset(asset_id)
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
+    enriched = _asset_with_link_info(store, asset)
+    return {
+        "asset_id": enriched["asset_id"],
+        "experiment_id": enriched.get("experiment_id"),
+        "link_status": enriched["link_status"],
+        "linked_experiment": enriched.get("linked_experiment"),
+    }
 
 
 @app.get("/assets/{asset_id}", response_model=AssetResponse, tags=["assets"])
@@ -1403,7 +1450,7 @@ def asset_detail(asset_id: str) -> AssetResponse:
     asset = store.get_asset(asset_id)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
-    return AssetResponse(**asset)
+    return AssetResponse(**_asset_with_link_info(store, asset))
 
 
 @app.delete("/assets/{asset_id}", tags=["assets"])

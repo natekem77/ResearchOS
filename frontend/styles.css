@@ -478,6 +478,12 @@ button {
   gap: 8px;
 }
 
+.asset-link-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 10px;
+}
+
 .record-card p,
 .result p,
 .detail-section p {
@@ -1005,6 +1011,7 @@ mark {
   .graph-stat-grid,
   .graph-layout,
   .asset-filters,
+  .asset-link-form,
   .saved-draft-card,
   .side-nav {
     grid-template-columns: 1fr;

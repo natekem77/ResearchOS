@@ -95,6 +95,59 @@ curl -X POST http://127.0.0.1:8001/assets/link \
   }'
 ```
 
+Link a GraphPad Prism file to a human experiment ID before the extracted
+experiment exists:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assets/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_type": "graphpad",
+    "title": "NK Expt 31 SAG rescue Prism analysis",
+    "filename": "NK_Expt_31_SAG_rescue.pzfx",
+    "provider": "local",
+    "path": "data/graphpad/NK_Expt_31_SAG_rescue.pzfx"
+  }'
+
+curl -X POST http://127.0.0.1:8001/assets/link \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "asset:example",
+    "experiment_id": "NK_Expt_31"
+  }'
+```
+
+If `NK_Expt_31` has not been extracted yet, the link is kept with
+`link_status: "unresolved"`. When a future ingested experiment has
+`experiment_id` equal to `NK_Expt_31`, ResearchOS resolves the link
+automatically in asset and experiment responses.
+
+Link a microscopy image to an experiment:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assets/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_type": "microscopy",
+    "title": "D32 BRN3B confocal field 01",
+    "filename": "D32_BRN3B_field01.tif",
+    "provider": "local",
+    "path": "data/microscopy/D32_BRN3B_field01.tif",
+    "metadata": {"marker": "BRN3B", "modality": "confocal"}
+  }'
+```
+
+Link a Prism analysis directly to an extracted ResearchOS experiment ID:
+
+```bash
+curl -X POST http://127.0.0.1:8001/assets/link \
+  -H "Content-Type: application/json" \
+  -d '{
+    "asset_id": "asset:example",
+    "experiment_id": "experiment:8ff67dfff14ec61c"
+  }'
+```
+
 Delete an asset registration:
 
 ```bash
