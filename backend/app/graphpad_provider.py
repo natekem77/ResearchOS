@@ -199,6 +199,82 @@ def graphpad_asset_statistics_summary(
     }
 
 
+def compact_graphpad_statistics_summary(
+    asset_id: str,
+    settings: Settings | None = None,
+) -> dict[str, Any] | None:
+    """Return a concise demo-friendly summary for parsed GraphPad statistics."""
+
+    summary = graphpad_asset_statistics_summary(asset_id=asset_id, settings=settings)
+    if summary is None:
+        return None
+    if not summary.get("parsed"):
+        return {
+            "asset_id": summary.get("asset_id"),
+            "title": summary.get("title"),
+            "experiment_id": summary.get("experiment_id"),
+            "detected_markers_entities": [],
+            "detected_treatments_groups": [],
+            "key_numeric_measurements": [],
+            "per_group_means": {},
+            "n_per_group": {},
+            "p_values": [],
+            "short_interpretation": summary.get("message") or "No parsed statistics are available.",
+            "limitations": summary.get("limitations") or ["No parsed GraphPad statistics metadata is available."],
+            "source": "graphpad_statistics",
+        }
+
+    variables = [str(value) for value in summary.get("variables", []) if value]
+    groups = [str(value) for value in summary.get("group_names", []) if value]
+    rows = summary.get("rows") if isinstance(summary.get("rows"), list) else []
+    per_group_means: dict[str, dict[str, Any]] = {}
+    n_per_group: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        group = str(row.get("group") or "ungrouped")
+        variable = str(row.get("variable") or "measurement")
+        per_group_means.setdefault(group, {})[variable] = row.get("mean")
+        n_per_group.setdefault(group, {})[variable] = row.get("n")
+
+    measurements = []
+    for variable in variables:
+        related_rows = [row for row in rows if isinstance(row, dict) and row.get("variable") == variable]
+        means = [row.get("mean") for row in related_rows if row.get("mean") is not None]
+        measurements.append(
+            {
+                "measurement": variable,
+                "mean": sum(means) / len(means) if means else None,
+                "groups": [str(row.get("group")) for row in related_rows if row.get("group")],
+            }
+        )
+
+    p_values = [value for value in summary.get("p_values", []) if value is not None]
+    tests = [str(value) for value in summary.get("statistical_tests", []) if value]
+    interpretation = (
+        f"{summary.get('title') or summary.get('filename')} reports {len(variables)} variable(s)"
+        f" across {len(groups)} group(s)."
+    )
+    if p_values:
+        interpretation += f" Parsed p-values include {', '.join(str(value) for value in p_values[:4])}."
+    if tests:
+        interpretation += f" Statistical test: {', '.join(tests[:3])}."
+    return {
+        "asset_id": summary.get("asset_id"),
+        "title": summary.get("title"),
+        "experiment_id": summary.get("experiment_id"),
+        "detected_markers_entities": variables,
+        "detected_treatments_groups": groups,
+        "key_numeric_measurements": measurements[:12],
+        "per_group_means": per_group_means,
+        "n_per_group": n_per_group,
+        "p_values": p_values,
+        "short_interpretation": interpretation,
+        "limitations": summary.get("limitations") or ["GraphPad summary depends on exported CSV structure."],
+        "source": "graphpad_statistics",
+    }
+
+
 def _discover_supported_files(folders: list[Path]) -> list[Path]:
     """Recursively find supported files in existing scan folders."""
 

@@ -158,6 +158,107 @@ def spreadsheet_summary(asset_id: str, settings: Settings | None = None) -> dict
     }
 
 
+def compact_spreadsheet_summary(asset_id: str, settings: Settings | None = None) -> dict[str, Any] | None:
+    """Return a concise demo-friendly quantitative summary for one spreadsheet."""
+
+    summary = spreadsheet_summary(asset_id=asset_id, settings=settings)
+    if summary is None:
+        return None
+
+    entities = summary.get("entities") if isinstance(summary.get("entities"), dict) else {}
+    tables = summary.get("detected_tables") if isinstance(summary.get("detected_tables"), list) else []
+    key_numeric_measurements: list[dict[str, Any]] = []
+    per_group_means: dict[str, Any] = {}
+    n_per_group: dict[str, Any] = {}
+    p_values: list[Any] = []
+
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for column, values in (table.get("numeric_summaries") or {}).items():
+            if isinstance(values, dict):
+                key_numeric_measurements.append(
+                    {
+                        "measurement": column,
+                        "mean": values.get("mean"),
+                        "median": values.get("median"),
+                        "standard_deviation": values.get("standard_deviation"),
+                        "sem": values.get("sem"),
+                        "min": values.get("min"),
+                        "max": values.get("max"),
+                    }
+                )
+                if "p" in str(column).lower():
+                    p_values.append(values.get("mean"))
+        for group_column, groups in (table.get("grouped_summaries") or {}).items():
+            if not isinstance(groups, dict):
+                continue
+            per_group_means.setdefault(group_column, {})
+            n_per_group.setdefault(group_column, {})
+            for group_name, measurements in groups.items():
+                per_group_means[group_column].setdefault(group_name, {})
+                n_per_group[group_column].setdefault(group_name, {})
+                if not isinstance(measurements, dict):
+                    continue
+                for measurement, values in measurements.items():
+                    if isinstance(values, dict) and values:
+                        per_group_means[group_column][group_name][measurement] = values.get("mean")
+                        n_per_group[group_column][group_name][measurement] = values.get("count")
+
+    detected_treatments = sorted(
+        set((entities.get("treatments") or []) + (entities.get("compounds") or []) + (entities.get("drugs") or []))
+    )
+    detected_markers = sorted(
+        set((entities.get("markers") or []) + (entities.get("genes") or []) + (entities.get("proteins") or []))
+    )
+    group_names = sorted(
+        {
+            str(group_name)
+            for group_sets in per_group_means.values()
+            for group_name in group_sets.keys()
+            if str(group_name)
+        }
+    )
+    interpretation = _compact_interpretation(
+        title=str(summary.get("title") or summary.get("filename") or "Spreadsheet"),
+        measurements=key_numeric_measurements,
+        group_names=group_names,
+        detected_markers=detected_markers,
+    )
+    return {
+        "asset_id": summary.get("asset_id"),
+        "title": summary.get("title"),
+        "experiment_id": summary.get("experiment_id"),
+        "detected_markers_entities": detected_markers[:24],
+        "detected_treatments_groups": (detected_treatments + group_names)[:24],
+        "key_numeric_measurements": key_numeric_measurements[:12],
+        "per_group_means": per_group_means,
+        "n_per_group": n_per_group,
+        "p_values": [value for value in p_values if value is not None],
+        "short_interpretation": interpretation,
+        "limitations": summary.get("limitations") or [],
+        "source": "spreadsheet",
+    }
+
+
+def _compact_interpretation(
+    title: str,
+    measurements: list[dict[str, Any]],
+    group_names: list[str],
+    detected_markers: list[str],
+) -> str:
+    """Build short deterministic interpretation text."""
+
+    pieces = [f"{title} contains quantitative table summaries"]
+    if detected_markers:
+        pieces.append(f"for {', '.join(detected_markers[:6])}")
+    if group_names:
+        pieces.append(f"across groups {', '.join(group_names[:6])}")
+    if measurements:
+        pieces.append(f"with {len(measurements)} numeric measurement(s)")
+    return " ".join(pieces) + ". Review source rows before drawing conclusions."
+
+
 def parse_spreadsheet(
     file_path: Path,
     folders: list[Path],

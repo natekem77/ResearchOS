@@ -1005,6 +1005,27 @@ td a {
   margin: 0 0 8px;
 }
 
+.detail-section summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.compact-summary-card {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface);
+}
+
+.compact-summary-card h4 {
+  margin: 0 0 6px;
+}
+
+.compact-summary-card p {
+  margin: 0 0 8px;
+}
+
 .assistant-answer {
   margin-top: 12px;
   background: var(--accent-soft);

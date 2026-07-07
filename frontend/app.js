@@ -21,6 +21,7 @@ const state = {
   currentSavedEntryId: null,
   assistantMode: "search",
   currentExperimentPlan: null,
+  compactSummaries: {},
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -592,11 +593,30 @@ function renderSpreadsheets() {
             <a class="mini-chip" href="/spreadsheets/${encodeURIComponent(asset.asset_id)}/download">Download file</a>
           </div>
           ${spreadsheetEntitySummary(entities)}
-          <p class="card-copy">Summary API: /spreadsheets/${escapeHtml(asset.asset_id)}/summary</p>
+          ${compactSummaryFromMetadata(asset)}
+          <p class="card-copy">Compact summary API: /spreadsheets/${escapeHtml(asset.asset_id)}/compact-summary</p>
         </article>
       `;
     }).join("")
     : `<div class="empty-state">No spreadsheets imported. Scan spreadsheet folders to register quantitative data files.</div>`;
+}
+
+function compactSummaryFromMetadata(asset) {
+  const metadata = asset.metadata || {};
+  const table = (metadata.detected_tables || [])[0] || {};
+  const groups = Object.keys(table.grouped_summaries || {}).flatMap((groupColumn) => Object.keys(table.grouped_summaries[groupColumn] || {}));
+  const numeric = Object.entries(table.numeric_summaries || {}).slice(0, 4);
+  if (!groups.length && !numeric.length) return "";
+  return `
+    <section class="compact-summary-card">
+      <h4>Compact summary</h4>
+      <p>${escapeHtml(asset.title)} has ${escapeHtml(metadata.row_count ?? 0)} row(s), ${escapeHtml(metadata.column_count ?? 0)} column(s), and ${escapeHtml(numeric.length)} key numeric measurement(s).</p>
+      <div class="meta">
+        ${groups.slice(0, 8).map((group) => `<span class="tag">${escapeHtml(group)}</span>`).join("")}
+        ${numeric.map(([name, values]) => `<span class="tag">${escapeHtml(name)} mean ${escapeHtml(roundNumber(values.mean))}</span>`).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function spreadsheetEntitySummary(entities) {
@@ -604,6 +624,10 @@ function spreadsheetEntitySummary(entities) {
     .flatMap(([category, values]) => (values || []).slice(0, 6).map((value) => `<span class="tag">${escapeHtml(category)}: ${escapeHtml(value)}</span>`))
     .slice(0, 18);
   return chips.length ? `<div class="meta">${chips.join("")}</div>` : "";
+}
+
+function roundNumber(value) {
+  return typeof value === "number" ? Math.round(value * 1000) / 1000 : value ?? "n/a";
 }
 
 function renderImageAssetCard(asset) {
@@ -677,15 +701,16 @@ function renderAssetDetail(assetId) {
           : `<div class="empty-state">This asset is not linked to an experiment yet.</div>`}
       </div>
     </section>
+    ${asset.provider === "spreadsheet" || statistics ? `<section class="detail-section" id="assetCompactSummary"><div class="empty-state">Loading compact quantitative summary...</div></section>` : ""}
     ${statistics ? statisticsSummarySection(statistics, asset.asset_id) : ""}
-    <section class="detail-section">
-      <h3>Metadata</h3>
-      <div class="detail-grid">
+    <details class="detail-section">
+      <summary>Raw metadata</summary>
+      <div class="detail-grid raw-metadata-grid">
         ${metadata.length
           ? metadata.map(([key, value]) => detailField(key, formatComparisonValue(value))).join("")
           : `<div class="empty-state">No metadata registered.</div>`}
       </div>
-    </section>
+    </details>
   `;
 
   $("#assetLinkForm").addEventListener("submit", (event) => {
@@ -699,6 +724,43 @@ function renderAssetDetail(assetId) {
       $("#assetLinkStatus").textContent = `Unlink failed: ${error.message}`;
     });
   });
+  loadAssetCompactSummary(asset).catch(() => {
+    const target = $("#assetCompactSummary");
+    if (target) target.innerHTML = `<div class="empty-state">Compact summary unavailable.</div>`;
+  });
+}
+
+async function loadAssetCompactSummary(asset) {
+  const target = $("#assetCompactSummary");
+  if (!target) return;
+  let path = "";
+  if (asset.provider === "spreadsheet") {
+    path = `/spreadsheets/${encodeURIComponent(asset.asset_id)}/compact-summary`;
+  } else if (asset.metadata?.statistics) {
+    path = `/statistics/${encodeURIComponent(asset.asset_id)}/compact-summary`;
+  }
+  if (!path) return;
+  const summary = await requestJson(path);
+  state.compactSummaries[asset.asset_id] = summary;
+  target.innerHTML = compactSummarySection(summary);
+}
+
+function compactSummarySection(summary) {
+  return `
+    <h3>Compact quantitative summary</h3>
+    <p>${escapeHtml(summary.short_interpretation)}</p>
+    <div class="meta">
+      ${(summary.detected_markers_entities || []).slice(0, 12).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+      ${(summary.detected_treatments_groups || []).slice(0, 12).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+      ${(summary.p_values || []).slice(0, 6).map((value) => `<span class="tag">p=${escapeHtml(value)}</span>`).join("")}
+    </div>
+    <div class="detail-grid">
+      ${detailField("Experiment ID", summary.experiment_id)}
+      ${detailField("Source", summary.source)}
+      ${detailField("Key measurements", (summary.key_numeric_measurements || []).map((item) => `${item.measurement}: mean ${roundNumber(item.mean)}`).join("; "))}
+      ${detailField("Limitations", (summary.limitations || []).join(" "))}
+    </div>
+  `;
 }
 
 function statisticsSummarySection(statistics, assetId = "") {
@@ -830,11 +892,34 @@ function renderStatistics() {
               ${(stats.variables || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
               ${(stats.statistical_tests || []).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
             </div>
-            ${statisticsSummarySection(stats, asset.asset_id)}
+            ${statisticsCompactCard(asset)}
+            <p class="card-copy">Compact summary API: /statistics/${escapeHtml(asset.asset_id)}/compact-summary</p>
           </article>
         `;
       }).join("")
     : `<div class="empty-state">No parsed GraphPad CSV statistics yet. Scan the GraphPad folder to import sample statistics.</div>`;
+}
+
+function statisticsCompactCard(asset) {
+  const stats = asset.metadata?.statistics || {};
+  const rows = stats.rows || [];
+  const variables = stats.variables || [];
+  const groups = stats.group_names || [];
+  const pValues = stats.p_values || [];
+  const means = rows
+    .filter((row) => row.mean !== undefined && row.mean !== null)
+    .slice(0, 6)
+    .map((row) => `${row.group || "group"} ${row.variable || "value"} mean ${roundNumber(row.mean)}`);
+  return `
+    <section class="compact-summary-card">
+      <h4>Compact summary</h4>
+      <p>${escapeHtml(asset.title)} reports ${escapeHtml(variables.length)} variable(s) across ${escapeHtml(groups.length)} group(s).</p>
+      <div class="meta">
+        ${means.map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}
+        ${pValues.slice(0, 6).map((value) => `<span class="tag">p=${escapeHtml(value)}</span>`).join("")}
+      </div>
+    </section>
+  `;
 }
 
 function renderPapers() {

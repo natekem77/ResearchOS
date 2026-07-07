@@ -65,6 +65,7 @@ print(assets[0]["asset_id"])
 PY
 )"
 request GET "/providers/graphpad/assets/$GRAPH_PAD_STAT_ASSET_ID/summary" >/dev/null
+request GET "/statistics/$GRAPH_PAD_STAT_ASSET_ID/compact-summary" >/dev/null
 SPREADSHEET_ASSET_ID="$(
   python3 - "$SPREADSHEETS_FILE" <<'PY'
 import json
@@ -81,6 +82,7 @@ PY
 )"
 request GET "/spreadsheets/$SPREADSHEET_ASSET_ID" >/dev/null
 request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/summary" >/dev/null
+request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/compact-summary" >/dev/null
 request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/download" >/dev/null
 request GET "/assets" >/dev/null
 request GET "/papers" >/dev/null

@@ -20,6 +20,7 @@ from app.experiment_planner import plan_follow_up_experiment
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.graphpad_provider import (
+    compact_graphpad_statistics_summary,
     graphpad_asset_statistics_summary,
     graphpad_statistics_assets,
     graphpad_status,
@@ -35,6 +36,7 @@ from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
 from app.scientific_reasoning import reason_scientifically
 from app.spreadsheet_provider import (
+    compact_spreadsheet_summary,
     scan_spreadsheet_assets,
     spreadsheet_assets,
     spreadsheet_status,
@@ -518,6 +520,23 @@ class SpreadsheetSummaryResponse(BaseModel):
     modified_timestamp: str | None = None
     limitations: list[str] = Field(default_factory=list)
     ontology_source: str | None = None
+
+
+class CompactQuantitativeSummaryResponse(BaseModel):
+    """Concise quantitative summary for demo and assistant use."""
+
+    asset_id: str
+    title: str | None = None
+    experiment_id: str | None = None
+    detected_markers_entities: list[str] = Field(default_factory=list)
+    detected_treatments_groups: list[str] = Field(default_factory=list)
+    key_numeric_measurements: list[dict[str, object]] = Field(default_factory=list)
+    per_group_means: dict[str, object] = Field(default_factory=dict)
+    n_per_group: dict[str, object] = Field(default_factory=dict)
+    p_values: list[object] = Field(default_factory=list)
+    short_interpretation: str
+    limitations: list[str] = Field(default_factory=list)
+    source: str
 
 
 class GraphPadStatisticsSummaryResponse(BaseModel):
@@ -1980,6 +1999,20 @@ def graphpad_asset_summary(asset_id: str) -> GraphPadStatisticsSummaryResponse:
     return GraphPadStatisticsSummaryResponse(**summary)
 
 
+@app.get(
+    "/statistics/{asset_id}/compact-summary",
+    response_model=CompactQuantitativeSummaryResponse,
+    tags=["statistics"],
+)
+def statistics_compact_summary(asset_id: str) -> CompactQuantitativeSummaryResponse:
+    """Return a concise quantitative summary for one parsed statistics asset."""
+
+    summary = compact_graphpad_statistics_summary(asset_id=asset_id, settings=settings)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"Statistics asset not found: {asset_id}")
+    return CompactQuantitativeSummaryResponse(**summary)
+
+
 @app.get("/statistics", response_model=list[AssetResponse], tags=["statistics"])
 def statistics() -> list[AssetResponse]:
     """Return assets containing extracted statistics metadata."""
@@ -2095,6 +2128,16 @@ def spreadsheet_asset_summary(asset_id: str) -> SpreadsheetSummaryResponse:
     if summary is None:
         raise HTTPException(status_code=404, detail=f"Spreadsheet asset not found: {asset_id}")
     return SpreadsheetSummaryResponse(**summary)
+
+
+@app.get("/spreadsheets/{asset_id}/compact-summary", response_model=CompactQuantitativeSummaryResponse, tags=["spreadsheets"])
+def spreadsheet_asset_compact_summary(asset_id: str) -> CompactQuantitativeSummaryResponse:
+    """Return a concise quantitative summary for one spreadsheet asset."""
+
+    summary = compact_spreadsheet_summary(asset_id=asset_id, settings=settings)
+    if summary is None:
+        raise HTTPException(status_code=404, detail=f"Spreadsheet asset not found: {asset_id}")
+    return CompactQuantitativeSummaryResponse(**summary)
 
 
 @app.get("/spreadsheets/{asset_id}/download", tags=["spreadsheets"])

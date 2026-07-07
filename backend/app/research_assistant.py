@@ -8,7 +8,9 @@ from typing import Any
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import Settings, get_settings
+from app.graphpad_provider import compact_graphpad_statistics_summary
 from app.retinal_ontology import KNOWN_MARKERS, build_retinal_ontology
+from app.spreadsheet_provider import compact_spreadsheet_summary
 from app.storage import SQLiteStore
 from app.vector_index import ChromaVectorIndex
 
@@ -412,18 +414,10 @@ def _relevant_image_assets(question: str, store: SQLiteStore) -> list[dict[str, 
 def _spreadsheet_asset_summary(asset: dict[str, Any]) -> dict[str, Any]:
     """Return assistant-friendly spreadsheet evidence metadata."""
 
-    metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
-    return {
-        "asset_id": asset.get("asset_id"),
-        "title": asset.get("title"),
-        "filename": asset.get("filename"),
-        "provider": asset.get("provider"),
-        "experiment_id": asset.get("experiment_id"),
-        "row_count": metadata.get("row_count"),
-        "column_count": metadata.get("column_count"),
-        "entities": metadata.get("entities") if isinstance(metadata.get("entities"), dict) else {},
-        "detected_tables": metadata.get("detected_tables") if isinstance(metadata.get("detected_tables"), list) else [],
-    }
+    compact = compact_spreadsheet_summary(str(asset.get("asset_id") or ""))
+    if compact is not None:
+        return compact
+    return {"asset_id": asset.get("asset_id"), "title": asset.get("title"), "provider": asset.get("provider")}
 
 
 def _relevant_spreadsheet_assets(question: str, store: SQLiteStore) -> list[dict[str, Any]]:
@@ -450,6 +444,33 @@ def _relevant_spreadsheet_assets(question: str, store: SQLiteStore) -> list[dict
             matches.append((float(score), asset))
     matches.sort(key=lambda item: item[0], reverse=True)
     return [_spreadsheet_asset_summary(asset) | {"score": score} for score, asset in matches[:8]]
+
+
+def _relevant_statistics_assets(question: str, store: SQLiteStore) -> list[dict[str, Any]]:
+    """Return compact GraphPad statistics summaries relevant to the question."""
+
+    terms = _terms(question)
+    if not terms:
+        return []
+    matches: list[tuple[float, dict[str, Any]]] = []
+    for asset in store.list_assets():
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        if asset.get("provider") != "graphpad" or not isinstance(metadata.get("statistics"), dict):
+            continue
+        haystack = " ".join(
+            [
+                str(asset.get("title") or ""),
+                str(asset.get("filename") or ""),
+                str(metadata.get("statistics") or ""),
+            ]
+        ).lower()
+        score = sum(haystack.count(term) for term in terms)
+        if score > 0:
+            compact = compact_graphpad_statistics_summary(str(asset.get("asset_id") or ""))
+            if compact is not None:
+                matches.append((float(score), compact))
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return [summary | {"score": score} for score, summary in matches[:8]]
 
 
 def _literature_context(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -546,13 +567,15 @@ def _local_direct_answer(
     intent: QueryIntent,
     image_assets: list[dict[str, Any]] | None = None,
     spreadsheet_assets: list[dict[str, Any]] | None = None,
+    statistics_assets: list[dict[str, Any]] | None = None,
 ) -> str:
     """Create a deterministic local answer when no AI provider is configured."""
 
     lower_question = question.lower()
     image_assets = image_assets or []
     spreadsheet_assets = spreadsheet_assets or []
-    if not direct_evidence and not related_evidence and not image_assets and not spreadsheet_assets:
+    statistics_assets = statistics_assets or []
+    if not direct_evidence and not related_evidence and not image_assets and not spreadsheet_assets and not statistics_assets:
         return (
             "I did not find matching structured experiments in the local ResearchOS data. "
             "Try loading demo notes or syncing a notebook, then ask again."
@@ -579,7 +602,10 @@ def _local_direct_answer(
         spreadsheet_note = ""
         if spreadsheet_assets:
             spreadsheet_note = f" I also found {len(spreadsheet_assets)} relevant spreadsheet asset(s)."
-        return f"I found {len(names)} experiment(s){scope}: {', '.join(names)}.{image_note}{spreadsheet_note}"
+        statistics_note = ""
+        if statistics_assets:
+            statistics_note = f" I also found {len(statistics_assets)} compact statistics summary/summaries."
+        return f"I found {len(names)} experiment(s){scope}: {', '.join(names)}.{image_note}{spreadsheet_note}{statistics_note}"
 
     if "compare" in lower_question:
         titles = [str(item.get("title")) for item in evidence if item.get("title")]
@@ -606,9 +632,13 @@ def _local_direct_answer(
                 image_note = f" Relevant microscopy/image assets: {'; '.join(labels)}."
             spreadsheet_note = ""
             if spreadsheet_assets:
-                labels = [str(asset.get("filename") or asset.get("title")) for asset in spreadsheet_assets[:4]]
+                labels = [str(asset.get("title") or asset.get("asset_id")) for asset in spreadsheet_assets[:4]]
                 spreadsheet_note = f" Relevant spreadsheet evidence: {'; '.join(labels)}."
-            return f"I found {len(summaries)} direct result(s){scope}. " + " ".join(summaries) + image_note + spreadsheet_note
+            statistics_note = ""
+            if statistics_assets:
+                labels = [str(asset.get("title") or asset.get("asset_id")) for asset in statistics_assets[:4]]
+                statistics_note = f" Relevant statistics summaries: {'; '.join(labels)}."
+            return f"I found {len(summaries)} direct result(s){scope}. " + " ".join(summaries) + image_note + spreadsheet_note + statistics_note
 
     compounds = facts.get("compounds", [])
     markers = facts.get("markers", [])
@@ -627,8 +657,11 @@ def _local_direct_answer(
         ]
         pieces.append(f"Relevant microscopy/image assets: {'; '.join(labels)}.")
     if spreadsheet_assets:
-        labels = [str(asset.get("filename") or asset.get("title")) for asset in spreadsheet_assets[:4]]
+        labels = [str(asset.get("title") or asset.get("asset_id")) for asset in spreadsheet_assets[:4]]
         pieces.append(f"Relevant spreadsheet evidence: {'; '.join(labels)}.")
+    if statistics_assets:
+        labels = [str(asset.get("title") or asset.get("asset_id")) for asset in statistics_assets[:4]]
+        pieces.append(f"Relevant statistics summaries: {'; '.join(labels)}.")
     return " ".join(pieces)
 
 
@@ -639,12 +672,14 @@ def _local_synthesis(
     facts: dict[str, list[str]],
     image_assets: list[dict[str, Any]] | None = None,
     spreadsheet_assets: list[dict[str, Any]] | None = None,
+    statistics_assets: list[dict[str, Any]] | None = None,
 ) -> str:
     """Summarize retrieved evidence without calling an AI provider."""
 
     lines = []
     image_assets = image_assets or []
     spreadsheet_assets = spreadsheet_assets or []
+    statistics_assets = statistics_assets or []
     if direct_evidence:
         lines.append("Direct experiment matches:")
         for item in direct_evidence:
@@ -686,9 +721,13 @@ def _local_synthesis(
         lines.append("Relevant spreadsheet-derived evidence:")
         for asset in spreadsheet_assets:
             lines.append(
-                f"- {asset.get('filename')}: rows={asset.get('row_count')}; columns={asset.get('column_count')}; "
-                f"entities={asset.get('entities') or {}}"
+                f"- {asset.get('title')}: {asset.get('short_interpretation')}; "
+                f"entities={asset.get('detected_markers_entities') or []}; groups={asset.get('detected_treatments_groups') or []}"
             )
+    if statistics_assets:
+        lines.append("Relevant compact statistics summaries:")
+        for asset in statistics_assets:
+            lines.append(f"- {asset.get('title')}: {asset.get('short_interpretation')}")
 
     if not lines:
         facts_text = ", ".join(f"{key}: {', '.join(values)}" for key, values in facts.items() if values)
@@ -706,6 +745,7 @@ def _assistant_prompt(
     entities: dict[str, list[dict[str, Any]]],
     image_assets: list[dict[str, Any]],
     spreadsheet_assets: list[dict[str, Any]],
+    statistics_assets: list[dict[str, Any]],
 ) -> str:
     """Build a structured prompt for optional AI synthesis."""
 
@@ -719,7 +759,8 @@ def _assistant_prompt(
         f"Extracted facts:\n{facts}\n\n"
         f"Ontology entities:\n{entities}\n\n"
         f"Microscopy/image assets:\n{image_assets}\n\n"
-        f"Spreadsheet quantitative assets:\n{spreadsheet_assets}"
+        f"Spreadsheet compact summaries:\n{spreadsheet_assets}\n\n"
+        f"Statistics compact summaries:\n{statistics_assets}"
     )
 
 
@@ -753,6 +794,7 @@ def ask_research_assistant(
     related_context = _experiment_evidence(related_experiments, relevance="related")
     image_assets = _relevant_image_assets(clean_question, store)
     spreadsheet_assets = _relevant_spreadsheet_assets(clean_question, store)
+    statistics_assets = _relevant_statistics_assets(clean_question, store)
     evidence = direct_matches + related_context
     citations = _source_citations(sources)
     facts = _extracted_facts(direct_experiments or related_experiments, relevant_entities)
@@ -764,8 +806,9 @@ def ask_research_assistant(
         intent,
         image_assets,
         spreadsheet_assets,
+        statistics_assets,
     )
-    local_synthesis = _local_synthesis(direct_matches, related_context, citations, facts, image_assets, spreadsheet_assets)
+    local_synthesis = _local_synthesis(direct_matches, related_context, citations, facts, image_assets, spreadsheet_assets, statistics_assets)
     limitations = [
         "This answer is based only on documents currently ingested into local ResearchOS storage.",
         "Regex-based experiment extraction may miss fields that are phrased unusually.",
@@ -790,6 +833,7 @@ def ask_research_assistant(
                     relevant_entities,
                     image_assets,
                     spreadsheet_assets,
+                    statistics_assets,
                 )
             )
             ai_used = True
