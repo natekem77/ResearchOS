@@ -32,6 +32,7 @@ from app.experiment_lifecycle import (
 )
 from app.experiment_planner import plan_follow_up_experiment
 from app.experiment_workspace import build_experiment_workspace
+from app.extensions import create_default_extension_manager
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
 from app.global_knowledge_graph import KnowledgeGraphService
@@ -55,6 +56,7 @@ from app.protocol_intelligence import ProtocolService
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
 from app.scientific_reasoning import reason_scientifically
+from app.scientific_memory import ScientificMemoryService
 from app.spreadsheet_provider import (
     compact_spreadsheet_summary,
     scan_spreadsheet_assets,
@@ -93,6 +95,7 @@ agent_manager = create_default_agent_manager(
     refreshables={"knowledge_graph": knowledge_graph_service},
 )
 agent_manager.start()
+extension_manager = create_default_extension_manager()
 
 app = FastAPI(
     title=settings.project_name,
@@ -636,6 +639,13 @@ class SessionEventAppendRequest(BaseModel):
     metadata: dict[str, object] = Field(default_factory=dict)
 
 
+class MobileSessionNoteRequest(BaseModel):
+    """Mobile bench note appended to an active session."""
+
+    note_type: Literal["manual_note", "voice_transcript", "observation", "treatment", "media_change"] = "manual_note"
+    text: str
+
+
 class SessionEventResponse(BaseModel):
     """One event in an experiment session timeline."""
 
@@ -1013,6 +1023,13 @@ class ExperimentCompareRequest(BaseModel):
 
     experiment_ids: list[str]
     use_ai: bool = True
+
+
+class MemorySimilarRequest(BaseModel):
+    """Request body for scientific memory similarity."""
+
+    experiment_id: str
+    limit: int = Field(default=5, ge=1, le=25)
 
 
 class ExperimentCompareResponse(BaseModel):
@@ -1461,6 +1478,41 @@ def disable_agent(agent_id: str) -> AgentManagerStatusResponse:
     if not agent_manager.disable_agent(agent_id):
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
     return AgentManagerStatusResponse(**agent_manager.status())
+
+
+@app.get("/extensions", tags=["extensions"])
+def extensions() -> dict[str, object]:
+    """Return installed ResearchOS extensions and marketplace placeholder."""
+
+    return extension_manager.status()
+
+
+@app.get("/extensions/{extension_id}", tags=["extensions"])
+def extension_detail(extension_id: str) -> dict[str, object]:
+    """Return one installed extension."""
+
+    extension = extension_manager.registry.get(extension_id)
+    if extension is None:
+        raise HTTPException(status_code=404, detail=f"Extension not found: {extension_id}")
+    return extension.as_dict()
+
+
+@app.post("/extensions/{extension_id}/enable", tags=["extensions"])
+def enable_extension(extension_id: str) -> dict[str, object]:
+    """Enable one installed extension."""
+
+    if not extension_manager.enable_extension(extension_id):
+        raise HTTPException(status_code=404, detail=f"Extension not found: {extension_id}")
+    return extension_manager.status()
+
+
+@app.post("/extensions/{extension_id}/disable", tags=["extensions"])
+def disable_extension(extension_id: str) -> dict[str, object]:
+    """Disable one installed extension."""
+
+    if not extension_manager.disable_extension(extension_id):
+        raise HTTPException(status_code=404, detail=f"Extension not found: {extension_id}")
+    return extension_manager.status()
 
 
 def _deployment_status() -> dict[str, object]:
@@ -3055,6 +3107,447 @@ def _asset_with_link_info(
     }
 
 
+def _mobile_route(path: str) -> str:
+    return f"/mobile{path}"
+
+
+def _compact_provenance(source: str, provider: str = "ResearchOS", **extra: object) -> dict[str, object]:
+    return {"source": source, "provider": provider, **{key: value for key, value in extra.items() if value is not None}}
+
+
+def _mobile_experiment_card(store: SQLiteStore, experiment: dict[str, object]) -> dict[str, object]:
+    workflow = WorkflowEngine(store).workflow_for_experiment(experiment)
+    linked_assets = store.list_assets_for_experiment(experiment)
+    return {
+        "id": experiment.get("id"),
+        "title": experiment.get("title") or experiment.get("experiment_id") or experiment.get("id"),
+        "human_experiment_id": experiment.get("experiment_id"),
+        "date": experiment.get("date"),
+        "workflow_stage": workflow.get("current_stage") or "Planning",
+        "key_compounds": list(experiment.get("compounds") or [])[:4],
+        "key_markers": list(experiment.get("markers") or [])[:4],
+        "status": "needs_statistics" if not any(_asset_has_statistics(asset) for asset in linked_assets) else "has_statistics",
+        "last_activity": experiment.get("date") or experiment.get("extracted_at"),
+        "route": _mobile_route(f"/experiments/{experiment.get('id')}"),
+        "icon": "experiment",
+        "type_label": "Experiment",
+    }
+
+
+def _asset_has_statistics(asset: dict[str, object]) -> bool:
+    """Return whether an asset carries parsed quantitative/statistical metadata."""
+
+    metadata = asset.get("metadata")
+    if not isinstance(metadata, dict):
+        return False
+    return bool(metadata.get("statistics") or metadata.get("statistics_summary") or metadata.get("statistical_results"))
+
+
+def _mobile_asset_card(asset: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": asset.get("asset_id"),
+        "title": asset.get("title") or asset.get("filename"),
+        "subtitle": f"{asset.get('provider') or 'local'} · {asset.get('asset_type') or 'asset'}",
+        "type": asset.get("asset_type") or "asset",
+        "route": f"#/assets/{asset.get('asset_id')}",
+        "provenance": _compact_provenance("asset", str(asset.get("provider") or "local"), asset_id=asset.get("asset_id")),
+    }
+
+
+def _mobile_session_card(session: dict[str, object]) -> dict[str, object]:
+    return {
+        "session_id": session.get("session_id"),
+        "experiment_id": session.get("experiment_id"),
+        "status": session.get("status"),
+        "title": session.get("experiment_id") or "Experiment session",
+        "subtitle": session.get("notes") or session.get("start_time"),
+        "start_time": session.get("start_time"),
+        "end_time": session.get("end_time"),
+        "route": _mobile_route(f"/sessions/{session.get('session_id')}"),
+    }
+
+
+def _mobile_dashboard_card(
+    title: str,
+    subtitle: str,
+    card_type: str,
+    priority: int,
+    route: str | None = None,
+    action: str | None = None,
+    provenance: dict[str, object] | None = None,
+) -> dict[str, object]:
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "type": card_type,
+        "priority": priority,
+        "route": route,
+        "action": action,
+        "provenance": provenance,
+    }
+
+
+def _mobile_workspace_payload(workspace: dict[str, object]) -> dict[str, object]:
+    experiment = workspace.get("experiment") if isinstance(workspace.get("experiment"), dict) else {}
+    copilot = workspace.get("research_copilot") if isinstance(workspace.get("research_copilot"), dict) else {}
+    sections = copilot.get("sections") if isinstance(copilot.get("sections"), dict) else {}
+    return {
+        "overview": {
+            "id": experiment.get("id"),
+            "title": experiment.get("title"),
+            "human_experiment_id": experiment.get("experiment_id"),
+            "date": experiment.get("date"),
+            "summary": (workspace.get("ai_summary") or {}).get("text") if isinstance(workspace.get("ai_summary"), dict) else None,
+        },
+        "workflow": workspace.get("workflow") or {},
+        "timeline_preview": (workspace.get("timeline") or {}).get("events", [])[:5] if isinstance(workspace.get("timeline"), dict) else [],
+        "key_notebook_notes": list(workspace.get("notebook_entries") or [])[:3],
+        "key_statistics": list(workspace.get("statistics") or [])[:3],
+        "key_images": [_mobile_asset_card(asset) for asset in list(workspace.get("microscopy") or [])[:6] if isinstance(asset, dict)],
+        "key_graphpad_assets": [_mobile_asset_card(asset) for asset in list(workspace.get("graphpad") or [])[:4] if isinstance(asset, dict)],
+        "key_spreadsheets": list(workspace.get("spreadsheets") or [])[:3],
+        "research_copilot_summary": {
+            "provider": copilot.get("provider"),
+            "natural_summary": copilot.get("natural_summary"),
+            "key_findings": list(sections.get("key_findings") or [])[:3],
+            "potential_concerns": list(sections.get("potential_concerns") or [])[:3],
+        },
+        "related_entities": list(workspace.get("related_entities") or [])[:8],
+        "related_experiments": [_mobile_experiment_minimal(item) for item in list(workspace.get("related_experiments") or [])[:5] if isinstance(item, dict)],
+        "scientific_memory": {
+            "most_similar_experiments": list((workspace.get("scientific_memory") or {}).get("most_similar_experiments") or [])[:3]
+            if isinstance(workspace.get("scientific_memory"), dict)
+            else [],
+        },
+    }
+
+
+def _mobile_experiment_minimal(experiment: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": experiment.get("id"),
+        "title": experiment.get("title") or experiment.get("experiment_id"),
+        "human_experiment_id": experiment.get("experiment_id"),
+        "route": _mobile_route(f"/experiments/{experiment.get('id')}"),
+    }
+
+
+def _mobile_experiment_workspace(experiment_id: str) -> dict[str, object]:
+    store = SQLiteStore(settings=settings)
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        linked_assets = store.list_assets(experiment_id=experiment_id)
+        if not linked_assets:
+            raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+        timeline = _virtual_experiment_timeline(store, experiment_id)
+    else:
+        timeline = _experiment_timeline(store, experiment)
+    workspace = build_experiment_workspace(
+        experiment_id=experiment_id,
+        timeline=timeline,
+        settings=settings,
+        use_ai=False,
+        knowledge_graph=knowledge_graph_service,
+    )
+    if workspace is None:
+        raise HTTPException(status_code=404, detail=f"Experiment workspace not found: {experiment_id}")
+    return workspace
+
+
+@app.get("/mobile/status", tags=["mobile"])
+def mobile_status() -> dict[str, object]:
+    """Return compact mobile API status."""
+
+    production = _production_readiness()
+    return {
+        "status": "ok",
+        "project": "ResearchOS",
+        "app_version": "v0.2 preview",
+        "app_env": production["app_env"],
+        "data_classification": production["data_classification"],
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "warnings": list(production.get("warnings") or [])[:3],
+    }
+
+
+@app.get("/mobile/auth/me", tags=["mobile"])
+def mobile_auth_me() -> dict[str, object]:
+    """Return compact current-user information for mobile."""
+
+    user = _current_user_payload()
+    permissions = user.get("permission_summary") if isinstance(user.get("permission_summary"), dict) else {}
+    workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
+    return {
+        "user_id": user.get("user_id"),
+        "display_name": user.get("display_name"),
+        "email": user.get("email"),
+        "role": user.get("role"),
+        "workspace": {
+            "workspace_id": workspace.get("workspace_id"),
+            "name": workspace.get("name"),
+            "role": (workspace.get("current_user_membership") or {}).get("role") if isinstance(workspace.get("current_user_membership"), dict) else user.get("role"),
+        },
+        "auth_mode": user.get("auth_mode"),
+        "permissions_summary": {
+            "can_view": user.get("can_view"),
+            "can_edit": user.get("can_edit"),
+            "can_admin": user.get("can_admin"),
+            "note": (permissions.get("enforcement") or {}).get("note") if isinstance(permissions.get("enforcement"), dict) else None,
+        },
+    }
+
+
+@app.get("/mobile/dashboard", tags=["mobile"])
+def mobile_dashboard() -> dict[str, object]:
+    """Return mobile-ready dashboard cards."""
+
+    store = SQLiteStore(settings=settings)
+    workspace = current_workspace(settings, store)
+    workspace_id = str(workspace.get("workspace_id") or "")
+    experiments = store.list_experiments(workspace_id=workspace_id)
+    assets = store.list_assets(workspace_id=workspace_id)
+    sessions_list = store.list_sessions(workspace_id=workspace_id)
+    active = next((session for session in sessions_list if session.get("status") == "active"), None)
+    cards = [
+        _mobile_dashboard_card("Current workspace", str(workspace.get("name") or "ResearchOS workspace"), "workspace", 1, route="/mobile/settings", provenance=_compact_provenance("workspace", "sqlite", workspace_id=workspace.get("workspace_id"))),
+        _mobile_dashboard_card("Active session", str(active.get("experiment_id") if active else "No active session"), "session", 2, route=_mobile_route("/sessions/active"), action="start_session" if active is None else "open_session"),
+        _mobile_dashboard_card("Experiments", f"{len(experiments)} indexed", "experiments", 3, route=_mobile_route("/experiments")),
+        _mobile_dashboard_card("Recent assets", f"{len(assets)} assets available", "assets", 4, route="#/assets"),
+    ]
+    if experiments:
+        cards.extend(
+            _mobile_dashboard_card(
+                str(experiment.get("experiment_id") or experiment.get("title")),
+                f"Stage: {WorkflowEngine(store).workflow_for_experiment(experiment).get('current_stage') or 'Planning'}",
+                "recent_experiment",
+                10 + index,
+                route=_mobile_route(f"/experiments/{experiment.get('id')}/workspace"),
+                provenance=_compact_provenance("experiment", "sqlite", experiment_id=experiment.get("id")),
+            )
+            for index, experiment in enumerate(experiments[:5])
+        )
+    cards.append(_mobile_dashboard_card("Ask ResearchOS", "Use local evidence and Copilot context.", "quick_action", 50, route=_mobile_route("/assistant/ask"), action="ask_assistant"))
+    return {"cards": sorted(cards, key=lambda item: int(item["priority"])), "quick_actions": ["new_experiment", "start_session", "search", "ask_copilot"]}
+
+
+@app.get("/mobile/search", tags=["mobile"])
+def mobile_search(q: str = Query(..., min_length=1), limit_per_group: int = Query(4, ge=1, le=10)) -> dict[str, object]:
+    """Return compact universal search results for mobile."""
+
+    results = universal_search_service.search(q, limit_per_group=limit_per_group)
+    grouped = {}
+    for group, items in (results.get("grouped_results") or {}).items():
+        grouped[group] = [
+            {
+                "title": item.get("title") or item.get("name") or item.get("id"),
+                "subtitle": item.get("snippet") or item.get("summary") or item.get("type"),
+                "type": group,
+                "score": item.get("score"),
+                "route": item.get("route") or item.get("href"),
+            }
+            for item in list(items)[:limit_per_group]
+            if isinstance(item, dict)
+        ]
+    return {"query": q, "total_results": results.get("total_results", 0), "grouped_results": grouped, "suggested_queries": list(results.get("suggested_queries") or [])[:5], "related_entities": list(results.get("related_entities") or [])[:8]}
+
+
+@app.get("/mobile/experiments", tags=["mobile"])
+def mobile_experiments() -> dict[str, object]:
+    """Return compact experiment cards for mobile lists."""
+
+    store = SQLiteStore(settings=settings)
+    workspace_id = _current_workspace_id()
+    experiments = store.list_experiments(workspace_id=workspace_id)
+    return {"experiments": [_mobile_experiment_card(store, experiment) for experiment in experiments], "count": len(experiments)}
+
+
+@app.get("/mobile/experiments/{experiment_id}", tags=["mobile"])
+def mobile_experiment_detail(experiment_id: str) -> dict[str, object]:
+    """Return compact experiment detail for mobile."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    timeline = _experiment_timeline(store, experiment)
+    linked_assets = store.list_assets_for_experiment(experiment)
+    statistics_assets = [asset for asset in linked_assets if _asset_has_statistics(asset)]
+    image_assets = [asset for asset in linked_assets if _is_microscopy_asset(asset)]
+    notebook_count = 1 if experiment.get("source_document_id") else 0
+    return {
+        "overview": _mobile_experiment_card(store, experiment),
+        "workflow_stage": WorkflowEngine(store).workflow_for_experiment(experiment).get("current_stage"),
+        "latest_timeline_events": list(timeline.get("events") or [])[:5],
+        "key_findings": [experiment.get("conclusions")] if experiment.get("conclusions") else [],
+        "linked_assets_count": len(linked_assets),
+        "statistics_summary": f"{len(statistics_assets)} linked statistics asset(s)",
+        "image_count": len(image_assets),
+        "notebook_count": notebook_count,
+        "quick_actions": ["open_workspace", "start_session", "ask_copilot", "compare_experiments"],
+    }
+
+
+@app.get("/mobile/experiments/{experiment_id}/workspace", tags=["mobile"])
+def mobile_experiment_workspace(experiment_id: str) -> dict[str, object]:
+    """Return a mobile-optimized experiment workspace."""
+
+    return _mobile_workspace_payload(_mobile_experiment_workspace(experiment_id))
+
+
+@app.get("/mobile/experiments/{experiment_id}/timeline", tags=["mobile"])
+def mobile_experiment_timeline(experiment_id: str) -> dict[str, object]:
+    """Return compact timeline events for mobile."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        assets = store.list_assets(experiment_id=experiment_id)
+        if not assets:
+            raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+        timeline = _virtual_experiment_timeline(store, experiment_id)
+    else:
+        timeline = _experiment_timeline(store, experiment)
+    return {"experiment_id": experiment_id, "events": list(timeline.get("events") or [])[:25]}
+
+
+@app.get("/mobile/sessions", tags=["mobile"])
+def mobile_sessions() -> dict[str, object]:
+    """Return compact session list for mobile."""
+
+    store = SQLiteStore(settings=settings)
+    sessions_list = store.list_sessions(workspace_id=_current_workspace_id())
+    return {"sessions": [_mobile_session_card(session) for session in sessions_list], "count": len(sessions_list)}
+
+
+@app.get("/mobile/sessions/active", tags=["mobile"])
+def mobile_active_session() -> dict[str, object]:
+    """Return the active session, if any."""
+
+    store = SQLiteStore(settings=settings)
+    active = next((session for session in store.list_sessions(workspace_id=_current_workspace_id()) if session.get("status") == "active"), None)
+    return {"active_session": _mobile_session_card(active) if active else None}
+
+
+@app.post("/mobile/sessions/start", tags=["mobile"])
+def mobile_start_session(request: SessionStartRequest) -> dict[str, object]:
+    """Start a session from mobile bench workflow."""
+
+    return {"session": _mobile_session_card(start_session(request).model_dump())}
+
+
+@app.post("/mobile/sessions/{session_id}/note", tags=["mobile"])
+def mobile_session_note(session_id: str, request: MobileSessionNoteRequest) -> dict[str, object]:
+    """Append a compact mobile note to a session."""
+
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Session note text must not be empty.")
+    event_type = "voice_note" if request.note_type == "voice_transcript" else request.note_type
+    event = append_session_event(
+        session_id,
+        SessionEventAppendRequest(
+            event_type=event_type,  # type: ignore[arg-type]
+            title=request.note_type.replace("_", " ").title(),
+            content=request.text.strip(),
+            metadata={"source": "mobile"},
+        ),
+    )
+    return {"event": event.model_dump(), "session_id": session_id}
+
+
+@app.post("/mobile/sessions/{session_id}/end", tags=["mobile"])
+def mobile_end_session(session_id: str, request: SessionEndRequest | None = Body(default=None)) -> dict[str, object]:
+    """End a mobile experiment session."""
+
+    return {"session": _mobile_session_card(end_session(session_id, request).model_dump())}
+
+
+@app.get("/mobile/knowledge/entity/{entity:path}", tags=["mobile"])
+def mobile_knowledge_entity(entity: str) -> dict[str, object]:
+    """Return compact knowledge entity detail."""
+
+    detail = knowledge_graph_service.entity_detail(entity)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"Knowledge graph entity not found: {entity}")
+    return {
+        "entity": detail.get("entity"),
+        "entity_type": detail.get("entity_type"),
+        "summary": detail.get("summary"),
+        "related_entities": list(detail.get("related_entities") or [])[:10],
+        "experiments": [_mobile_experiment_minimal(item) for item in list(detail.get("experiments") or [])[:6] if isinstance(item, dict)],
+        "literature": list(detail.get("literature") or [])[:4],
+        "microscopy_assets": [_mobile_asset_card(item) for item in list(detail.get("microscopy_assets") or [])[:6] if isinstance(item, dict)],
+    }
+
+
+@app.post("/mobile/assistant/ask", tags=["mobile"])
+def mobile_assistant_ask(request: AssistantRequest) -> dict[str, object]:
+    """Return compact assistant response for mobile."""
+
+    question = _assistant_question(request)
+    if not question:
+        raise HTTPException(status_code=400, detail="Assistant question must not be empty.")
+    answer = ask_research_assistant(question=question, settings=settings, use_ai=request.use_ai)
+    return {
+        "direct_answer": answer.direct_answer,
+        "supporting_cards": list(answer.evidence_from_experiments or [])[:4],
+        "related_experiments": list(answer.direct_matches or [])[:4],
+        "related_entities": [],
+        "suggested_next_questions": [
+            "Show related experiments.",
+            "Compare this with literature.",
+            "What should we test next?",
+        ],
+        "limitations": list(answer.limitations_uncertainties or [])[:4],
+    }
+
+
+@app.post("/mobile/assistant/copilot", tags=["mobile"])
+def mobile_assistant_copilot(request: AssistantRequest) -> dict[str, object]:
+    """Return compact Research Copilot answer for mobile."""
+
+    question = _assistant_question(request)
+    if not question:
+        raise HTTPException(status_code=400, detail="Copilot question must not be empty.")
+    answer = answer_with_knowledge_graph(question=question, settings=settings, use_ai=request.use_ai)
+    return {
+        "direct_answer": answer.direct_answer,
+        "supporting_cards": list(answer.experiments or [])[:4],
+        "related_experiments": list(answer.experiments or [])[:4],
+        "related_entities": list(answer.related_entities or [])[:8],
+        "suggested_next_questions": [
+            "Which prior experiments are most similar?",
+            "What evidence supports this?",
+            "What are the limitations?",
+        ],
+        "limitations": list(answer.limitations or [])[:4],
+    }
+
+
+@app.get("/mobile/settings", tags=["mobile"])
+def mobile_settings() -> dict[str, object]:
+    """Return compact mobile settings/readiness state."""
+
+    deployment = _deployment_status()
+    onenote = _onenote_readiness()
+    production = _production_readiness()
+    workspace = current_workspace(settings, SQLiteStore(settings=settings))
+    return {
+        "app_version": "ResearchOS v0.2 preview",
+        "server_url": deployment.get("public_base_url") or f"http://{deployment.get('host')}:{deployment.get('port')}",
+        "workspace": {"workspace_id": workspace.get("workspace_id"), "name": workspace.get("name")},
+        "auth_mode": auth_mode(settings),
+        "onenote_readiness": {
+            "status": "ready" if onenote.get("read_only_sync_ready") else "not_ready",
+            "message": onenote.get("read_only_sync_message"),
+            "write_back_disabled": onenote.get("write_back_disabled"),
+        },
+        "production_readiness": {
+            "status": "ready" if not production.get("warnings") else "preview",
+            "warnings": list(production.get("warnings") or [])[:5],
+        },
+        "pwa_install_docs": "docs/MOBILE_PWA.md",
+    }
+
+
 def _is_microscopy_asset(asset: dict[str, object]) -> bool:
     """Return whether an asset is a microscopy/image record."""
 
@@ -3787,6 +4280,39 @@ def delete_asset(asset_id: str) -> dict[str, object]:
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Asset not found: {asset_id}")
     return {"deleted": True, "asset_id": asset_id}
+
+
+@app.get("/memory", tags=["memory"])
+def memory_index(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return Scientific Memory index status for the active workspace."""
+
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    return ScientificMemoryService(settings=settings, workspace_id=resolved_workspace_id).summary()
+
+
+@app.get("/memory/experiment/{experiment_id:path}", tags=["memory"])
+def memory_experiment(experiment_id: str, workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return one experiment's deterministic Scientific Memory vectors."""
+
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    try:
+        return ScientificMemoryService(settings=settings, workspace_id=resolved_workspace_id).experiment_memory(experiment_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/memory/similar", tags=["memory"])
+def memory_similar(request: MemorySimilarRequest, workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return similar experiments and related memory context."""
+
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    try:
+        return ScientificMemoryService(settings=settings, workspace_id=resolved_workspace_id).similar_payload(
+            request.experiment_id,
+            limit=request.limit,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/experiments", response_model=list[ExperimentResponse], tags=["experiments"])

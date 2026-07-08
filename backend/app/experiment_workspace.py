@@ -9,6 +9,7 @@ from app.config import Settings, get_settings
 from app.global_knowledge_graph import KnowledgeGraphService
 from app.graphpad_provider import compact_graphpad_statistics_summary
 from app.research_copilot import ResearchCopilotService
+from app.scientific_memory import ScientificMemoryService
 from app.spreadsheet_provider import compact_spreadsheet_summary
 from app.statistics_engine import interpret_statistics_asset
 from app.storage import SQLiteStore
@@ -57,6 +58,7 @@ def build_experiment_workspace(
     workflow = _workspace_workflow(store, experiment)
     lifecycle = _workflow_as_lifecycle(workflow)
     notebook_entries = [_notebook_with_lifecycle_stage(entry, str(workflow.get("current_stage") or "Planning")) for entry in notebook_entries]
+    scientific_memory = _workspace_memory(resolved_settings, store, service, experiment)
 
     compounds = _entity_names(entities, "compound", experiment.get("compounds") or [])
     markers = _entity_names(entities, "marker", experiment.get("markers") or [])
@@ -82,6 +84,7 @@ def build_experiment_workspace(
         "related_entities": related_entities,
         "workflow": workflow,
         "lifecycle": lifecycle,
+        "scientific_memory": scientific_memory,
         "conclusions": conclusions,
         "limitations": limitations,
         "provenance": provenance,
@@ -105,6 +108,7 @@ def build_experiment_workspace(
             "literature": literature,
             "connected_experiments": related_experiments,
             "related_entities": related_entities,
+            "scientific_memory": scientific_memory,
             "files": _workspace_files(microscopy, graphpad, spreadsheets),
             "ai_summary": ai_summary,
             "limitations": limitations,
@@ -114,6 +118,28 @@ def build_experiment_workspace(
     }
     workspace["research_copilot"] = ResearchCopilotService(settings=resolved_settings).build(workspace, use_ai=use_ai)
     return workspace
+
+
+def _workspace_memory(
+    settings: Settings,
+    store: SQLiteStore,
+    knowledge_graph: KnowledgeGraphService,
+    experiment: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach deterministic Scientific Memory to the workspace."""
+
+    experiment_id = str(experiment.get("id") or "")
+    if not experiment_id:
+        return {"most_similar_experiments": [], "limitations": ["No extracted experiment ID is available for memory lookup."]}
+    try:
+        return ScientificMemoryService(
+            settings=settings,
+            store=store,
+            knowledge_graph=knowledge_graph,
+            workspace_id=str(experiment.get("workspace_id") or "") or None,
+        ).similar_payload(experiment_id, limit=5)
+    except LookupError:
+        return {"most_similar_experiments": [], "limitations": ["Scientific Memory could not build this experiment profile."]}
 
 
 def _asset_only_neighborhood(experiment_id: str, linked_assets: list[dict[str, Any]]) -> dict[str, Any]:

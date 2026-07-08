@@ -90,6 +90,19 @@ class ResearchCopilotService:
         for item in _statistic_interpretations(workspace)[:3]:
             statements.append(_statement(item, "observed", _matching_provenance(provenance, "statistics")))
             observed_added = True
+        memory = workspace.get("scientific_memory") if isinstance(workspace.get("scientific_memory"), dict) else {}
+        similar = memory.get("most_similar_experiments") if isinstance(memory.get("most_similar_experiments"), list) else []
+        if similar:
+            closest = similar[0]
+            closest_experiment = closest.get("experiment") if isinstance(closest, dict) else {}
+            if isinstance(closest_experiment, dict):
+                statements.append(
+                    _statement(
+                        f"Scientific Memory links this experiment to {closest_experiment.get('experiment_id') or closest_experiment.get('title') or closest_experiment.get('id')} with similarity score {closest.get('similarity_score')}.",
+                        "inferred",
+                        _matching_provenance(provenance, "experiment"),
+                    )
+                )
         for item in (workspace.get("conclusions") or {}).get("referenced_from_literature", [])[:3]:
             statements.append(_statement(str(item), "literature-supported", _matching_provenance(provenance, "literature")))
         if not observed_added:
@@ -150,7 +163,7 @@ class ResearchCopilotService:
 
     def _related_experiments(self, workspace: dict[str, Any], provenance: list[dict[str, Any]]) -> list[dict[str, Any]]:
         related = workspace.get("related_experiments") if isinstance(workspace.get("related_experiments"), list) else []
-        return [
+        statements = [
             _statement(
                 str(item.get("experiment_id") or item.get("title") or item.get("id")),
                 "inferred",
@@ -159,6 +172,21 @@ class ResearchCopilotService:
             for item in related[:6]
             if isinstance(item, dict)
         ]
+        memory = workspace.get("scientific_memory") if isinstance(workspace.get("scientific_memory"), dict) else {}
+        for item in (memory.get("most_similar_experiments") or [])[:4]:
+            if not isinstance(item, dict):
+                continue
+            experiment = item.get("experiment") if isinstance(item.get("experiment"), dict) else {}
+            similarities = ", ".join(str(value) for value in item.get("key_similarities", [])[:3])
+            differences = ", ".join(str(value) for value in item.get("important_differences", [])[:2])
+            statements.append(
+                _statement(
+                    f"{experiment.get('experiment_id') or experiment.get('title') or experiment.get('id')} resembles this workspace ({item.get('similarity_score')}); similarities: {similarities or 'metadata overlap'}; differences: {differences or 'not detected'}.",
+                    "inferred",
+                    _matching_provenance(provenance, "experiment"),
+                )
+            )
+        return statements
 
     def _related_literature(self, workspace: dict[str, Any], provenance: list[dict[str, Any]]) -> list[dict[str, Any]]:
         literature = workspace.get("literature") if isinstance(workspace.get("literature"), list) else []

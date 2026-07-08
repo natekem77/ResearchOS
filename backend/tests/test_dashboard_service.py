@@ -77,7 +77,7 @@ class DashboardServiceTests(unittest.TestCase):
             dashboard = service.build(use_ai=False)
 
         self.assertEqual(dashboard["assistant_summary"]["provider"], "local-fallback")
-        self.assertEqual(len(dashboard["sections"]), 13)
+        self.assertEqual(len(dashboard["sections"]), 14)
         self.assertTrue(dashboard["layout"]["supports_collapse"])
         self.assertTrue(dashboard["layout"]["supports_reorder"])
         self.assertEqual(dashboard["layout"]["mobile"]["columns"], 1)

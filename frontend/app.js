@@ -22,6 +22,7 @@ const state = {
   deploymentStatus: null,
   oneNoteReadiness: null,
   productionReadiness: null,
+  extensions: null,
   ontology: {},
   graphStats: null,
   entryTemplates: [],
@@ -65,6 +66,7 @@ const views = {
   chat: $("#chatView"),
   reasoning: $("#reasoningView"),
   planner: $("#plannerView"),
+  extensions: $("#extensionsView"),
   settings: $("#settingsView"),
 };
 
@@ -315,6 +317,7 @@ function route() {
     chat: ["AI Chat", "Ask ResearchOS"],
     reasoning: ["Scientific Reasoning", "Evidence-Based Reasoning"],
     planner: ["Experiment Planner", "Plan Follow-up Experiment"],
+    extensions: ["Extensions", "Extension SDK"],
     settings: ["Settings", "Workspace Settings"],
   };
   setHeader(...titles[target]);
@@ -2394,6 +2397,7 @@ async function renderExperimentWorkspace(experimentId) {
       ${tagSection("Compounds", workspace.compounds || [], "compounds")}
       ${tagSection("Markers", workspace.markers || [], "markers")}
       ${tagSection("Genes", workspace.genes || [], "genes")}
+      ${workspaceSection("Scientific Memory", workspace.scientific_memory?.most_similar_experiments || [], renderMemorySimilarity)}
       ${workspaceSection("Timeline", workspace.timeline?.events || [], renderWorkspaceTimelineEvent)}
       ${workspaceSection("Microscopy / Images", workspace.microscopy || [], renderImageAssetCard)}
       ${workspaceSection("GraphPad Analyses", workspace.graphpad || [], renderWorkspaceAsset)}
@@ -2562,6 +2566,20 @@ function renderWorkspaceTimelineEvent(event) {
       <span>${escapeHtml(formatDate(event.timestamp))} · ${escapeHtml(event.source || "")}</span>
       <p>${escapeHtml(event.description || "")}</p>
     </article>
+  `;
+}
+
+function renderMemorySimilarity(item) {
+  const experiment = item.experiment || {};
+  const similarities = (item.key_similarities || []).slice(0, 4).join(" · ");
+  const differences = (item.important_differences || []).slice(0, 3).join(" · ");
+  return `
+    <a class="item-link" href="#/experiments/${encodeURIComponent(experiment.id || "")}/workspace">
+      <strong>${escapeHtml(experiment.experiment_id || experiment.title || experiment.id || "Similar experiment")}</strong>
+      <span>Similarity score: ${escapeHtml(item.similarity_score ?? "0")}</span>
+      <span>${escapeHtml(similarities ? `Similarities: ${similarities}` : "No key similarities listed.")}</span>
+      <span>${escapeHtml(differences ? `Differences: ${differences}` : "No major differences listed.")}</span>
+    </a>
   `;
 }
 
@@ -3807,6 +3825,11 @@ async function loadStatus() {
     state.agentStatus = null;
   }
   try {
+    state.extensions = await requestJson("/extensions");
+  } catch (error) {
+    state.extensions = null;
+  }
+  try {
     state.deploymentStatus = await requestJson("/status/deployment");
   } catch (error) {
     state.deploymentStatus = null;
@@ -3891,10 +3914,50 @@ function renderAll() {
   renderWorkflows();
   renderSessions();
   renderExperimentsTable();
+  renderExtensions();
   renderProviderSettings();
   renderEntryTemplates();
   renderSavedDrafts();
   route();
+}
+
+function renderExtensions() {
+  const target = $("#extensionCards");
+  const marketplace = $("#extensionMarketplace");
+  if (!target) return;
+  const status = state.extensions;
+  if (!status) {
+    target.innerHTML = `<div class="empty-state">Extension registry is not available.</div>`;
+    if (marketplace) marketplace.textContent = "Future ResearchOS extension marketplace is not implemented yet.";
+    return;
+  }
+  const extensions = status.extensions || [];
+  target.innerHTML = extensions.length
+    ? extensions.map(renderExtensionCard).join("")
+    : `<div class="empty-state">No extensions are installed.</div>`;
+  if (marketplace) {
+    marketplace.textContent = status.marketplace?.message || "Future ResearchOS extension marketplace is not implemented yet.";
+  }
+}
+
+function renderExtensionCard(extension) {
+  const capabilities = (extension.capabilities || []).join(", ") || "No capabilities declared";
+  const contributions = extension.contributions || {};
+  const contributionCount = Object.values(contributions).reduce((count, items) => count + (Array.isArray(items) ? items.length : 0), 0);
+  return `
+    <article class="provider-card">
+      <div class="provider-card-header">
+        <span>${escapeHtml(extension.name)}</span>
+        <strong class="status-pill ${extension.enabled ? "ok" : "warn"}">${extension.enabled ? "Enabled" : "Disabled"}</strong>
+      </div>
+      <p>${escapeHtml(extension.description || "ResearchOS extension.")}</p>
+      <small>${escapeHtml(extension.version)} · ${escapeHtml(extension.author)} · ${escapeHtml(capabilities)}</small>
+      <div class="meta">
+        <span class="tag">${escapeHtml(contributionCount)} contribution${contributionCount === 1 ? "" : "s"}</span>
+        ${(extension.required_permissions || []).slice(0, 4).map((permission) => `<span class="tag">${escapeHtml(permission)}</span>`).join("")}
+      </div>
+    </article>
+  `;
 }
 
 async function loadDemo() {

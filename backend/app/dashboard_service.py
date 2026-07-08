@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.global_knowledge_graph import KnowledgeGraphService
 from app.lab_workspaces import current_workspace
 from app.research_copilot import ResearchCopilotService
+from app.scientific_memory import ScientificMemoryService
 from app.storage import SQLiteStore
 
 
@@ -63,6 +64,7 @@ class DashboardService:
             self._overview(documents, experiments, assets, papers, pending_entries, graph_summary, workspace),
             self._workflow_stages(),
             self._experiments_requiring_attention(experiments, assets),
+            self._similar_experiments(experiments, workspace_id),
             self._recent_activity(documents, experiments, assets, pending_entries),
             self._todays_timeline(experiments, assets, documents),
             self._research_copilot_insights(experiments, assets, papers, use_ai),
@@ -161,6 +163,34 @@ class DashboardService:
         if not items:
             items.append(_item("No experiment attention items", "No missing conclusions, marker metadata, or linked-statistics gaps were detected.", "inferred", _prov("experiments", "dashboard")))
         return _section("experiments_requiring_attention", "Experiments requiring attention", 20, items[:8])
+
+    def _similar_experiments(self, experiments: list[dict[str, Any]], workspace_id: str | None) -> dict[str, Any]:
+        if len(experiments) < 2:
+            return _section("similar_experiments", "Similar experiments", 25, [_empty_item("Not enough experiment history", "Scientific Memory needs at least two experiments to compare.")])
+        service = ScientificMemoryService(settings=self.settings, store=self.store, workspace_id=workspace_id)
+        items = []
+        for experiment in experiments[:4]:
+            try:
+                similar = service.find_similar_experiments(str(experiment["id"]), limit=1)
+            except LookupError:
+                similar = []
+            if not similar:
+                continue
+            closest = similar[0]
+            closest_experiment = closest.get("experiment") if isinstance(closest.get("experiment"), dict) else {}
+            items.append(
+                _item(
+                    str(experiment.get("experiment_id") or experiment.get("title") or experiment.get("id")),
+                    (
+                        f"Similar to {closest_experiment.get('experiment_id') or closest_experiment.get('title') or closest_experiment.get('id')} "
+                        f"(score {closest.get('similarity_score')})."
+                    ),
+                    "inferred",
+                    _prov("scientific_memory", "memory", experiment_id=experiment.get("id")),
+                    href=f"#/experiments/{experiment.get('id')}/workspace",
+                )
+            )
+        return _section("similar_experiments", "Similar experiments", 25, items or [_empty_item("No memory links yet", "No strong deterministic experiment similarities were detected.")])
 
     def _recent_activity(
         self,

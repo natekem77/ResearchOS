@@ -58,6 +58,14 @@ request GET "/status/onenote-readiness" >/dev/null
 request GET "/status/production-readiness" >/dev/null
 request GET "/status/automation" >/dev/null
 request GET "/agents" >/dev/null
+request GET "/extensions" >/dev/null
+request GET "/extensions/builtin.graphpad" >/dev/null
+request POST "/extensions/builtin.graphpad/disable" "{}" >/dev/null
+request POST "/extensions/builtin.graphpad/enable" "{}" >/dev/null
+request GET "/mobile/status" >/dev/null
+request GET "/mobile/auth/me" >/dev/null
+request GET "/mobile/settings" >/dev/null
+request GET "/mobile/dashboard" >/dev/null
 request GET "/api/dashboard/daily?use_ai=false" >/dev/null
 request GET "/demo/status" >/dev/null
 request POST "/demo/reset" "{}" >/dev/null
@@ -65,12 +73,15 @@ request GET "/documents" >/dev/null
 request GET "/documents?workspace_id=workspace:demo-lab" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/experiments?workspace_id=workspace:demo-lab" >/dev/null
+request GET "/mobile/experiments" >/dev/null
 WORKFLOWS_FILE="$(request GET "/workflows")"
 request GET "/workflows?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/workflows/definitions" >/dev/null
 request GET "/protocols" >/dev/null
 request GET "/sessions" >/dev/null
 request GET "/sessions?workspace_id=workspace:demo-lab" >/dev/null
+request GET "/mobile/sessions" >/dev/null
+request GET "/mobile/sessions/active" >/dev/null
 SESSION_FILE="$(request POST "/sessions/start" '{"experiment_id":"SMOKE_SESSION","notes":"Smoke test session started."}')"
 SESSION_ID="$(
   python3 - "$SESSION_FILE" <<'PY'
@@ -84,6 +95,18 @@ PY
 request POST "/sessions/$SESSION_ID/events" '{"event_type":"observation","title":"Smoke observation","content":"Session timeline smoke test."}' >/dev/null
 request GET "/sessions/$SESSION_ID/timeline" >/dev/null
 request POST "/sessions/$SESSION_ID/end" '{"notes":"Smoke test session ended."}' >/dev/null
+MOBILE_SESSION_FILE="$(request POST "/mobile/sessions/start" '{"experiment_id":"SMOKE_MOBILE_SESSION","notes":"Mobile smoke test session started."}')"
+MOBILE_SESSION_ID="$(
+  python3 - "$MOBILE_SESSION_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["session"]["session_id"])
+PY
+)"
+request POST "/mobile/sessions/$MOBILE_SESSION_ID/note" '{"note_type":"observation","text":"Mobile smoke observation."}' >/dev/null
+request POST "/mobile/sessions/$MOBILE_SESSION_ID/end" '{"notes":"Mobile smoke session ended."}' >/dev/null
 request GET "/providers/graphpad/status" >/dev/null
 request POST "/providers/graphpad/scan" "{}" >/dev/null
 request GET "/providers/images/status" >/dev/null
@@ -91,6 +114,7 @@ request POST "/providers/images/scan" "{}" >/dev/null
 request GET "/providers/spreadsheets/status" >/dev/null
 request POST "/providers/spreadsheets/scan" "{}" >/dev/null
 request GET "/experiments/NK_Expt_31/workspace?use_ai=false" >/dev/null
+request GET "/mobile/experiments/NK_Expt_31/workspace" >/dev/null
 SPREADSHEETS_FILE="$(request GET "/spreadsheets")"
 request GET "/spreadsheets?workspace_id=workspace:demo-lab" >/dev/null
 IMAGES_FILE="$(request GET "/images")"
@@ -138,11 +162,13 @@ request GET "/papers" >/dev/null
 request GET "/papers?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/graph/stats" >/dev/null
 request GET "/search/universal?q=SAG" >/dev/null
+request GET "/mobile/search?q=SAG" >/dev/null
 request GET "/knowledgegraph" >/dev/null
 request GET "/knowledgegraph?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/knowledgegraph/search?q=SAG" >/dev/null
 request GET "/knowledgegraph/entity/SAG" >/dev/null
 request GET "/knowledgegraph/type/marker" >/dev/null
+request GET "/memory" >/dev/null
 request GET "/entry-templates" >/dev/null
 request POST "/entries/draft" '{"template":"retinal_organoid","dictation":"Create NK Expt 31. Date today. Researcher Nathan. D18 SAG plus GRKi rescue with 100 nM SAG and 250 nM GRK inhibitor. DMSO control. Readouts SIX6 and BRN3B. Next steps quantify SIX6 intensity.","use_ai":false}' >/dev/null
 SAVED_ENTRY_FILE="$(request POST "/entries/save-draft" '{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1","template":"general_experiment","structured":{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1"},"markdown":"# Smoke Test Pending Entry\n\nLocal pending entry smoke test.","status":"draft"}')"
@@ -176,6 +202,19 @@ if not experiments:
 print(experiments[0]["id"])
 PY
 )"
+MEMORY_BODY="$(
+  python3 - "$FIRST_EXPERIMENT_ID" <<'PY'
+import json
+import sys
+
+print(json.dumps({"experiment_id": sys.argv[1], "limit": 3}))
+PY
+)"
+request GET "/memory/experiment/$FIRST_EXPERIMENT_ID" >/dev/null
+request POST "/memory/similar" "$MEMORY_BODY" >/dev/null
+request GET "/mobile/experiments/$FIRST_EXPERIMENT_ID" >/dev/null
+request GET "/mobile/experiments/$FIRST_EXPERIMENT_ID/timeline" >/dev/null
+request GET "/mobile/experiments/$FIRST_EXPERIMENT_ID/workspace" >/dev/null
 IMAGE_ASSET_ID="$(
   python3 - "$IMAGES_FILE" <<'PY'
 import json
@@ -263,6 +302,9 @@ request DELETE "/assets/$ASSET_ID" >/dev/null
 request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
 request POST "/assistant/knowledge" '{"question":"What do we know about SAG?","use_ai":false}' >/dev/null
 request POST "/assistant/reason" '{"question":"Which experiments involve BRN3B?","use_ai":false}' >/dev/null
+request GET "/mobile/knowledge/entity/SAG" >/dev/null
+request POST "/mobile/assistant/ask" '{"message":"Which experiments used SAG?","use_ai":false}' >/dev/null
+request POST "/mobile/assistant/copilot" '{"question":"What do we know about SAG?","use_ai":false}' >/dev/null
 
 COMPARE_BODY="$(
   python3 - "$EXPERIMENTS_FILE" <<'PY'
