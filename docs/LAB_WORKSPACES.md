@@ -213,8 +213,66 @@ ResearchOS now has nullable `workspace_id` metadata where safe:
 - assets
 - sessions
 - workflows
+- papers/literature through the underlying document records
 
 Existing local data remains valid because these fields are nullable. Current workspace counts include records with either the workspace ID or no workspace ID so pre-workspace demo data remains visible.
+
+## Workspace-Aware Resources
+
+List endpoints default to the active workspace in local/dev mode:
+
+- `/documents`
+- `/papers`
+- `/experiments`
+- `/assets`
+- `/entries`
+- `/sessions`
+- `/workflows`
+- `/spreadsheets`
+- `/statistics`
+- `/images`
+- `/knowledgegraph`
+
+Admin/dev callers may pass `?workspace_id=...` to inspect a specific workspace. This is a preparation step, not strict isolation: legacy rows with `workspace_id = NULL` are treated as part of the default workspace so existing demos and local databases continue to work.
+
+Provider ingestion assigns the active workspace where safe:
+
+- Markdown demo notes
+- OneNote read-only sync records
+- literature/paper documents
+- GraphPad assets
+- microscopy/image assets
+- spreadsheet assets
+- pending entries and sessions created through the API
+
+The helper layer exposes:
+
+- `get_current_workspace()`
+- `get_default_workspace()`
+- `assign_workspace(resource)`
+
+These helpers should be used by future providers before writing workspace-aware resources.
+
+## Workspace Data Isolation Roadmap
+
+Current milestone:
+
+- store workspace metadata
+- default list APIs to the active workspace
+- keep legacy unscoped records visible
+- avoid strict enforcement while the app is still local/demo-first
+
+Next steps:
+
+- backfill legacy rows into an explicit default workspace
+- add database migration versioning for workspace columns
+- require workspace context for every create/update endpoint
+- enforce membership checks in permissions
+- make provider configuration workspace-specific
+- store Microsoft Graph tokens by user and workspace
+- scope AI provider settings and data-handling policies by workspace
+- add audit logs for cross-workspace admin access
+- add tests for strict isolation before enabling production multi-lab mode
 
 ## Dashboard and Settings
 

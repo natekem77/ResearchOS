@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 
 from app.config import Settings
-from app.lab_workspaces import bootstrap_default_workspace, current_workspace
+from app.lab_workspaces import (
+    assign_workspace,
+    bootstrap_default_workspace,
+    current_workspace,
+    get_current_workspace,
+    get_default_workspace,
+)
 from app.permissions import can_admin, can_edit_resource, can_view_resource, permission_summary
 from app.storage import SQLiteStore
 from app.users import current_user, normalize_role, permissions_for_role, user_with_permissions
@@ -109,9 +115,14 @@ class AuthUsersTests(unittest.TestCase):
             store = SQLiteStore(settings=settings)
             workspace = bootstrap_default_workspace(settings, store)
             current = current_workspace(settings, store)
+            default = get_default_workspace(settings, store)
+            active = get_current_workspace(settings, store)
 
         self.assertEqual(workspace["workspace_id"], "workspace:demo-lab")
         self.assertEqual(workspace["name"], "ResearchOS Demo Lab")
+        self.assertEqual(default["workspace_id"], "workspace:demo-lab")
+        self.assertEqual(active["workspace_id"], "workspace:demo-lab")
+        self.assertEqual(assign_workspace({"title": "Draft"}, active)["workspace_id"], "workspace:demo-lab")
         self.assertEqual(current["current_user_membership"]["role"], "admin")
         self.assertEqual(current["counts"]["documents"], 0)
 

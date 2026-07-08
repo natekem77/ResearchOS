@@ -65,6 +65,15 @@ class ActiveWorkspaceService:
             self.store.set_active_workspace(str(user["user_id"]), str(workspace["workspace_id"]))
         return workspace_with_membership(self.store, workspace, str(user["user_id"]))
 
+    def get_default_workspace(self) -> dict[str, Any]:
+        """Return the default development workspace, creating it if needed."""
+
+        workspace = self.store.get_workspace(DEFAULT_WORKSPACE_ID)
+        if workspace is None:
+            return self.ensure_default_workspace()
+        user = current_user(self.settings, self.store)
+        return workspace_with_membership(self.store, workspace, str(user["user_id"]))
+
     def get_current_workspace(self) -> dict[str, Any]:
         """Return the selected workspace, falling back to the default workspace."""
 
@@ -92,6 +101,31 @@ def bootstrap_default_workspace(settings: Settings, store: SQLiteStore) -> dict[
     """Create the demo/default lab workspace and attach the current user."""
 
     return ActiveWorkspaceService(settings, store).ensure_default_workspace()
+
+
+def get_default_workspace(settings: Settings, store: SQLiteStore) -> dict[str, Any]:
+    """Return the default workspace, creating it when needed."""
+
+    return ActiveWorkspaceService(settings, store).get_default_workspace()
+
+
+def get_current_workspace(settings: Settings, store: SQLiteStore) -> dict[str, Any]:
+    """Return the active workspace for the current user."""
+
+    return ActiveWorkspaceService(settings, store).get_current_workspace()
+
+
+def assign_workspace(resource: dict[str, Any], workspace: dict[str, Any] | str | None) -> dict[str, Any]:
+    """Return a resource copy with `workspace_id` assigned when missing.
+
+    This helper is intentionally non-mutating so provider code can use it safely
+    while workspace isolation remains metadata-only.
+    """
+
+    workspace_id = workspace if isinstance(workspace, str) else (workspace or {}).get("workspace_id")
+    if not workspace_id or resource.get("workspace_id"):
+        return dict(resource)
+    return {**resource, "workspace_id": str(workspace_id)}
 
 
 def current_workspace(settings: Settings, store: SQLiteStore) -> dict[str, Any]:

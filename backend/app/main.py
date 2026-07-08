@@ -1333,11 +1333,8 @@ def global_knowledge_graph(workspace_id: str | None = Query(default=None)) -> di
     """Return global provider-agnostic knowledge graph statistics."""
 
     resolved_workspace_id = _current_workspace_id(workspace_id)
-    if workspace_id:
-        scoped_service = KnowledgeGraphService(settings=settings, workspace_id=resolved_workspace_id)
-        summary = scoped_service.summary()
-    else:
-        summary = knowledge_graph_service.summary()
+    scoped_service = KnowledgeGraphService(settings=settings, workspace_id=resolved_workspace_id)
+    summary = scoped_service.summary()
     return {
         **summary,
         "workspace_id": resolved_workspace_id,

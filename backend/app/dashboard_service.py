@@ -29,7 +29,7 @@ class DashboardService:
         self.settings = self.settings or get_settings()
         self.store = self.store or SQLiteStore(settings=self.settings)
         self.knowledge_graph = self.knowledge_graph or KnowledgeGraphService(settings=self.settings, store=self.store)
-        self._cache_fingerprint: tuple[int, int, int, int, int] | None = None
+        self._cache_fingerprint: tuple[object, ...] | None = None
         self._cache_payload: dict[str, Any] | None = None
 
     def refresh(self) -> None:
@@ -47,13 +47,18 @@ class DashboardService:
             cached["cache"]["cached"] = True
             return cached
 
-        documents = self.store.list_documents()
-        experiments = self.store.list_experiments()
-        assets = self.store.list_assets(query=None)
-        pending_entries = self.store.list_pending_entries()
-        papers = [document for document in documents if document.get("provider") == "literature"]
-        graph_summary = self.knowledge_graph.summary()
         workspace = current_workspace(self.settings, self.store)
+        workspace_id = str(workspace.get("workspace_id") or "")
+        documents = self.store.list_documents(workspace_id=workspace_id)
+        experiments = self.store.list_experiments(workspace_id=workspace_id)
+        assets = self.store.list_assets(query=None, workspace_id=workspace_id)
+        pending_entries = self.store.list_pending_entries(workspace_id=workspace_id)
+        papers = [document for document in documents if document.get("provider") == "literature"]
+        graph_summary = KnowledgeGraphService(
+            settings=self.settings,
+            store=self.store,
+            workspace_id=workspace_id,
+        ).summary()
         sections = [
             self._overview(documents, experiments, assets, papers, pending_entries, graph_summary, workspace),
             self._workflow_stages(),
@@ -85,12 +90,15 @@ class DashboardService:
         self._cache_payload = payload
         return payload
 
-    def _fingerprint(self) -> tuple[int, int, int, int, int]:
+    def _fingerprint(self) -> tuple[object, ...]:
+        workspace = current_workspace(self.settings, self.store)
+        workspace_id = str(workspace.get("workspace_id") or "")
         return (
-            len(self.store.list_documents()),
-            len(self.store.list_experiments()),
-            len(self.store.list_assets(query=None)),
-            len(self.store.list_pending_entries()),
+            workspace_id,
+            len(self.store.list_documents(workspace_id=workspace_id)),
+            len(self.store.list_experiments(workspace_id=workspace_id)),
+            len(self.store.list_assets(query=None, workspace_id=workspace_id)),
+            len(self.store.list_pending_entries(workspace_id=workspace_id)),
             sum(self.store.workflow_stage_counts("experiment").values()),
         )
 
