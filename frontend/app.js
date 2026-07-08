@@ -15,6 +15,7 @@ const state = {
   currentUser: null,
   currentPermissions: null,
   currentWorkspace: null,
+  authReadiness: null,
   dailyDashboard: null,
   providerStatus: null,
   agentStatus: null,
@@ -1463,6 +1464,7 @@ function renderProviderSettings() {
   if (!status) {
     $("#providerCards").innerHTML = `<div class="empty-state">Provider status is not available.</div>`;
     renderCurrentUserSettings();
+    renderAuthReadinessSettings();
     renderAgentSettings();
     renderOneNoteReadinessSettings();
     renderDeploymentSettings();
@@ -1501,6 +1503,7 @@ function renderProviderSettings() {
     ),
   ].join("");
   renderCurrentUserSettings();
+  renderAuthReadinessSettings();
   renderAgentSettings();
   renderOneNoteReadinessSettings();
   renderDeploymentSettings();
@@ -1572,6 +1575,42 @@ function renderCurrentUserSettings() {
       "active",
       user.auth_provider || "local_dev",
       user.last_login ? `Last login: ${formatDate(user.last_login)}` : "No login timestamp",
+    ),
+  ].join("");
+}
+
+function renderAuthReadinessSettings() {
+  const target = $("#authReadinessCards");
+  if (!target) return;
+  const readiness = state.authReadiness;
+  if (!readiness) {
+    target.innerHTML = `<div class="empty-state">Authentication readiness is not available.</div>`;
+    return;
+  }
+  target.innerHTML = [
+    providerCard(
+      "App login mode",
+      readiness.auth_mode === "microsoft" ? "configured" : "active",
+      readiness.auth_mode || "dev",
+      readiness.require_login ? "Login required when enforcement is enabled." : "Demo-friendly: login is not required.",
+    ),
+    providerCard(
+      "Microsoft identity readiness",
+      readiness.microsoft_login_ready ? "configured" : "warn",
+      readiness.microsoft_login_ready ? "Ready for Microsoft app login design." : "Not ready for enforced Microsoft login.",
+      `Client: ${readiness.microsoft_client_configured ? "configured" : "missing"} · Tenant: ${readiness.tenant_configured ? "configured" : "missing"}`,
+    ),
+    providerCard(
+      "Redirect URI",
+      "active",
+      readiness.redirect_uri || "Not configured",
+      "This is separate from the future ResearchOS app-login redirect design.",
+    ),
+    providerCard(
+      "Production warnings",
+      readiness.warnings?.length ? "warn" : "configured",
+      readiness.warnings?.length ? `${readiness.warnings.length} warning(s)` : "No readiness warnings.",
+      (readiness.warnings || []).join(" · ") || "Local demo defaults are active.",
     ),
   ].join("");
 }
@@ -3743,6 +3782,11 @@ async function loadStatus() {
     state.currentPermissions = await requestJson("/auth/permissions");
   } catch (error) {
     state.currentPermissions = null;
+  }
+  try {
+    state.authReadiness = await requestJson("/auth/readiness");
+  } catch (error) {
+    state.authReadiness = null;
   }
   try {
     state.currentWorkspace = await requestJson("/workspaces/current");

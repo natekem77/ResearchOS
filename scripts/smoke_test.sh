@@ -43,6 +43,7 @@ request GET "/frontend-assets/manifest.webmanifest" >/dev/null
 request GET "/auth/status" >/dev/null
 request GET "/auth/me" >/dev/null
 request GET "/auth/permissions" >/dev/null
+request GET "/auth/readiness" >/dev/null
 request GET "/users" >/dev/null
 request GET "/workspaces" >/dev/null
 SMOKE_WORKSPACE_ID="workspace:smoke-$(date +%s)"

@@ -107,4 +107,7 @@ def current_user(settings: Settings, store: SQLiteStore) -> dict[str, object]:
 def auth_mode(settings: Settings) -> str:
     """Return user-facing auth mode."""
 
-    return "enabled" if settings.auth_enabled else "disabled_dev_mode"
+    configured_mode = settings.auth_mode.strip().lower()
+    if configured_mode in {"dev", "microsoft", "disabled"}:
+        return configured_mode
+    return "enabled" if settings.auth_enabled else "dev"

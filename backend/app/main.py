@@ -208,6 +208,23 @@ class AuthStatusResponse(BaseModel):
     token_type: str | None
 
 
+class AuthReadinessResponse(BaseModel):
+    """ResearchOS app-login readiness for lab-server/mobile deployment."""
+
+    auth_mode: str
+    require_login: bool
+    auth_enforcement_enabled: bool
+    dev_user_enabled: bool
+    microsoft_client_configured: bool
+    tenant_configured: bool
+    redirect_uri: str
+    user_table_ready: bool
+    workspace_table_ready: bool
+    microsoft_login_ready: bool
+    onenote_sync_auth_separate: bool
+    warnings: list[str] = Field(default_factory=list)
+
+
 class UserResponse(BaseModel):
     """ResearchOS user response."""
 
@@ -1982,6 +1999,68 @@ def auth_permissions() -> dict[str, object]:
         "auth_enabled": user["auth_enabled"],
         **permission_summary(user),
     }
+
+
+def _auth_readiness() -> dict[str, object]:
+    """Return app-login readiness without changing enforcement behavior."""
+
+    store = SQLiteStore(settings=settings)
+    try:
+        store.list_users()
+        user_table_ready = True
+    except Exception:
+        user_table_ready = False
+    try:
+        store.list_workspaces()
+        workspace_table_ready = True
+    except Exception:
+        workspace_table_ready = False
+
+    configured_mode = auth_mode(settings)
+    dev_user_enabled = configured_mode in {"dev", "disabled"} or not settings.require_login
+    microsoft_client_configured = bool(settings.microsoft_client_id.strip())
+    tenant_configured = bool(settings.microsoft_tenant_id.strip())
+    microsoft_login_ready = (
+        configured_mode == "microsoft"
+        and settings.require_login
+        and microsoft_client_configured
+        and tenant_configured
+        and user_table_ready
+        and workspace_table_ready
+    )
+    warnings: list[str] = []
+    if not settings.require_login:
+        warnings.append("Login is not required; this is appropriate for local demo mode but not production lab-server deployment.")
+    if configured_mode == "microsoft" and not microsoft_client_configured:
+        warnings.append("AUTH_MODE is microsoft but MICROSOFT_CLIENT_ID is not configured.")
+    if configured_mode == "microsoft" and settings.microsoft_tenant_id.lower() == "common":
+        warnings.append("Microsoft tenant is set to common; UCSD/lab production should use an approved tenant-specific app.")
+    if settings.microsoft_redirect_uri.startswith("http://") and "localhost" not in settings.microsoft_redirect_uri:
+        warnings.append("Microsoft redirect URI is plain HTTP and not localhost; production/mobile deployments require HTTPS.")
+    if settings.auth_enabled and not settings.require_login:
+        warnings.append("AUTH_ENABLED is true but REQUIRE_LOGIN is false; login enforcement remains disabled.")
+
+    return {
+        "auth_mode": configured_mode,
+        "require_login": settings.require_login,
+        "auth_enforcement_enabled": settings.auth_enabled and settings.require_login,
+        "dev_user_enabled": dev_user_enabled,
+        "microsoft_client_configured": microsoft_client_configured,
+        "tenant_configured": tenant_configured,
+        "redirect_uri": settings.microsoft_redirect_uri,
+        "user_table_ready": user_table_ready,
+        "workspace_table_ready": workspace_table_ready,
+        "microsoft_login_ready": microsoft_login_ready,
+        "onenote_sync_auth_separate": True,
+        "warnings": warnings,
+    }
+
+
+@app.get("/auth/readiness", response_model=AuthReadinessResponse, tags=["auth"])
+def auth_readiness() -> AuthReadinessResponse:
+    """Return ResearchOS app-login readiness for future Microsoft identity."""
+
+    return AuthReadinessResponse(**_auth_readiness())
 
 
 @app.get("/auth/callback", response_model=AuthStatusResponse, tags=["auth"])

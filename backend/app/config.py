@@ -40,6 +40,16 @@ class Settings(BaseSettings):
         description="Enable ResearchOS user authentication enforcement. Disabled keeps local demo mode unblocked.",
         validation_alias=AliasChoices("AUTH_ENABLED", "RESEARCHOS_AUTH_ENABLED"),
     )
+    auth_mode: str = Field(
+        default="dev",
+        description="Future app-login mode: dev, microsoft, or disabled. Dev remains the demo-friendly default.",
+        validation_alias=AliasChoices("AUTH_MODE", "RESEARCHOS_AUTH_MODE"),
+    )
+    require_login: bool = Field(
+        default=False,
+        description="Future strict-login switch. False keeps local demos and PWA preview unblocked.",
+        validation_alias=AliasChoices("REQUIRE_LOGIN", "RESEARCHOS_REQUIRE_LOGIN"),
+    )
     dev_user_email: str = Field(
         default="dev@researchos.local",
         description="Development-mode user email when ResearchOS auth enforcement is disabled.",
