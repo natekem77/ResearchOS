@@ -336,6 +336,8 @@ class WorkflowEngine:
             subject_id=str(experiment["id"]),
             initial_stage="Planning",
             metadata={"human_experiment_id": experiment.get("experiment_id")},
+            owner_user_id=str(experiment.get("owner_user_id") or "") or None,
+            created_by=str(experiment.get("created_by") or experiment.get("owner_user_id") or "") or None,
         )
         assets = self.store.list_assets_for_experiment(experiment)
         return self._payload(state, experiment, assets)
@@ -561,4 +563,3 @@ def has_statistics(assets: list[dict[str, Any]]) -> bool:
 
 def has_notebook_observation(experiment: dict[str, Any], notes: list[dict[str, Any]] | None = None) -> bool:
     return bool(experiment.get("notes") or experiment.get("conclusions") or notes)
-

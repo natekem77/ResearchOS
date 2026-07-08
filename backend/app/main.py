@@ -49,6 +49,7 @@ from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
 from app.microscopy_provider import microscopy_assets, microscopy_status, scan_microscopy_assets
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
+from app.permissions import permission_summary
 from app.protocol_intelligence import ProtocolService
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
@@ -120,7 +121,12 @@ def _current_user_payload() -> dict[str, object]:
 
     store = SQLiteStore(settings=settings)
     user = current_user(settings, store)
-    return {**user, "auth_mode": auth_mode(settings), "auth_enabled": settings.auth_enabled}
+    return {
+        **user,
+        "auth_mode": auth_mode(settings),
+        "auth_enabled": settings.auth_enabled,
+        "permission_summary": permission_summary(user),
+    }
 
 
 def _require_admin() -> dict[str, object]:
@@ -190,6 +196,10 @@ class UserResponse(BaseModel):
     last_login: str | None = None
     auth_provider: str
     permissions: dict[str, bool]
+    can_view: bool
+    can_edit: bool
+    can_admin: bool
+    permission_summary: dict[str, object] | None = None
     auth_mode: str | None = None
     auth_enabled: bool | None = None
 
@@ -1877,6 +1887,21 @@ def auth_me() -> UserResponse:
     return UserResponse(**_current_user_payload())
 
 
+@app.get("/auth/permissions", tags=["auth"])
+def auth_permissions() -> dict[str, object]:
+    """Return current user's role-aware permission matrix."""
+
+    user = _current_user_payload()
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "role": user["role"],
+        "auth_mode": user["auth_mode"],
+        "auth_enabled": user["auth_enabled"],
+        **permission_summary(user),
+    }
+
+
 @app.get("/auth/callback", response_model=AuthStatusResponse, tags=["auth"])
 def auth_callback(
     code: str = Query(..., description="Authorization code returned by Microsoft."),
@@ -2312,6 +2337,7 @@ def save_entry_draft(request: PendingEntrySaveRequest) -> PendingEntryResponse:
         raise HTTPException(status_code=400, detail="Saved draft Markdown must not be empty.")
 
     store = SQLiteStore(settings=settings)
+    user = _current_user_payload()
     saved = store.save_pending_entry(
         entry_id=request.id,
         title=request.title.strip(),
@@ -2320,6 +2346,8 @@ def save_entry_draft(request: PendingEntrySaveRequest) -> PendingEntryResponse:
         structured=dict(request.structured),
         markdown=request.markdown,
         status=request.status,
+        owner_user_id=str(user.get("user_id")),
+        created_by=str(user.get("user_id")),
     )
     _publish_event(
         EventType.DRAFT_CREATED,
@@ -2334,9 +2362,12 @@ def start_session(request: SessionStartRequest) -> SessionResponse:
     """Start a live experiment session."""
 
     store = SQLiteStore(settings=settings)
+    user = _current_user_payload()
     session = store.start_session(
         experiment_id=request.experiment_id.strip() if request.experiment_id else None,
         notes=request.notes.strip() if request.notes else None,
+        owner_user_id=str(user.get("user_id")),
+        created_by=str(user.get("user_id")),
     )
     _publish_event(
         EventType.SESSION_STARTED,
@@ -3291,6 +3322,7 @@ def register_asset(request: AssetRegisterRequest) -> AssetResponse:
     """Register a local research asset without parsing provider-specific content."""
 
     store = SQLiteStore(settings=settings)
+    user = _current_user_payload()
     asset = store.register_asset(
         asset_id=request.asset_id,
         asset_type=request.asset_type,
@@ -3300,6 +3332,8 @@ def register_asset(request: AssetRegisterRequest) -> AssetResponse:
         provider=request.provider.strip() or "local",
         path=request.path.strip(),
         metadata=request.metadata,
+        owner_user_id=str(user.get("user_id")),
+        created_by=str(user.get("user_id")),
     )
     _publish_event(
         EventType.ASSET_REGISTERED,

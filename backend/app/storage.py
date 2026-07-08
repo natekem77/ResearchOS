@@ -97,6 +97,8 @@ class SQLiteStore:
                     sequencing_json TEXT NOT NULL DEFAULT '[]',
                     notes TEXT,
                     conclusions TEXT,
+                    owner_user_id TEXT,
+                    created_by TEXT,
                     extracted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(source_document_id) REFERENCES documents(id) ON DELETE CASCADE
                 );
@@ -113,6 +115,8 @@ class SQLiteStore:
                     structured_json TEXT NOT NULL DEFAULT '{}',
                     markdown TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'draft',
+                    owner_user_id TEXT,
+                    created_by TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -131,6 +135,8 @@ class SQLiteStore:
                     provider TEXT NOT NULL,
                     path TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    owner_user_id TEXT,
+                    created_by TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -150,6 +156,8 @@ class SQLiteStore:
                     status TEXT NOT NULL DEFAULT 'active',
                     notes TEXT,
                     voice_transcripts_json TEXT NOT NULL DEFAULT '[]',
+                    owner_user_id TEXT,
+                    created_by TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -206,6 +214,8 @@ class SQLiteStore:
                     subject_id TEXT NOT NULL,
                     current_stage TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    owner_user_id TEXT,
+                    created_by TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -258,6 +268,19 @@ class SQLiteStore:
                     ON users(role);
                 """
             )
+            self._ensure_permission_columns(connection)
+
+    def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
+        """Add nullable owner columns to existing local databases."""
+
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states"]:
+            existing = {
+                str(row["name"])
+                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            for column in ["owner_user_id", "created_by"]:
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
     def upsert_document(self, document: ResearchDocument, chunks: list[DocumentChunk]) -> None:
         """Store one document and replace its chunks atomically."""
@@ -594,6 +617,8 @@ class SQLiteStore:
         markdown: str,
         status: str = "draft",
         entry_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a local pending notebook entry draft."""
 
@@ -608,9 +633,9 @@ class SQLiteStore:
                     """
                     INSERT INTO pending_entries (
                         id, title, experiment_id, template, structured_json,
-                        markdown, status
+                        markdown, status, owner_user_id, created_by
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -620,6 +645,8 @@ class SQLiteStore:
                         json.dumps(structured, sort_keys=True),
                         markdown,
                         status,
+                        owner_user_id,
+                        created_by or owner_user_id,
                     ),
                 )
             else:
@@ -632,6 +659,8 @@ class SQLiteStore:
                         structured_json = ?,
                         markdown = ?,
                         status = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
@@ -642,6 +671,8 @@ class SQLiteStore:
                         json.dumps(structured, sort_keys=True),
                         markdown,
                         status,
+                        owner_user_id,
+                        created_by or owner_user_id,
                         resolved_id,
                     ),
                 )
@@ -685,7 +716,13 @@ class SQLiteStore:
             cursor = connection.execute("DELETE FROM pending_entries WHERE id = ?", (entry_id,))
         return cursor.rowcount > 0
 
-    def start_session(self, experiment_id: str | None = None, notes: str | None = None) -> dict[str, Any]:
+    def start_session(
+        self,
+        experiment_id: str | None = None,
+        notes: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
+    ) -> dict[str, Any]:
         """Start one active laboratory experiment session."""
 
         session_id = f"session:{uuid.uuid4().hex[:16]}"
@@ -693,11 +730,11 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT INTO experiment_sessions (
-                    session_id, experiment_id, notes
+                    session_id, experiment_id, notes, owner_user_id, created_by
                 )
-                VALUES (?, ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_id, experiment_id, notes),
+                (session_id, experiment_id, notes, owner_user_id, created_by or owner_user_id),
             )
         session = self.get_session(session_id)
         if session is None:
@@ -983,6 +1020,8 @@ class SQLiteStore:
         subject_id: str,
         initial_stage: str,
         metadata: dict[str, Any] | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
     ) -> dict[str, Any]:
         """Return a workflow state, creating an initial state if needed."""
 
@@ -993,9 +1032,10 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT INTO workflow_states (
-                    workflow_id, workflow_type, subject_id, current_stage, metadata_json
+                    workflow_id, workflow_type, subject_id, current_stage,
+                    metadata_json, owner_user_id, created_by
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     workflow_id,
@@ -1003,6 +1043,8 @@ class SQLiteStore:
                     subject_id,
                     initial_stage,
                     json.dumps(metadata or {}, sort_keys=True),
+                    owner_user_id,
+                    created_by or owner_user_id,
                 ),
             )
             connection.execute(
@@ -1266,6 +1308,8 @@ class SQLiteStore:
         path: str,
         metadata: dict[str, Any] | None = None,
         asset_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a local research asset registration.
 
@@ -1285,9 +1329,9 @@ class SQLiteStore:
                     """
                     INSERT INTO assets (
                         asset_id, asset_type, experiment_id, title, filename,
-                        provider, path, metadata_json
+                        provider, path, metadata_json, owner_user_id, created_by
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -1298,6 +1342,8 @@ class SQLiteStore:
                         provider,
                         path,
                         json.dumps(metadata or {}, sort_keys=True),
+                        owner_user_id,
+                        created_by or owner_user_id,
                     ),
                 )
             else:
@@ -1311,6 +1357,8 @@ class SQLiteStore:
                         provider = ?,
                         path = ?,
                         metadata_json = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE asset_id = ?
                     """,
@@ -1322,6 +1370,8 @@ class SQLiteStore:
                         provider,
                         path,
                         json.dumps(metadata or {}, sort_keys=True),
+                        owner_user_id,
+                        created_by or owner_user_id,
                         resolved_id,
                     ),
                 )

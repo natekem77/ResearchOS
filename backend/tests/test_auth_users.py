@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from app.config import Settings
+from app.permissions import can_admin, can_edit_resource, can_view_resource, permission_summary
 from app.storage import SQLiteStore
 from app.users import current_user, normalize_role, permissions_for_role, user_with_permissions
 
@@ -39,6 +40,12 @@ class AuthUsersTests(unittest.TestCase):
         self.assertEqual(normalize_role("Admin"), "admin")
         self.assertTrue(permissions_for_role("researcher")["can_edit"])
         self.assertFalse(permissions_for_role("viewer")["can_edit"])
+        self.assertTrue(can_view_resource({"role": "viewer"}, "experiments"))
+        self.assertFalse(can_edit_resource({"role": "viewer"}, "experiments"))
+        self.assertTrue(can_edit_resource({"role": "researcher"}, "assets"))
+        self.assertFalse(can_edit_resource({"role": "researcher"}, "users"))
+        self.assertTrue(can_admin({"role": "admin"}))
+        self.assertIn("workflows", permission_summary({"role": "researcher"})["resource_permissions"])
         with self.assertRaises(ValueError):
             normalize_role("owner")
 
@@ -60,6 +67,40 @@ class AuthUsersTests(unittest.TestCase):
         assert fetched is not None
         self.assertEqual(fetched["display_name"], "Admin User")
         self.assertTrue(user_with_permissions(fetched)["permissions"]["can_admin"])
+
+    def test_owner_fields_are_stored_for_user_created_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(tmpdir)
+            store = SQLiteStore(settings=settings)
+            entry = store.save_pending_entry(
+                title="Owned draft",
+                experiment_id="NK_Expt_31",
+                template="general",
+                structured={},
+                markdown="# Owned draft",
+                owner_user_id="user:dev-local",
+                created_by="user:dev-local",
+            )
+            asset = store.register_asset(
+                asset_type="image",
+                experiment_id="NK_Expt_31",
+                title="Owned asset",
+                filename="owned.tif",
+                provider="local",
+                path="data/owned.tif",
+                owner_user_id="user:dev-local",
+                created_by="user:dev-local",
+            )
+            session = store.start_session(
+                experiment_id="NK_Expt_31",
+                notes="Owned session",
+                owner_user_id="user:dev-local",
+                created_by="user:dev-local",
+            )
+
+        self.assertEqual(entry["owner_user_id"], "user:dev-local")
+        self.assertEqual(asset["created_by"], "user:dev-local")
+        self.assertEqual(session["owner_user_id"], "user:dev-local")
 
 
 if __name__ == "__main__":

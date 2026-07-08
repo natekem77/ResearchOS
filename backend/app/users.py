@@ -54,7 +54,14 @@ def user_with_permissions(user: dict[str, object]) -> dict[str, object]:
     """Add computed permission booleans to a user response."""
 
     role = str(user.get("role") or "viewer")
-    return {**user, "permissions": permissions_for_role(role)}
+    permissions = permissions_for_role(role)
+    return {
+        **user,
+        "permissions": permissions,
+        "can_view": permissions["can_view"],
+        "can_edit": permissions["can_edit"],
+        "can_admin": permissions["can_admin"],
+    }
 
 
 def dev_user_id(settings: Settings) -> str:
@@ -101,4 +108,3 @@ def auth_mode(settings: Settings) -> str:
     """Return user-facing auth mode."""
 
     return "enabled" if settings.auth_enabled else "disabled_dev_mode"
-

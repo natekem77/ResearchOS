@@ -13,6 +13,7 @@ const state = {
   health: null,
   auth: null,
   currentUser: null,
+  currentPermissions: null,
   dailyDashboard: null,
   providerStatus: null,
   agentStatus: null,
@@ -1492,6 +1493,8 @@ function renderCurrentUserSettings() {
   const target = $("#currentUserCards");
   if (!target) return;
   const user = state.currentUser;
+  const permissionSummary = state.currentPermissions || user?.permission_summary || {};
+  const resourcePermissions = permissionSummary.resource_permissions || {};
   if (!user) {
     target.innerHTML = `<div class="empty-state">Current user is not available.</div>`;
     return;
@@ -1515,6 +1518,14 @@ function renderCurrentUserSettings() {
       user.auth_enabled ? "configured" : "warn",
       user.auth_enabled ? "Authentication enforcement enabled." : "Development mode: auth disabled.",
       user.auth_mode || "unknown",
+    ),
+    providerCard(
+      "Resource permissions",
+      "active",
+      Object.entries(resourcePermissions)
+        .map(([name, value]) => `${name}: ${value.can_edit ? "edit" : value.can_view ? "view" : "none"}`)
+        .join(" · ") || "No resource permissions available.",
+      permissionSummary.enforcement?.note || "Permissions are scaffolded for future enforcement.",
     ),
     providerCard(
       "Identity provider",
@@ -3687,6 +3698,11 @@ async function loadStatus() {
     state.currentUser = await requestJson("/auth/me");
   } catch (error) {
     state.currentUser = null;
+  }
+  try {
+    state.currentPermissions = await requestJson("/auth/permissions");
+  } catch (error) {
+    state.currentPermissions = null;
   }
   try {
     state.providerStatus = await requestJson("/status/providers");
