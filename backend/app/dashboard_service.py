@@ -11,6 +11,7 @@ from typing import Any, Callable
 from app.ai_providers import AIProvider, AIProviderError, get_ai_provider
 from app.config import Settings, get_settings
 from app.global_knowledge_graph import KnowledgeGraphService
+from app.lab_workspaces import current_workspace
 from app.research_copilot import ResearchCopilotService
 from app.storage import SQLiteStore
 
@@ -52,8 +53,9 @@ class DashboardService:
         pending_entries = self.store.list_pending_entries()
         papers = [document for document in documents if document.get("provider") == "literature"]
         graph_summary = self.knowledge_graph.summary()
+        workspace = current_workspace(self.settings, self.store)
         sections = [
-            self._overview(documents, experiments, assets, papers, pending_entries, graph_summary),
+            self._overview(documents, experiments, assets, papers, pending_entries, graph_summary, workspace),
             self._workflow_stages(),
             self._experiments_requiring_attention(experiments, assets),
             self._recent_activity(documents, experiments, assets, pending_entries),
@@ -77,6 +79,7 @@ class DashboardService:
             },
             "sections": sorted(sections, key=lambda section: int(section["order"])),
             "assistant_summary": self._assistant_summary(sections, use_ai),
+            "workspace": workspace,
         }
         self._cache_fingerprint = fingerprint
         self._cache_payload = payload
@@ -107,18 +110,22 @@ class DashboardService:
         papers: list[dict[str, Any]],
         pending_entries: list[dict[str, Any]],
         graph_summary: dict[str, Any],
+        workspace: dict[str, Any],
     ) -> dict[str, Any]:
+        counts = workspace.get("counts") if isinstance(workspace.get("counts"), dict) else {}
         return _section(
             "overview",
             "Overview",
             10,
             [
+                _item("Workspace", str(workspace.get("name") or "ResearchOS workspace"), "observed", _prov("workspace", "sqlite", workspace_id=workspace.get("workspace_id"))),
                 _item("Experiments indexed", str(len(experiments)), "observed", _prov("experiments", "sqlite", count=len(experiments))),
                 _item("Documents indexed", str(len(documents)), "observed", _prov("documents", "sqlite", count=len(documents))),
                 _item("Research assets", str(len(assets)), "observed", _prov("assets", "sqlite", count=len(assets))),
                 _item("Papers", str(len(papers)), "observed", _prov("literature", "sqlite", count=len(papers))),
                 _item("Knowledge Graph entities", str(graph_summary.get("entity_count", 0)), "observed", _prov("knowledge_graph", "knowledgegraph")),
                 _item("Pending drafts", str(len(pending_entries)), "observed", _prov("pending_entries", "sqlite", count=len(pending_entries))),
+                _item("Workspace records", f"{counts.get('documents', 0)} documents / {counts.get('assets', 0)} assets", "observed", _prov("workspace_counts", "sqlite", workspace_id=workspace.get("workspace_id"))),
             ],
         )
 

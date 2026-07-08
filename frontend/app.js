@@ -1495,6 +1495,8 @@ function renderCurrentUserSettings() {
   const user = state.currentUser;
   const permissionSummary = state.currentPermissions || user?.permission_summary || {};
   const resourcePermissions = permissionSummary.resource_permissions || {};
+  const workspace = user?.current_workspace || state.dailyDashboard?.workspace || {};
+  const membership = workspace.current_user_membership || {};
   if (!user) {
     target.innerHTML = `<div class="empty-state">Current user is not available.</div>`;
     return;
@@ -1526,6 +1528,18 @@ function renderCurrentUserSettings() {
         .map(([name, value]) => `${name}: ${value.can_edit ? "edit" : value.can_view ? "view" : "none"}`)
         .join(" · ") || "No resource permissions available.",
       permissionSummary.enforcement?.note || "Permissions are scaffolded for future enforcement.",
+    ),
+    providerCard(
+      "Current workspace",
+      "active",
+      workspace.name || "Demo Lab Workspace",
+      workspace.institution || "ResearchOS Local Demo",
+    ),
+    providerCard(
+      "Workspace membership",
+      membership.role === "admin" ? "configured" : "active",
+      membership.role || user.role || "admin",
+      workspace.workspace_id || "workspace:demo-lab",
     ),
     providerCard(
       "Identity provider",

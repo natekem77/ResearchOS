@@ -45,6 +45,7 @@ from app.graphpad_provider import (
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.knowledge_graph_assistant import answer_with_knowledge_graph
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
+from app.lab_workspaces import bootstrap_default_workspace, current_workspace, workspace_with_membership
 from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
 from app.microscopy_provider import microscopy_assets, microscopy_status, scan_microscopy_assets
@@ -121,11 +122,13 @@ def _current_user_payload() -> dict[str, object]:
 
     store = SQLiteStore(settings=settings)
     user = current_user(settings, store)
+    workspace = current_workspace(settings, store)
     return {
         **user,
         "auth_mode": auth_mode(settings),
         "auth_enabled": settings.auth_enabled,
         "permission_summary": permission_summary(user),
+        "current_workspace": workspace,
     }
 
 
@@ -200,6 +203,7 @@ class UserResponse(BaseModel):
     can_edit: bool
     can_admin: bool
     permission_summary: dict[str, object] | None = None
+    current_workspace: dict[str, object] | None = None
     auth_mode: str | None = None
     auth_enabled: bool | None = None
 
@@ -211,6 +215,30 @@ class BootstrapAdminRequest(BaseModel):
     display_name: str
     user_id: str | None = None
     auth_provider: str = "local"
+
+
+class WorkspaceResponse(BaseModel):
+    """Lab workspace response."""
+
+    workspace_id: str
+    name: str
+    institution: str | None = None
+    description: str | None = None
+    created_at: str | None = None
+    owner_user_id: str | None = None
+    settings: dict[str, object] = Field(default_factory=dict)
+    current_user_membership: dict[str, object] | None = None
+    members: list[dict[str, object]] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class BootstrapWorkspaceRequest(BaseModel):
+    """Create or update the default lab workspace."""
+
+    name: str = "Demo Lab Workspace"
+    institution: str = "ResearchOS Local Demo"
+    description: str = "Default local development workspace for ResearchOS demos."
+    settings: dict[str, object] = Field(default_factory=dict)
 
 
 class OneNoteMetadataResponse(BaseModel):
@@ -1971,6 +1999,53 @@ def bootstrap_admin(request: BootstrapAdminRequest) -> UserResponse:
     return UserResponse(**{**user_with_permissions(user), "auth_mode": current["auth_mode"], "auth_enabled": current["auth_enabled"]})
 
 
+@app.get("/workspaces", response_model=list[WorkspaceResponse], tags=["workspaces"])
+def workspaces() -> list[WorkspaceResponse]:
+    """Return lab workspaces, bootstrapping the demo workspace in dev mode."""
+
+    current = _require_admin()
+    store = SQLiteStore(settings=settings)
+    if not settings.auth_enabled:
+        bootstrap_default_workspace(settings, store)
+    return [
+        WorkspaceResponse(**workspace_with_membership(store, workspace, str(current["user_id"])))
+        for workspace in store.list_workspaces()
+    ]
+
+
+@app.get("/workspaces/{workspace_id}", response_model=WorkspaceResponse, tags=["workspaces"])
+def workspace_detail(workspace_id: str) -> WorkspaceResponse:
+    """Return one lab workspace."""
+
+    current = _require_admin()
+    store = SQLiteStore(settings=settings)
+    workspace = store.get_workspace(workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}")
+    return WorkspaceResponse(**workspace_with_membership(store, workspace, str(current["user_id"])))
+
+
+@app.post("/workspaces/bootstrap-default", response_model=WorkspaceResponse, tags=["workspaces"])
+def bootstrap_workspace(request: BootstrapWorkspaceRequest | None = Body(default=None)) -> WorkspaceResponse:
+    """Create or update the default local lab workspace."""
+
+    current = _require_admin()
+    store = SQLiteStore(settings=settings)
+    workspace = bootstrap_default_workspace(settings, store)
+    if request is not None:
+        workspace = store.upsert_workspace(
+            workspace_id=str(workspace["workspace_id"]),
+            name=request.name.strip() or "Demo Lab Workspace",
+            institution=request.institution.strip() or None,
+            description=request.description.strip() or None,
+            owner_user_id=str(current["user_id"]),
+            settings={**dict(workspace.get("settings") or {}), **dict(request.settings)},
+        )
+        store.upsert_workspace_membership(str(workspace["workspace_id"]), str(current["user_id"]), "admin")
+        workspace = workspace_with_membership(store, workspace, str(current["user_id"]))
+    return WorkspaceResponse(**workspace)
+
+
 @app.get("/onenote/notebooks", response_model=list[OneNoteMetadataResponse], tags=["onenote"])
 def onenote_notebooks() -> list[OneNoteMetadataResponse]:
     """List OneNote notebooks for the signed-in user."""
@@ -2338,6 +2413,7 @@ def save_entry_draft(request: PendingEntrySaveRequest) -> PendingEntryResponse:
 
     store = SQLiteStore(settings=settings)
     user = _current_user_payload()
+    workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
     saved = store.save_pending_entry(
         entry_id=request.id,
         title=request.title.strip(),
@@ -2348,6 +2424,7 @@ def save_entry_draft(request: PendingEntrySaveRequest) -> PendingEntryResponse:
         status=request.status,
         owner_user_id=str(user.get("user_id")),
         created_by=str(user.get("user_id")),
+        workspace_id=str(workspace.get("workspace_id") or ""),
     )
     _publish_event(
         EventType.DRAFT_CREATED,
@@ -2363,11 +2440,13 @@ def start_session(request: SessionStartRequest) -> SessionResponse:
 
     store = SQLiteStore(settings=settings)
     user = _current_user_payload()
+    workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
     session = store.start_session(
         experiment_id=request.experiment_id.strip() if request.experiment_id else None,
         notes=request.notes.strip() if request.notes else None,
         owner_user_id=str(user.get("user_id")),
         created_by=str(user.get("user_id")),
+        workspace_id=str(workspace.get("workspace_id") or ""),
     )
     _publish_event(
         EventType.SESSION_STARTED,
@@ -3323,6 +3402,7 @@ def register_asset(request: AssetRegisterRequest) -> AssetResponse:
 
     store = SQLiteStore(settings=settings)
     user = _current_user_payload()
+    workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
     asset = store.register_asset(
         asset_id=request.asset_id,
         asset_type=request.asset_type,
@@ -3334,6 +3414,7 @@ def register_asset(request: AssetRegisterRequest) -> AssetResponse:
         metadata=request.metadata,
         owner_user_id=str(user.get("user_id")),
         created_by=str(user.get("user_id")),
+        workspace_id=str(workspace.get("workspace_id") or ""),
     )
     _publish_event(
         EventType.ASSET_REGISTERED,

@@ -136,7 +136,8 @@ class DashboardServiceTests(unittest.TestCase):
 
         self.assertTrue(cached_empty["cache"]["cached"])
         self.assertNotEqual(empty["cache"]["fingerprint"], rebuilt["cache"]["fingerprint"])
-        self.assertGreater(int(rebuilt["sections"][0]["items"][0]["summary"]), 0)
+        overview_items = {item["title"]: item for item in rebuilt["sections"][0]["items"]}
+        self.assertGreater(int(overview_items["Experiments indexed"]["summary"]), 0)
 
 
 if __name__ == "__main__":

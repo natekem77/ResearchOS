@@ -338,6 +338,7 @@ class WorkflowEngine:
             metadata={"human_experiment_id": experiment.get("experiment_id")},
             owner_user_id=str(experiment.get("owner_user_id") or "") or None,
             created_by=str(experiment.get("created_by") or experiment.get("owner_user_id") or "") or None,
+            workspace_id=str(experiment.get("workspace_id") or "") or None,
         )
         assets = self.store.list_assets_for_experiment(experiment)
         return self._payload(state, experiment, assets)

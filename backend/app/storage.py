@@ -62,6 +62,7 @@ class SQLiteStore:
                     created_at TEXT,
                     updated_at TEXT,
                     metadata_json TEXT NOT NULL DEFAULT '{}',
+                    workspace_id TEXT,
                     ingested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
@@ -99,6 +100,7 @@ class SQLiteStore:
                     conclusions TEXT,
                     owner_user_id TEXT,
                     created_by TEXT,
+                    workspace_id TEXT,
                     extracted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(source_document_id) REFERENCES documents(id) ON DELETE CASCADE
                 );
@@ -117,6 +119,7 @@ class SQLiteStore:
                     status TEXT NOT NULL DEFAULT 'draft',
                     owner_user_id TEXT,
                     created_by TEXT,
+                    workspace_id TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -137,6 +140,7 @@ class SQLiteStore:
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     owner_user_id TEXT,
                     created_by TEXT,
+                    workspace_id TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -158,6 +162,7 @@ class SQLiteStore:
                     voice_transcripts_json TEXT NOT NULL DEFAULT '[]',
                     owner_user_id TEXT,
                     created_by TEXT,
+                    workspace_id TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -216,6 +221,7 @@ class SQLiteStore:
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     owner_user_id TEXT,
                     created_by TEXT,
+                    workspace_id TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -252,6 +258,27 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_workflow_notes_workflow_id
                     ON workflow_notes(workflow_id);
 
+                CREATE TABLE IF NOT EXISTS lab_workspaces (
+                    workspace_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    institution TEXT,
+                    description TEXT,
+                    owner_user_id TEXT,
+                    settings_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS workspace_memberships (
+                    workspace_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(workspace_id, user_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_workspace_memberships_user_id
+                    ON workspace_memberships(user_id);
+
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
@@ -278,9 +305,15 @@ class SQLiteStore:
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
             }
-            for column in ["owner_user_id", "created_by"]:
+            for column in ["owner_user_id", "created_by", "workspace_id"]:
                 if column not in existing:
                     connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        document_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(documents)").fetchall()
+        }
+        if "workspace_id" not in document_columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN workspace_id TEXT")
 
     def upsert_document(self, document: ResearchDocument, chunks: list[DocumentChunk]) -> None:
         """Store one document and replace its chunks atomically."""
@@ -619,6 +652,7 @@ class SQLiteStore:
         entry_id: str | None = None,
         owner_user_id: str | None = None,
         created_by: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a local pending notebook entry draft."""
 
@@ -633,9 +667,9 @@ class SQLiteStore:
                     """
                     INSERT INTO pending_entries (
                         id, title, experiment_id, template, structured_json,
-                        markdown, status, owner_user_id, created_by
+                        markdown, status, owner_user_id, created_by, workspace_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -647,6 +681,7 @@ class SQLiteStore:
                         status,
                         owner_user_id,
                         created_by or owner_user_id,
+                        workspace_id,
                     ),
                 )
             else:
@@ -661,6 +696,7 @@ class SQLiteStore:
                         status = ?,
                         owner_user_id = COALESCE(?, owner_user_id),
                         created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                     """,
@@ -673,6 +709,7 @@ class SQLiteStore:
                         status,
                         owner_user_id,
                         created_by or owner_user_id,
+                        workspace_id,
                         resolved_id,
                     ),
                 )
@@ -722,6 +759,7 @@ class SQLiteStore:
         notes: str | None = None,
         owner_user_id: str | None = None,
         created_by: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Start one active laboratory experiment session."""
 
@@ -730,11 +768,11 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT INTO experiment_sessions (
-                    session_id, experiment_id, notes, owner_user_id, created_by
+                    session_id, experiment_id, notes, owner_user_id, created_by, workspace_id
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, experiment_id, notes, owner_user_id, created_by or owner_user_id),
+                (session_id, experiment_id, notes, owner_user_id, created_by or owner_user_id, workspace_id),
             )
         session = self.get_session(session_id)
         if session is None:
@@ -1022,6 +1060,7 @@ class SQLiteStore:
         metadata: dict[str, Any] | None = None,
         owner_user_id: str | None = None,
         created_by: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Return a workflow state, creating an initial state if needed."""
 
@@ -1033,9 +1072,9 @@ class SQLiteStore:
                 """
                 INSERT INTO workflow_states (
                     workflow_id, workflow_type, subject_id, current_stage,
-                    metadata_json, owner_user_id, created_by
+                    metadata_json, owner_user_id, created_by, workspace_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     workflow_id,
@@ -1045,6 +1084,7 @@ class SQLiteStore:
                     json.dumps(metadata or {}, sort_keys=True),
                     owner_user_id,
                     created_by or owner_user_id,
+                    workspace_id,
                 ),
             )
             connection.execute(
@@ -1298,6 +1338,152 @@ class SQLiteStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def upsert_workspace(
+        self,
+        workspace_id: str,
+        name: str,
+        institution: str | None = None,
+        description: str | None = None,
+        owner_user_id: str | None = None,
+        settings: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one lab workspace."""
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO lab_workspaces (
+                    workspace_id, name, institution, description, owner_user_id, settings_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workspace_id) DO UPDATE SET
+                    name = excluded.name,
+                    institution = excluded.institution,
+                    description = excluded.description,
+                    owner_user_id = excluded.owner_user_id,
+                    settings_json = excluded.settings_json
+                """,
+                (
+                    workspace_id,
+                    name,
+                    institution,
+                    description,
+                    owner_user_id,
+                    json.dumps(settings or {}, sort_keys=True),
+                ),
+            )
+        workspace = self.get_workspace(workspace_id)
+        assert workspace is not None
+        return workspace
+
+    def get_workspace(self, workspace_id: str) -> dict[str, Any] | None:
+        """Return one lab workspace."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM lab_workspaces WHERE workspace_id = ?",
+                (workspace_id,),
+            ).fetchone()
+        return self._workspace_row_to_dict(row) if row else None
+
+    def list_workspaces(self) -> list[dict[str, Any]]:
+        """Return lab workspaces."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM lab_workspaces
+                ORDER BY created_at ASC, name ASC
+                """
+            ).fetchall()
+        return [self._workspace_row_to_dict(row) for row in rows]
+
+    def upsert_workspace_membership(self, workspace_id: str, user_id: str, role: str) -> dict[str, Any]:
+        """Create or update one workspace membership."""
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO workspace_memberships (workspace_id, user_id, role)
+                VALUES (?, ?, ?)
+                ON CONFLICT(workspace_id, user_id) DO UPDATE SET
+                    role = excluded.role
+                """,
+                (workspace_id, user_id, role),
+            )
+        membership = self.get_workspace_membership(workspace_id, user_id)
+        assert membership is not None
+        return membership
+
+    def get_workspace_membership(self, workspace_id: str, user_id: str | None) -> dict[str, Any] | None:
+        """Return one workspace membership."""
+
+        if not user_id:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM workspace_memberships
+                WHERE workspace_id = ? AND user_id = ?
+                """,
+                (workspace_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_workspace_memberships(self, workspace_id: str) -> list[dict[str, Any]]:
+        """Return memberships for one workspace."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM workspace_memberships
+                WHERE workspace_id = ?
+                ORDER BY joined_at ASC
+                """,
+                (workspace_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def workspace_counts(self, workspace_id: str) -> dict[str, int]:
+        """Return workspace-level counts without enforcing strict isolation."""
+
+        with self._connect() as connection:
+            documents = connection.execute(
+                "SELECT COUNT(*) AS count FROM documents WHERE workspace_id = ? OR workspace_id IS NULL",
+                (workspace_id,),
+            ).fetchone()
+            experiments = connection.execute(
+                "SELECT COUNT(*) AS count FROM experiments WHERE workspace_id = ? OR workspace_id IS NULL",
+                (workspace_id,),
+            ).fetchone()
+            assets = connection.execute(
+                "SELECT COUNT(*) AS count FROM assets WHERE workspace_id = ? OR workspace_id IS NULL",
+                (workspace_id,),
+            ).fetchone()
+            entries = connection.execute(
+                "SELECT COUNT(*) AS count FROM pending_entries WHERE workspace_id = ? OR workspace_id IS NULL",
+                (workspace_id,),
+            ).fetchone()
+            sessions = connection.execute(
+                "SELECT COUNT(*) AS count FROM experiment_sessions WHERE workspace_id = ? OR workspace_id IS NULL",
+                (workspace_id,),
+            ).fetchone()
+            workflows = connection.execute(
+                "SELECT COUNT(*) AS count FROM workflow_states WHERE workspace_id = ? OR workspace_id IS NULL",
+                (workspace_id,),
+            ).fetchone()
+        return {
+            "documents": int(documents["count"]),
+            "experiments": int(experiments["count"]),
+            "assets": int(assets["count"]),
+            "entries": int(entries["count"]),
+            "sessions": int(sessions["count"]),
+            "workflows": int(workflows["count"]),
+        }
+
     def register_asset(
         self,
         asset_type: str,
@@ -1310,6 +1496,7 @@ class SQLiteStore:
         asset_id: str | None = None,
         owner_user_id: str | None = None,
         created_by: str | None = None,
+        workspace_id: str | None = None,
     ) -> dict[str, Any]:
         """Create or update a local research asset registration.
 
@@ -1329,9 +1516,9 @@ class SQLiteStore:
                     """
                     INSERT INTO assets (
                         asset_id, asset_type, experiment_id, title, filename,
-                        provider, path, metadata_json, owner_user_id, created_by
+                        provider, path, metadata_json, owner_user_id, created_by, workspace_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -1344,6 +1531,7 @@ class SQLiteStore:
                         json.dumps(metadata or {}, sort_keys=True),
                         owner_user_id,
                         created_by or owner_user_id,
+                        workspace_id,
                     ),
                 )
             else:
@@ -1359,6 +1547,7 @@ class SQLiteStore:
                         metadata_json = ?,
                         owner_user_id = COALESCE(?, owner_user_id),
                         created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE asset_id = ?
                     """,
@@ -1372,6 +1561,7 @@ class SQLiteStore:
                         json.dumps(metadata or {}, sort_keys=True),
                         owner_user_id,
                         created_by or owner_user_id,
+                        workspace_id,
                         resolved_id,
                     ),
                 )
@@ -1566,6 +1756,13 @@ class SQLiteStore:
 
         record = dict(row)
         record["metadata"] = json.loads(record.pop("metadata_json") or "{}")
+        return record
+
+    def _workspace_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Deserialize a lab workspace row."""
+
+        record = dict(row)
+        record["settings"] = json.loads(record.pop("settings_json") or "{}")
         return record
 
 

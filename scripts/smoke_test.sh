@@ -44,6 +44,8 @@ request GET "/auth/status" >/dev/null
 request GET "/auth/me" >/dev/null
 request GET "/auth/permissions" >/dev/null
 request GET "/users" >/dev/null
+request GET "/workspaces" >/dev/null
+request POST "/workspaces/bootstrap-default" "{}" >/dev/null
 request GET "/status/deployment" >/dev/null
 request GET "/status/onenote-readiness" >/dev/null
 request GET "/status/automation" >/dev/null
