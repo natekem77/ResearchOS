@@ -34,6 +34,7 @@ class ResearchCopilotService:
             "suggested_follow_up_experiments": self._follow_ups(workspace, experiment, provenance),
             "related_experiments": self._related_experiments(workspace, provenance),
             "related_literature": self._related_literature(workspace, provenance),
+            "resources": self._resources(workspace, provenance),
             "experimental_gaps": self._experimental_gaps(workspace, experiment, provenance),
             "potential_manuscript_statements": self._manuscript_statements(workspace, experiment, provenance),
             "grant_proposal_ideas": self._grant_ideas(workspace, experiment, provenance),
@@ -77,6 +78,14 @@ class ResearchCopilotService:
                 )
             )
             observed_added = True
+        evidence = workspace.get("evidence") if isinstance(workspace.get("evidence"), dict) else {}
+        for item in evidence.get("observed_evidence", [])[:2] if isinstance(evidence.get("observed_evidence"), list) else []:
+            if isinstance(item, dict) and item.get("statement"):
+                statements.append(_statement(str(item["statement"]), "observed", item.get("sources") or []))
+                observed_added = True
+        for item in evidence.get("supporting_evidence", [])[:2] if isinstance(evidence.get("supporting_evidence"), list) else []:
+            if isinstance(item, dict) and item.get("statement"):
+                statements.append(_statement(str(item["statement"]), "inferred", item.get("sources") or []))
         compounds = workspace.get("compounds") or []
         markers = workspace.get("markers") or []
         if compounds or markers:
@@ -87,6 +96,10 @@ class ResearchCopilotService:
                     _matching_provenance(provenance, "entity"),
                 )
             )
+        resources = workspace.get("resources") if isinstance(workspace.get("resources"), list) else []
+        if resources:
+            names = ", ".join(str(item.get("name") or item.get("resource_id")) for item in resources[:5] if isinstance(item, dict))
+            statements.append(_statement(f"Resource catalog links this workspace to: {names}.", "inferred", _matching_provenance(provenance, "resource")))
         for item in _statistic_interpretations(workspace)[:3]:
             statements.append(_statement(item, "observed", _matching_provenance(provenance, "statistics")))
             observed_added = True
@@ -116,10 +129,27 @@ class ResearchCopilotService:
         current_stage = str(workflow.get("current_stage") or "")
         if not workspace.get("statistics"):
             concerns.append("No parsed statistics are linked to this workspace.")
+        evidence = workspace.get("evidence") if isinstance(workspace.get("evidence"), dict) else {}
+        for item in evidence.get("missing_evidence", [])[:3] if isinstance(evidence.get("missing_evidence"), list) else []:
+            if isinstance(item, dict) and item.get("statement"):
+                concerns.append(str(item["statement"]))
+        for item in evidence.get("contradictory_evidence", [])[:3] if isinstance(evidence.get("contradictory_evidence"), list) else []:
+            if isinstance(item, dict) and item.get("statement"):
+                concerns.append(str(item["statement"]))
         if not workspace.get("literature"):
             concerns.append("No literature references are linked through shared entities.")
         if not workspace.get("microscopy"):
             concerns.append("No microscopy/image assets are linked to this workspace.")
+        for resource in workspace.get("resources", [])[:5] if isinstance(workspace.get("resources"), list) else []:
+            if not isinstance(resource, dict):
+                continue
+            name = str(resource.get("name") or resource.get("resource_id") or "Resource")
+            if not resource.get("lot_number"):
+                concerns.append(f"{name} is missing lot number metadata.")
+            if not resource.get("storage_location"):
+                concerns.append(f"{name} is missing storage location metadata.")
+            if not resource.get("expiration"):
+                concerns.append(f"{name} has no expiration date recorded.")
         for issue in workflow.get("blocking_issues", [])[:5]:
             concerns.append(str(issue))
         if current_stage in {"Analysis", "Quantification", "Statistics", "Interpretation", "Writing"} and workspace.get("microscopy") and not workspace.get("statistics"):
@@ -199,6 +229,34 @@ class ResearchCopilotService:
             for item in literature[:6]
             if isinstance(item, dict)
         ] or [_statement("No related literature is currently linked.", "inferred", _matching_provenance(provenance, None))]
+
+    def _resources(self, workspace: dict[str, Any], provenance: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        resources = workspace.get("resources") if isinstance(workspace.get("resources"), list) else []
+        if not resources:
+            return [_statement("No reusable ResearchOS resources are linked to this workspace yet.", "inferred", _matching_provenance(provenance, None))]
+        statements = []
+        for resource in resources[:8]:
+            if not isinstance(resource, dict):
+                continue
+            usages = resource.get("usages") if isinstance(resource.get("usages"), list) else []
+            details = []
+            if resource.get("vendor"):
+                details.append(f"vendor {resource['vendor']}")
+            if resource.get("catalog_number"):
+                details.append(f"catalog {resource['catalog_number']}")
+            if resource.get("lot_number"):
+                details.append(f"lot {resource['lot_number']}")
+            if resource.get("storage_location"):
+                details.append(f"stored at {resource['storage_location']}")
+            statements.append(
+                _statement(
+                    f"{resource.get('name') or resource.get('resource_id')} ({resource.get('resource_type')}) has {len(usages)} usage record(s)"
+                    + (f"; {', '.join(details)}." if details else "."),
+                    "observed",
+                    _matching_provenance(provenance, "resource"),
+                )
+            )
+        return statements
 
     def _experimental_gaps(
         self,

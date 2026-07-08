@@ -19,7 +19,8 @@ class ServerConnectionScreen extends StatefulWidget {
 }
 
 class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
-  final TextEditingController _controller = TextEditingController(text: const AppConfig().defaultServerUrl);
+  final TextEditingController _controller =
+      TextEditingController(text: const AppConfig().defaultServerUrl);
   bool _loading = false;
   String? _error;
   MobileStatus? _status;
@@ -53,9 +54,11 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
         child: ListView(
           padding: ResearchOsSpacing.screen,
           children: [
-            Text('Connect to ResearchOS', style: Theme.of(context).textTheme.headlineSmall),
+            Text('Connect to ResearchOS',
+                style: Theme.of(context).textTheme.headlineSmall),
             const SizedBox(height: ResearchOsSpacing.sm),
-            const Text('Use the local demo URL on desktop. Phones need a reachable lab-server, HTTPS, Tailscale, or emulator URL instead of localhost.'),
+            const Text(
+                'Use the local demo URL on desktop. Phones need a reachable lab-server, HTTPS, Tailscale, or emulator URL instead of localhost.'),
             const SizedBox(height: ResearchOsSpacing.xl),
             TextField(
               controller: _controller,
@@ -69,7 +72,11 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
             const SizedBox(height: ResearchOsSpacing.lg),
             FilledButton.icon(
               onPressed: _loading ? null : _connect,
-              icon: _loading ? const SizedBox.square(dimension: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.link),
+              icon: _loading
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.link),
               label: const Text('Connect'),
             ),
             if (_error != null) ...[

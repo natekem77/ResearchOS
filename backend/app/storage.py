@@ -12,6 +12,7 @@ from typing import Any
 from app.config import Settings, get_settings
 from app.experiments import Experiment
 from app.research_document import DocumentChunk, ResearchDocument
+from app.resources import normalize_resource_type, resource_entity_type
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -258,6 +259,51 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_workflow_notes_workflow_id
                     ON workflow_notes(workflow_id);
 
+                CREATE TABLE IF NOT EXISTS resources (
+                    resource_id TEXT PRIMARY KEY,
+                    resource_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    aliases_json TEXT NOT NULL DEFAULT '[]',
+                    vendor TEXT,
+                    catalog_number TEXT,
+                    lot_number TEXT,
+                    rrid TEXT,
+                    storage_location TEXT,
+                    concentration TEXT,
+                    units TEXT,
+                    expiration TEXT,
+                    notes TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    owner_user_id TEXT,
+                    created_by TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_resources_type
+                    ON resources(resource_type);
+                CREATE INDEX IF NOT EXISTS idx_resources_name
+                    ON resources(name);
+
+                CREATE TABLE IF NOT EXISTS resource_usages (
+                    usage_id TEXT PRIMARY KEY,
+                    resource_id TEXT NOT NULL,
+                    object_type TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    usage_type TEXT NOT NULL DEFAULT 'referenced',
+                    source TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(resource_id) REFERENCES resources(resource_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_resource_usages_resource_id
+                    ON resource_usages(resource_id);
+                CREATE INDEX IF NOT EXISTS idx_resource_usages_object
+                    ON resource_usages(object_type, object_id);
+
                 CREATE TABLE IF NOT EXISTS lab_workspaces (
                     workspace_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -301,6 +347,75 @@ class SQLiteStore:
                     ON users(email);
                 CREATE INDEX IF NOT EXISTS idx_users_role
                     ON users(role);
+
+                CREATE TABLE IF NOT EXISTS lab_intelligence_item_states (
+                    item_id TEXT PRIMARY KEY,
+                    dismissed INTEGER NOT NULL DEFAULT 0,
+                    pinned INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS inventory_items (
+                    item_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    category TEXT,
+                    vendor TEXT,
+                    catalog_number TEXT,
+                    lot_number TEXT,
+                    rrid TEXT,
+                    price REAL,
+                    unit TEXT,
+                    storage_location TEXT,
+                    quantity REAL,
+                    reorder_threshold REAL,
+                    expiration_date TEXT,
+                    notes TEXT,
+                    linked_resource_id TEXT,
+                    owner_user_id TEXT,
+                    created_by TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_inventory_category
+                    ON inventory_items(category);
+                CREATE INDEX IF NOT EXISTS idx_inventory_vendor
+                    ON inventory_items(vendor);
+                CREATE INDEX IF NOT EXISTS idx_inventory_storage_location
+                    ON inventory_items(storage_location);
+                CREATE INDEX IF NOT EXISTS idx_inventory_linked_resource
+                    ON inventory_items(linked_resource_id);
+
+                CREATE TABLE IF NOT EXISTS purchase_records (
+                    purchase_id TEXT PRIMARY KEY,
+                    item_name TEXT NOT NULL,
+                    vendor TEXT,
+                    catalog_number TEXT,
+                    purchase_date TEXT,
+                    cost REAL,
+                    quantity REAL,
+                    grant_or_funding_source TEXT,
+                    purchaser TEXT,
+                    oracle_po_number TEXT,
+                    invoice_number TEXT,
+                    status TEXT,
+                    notes TEXT,
+                    owner_user_id TEXT,
+                    created_by TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_purchase_vendor
+                    ON purchase_records(vendor);
+                CREATE INDEX IF NOT EXISTS idx_purchase_grant
+                    ON purchase_records(grant_or_funding_source);
+                CREATE INDEX IF NOT EXISTS idx_purchase_date
+                    ON purchase_records(purchase_date);
+                CREATE INDEX IF NOT EXISTS idx_purchase_oracle_po
+                    ON purchase_records(oracle_po_number);
                 """
             )
             self._ensure_permission_columns(connection)
@@ -308,7 +423,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "purchase_records"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -1604,6 +1719,10 @@ class SQLiteStore:
                 "SELECT COUNT(*) AS count FROM workflow_states WHERE workspace_id = ? OR workspace_id IS NULL",
                 (workspace_id,),
             ).fetchone()
+            resources = connection.execute(
+                "SELECT COUNT(*) AS count FROM resources WHERE workspace_id = ? OR workspace_id IS NULL",
+                (workspace_id,),
+            ).fetchone()
         return {
             "documents": int(documents["count"]),
             "experiments": int(experiments["count"]),
@@ -1611,7 +1730,605 @@ class SQLiteStore:
             "entries": int(entries["count"]),
             "sessions": int(sessions["count"]),
             "workflows": int(workflows["count"]),
+            "resources": int(resources["count"]),
         }
+
+    def lab_intelligence_item_states(self) -> dict[str, dict[str, Any]]:
+        """Return persisted UI state for dynamic intelligence feed items."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT item_id, dismissed, pinned, updated_at
+                FROM lab_intelligence_item_states
+                """
+            ).fetchall()
+        return {
+            str(row["item_id"]): {
+                "dismissed": bool(row["dismissed"]),
+                "pinned": bool(row["pinned"]),
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        }
+
+    def set_lab_intelligence_item_state(
+        self,
+        item_id: str,
+        dismissed: bool | None = None,
+        pinned: bool | None = None,
+    ) -> dict[str, Any]:
+        """Persist dismiss/pin state for a deterministic feed item ID."""
+
+        existing = self.lab_intelligence_item_states().get(item_id, {})
+        resolved_dismissed = bool(existing.get("dismissed", False) if dismissed is None else dismissed)
+        resolved_pinned = bool(existing.get("pinned", False) if pinned is None else pinned)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO lab_intelligence_item_states (item_id, dismissed, pinned, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(item_id) DO UPDATE SET
+                    dismissed = excluded.dismissed,
+                    pinned = excluded.pinned,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (item_id, int(resolved_dismissed), int(resolved_pinned)),
+            )
+            row = connection.execute(
+                """
+                SELECT item_id, dismissed, pinned, updated_at
+                FROM lab_intelligence_item_states
+                WHERE item_id = ?
+                """,
+                (item_id,),
+            ).fetchone()
+        assert row is not None
+        return {
+            "item_id": row["item_id"],
+            "dismissed": bool(row["dismissed"]),
+            "pinned": bool(row["pinned"]),
+            "updated_at": row["updated_at"],
+        }
+
+    def save_resource(
+        self,
+        name: str,
+        resource_type: str = "other",
+        aliases: list[str] | None = None,
+        vendor: str | None = None,
+        catalog_number: str | None = None,
+        lot_number: str | None = None,
+        rrid: str | None = None,
+        storage_location: str | None = None,
+        concentration: str | None = None,
+        units: str | None = None,
+        expiration: str | None = None,
+        notes: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        resource_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a reusable laboratory resource."""
+
+        resolved_id = resource_id or f"resource:{uuid.uuid4().hex[:16]}"
+        normalized_type = normalize_resource_type(resource_type)
+        clean_aliases = _dedupe_strings(aliases or [])
+        clean_metadata = dict(metadata or {})
+        clean_metadata.setdefault("entities", {resource_entity_type(normalized_type): [name, *clean_aliases]})
+        if clean_aliases:
+            clean_metadata.setdefault("aliases", {name: clean_aliases})
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM resources WHERE resource_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO resources (
+                        resource_id, resource_type, name, aliases_json, vendor,
+                        catalog_number, lot_number, rrid, storage_location,
+                        concentration, units, expiration, notes, metadata_json,
+                        owner_user_id, created_by, workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        normalized_type,
+                        name,
+                        json.dumps(clean_aliases, sort_keys=True),
+                        vendor,
+                        catalog_number,
+                        lot_number,
+                        rrid,
+                        storage_location,
+                        concentration,
+                        units,
+                        expiration,
+                        notes,
+                        json.dumps(clean_metadata, sort_keys=True),
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE resources
+                    SET resource_type = ?,
+                        name = ?,
+                        aliases_json = ?,
+                        vendor = ?,
+                        catalog_number = ?,
+                        lot_number = ?,
+                        rrid = ?,
+                        storage_location = ?,
+                        concentration = ?,
+                        units = ?,
+                        expiration = ?,
+                        notes = ?,
+                        metadata_json = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE resource_id = ?
+                    """,
+                    (
+                        normalized_type,
+                        name,
+                        json.dumps(clean_aliases, sort_keys=True),
+                        vendor,
+                        catalog_number,
+                        lot_number,
+                        rrid,
+                        storage_location,
+                        concentration,
+                        units,
+                        expiration,
+                        notes,
+                        json.dumps(clean_metadata, sort_keys=True),
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                        resolved_id,
+                    ),
+                )
+
+        saved = self.get_resource(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Resource was not saved: {resolved_id}")
+        return saved
+
+    def list_resources(
+        self,
+        resource_type: str | None = None,
+        query: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return reusable lab resources."""
+
+        clauses: list[str] = []
+        values: list[str] = []
+        if resource_type:
+            clauses.append("resource_type = ?")
+            values.append(normalize_resource_type(resource_type))
+        if query:
+            clauses.append("(LOWER(name) LIKE ? OR LOWER(aliases_json) LIKE ? OR LOWER(vendor) LIKE ? OR LOWER(catalog_number) LIKE ? OR LOWER(rrid) LIKE ?)")
+            needle = f"%{query.lower()}%"
+            values.extend([needle, needle, needle, needle, needle])
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM resources
+                {where}
+                ORDER BY resource_type ASC, name ASC
+                """,
+                values,
+            ).fetchall()
+        return [self._resource_row_to_dict(row) for row in rows]
+
+    def get_resource(self, resource_id: str) -> dict[str, Any] | None:
+        """Return one lab resource."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM resources WHERE resource_id = ?",
+                (resource_id,),
+            ).fetchone()
+        return self._resource_row_to_dict(row) if row else None
+
+    def find_resource_by_name(self, name: str, workspace_id: str | None = None) -> dict[str, Any] | None:
+        """Find a resource by name or alias."""
+
+        needle = name.strip().lower()
+        for resource in self.list_resources(workspace_id=workspace_id):
+            aliases = [str(alias).lower() for alias in resource.get("aliases") or []]
+            if str(resource.get("name") or "").lower() == needle or needle in aliases:
+                return resource
+        return None
+
+    def resource_usages(self, resource_id: str) -> list[dict[str, Any]]:
+        """Return usage records for one resource."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM resource_usages
+                WHERE resource_id = ?
+                ORDER BY created_at DESC
+                """,
+                (resource_id,),
+            ).fetchall()
+        return [self._resource_usage_row_to_dict(row) for row in rows]
+
+    def record_resource_usage(
+        self,
+        resource_id: str,
+        object_type: str,
+        object_id: str,
+        usage_type: str = "referenced",
+        source: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record that a resource is used by another ResearchOS object."""
+
+        usage_id = f"resource-usage:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO resource_usages (
+                    usage_id, resource_id, object_type, object_id, usage_type,
+                    source, metadata_json, workspace_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    usage_id,
+                    resource_id,
+                    object_type,
+                    object_id,
+                    usage_type,
+                    source,
+                    json.dumps(metadata or {}, sort_keys=True),
+                    workspace_id,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM resource_usages WHERE usage_id = ?",
+                (usage_id,),
+            ).fetchone()
+        assert row is not None
+        return self._resource_usage_row_to_dict(row)
+
+    def save_inventory_item(
+        self,
+        name: str,
+        category: str | None = None,
+        vendor: str | None = None,
+        catalog_number: str | None = None,
+        lot_number: str | None = None,
+        rrid: str | None = None,
+        price: float | None = None,
+        unit: str | None = None,
+        storage_location: str | None = None,
+        quantity: float | None = None,
+        reorder_threshold: float | None = None,
+        expiration_date: str | None = None,
+        notes: str | None = None,
+        linked_resource_id: str | None = None,
+        item_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one inventory item."""
+
+        resolved_id = item_id or f"inventory:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM inventory_items WHERE item_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO inventory_items (
+                        item_id, name, category, vendor, catalog_number, lot_number,
+                        rrid, price, unit, storage_location, quantity, reorder_threshold,
+                        expiration_date, notes, linked_resource_id, owner_user_id,
+                        created_by, workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        name,
+                        category,
+                        vendor,
+                        catalog_number,
+                        lot_number,
+                        rrid,
+                        price,
+                        unit,
+                        storage_location,
+                        quantity,
+                        reorder_threshold,
+                        expiration_date,
+                        notes,
+                        linked_resource_id,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE inventory_items
+                    SET name = ?,
+                        category = ?,
+                        vendor = ?,
+                        catalog_number = ?,
+                        lot_number = ?,
+                        rrid = ?,
+                        price = ?,
+                        unit = ?,
+                        storage_location = ?,
+                        quantity = ?,
+                        reorder_threshold = ?,
+                        expiration_date = ?,
+                        notes = ?,
+                        linked_resource_id = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE item_id = ?
+                    """,
+                    (
+                        name,
+                        category,
+                        vendor,
+                        catalog_number,
+                        lot_number,
+                        rrid,
+                        price,
+                        unit,
+                        storage_location,
+                        quantity,
+                        reorder_threshold,
+                        expiration_date,
+                        notes,
+                        linked_resource_id,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                        resolved_id,
+                    ),
+                )
+        saved = self.get_inventory_item(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Inventory item was not saved: {resolved_id}")
+        return saved
+
+    def list_inventory_items(
+        self,
+        vendor: str | None = None,
+        category: str | None = None,
+        storage_location: str | None = None,
+        query: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return inventory items with optional filters."""
+
+        clauses: list[str] = []
+        values: list[str] = []
+        for column, value in [("vendor", vendor), ("category", category), ("storage_location", storage_location)]:
+            if value:
+                clauses.append(f"LOWER({column}) = ?")
+                values.append(value.lower())
+        if query:
+            needle = f"%{query.lower()}%"
+            clauses.append("(LOWER(name) LIKE ? OR LOWER(vendor) LIKE ? OR LOWER(catalog_number) LIKE ? OR LOWER(lot_number) LIKE ? OR LOWER(rrid) LIKE ?)")
+            values.extend([needle, needle, needle, needle, needle])
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM inventory_items
+                {where}
+                ORDER BY name ASC, vendor ASC
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_inventory_item(self, item_id: str) -> dict[str, Any] | None:
+        """Return one inventory item."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM inventory_items WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_inventory_item(self, item_id: str) -> bool:
+        """Delete one inventory item."""
+
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM inventory_items WHERE item_id = ?", (item_id,))
+        return cursor.rowcount > 0
+
+    def save_purchase_record(
+        self,
+        item_name: str,
+        vendor: str | None = None,
+        catalog_number: str | None = None,
+        purchase_date: str | None = None,
+        cost: float | None = None,
+        quantity: float | None = None,
+        grant_or_funding_source: str | None = None,
+        purchaser: str | None = None,
+        oracle_po_number: str | None = None,
+        invoice_number: str | None = None,
+        status: str | None = None,
+        notes: str | None = None,
+        purchase_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one purchase record."""
+
+        resolved_id = purchase_id or f"purchase:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM purchase_records WHERE purchase_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO purchase_records (
+                        purchase_id, item_name, vendor, catalog_number, purchase_date,
+                        cost, quantity, grant_or_funding_source, purchaser,
+                        oracle_po_number, invoice_number, status, notes,
+                        owner_user_id, created_by, workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        item_name,
+                        vendor,
+                        catalog_number,
+                        purchase_date,
+                        cost,
+                        quantity,
+                        grant_or_funding_source,
+                        purchaser,
+                        oracle_po_number,
+                        invoice_number,
+                        status,
+                        notes,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE purchase_records
+                    SET item_name = ?,
+                        vendor = ?,
+                        catalog_number = ?,
+                        purchase_date = ?,
+                        cost = ?,
+                        quantity = ?,
+                        grant_or_funding_source = ?,
+                        purchaser = ?,
+                        oracle_po_number = ?,
+                        invoice_number = ?,
+                        status = ?,
+                        notes = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE purchase_id = ?
+                    """,
+                    (
+                        item_name,
+                        vendor,
+                        catalog_number,
+                        purchase_date,
+                        cost,
+                        quantity,
+                        grant_or_funding_source,
+                        purchaser,
+                        oracle_po_number,
+                        invoice_number,
+                        status,
+                        notes,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                        resolved_id,
+                    ),
+                )
+        saved = self.get_purchase_record(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Purchase record was not saved: {resolved_id}")
+        return saved
+
+    def list_purchase_records(
+        self,
+        vendor: str | None = None,
+        grant_or_funding_source: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return purchase records with optional filters."""
+
+        clauses: list[str] = []
+        values: list[str] = []
+        for column, value in [("vendor", vendor), ("grant_or_funding_source", grant_or_funding_source), ("status", status)]:
+            if value:
+                clauses.append(f"LOWER({column}) = ?")
+                values.append(value.lower())
+        if query:
+            needle = f"%{query.lower()}%"
+            clauses.append("(LOWER(item_name) LIKE ? OR LOWER(vendor) LIKE ? OR LOWER(catalog_number) LIKE ? OR LOWER(oracle_po_number) LIKE ? OR LOWER(invoice_number) LIKE ?)")
+            values.extend([needle, needle, needle, needle, needle])
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM purchase_records
+                {where}
+                ORDER BY COALESCE(purchase_date, created_at) DESC, item_name ASC
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_purchase_record(self, purchase_id: str) -> dict[str, Any] | None:
+        """Return one purchase record."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM purchase_records WHERE purchase_id = ?",
+                (purchase_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def register_asset(
         self,
@@ -1850,6 +2567,22 @@ class SQLiteStore:
         record["metadata"] = json.loads(record.pop("metadata_json") or "{}")
         return record
 
+    def _resource_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Deserialize a resource row into API-ready fields."""
+
+        record = dict(row)
+        record["aliases"] = json.loads(record.pop("aliases_json") or "[]")
+        record["metadata"] = json.loads(record.pop("metadata_json") or "{}")
+        record["usages"] = self.resource_usages(str(record["resource_id"]))
+        return record
+
+    def _resource_usage_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Deserialize a resource usage row."""
+
+        record = dict(row)
+        record["metadata"] = json.loads(record.pop("metadata_json") or "{}")
+        return record
+
     def _session_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         """Deserialize a session row into API-ready fields."""
 
@@ -1917,3 +2650,17 @@ def _experiment_asset_references(experiment: dict[str, Any]) -> set[str]:
     for match in re.finditer(r"(?:^|[^A-Za-z0-9])EXP[_-]?(\d+)(?=$|[^A-Za-z0-9])", haystack, flags=re.IGNORECASE):
         references.add(f"EXP_{match.group(1)}")
     return references
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    """Return non-empty strings with case-insensitive deduplication."""
+
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        clean = str(value).strip()
+        key = clean.lower()
+        if clean and key not in seen:
+            seen.add(key)
+            output.append(clean)
+    return output

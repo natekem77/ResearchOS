@@ -53,7 +53,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     return session.sessionId;
   }
 
-  Future<void> _runBenchAction(Future<void> Function(String sessionId) action) async {
+  Future<void> _runBenchAction(
+      Future<void> Function(String sessionId) action) async {
     if (_actionInFlight) {
       return;
     }
@@ -83,14 +84,16 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _quickVoiceNote() async {
     await _runBenchAction(
       (sessionId) => widget.api.recordVoiceNote(
         sessionId: sessionId,
-        transcript: 'Voice capture placeholder. Speech-to-text will be added in a future milestone.',
+        transcript:
+            'Voice capture placeholder. Speech-to-text will be added in a future milestone.',
       ),
     );
   }
@@ -101,7 +104,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     if (session == null) {
       return;
     }
-    await widget.api.endSession(session.sessionId, notes: 'Finished from Bench Mode.');
+    await widget.api
+        .endSession(session.sessionId, notes: 'Finished from Bench Mode.');
     _showSnack('Session finished.');
     _reload();
   }
@@ -123,7 +127,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
             left: ResearchOsSpacing.xl,
             right: ResearchOsSpacing.xl,
             top: ResearchOsSpacing.xl,
-            bottom: MediaQuery.of(context).viewInsets.bottom + ResearchOsSpacing.xl,
+            bottom:
+                MediaQuery.of(context).viewInsets.bottom + ResearchOsSpacing.xl,
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -144,7 +149,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
               ),
               const SizedBox(height: ResearchOsSpacing.md),
               FilledButton(
-                onPressed: () => Navigator.of(context).pop(controller.text.trim()),
+                onPressed: () =>
+                    Navigator.of(context).pop(controller.text.trim()),
                 child: const Text('Add to session'),
               ),
             ],
@@ -220,7 +226,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
   Widget _smallField(TextEditingController controller, String label) {
     return TextField(
       controller: controller,
-      decoration: InputDecoration(labelText: label, border: const OutlineInputBorder()),
+      decoration:
+          InputDecoration(labelText: label, border: const OutlineInputBorder()),
     );
   }
 
@@ -233,7 +240,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
           return const LoadingView(message: 'Loading Bench Mode...');
         }
         if (snapshot.hasError) {
-          return ErrorView(message: snapshot.error.toString(), onRetry: _reload);
+          return ErrorView(
+              message: snapshot.error.toString(), onRetry: _reload);
         }
         final state = snapshot.data ?? const _BenchState();
         if (state.session == null) {
@@ -248,8 +256,10 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
               const SizedBox(height: ResearchOsSpacing.md),
               _CopilotAlerts(experiment: state.experiment),
               const SizedBox(height: ResearchOsSpacing.md),
-              Text('Bench actions', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: ResearchOsSpacing.sm),
+              const ResearchOsSectionHeader(
+                title: 'Bench actions',
+                subtitle: 'Large controls for one-handed use at the bench.',
+              ),
               _ActionGrid(
                 actions: [
                   _BenchAction(Icons.mic, 'Voice Note', _quickVoiceNote),
@@ -258,16 +268,41 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
                     'Observation',
                     () => _openTextSheet(
                       title: 'Observation',
-                      onSubmit: (sessionId, text) => widget.api.recordObservation(sessionId: sessionId, text: text),
+                      onSubmit: (sessionId, text) => widget.api
+                          .recordObservation(sessionId: sessionId, text: text),
                     ),
                   ),
-                  _BenchAction(Icons.water_drop_outlined, 'Media Change', _openMediaChangeSheet),
-                  _BenchAction(Icons.medication_outlined, 'Treatment', _openTreatmentSheet),
-                  _BenchAction(Icons.photo_camera_outlined, 'Capture Image', () => _placeholder('image', 'Image capture placeholder', 'Camera/gallery import will be added later.')),
-                  _BenchAction(Icons.attach_file, 'Attach File', () => _placeholder('file', 'File attachment placeholder', 'Native file import will be added later.')),
-                  _BenchAction(Icons.bar_chart, 'Add GraphPad', () => _placeholder('graphpad', 'GraphPad import placeholder', 'Upload/scan workflow will be added later.')),
-                  _BenchAction(Icons.biotech_outlined, 'Add Sequencing', () => _placeholder('sequencing', 'Sequencing attachment placeholder', 'Provider integration will be added later.')),
-                  _BenchAction(Icons.check_circle_outline, 'Finish Session', _finishSession, destructive: true),
+                  _BenchAction(Icons.water_drop_outlined, 'Media Change',
+                      _openMediaChangeSheet),
+                  _BenchAction(Icons.medication_outlined, 'Treatment',
+                      _openTreatmentSheet),
+                  _BenchAction(
+                      Icons.photo_camera_outlined,
+                      'Capture Image',
+                      () => _placeholder('image', 'Image capture placeholder',
+                          'Camera/gallery import will be added later.')),
+                  _BenchAction(
+                      Icons.attach_file,
+                      'Attach File',
+                      () => _placeholder('file', 'File attachment placeholder',
+                          'Native file import will be added later.')),
+                  _BenchAction(
+                      Icons.bar_chart,
+                      'Add GraphPad',
+                      () => _placeholder(
+                          'graphpad',
+                          'GraphPad import placeholder',
+                          'Upload/scan workflow will be added later.')),
+                  _BenchAction(
+                      Icons.biotech_outlined,
+                      'Add Sequencing',
+                      () => _placeholder(
+                          'sequencing',
+                          'Sequencing attachment placeholder',
+                          'Provider integration will be added later.')),
+                  _BenchAction(Icons.check_circle_outline, 'Finish Session',
+                      _finishSession,
+                      destructive: true),
                 ],
               ),
             ],
@@ -277,7 +312,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     );
   }
 
-  Future<void> _placeholder(String attachmentType, String title, String notes) async {
+  Future<void> _placeholder(
+      String attachmentType, String title, String notes) async {
     await _runBenchAction(
       (sessionId) => widget.api.attachPlaceholder(
         sessionId: sessionId,
@@ -306,11 +342,14 @@ class _NoActiveSession extends StatelessWidget {
     return ListView(
       padding: ResearchOsSpacing.screen,
       children: [
-        Icon(Icons.science_outlined, size: 56, color: Theme.of(context).colorScheme.primary),
+        Icon(Icons.science_outlined,
+            size: 56, color: Theme.of(context).colorScheme.primary),
         const SizedBox(height: ResearchOsSpacing.lg),
-        Text('No active bench session', style: Theme.of(context).textTheme.headlineSmall),
+        Text('No active bench session',
+            style: Theme.of(context).textTheme.headlineSmall),
         const SizedBox(height: ResearchOsSpacing.sm),
-        const Text('Bench Mode becomes the mobile home screen while an experiment session is active. Start sessions from ResearchOS web for now; mobile session start controls will be expanded later.'),
+        const Text(
+            'Bench Mode becomes the mobile home screen while an experiment session is active. Controls use large touch targets for one-handed use.'),
         const SizedBox(height: ResearchOsSpacing.lg),
         FilledButton.icon(
           onPressed: onRetry,
@@ -331,27 +370,32 @@ class _BenchSummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final overview = state.experiment?['overview'];
     final title = overview is Map<String, dynamic>
-        ? overview['human_experiment_id']?.toString() ?? overview['title']?.toString()
+        ? overview['human_experiment_id']?.toString() ??
+            overview['title']?.toString()
         : state.session?.experimentId;
-    final stage = state.experiment?['workflow_stage'] ?? (overview is Map<String, dynamic> ? overview['workflow_stage'] : null);
+    final stage = state.experiment?['workflow_stage'] ??
+        (overview is Map<String, dynamic> ? overview['workflow_stage'] : null);
     return ResearchOsCard(
       semanticLabel: 'Active experiment summary',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title ?? 'Active experiment', style: Theme.of(context).textTheme.headlineSmall),
+          Text(title ?? 'Active experiment',
+              style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: ResearchOsSpacing.sm),
           Wrap(
             spacing: ResearchOsSpacing.sm,
             runSpacing: ResearchOsSpacing.sm,
             children: [
-              ScientificBadge(label: 'Stage: ${stage ?? 'Unknown'}', type: ScientificBadgeType.stage),
-              ScientificBadge(label: 'Session: ${state.session?.status ?? 'active'}'),
-              if (state.session?.startTime != null) ScientificBadge(label: 'Started ${state.session!.startTime}'),
+              WorkflowBadge(stage: stage?.toString() ?? 'Unknown'),
+              SessionBadge(status: state.session?.status ?? 'active'),
+              if (state.session?.startTime != null)
+                ScientificBadge(label: 'Started ${state.session!.startTime}'),
             ],
           ),
           const SizedBox(height: ResearchOsSpacing.sm),
-          const Text('Today: check required actions, capture observations, and keep the timeline current.'),
+          const Text(
+              'Today: capture observations, treatments, media changes, images, files, and session notes as they happen.'),
         ],
       ),
     );
@@ -367,7 +411,8 @@ class _CopilotAlerts extends StatelessWidget {
   Widget build(BuildContext context) {
     final statistics = experiment?['statistics_summary']?.toString();
     final alerts = <String>[
-      if (statistics != null && statistics.contains('0 linked')) 'Statistics still pending.',
+      if (statistics != null && statistics.contains('0 linked'))
+        'Statistics still pending.',
       'Notebook observation should be captured before ending the session.',
       'Upload GraphPad analysis when quantification is complete.',
     ];
@@ -377,7 +422,9 @@ class _CopilotAlerts extends StatelessWidget {
           ResearchOsCopilotCard(
             title: 'Research Copilot',
             message: alert,
-            level: alert.contains('pending') || alert.contains('missing') ? CopilotCardLevel.warning : CopilotCardLevel.info,
+            level: alert.contains('pending') || alert.contains('missing')
+                ? CopilotCardLevel.warning
+                : CopilotCardLevel.info,
           ),
       ],
     );
@@ -425,7 +472,8 @@ class _ActionGrid extends StatelessWidget {
 }
 
 class _BenchAction {
-  const _BenchAction(this.icon, this.label, this.onPressed, {this.destructive = false});
+  const _BenchAction(this.icon, this.label, this.onPressed,
+      {this.destructive = false});
 
   final IconData icon;
   final String label;

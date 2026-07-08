@@ -74,6 +74,18 @@ request GET "/documents?workspace_id=workspace:demo-lab" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/experiments?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/mobile/experiments" >/dev/null
+WIZARD_EXPERIMENT_ID="SMOKE-WIZARD-$(date +%s)"
+WIZARD_FILE="$(request POST "/mobile/experiments/create" "{\"title\":\"Smoke Wizard Experiment\",\"experiment_id\":\"$WIZARD_EXPERIMENT_ID\",\"project\":\"Smoke test\",\"researcher\":\"ResearchOS\",\"protocol_mode\":\"create_new\",\"protocol_title\":\"Smoke protocol\",\"cell_line\":\"Demo cells\",\"organoid_batch\":\"Demo batch\",\"compounds\":[\"SAG\"],\"concentrations\":[\"100 nM\"],\"timepoints\":[\"D1\"],\"replicates\":\"n=3\",\"controls\":[\"DMSO\"],\"readouts\":[\"microscopy\"],\"markers\":[\"SIX6\"],\"microscopy\":true,\"graphpad\":true,\"create_notebook_draft\":true,\"start_session\":false}")"
+WIZARD_INTERNAL_ID="$(
+  python3 - "$WIZARD_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["experiment"]["id"])
+PY
+)"
+request GET "/mobile/experiments/$WIZARD_INTERNAL_ID/workspace" >/dev/null
 WORKFLOWS_FILE="$(request GET "/workflows")"
 request GET "/workflows?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/workflows/definitions" >/dev/null
@@ -120,6 +132,8 @@ request GET "/providers/spreadsheets/status" >/dev/null
 request POST "/providers/spreadsheets/scan" "{}" >/dev/null
 request GET "/experiments/NK_Expt_31/workspace?use_ai=false" >/dev/null
 request GET "/mobile/experiments/NK_Expt_31/workspace" >/dev/null
+request GET "/experiments/NK_Expt_31/quantification?use_ai=false" >/dev/null
+request GET "/mobile/experiments/NK_Expt_31/quantification" >/dev/null
 SPREADSHEETS_FILE="$(request GET "/spreadsheets")"
 request GET "/spreadsheets?workspace_id=workspace:demo-lab" >/dev/null
 IMAGES_FILE="$(request GET "/images")"
@@ -163,6 +177,50 @@ request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/compact-summary" >/dev/null
 request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/download" >/dev/null
 request GET "/assets" >/dev/null
 request GET "/assets?workspace_id=workspace:demo-lab" >/dev/null
+SMOKE_RESOURCE_FILE="$(request POST "/resources" '{"resource_type":"compound","name":"Smoke SAG Resource","aliases":["Smoke Smoothened agonist"],"vendor":"ResearchOS","catalog_number":"SAG-SMOKE","lot_number":"LOT-SMOKE","storage_location":"Demo freezer","concentration":"100","units":"nM","notes":"Smoke test resource."}')"
+SMOKE_RESOURCE_ID="$(
+  python3 - "$SMOKE_RESOURCE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["resource_id"])
+PY
+)"
+request GET "/resources" >/dev/null
+request GET "/resources/type/compound" >/dev/null
+request GET "/resources/$SMOKE_RESOURCE_ID" >/dev/null
+request PUT "/resources/$SMOKE_RESOURCE_ID" '{"resource_type":"compound","name":"Smoke SAG Resource","aliases":["Smoke Smoothened agonist","Smoke SAG"],"vendor":"ResearchOS","catalog_number":"SAG-SMOKE","lot_number":"LOT-SMOKE-2","storage_location":"Demo freezer","concentration":"100","units":"nM","notes":"Updated smoke test resource."}' >/dev/null
+SMOKE_INVENTORY_FILE="$(request POST "/inventory" "{\"name\":\"Smoke SAG Inventory\",\"category\":\"compound\",\"vendor\":\"ResearchOS\",\"catalog_number\":\"SAG-SMOKE\",\"lot_number\":\"LOT-SMOKE\",\"rrid\":\"RRID:SMOKE\",\"price\":125.5,\"unit\":\"vial\",\"storage_location\":\"Demo freezer\",\"quantity\":1,\"reorder_threshold\":2,\"expiration_date\":\"2027-01-01\",\"linked_resource_id\":\"$SMOKE_RESOURCE_ID\",\"notes\":\"Smoke inventory item.\"}")"
+SMOKE_INVENTORY_ID="$(
+  python3 - "$SMOKE_INVENTORY_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["item_id"])
+PY
+)"
+request GET "/inventory" >/dev/null
+request GET "/inventory/$SMOKE_INVENTORY_ID" >/dev/null
+request GET "/inventory/$SMOKE_INVENTORY_ID/methods-citation" >/dev/null
+request PUT "/inventory/$SMOKE_INVENTORY_ID" '{"name":"Smoke SAG Inventory","category":"compound","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","lot_number":"LOT-SMOKE-2","quantity":3,"reorder_threshold":1}' >/dev/null
+request GET "/inventory/export-csv" >/dev/null
+SMOKE_PURCHASE_FILE="$(request POST "/purchases" '{"item_name":"Smoke SAG Purchase","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","purchase_date":"2026-07-08","cost":125.5,"quantity":1,"grant_or_funding_source":"Smoke Grant","purchaser":"ResearchOS","oracle_po_number":"PO-SMOKE","invoice_number":"INV-SMOKE","status":"ordered","notes":"Smoke purchase."}')"
+SMOKE_PURCHASE_ID="$(
+  python3 - "$SMOKE_PURCHASE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["purchase_id"])
+PY
+)"
+request GET "/purchases" >/dev/null
+request GET "/purchases/$SMOKE_PURCHASE_ID" >/dev/null
+request PUT "/purchases/$SMOKE_PURCHASE_ID" '{"item_name":"Smoke SAG Purchase","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","purchase_date":"2026-07-08","cost":130,"quantity":2,"grant_or_funding_source":"Smoke Grant","purchaser":"ResearchOS","oracle_po_number":"PO-SMOKE","invoice_number":"INV-SMOKE","status":"received","notes":"Updated smoke purchase."}' >/dev/null
+request POST "/purchases/import-csv" '{"csv_text":"PO Number,Supplier,Item,Amount,Grant,Buyer\nPO-SMOKE-CSV,ResearchOS,Smoke CSV Item,44.00,Smoke Grant,ResearchOS\n"}' >/dev/null
+request GET "/purchases/export-csv" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/papers?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/graph/stats" >/dev/null
@@ -173,6 +231,29 @@ request GET "/knowledgegraph?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/knowledgegraph/search?q=SAG" >/dev/null
 request GET "/knowledgegraph/entity/SAG" >/dev/null
 request GET "/knowledgegraph/type/marker" >/dev/null
+INTELLIGENCE_FILE="$(request GET "/intelligence/feed")"
+request GET "/mobile/intelligence/feed" >/dev/null
+INTELLIGENCE_ITEM_ID="$(
+  python3 - "$INTELLIGENCE_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+items = payload.get("items") or []
+if not items:
+    raise SystemExit("Need at least one Laboratory Intelligence item for smoke test.")
+
+print(items[0]["item_id"])
+PY
+)"
+request POST "/intelligence/feed/$INTELLIGENCE_ITEM_ID/pin" '{"pinned":true}' >/dev/null
+request POST "/mobile/intelligence/feed/$INTELLIGENCE_ITEM_ID/dismiss" '{}' >/dev/null
+request GET "/intelligence/morning" >/dev/null
+request GET "/intelligence/morning?period=yesterday" >/dev/null
+request GET "/intelligence/morning?period=last_week" >/dev/null
+request GET "/mobile/intelligence/morning" >/dev/null
 request GET "/memory" >/dev/null
 request GET "/entry-templates" >/dev/null
 request POST "/entries/draft" '{"template":"retinal_organoid","dictation":"Create NK Expt 31. Date today. Researcher Nathan. D18 SAG plus GRKi rescue with 100 nM SAG and 250 nM GRK inhibitor. DMSO control. Readouts SIX6 and BRN3B. Next steps quantify SIX6 intensity.","use_ai":false}' >/dev/null
@@ -305,6 +386,7 @@ request GET "/experiments" >/dev/null
 request DELETE "/assets/$ASSET_ID" >/dev/null
 
 request POST "/assistant/ask" '{"question":"Which experiments used SAG?","use_ai":false}' >/dev/null
+request POST "/evidence/query" '{"question":"Does early SAG improve retinal differentiation?"}' >/dev/null
 request POST "/assistant/knowledge" '{"question":"What do we know about SAG?","use_ai":false}' >/dev/null
 request POST "/assistant/reason" '{"question":"Which experiments involve BRN3B?","use_ai":false}' >/dev/null
 request GET "/mobile/knowledge/entity/SAG" >/dev/null

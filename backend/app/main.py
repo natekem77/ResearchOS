@@ -18,6 +18,7 @@ from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
 from app.dashboard_service import DashboardService
 from app.entry_drafting import available_entry_templates, draft_entry_from_notes
+from app.evidence_engine import EvidenceEngine
 from app.events.automation_engine import AutomationEngine
 from app.events.event_bus import get_event_bus
 from app.events.event_models import EventType, ResearchOSEvent
@@ -32,6 +33,7 @@ from app.experiment_lifecycle import (
 )
 from app.experiment_planner import plan_follow_up_experiment
 from app.experiment_workspace import build_experiment_workspace
+from app.experiment_wizard import ExperimentWizardPayload, ExperimentWizardService
 from app.extensions import create_default_extension_manager
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
 from app.graph_client import GraphRequestError, MissingGraphTokenError
@@ -44,17 +46,30 @@ from app.graphpad_provider import (
     scan_graphpad_assets,
 )
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
+from app.inventory import (
+    INVENTORY_CSV_FIELDS,
+    ORACLE_PURCHASING_PROVIDER,
+    PURCHASE_CSV_FIELDS,
+    methods_citation,
+    normalize_purchase_csv_row,
+    parse_csv_text,
+    records_to_csv,
+)
 from app.knowledge_graph_assistant import answer_with_knowledge_graph
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
 from app.lab_workspaces import ActiveWorkspaceService, bootstrap_default_workspace, current_workspace, workspace_with_membership
+from app.lab_intelligence import LaboratoryIntelligenceService
 from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
 from app.microscopy_provider import microscopy_assets, microscopy_status, scan_microscopy_assets
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
+from app.overnight_intelligence import OvernightIntelligenceService
 from app.permissions import permission_summary
 from app.protocol_intelligence import ProtocolService
+from app.quantification_workspace import QuantificationWorkspaceService
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
+from app.resources import RESOURCE_TYPES, normalize_resource_type
 from app.scientific_reasoning import reason_scientifically
 from app.scientific_memory import ScientificMemoryService
 from app.spreadsheet_provider import (
@@ -78,7 +93,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 knowledge_graph_service = KnowledgeGraphService(settings=settings)
 dashboard_service = DashboardService(settings=settings, knowledge_graph=knowledge_graph_service)
+lab_intelligence_service = LaboratoryIntelligenceService(settings=settings, knowledge_graph=knowledge_graph_service)
+overnight_intelligence_service = OvernightIntelligenceService(settings=settings, knowledge_graph=knowledge_graph_service)
 protocol_service = ProtocolService(settings=settings)
+quantification_workspace_service = QuantificationWorkspaceService(settings=settings, knowledge_graph=knowledge_graph_service)
 universal_search_service = UniversalSearchService(settings=settings, knowledge_graph=knowledge_graph_service)
 event_bus = get_event_bus()
 automation_engine = AutomationEngine(
@@ -87,6 +105,9 @@ automation_engine = AutomationEngine(
         "knowledge_graph": knowledge_graph_service,
         "search_index": universal_search_service,
         "dashboard": dashboard_service,
+        "lab_intelligence": lab_intelligence_service,
+        "overnight_intelligence": overnight_intelligence_service,
+        "quantification_workspace": quantification_workspace_service,
     },
 )
 automation_engine.start()
@@ -255,6 +276,13 @@ class BootstrapAdminRequest(BaseModel):
     display_name: str
     user_id: str | None = None
     auth_provider: str = "local"
+
+
+class LabIntelligenceStateRequest(BaseModel):
+    """Persist one UI-state change for a Laboratory Intelligence item."""
+
+    dismissed: bool | None = None
+    pinned: bool | None = None
 
 
 class WorkspaceResponse(BaseModel):
@@ -431,6 +459,12 @@ class AssistantRequest(BaseModel):
     question: str | None = None
     message: str | None = None
     use_ai: bool = True
+
+
+class EvidenceQueryRequest(BaseModel):
+    """Natural-language query for cross-provider scientific evidence."""
+
+    question: str
 
 
 class AssistantResponse(BaseModel):
@@ -684,6 +718,58 @@ class MobileAttachPlaceholderRequest(BaseModel):
     notes: str | None = None
 
 
+class WizardTreatmentRequest(BaseModel):
+    """One planned treatment row from the New Experiment Wizard."""
+
+    compound: str | None = None
+    concentration: str | None = None
+    timepoint: str | None = None
+    notes: str | None = None
+
+
+class WizardMilestoneRequest(BaseModel):
+    """One planned experiment milestone from the New Experiment Wizard."""
+
+    label: str
+    detail: str | None = None
+    date: str | None = None
+
+
+class NewExperimentWizardRequest(BaseModel):
+    """Guided creation request for a planned experiment."""
+
+    title: str
+    experiment_id: str
+    project: str | None = None
+    workspace: str | None = None
+    principal_investigator: str | None = None
+    researcher: str | None = None
+    date: str | None = None
+    notes: str | None = None
+    protocol_mode: Literal["select_existing", "create_new"] = "select_existing"
+    protocol_id: str | None = None
+    protocol_title: str | None = None
+    protocol_notes: str | None = None
+    cell_line: str | None = None
+    organoid_batch: str | None = None
+    treatments: list[WizardTreatmentRequest] = Field(default_factory=list)
+    compounds: list[str] = Field(default_factory=list)
+    concentrations: list[str] = Field(default_factory=list)
+    timepoints: list[str] = Field(default_factory=list)
+    replicates: str | None = None
+    controls: list[str] = Field(default_factory=list)
+    readouts: list[str] = Field(default_factory=list)
+    markers: list[str] = Field(default_factory=list)
+    microscopy: bool = False
+    graphpad: bool = False
+    rnaseq: bool = False
+    flow_cytometry: bool = False
+    other_readouts: str | None = None
+    milestones: list[WizardMilestoneRequest] = Field(default_factory=list)
+    create_notebook_draft: bool = True
+    start_session: bool = False
+
+
 class SessionEventResponse(BaseModel):
     """One event in an experiment session timeline."""
 
@@ -765,6 +851,122 @@ class AssetResponse(BaseModel):
     created_at: str
     updated_at: str
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+ResourceType = Literal[
+    "compound",
+    "antibody",
+    "marker",
+    "gene",
+    "protein",
+    "cell_line",
+    "organoid_line",
+    "media",
+    "growth_factor",
+    "small_molecule",
+    "reagent",
+    "primer",
+    "vector",
+    "plasmid",
+    "consumable",
+    "equipment",
+    "other",
+]
+
+
+class ResourceRequest(BaseModel):
+    """Create or update a reusable ResearchOS resource."""
+
+    resource_type: ResourceType = "other"
+    name: str
+    aliases: list[str] = Field(default_factory=list)
+    vendor: str | None = None
+    catalog_number: str | None = None
+    lot_number: str | None = None
+    rrid: str | None = None
+    storage_location: str | None = None
+    concentration: str | None = None
+    units: str | None = None
+    expiration: str | None = None
+    notes: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ResourceResponse(ResourceRequest):
+    """ResearchOS resource record with usage history."""
+
+    resource_id: str
+    usages: list[dict[str, object]] = Field(default_factory=list)
+    owner_user_id: str | None = None
+    created_by: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class InventoryItemRequest(BaseModel):
+    """Create or update a local inventory item."""
+
+    name: str
+    category: str | None = None
+    vendor: str | None = None
+    catalog_number: str | None = None
+    lot_number: str | None = None
+    rrid: str | None = None
+    price: float | None = None
+    unit: str | None = None
+    storage_location: str | None = None
+    quantity: float | None = None
+    reorder_threshold: float | None = None
+    expiration_date: str | None = None
+    notes: str | None = None
+    linked_resource_id: str | None = None
+
+
+class InventoryItemResponse(InventoryItemRequest):
+    """Stored inventory item."""
+
+    item_id: str
+    owner_user_id: str | None = None
+    created_by: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class PurchaseRecordRequest(BaseModel):
+    """Create or update a purchasing record."""
+
+    item_name: str
+    vendor: str | None = None
+    catalog_number: str | None = None
+    purchase_date: str | None = None
+    cost: float | None = None
+    quantity: float | None = None
+    grant_or_funding_source: str | None = None
+    purchaser: str | None = None
+    oracle_po_number: str | None = None
+    invoice_number: str | None = None
+    status: str | None = "planned"
+    notes: str | None = None
+
+
+class PurchaseRecordResponse(PurchaseRecordRequest):
+    """Stored purchase record."""
+
+    purchase_id: str
+    owner_user_id: str | None = None
+    created_by: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class PurchaseCsvImportRequest(BaseModel):
+    """CSV import payload for Oracle/exported purchasing reports."""
+
+    csv_text: str
+    provider: str = "oracle_purchasing"
 
 
 class GraphPadFolderStatusResponse(BaseModel):
@@ -1300,6 +1502,43 @@ def _draft_entry_notes(request: DraftEntryRequest) -> str:
 
     notes = request.dictation or request.notes or ""
     return notes.strip()
+
+
+def _wizard_payload(request: NewExperimentWizardRequest) -> ExperimentWizardPayload:
+    """Convert the API request into the wizard service payload."""
+
+    return ExperimentWizardPayload(
+        title=request.title.strip(),
+        experiment_id=request.experiment_id.strip(),
+        project=request.project,
+        workspace=request.workspace,
+        principal_investigator=request.principal_investigator,
+        researcher=request.researcher,
+        date=request.date,
+        notes=request.notes,
+        protocol_mode=request.protocol_mode,
+        protocol_id=request.protocol_id,
+        protocol_title=request.protocol_title,
+        protocol_notes=request.protocol_notes,
+        cell_line=request.cell_line,
+        organoid_batch=request.organoid_batch,
+        treatments=[item.model_dump() for item in request.treatments],
+        compounds=request.compounds,
+        concentrations=request.concentrations,
+        timepoints=request.timepoints,
+        replicates=request.replicates,
+        controls=request.controls,
+        readouts=request.readouts,
+        markers=request.markers,
+        microscopy=request.microscopy,
+        graphpad=request.graphpad,
+        rnaseq=request.rnaseq,
+        flow_cytometry=request.flow_cytometry,
+        other_readouts=request.other_readouts,
+        milestones=[item.model_dump() for item in request.milestones],
+        create_notebook_draft=request.create_notebook_draft,
+        start_session=request.start_session,
+    )
 
 
 def _metadata_terms(value: str | None) -> list[str]:
@@ -1982,7 +2221,66 @@ def organoid_batch_api(entity_name: str) -> OntologyEntityResponse:
 def daily_dashboard(use_ai: bool = Query(True)) -> dict[str, object]:
     """Return the daily ResearchOS attention dashboard."""
 
-    return dashboard_service.build(use_ai=use_ai)
+    dashboard = dashboard_service.build(use_ai=use_ai)
+    dashboard["laboratory_intelligence_feed"] = lab_intelligence_service.build_feed(limit=30)
+    dashboard["morning_brief"] = overnight_intelligence_service.morning_brief(period="today", limit=8)
+    return dashboard
+
+
+@app.get("/intelligence/feed", tags=["intelligence"])
+def laboratory_intelligence_feed(
+    item_type: str | None = Query(default=None),
+    include_dismissed: bool = Query(default=False),
+    pinned_first: bool = Query(default=True),
+    limit: int = Query(default=50, ge=1, le=200),
+    workspace_id: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Return the provenance-backed Laboratory Intelligence feed."""
+
+    return lab_intelligence_service.build_feed(
+        item_type=item_type,
+        include_dismissed=include_dismissed,
+        pinned_first=pinned_first,
+        limit=limit,
+        workspace_id=_current_workspace_id(workspace_id),
+    )
+
+
+@app.post("/intelligence/feed/{item_id}/state", tags=["intelligence"])
+def set_laboratory_intelligence_item_state(item_id: str, request: LabIntelligenceStateRequest) -> dict[str, object]:
+    """Persist pin/dismiss state for one Laboratory Intelligence item."""
+
+    return lab_intelligence_service.set_item_state(item_id, dismissed=request.dismissed, pinned=request.pinned)
+
+
+@app.post("/intelligence/feed/{item_id}/dismiss", tags=["intelligence"])
+def dismiss_laboratory_intelligence_item(item_id: str) -> dict[str, object]:
+    """Dismiss one Laboratory Intelligence feed item."""
+
+    return lab_intelligence_service.set_item_state(item_id, dismissed=True)
+
+
+@app.post("/intelligence/feed/{item_id}/pin", tags=["intelligence"])
+def pin_laboratory_intelligence_item(item_id: str, request: LabIntelligenceStateRequest | None = Body(default=None)) -> dict[str, object]:
+    """Pin or unpin one Laboratory Intelligence feed item."""
+
+    pinned = True if request is None or request.pinned is None else request.pinned
+    return lab_intelligence_service.set_item_state(item_id, pinned=pinned)
+
+
+@app.get("/intelligence/morning", tags=["intelligence"])
+def morning_intelligence_brief(
+    period: Literal["today", "yesterday", "last_week"] = Query(default="today"),
+    limit: int = Query(default=12, ge=1, le=100),
+    workspace_id: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Return a provenance-backed Morning Brief for recent lab changes."""
+
+    return overnight_intelligence_service.morning_brief(
+        period=period,
+        limit=limit,
+        workspace_id=_current_workspace_id(workspace_id),
+    )
 
 
 @app.get("/workflows", response_model=list[WorkflowResponse], tags=["workflows"])
@@ -3075,6 +3373,19 @@ def assistant_knowledge(request: AssistantRequest) -> KnowledgeAssistantResponse
     return KnowledgeAssistantResponse(**answer.__dict__)
 
 
+@app.post("/evidence/query", tags=["evidence"])
+def evidence_query(request: EvidenceQueryRequest) -> dict[str, object]:
+    """Synthesize observed, supporting, contradictory, and missing evidence."""
+
+    question = request.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Evidence question must not be empty.")
+    try:
+        return EvidenceEngine(settings=settings, knowledge_graph=knowledge_graph_service).query(question).as_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/assistant/plan-experiment", response_model=ExperimentPlanResponse, tags=["ai"])
 def assistant_plan_experiment(request: AssistantRequest) -> ExperimentPlanResponse:
     """Suggest a concrete follow-up experiment from ResearchOS evidence."""
@@ -3205,6 +3516,176 @@ def _mobile_session_card(session: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _create_experiment_from_wizard(request: NewExperimentWizardRequest, *, mobile: bool) -> dict[str, object]:
+    """Create experiment planning objects and return a UI-ready payload."""
+
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Experiment title is required.")
+    if not request.experiment_id.strip():
+        raise HTTPException(status_code=400, detail="Experiment ID is required.")
+
+    store = SQLiteStore(settings=settings)
+    if store.find_experiment_by_reference(request.experiment_id.strip()) is not None:
+        raise HTTPException(status_code=409, detail=f"Experiment ID already exists: {request.experiment_id.strip()}")
+
+    user = _current_user_payload()
+    workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
+    result = ExperimentWizardService(store).create(
+        _wizard_payload(request),
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    experiment = result["experiment"] if isinstance(result.get("experiment"), dict) else {}
+    experiment_id = str(experiment.get("id") or request.experiment_id)
+    _publish_event(
+        EventType.EXPERIMENT_EXTRACTED,
+        "experiment_wizard",
+        {
+            "experiment_id": experiment_id,
+            "human_experiment_id": request.experiment_id,
+            "source_provider": "wizard",
+        },
+    )
+    if result.get("pending_entry"):
+        _publish_event(
+            EventType.DRAFT_CREATED,
+            "experiment_wizard",
+            {
+                "entry_id": result["pending_entry"].get("id") if isinstance(result["pending_entry"], dict) else None,
+                "experiment_id": request.experiment_id,
+            },
+        )
+    if result.get("session"):
+        _publish_event(
+            EventType.SESSION_STARTED,
+            "experiment_wizard",
+            {
+                "session_id": result["session"].get("session_id") if isinstance(result["session"], dict) else None,
+                "experiment_id": request.experiment_id,
+            },
+        )
+
+    response: dict[str, object] = {
+        "experiment": _mobile_experiment_card(store, experiment) if mobile and experiment else experiment,
+        "workflow": result.get("workflow") or {},
+        "workspace_route": _mobile_route(f"/experiments/{experiment_id}/workspace") if mobile else f"/experiments/{experiment_id}/workspace",
+        "document": result.get("document") or {},
+        "pending_entry": result.get("pending_entry"),
+        "session": _mobile_session_card(result["session"]) if mobile and isinstance(result.get("session"), dict) else result.get("session"),
+        "notebook_draft": result.get("markdown") or "",
+        "copilot": result.get("copilot") or {},
+        "onenote": {
+            "create_notebook_draft_available": True,
+            "save_to_onenote_enabled": False,
+            "message": "Save to OneNote is disabled until OneNote write-back is approved.",
+        },
+        "message": result.get("message") or "Experiment created.",
+    }
+    return response
+
+
+def _save_resource_request(request: ResourceRequest, resource_id: str | None = None) -> dict[str, object]:
+    """Persist a resource request with current user/workspace metadata."""
+
+    if not request.name.strip():
+        raise HTTPException(status_code=400, detail="Resource name is required.")
+    store = SQLiteStore(settings=settings)
+    user = _current_user_payload()
+    workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
+    resource = store.save_resource(
+        resource_id=resource_id,
+        resource_type=request.resource_type,
+        name=request.name.strip(),
+        aliases=request.aliases,
+        vendor=request.vendor,
+        catalog_number=request.catalog_number,
+        lot_number=request.lot_number,
+        rrid=request.rrid,
+        storage_location=request.storage_location,
+        concentration=request.concentration,
+        units=request.units,
+        expiration=request.expiration,
+        notes=request.notes,
+        metadata=dict(request.metadata),
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    _publish_event(
+        EventType.KNOWLEDGE_GRAPH_UPDATED,
+        "resources",
+        {"resource_id": resource.get("resource_id"), "resource_type": resource.get("resource_type")},
+    )
+    return resource
+
+
+def _current_user_workspace_metadata() -> tuple[dict[str, object], dict[str, object]]:
+    """Return current user and workspace metadata for ownership scaffolding."""
+
+    user = _current_user_payload()
+    workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
+    return user, workspace
+
+
+def _save_inventory_request(request: InventoryItemRequest, item_id: str | None = None) -> dict[str, object]:
+    """Persist an inventory request."""
+
+    if not request.name.strip():
+        raise HTTPException(status_code=400, detail="Inventory item name is required.")
+    store = SQLiteStore(settings=settings)
+    if request.linked_resource_id and store.get_resource(request.linked_resource_id) is None:
+        raise HTTPException(status_code=404, detail=f"Linked resource not found: {request.linked_resource_id}")
+    user, workspace = _current_user_workspace_metadata()
+    return store.save_inventory_item(
+        item_id=item_id,
+        name=request.name.strip(),
+        category=request.category,
+        vendor=request.vendor,
+        catalog_number=request.catalog_number,
+        lot_number=request.lot_number,
+        rrid=request.rrid,
+        price=request.price,
+        unit=request.unit,
+        storage_location=request.storage_location,
+        quantity=request.quantity,
+        reorder_threshold=request.reorder_threshold,
+        expiration_date=request.expiration_date,
+        notes=request.notes,
+        linked_resource_id=request.linked_resource_id,
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+
+
+def _save_purchase_request(request: PurchaseRecordRequest, purchase_id: str | None = None) -> dict[str, object]:
+    """Persist a purchase request."""
+
+    if not request.item_name.strip():
+        raise HTTPException(status_code=400, detail="Purchase item name is required.")
+    store = SQLiteStore(settings=settings)
+    user, workspace = _current_user_workspace_metadata()
+    return store.save_purchase_record(
+        purchase_id=purchase_id,
+        item_name=request.item_name.strip(),
+        vendor=request.vendor,
+        catalog_number=request.catalog_number,
+        purchase_date=request.purchase_date,
+        cost=request.cost,
+        quantity=request.quantity,
+        grant_or_funding_source=request.grant_or_funding_source,
+        purchaser=request.purchaser,
+        oracle_po_number=request.oracle_po_number,
+        invoice_number=request.invoice_number,
+        status=request.status,
+        notes=request.notes,
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+
+
 def _mobile_dashboard_card(
     title: str,
     subtitle: str,
@@ -3222,6 +3703,86 @@ def _mobile_dashboard_card(
         "route": route,
         "action": action,
         "provenance": provenance,
+    }
+
+
+def _mobile_intelligence_card(item: dict[str, object]) -> dict[str, object]:
+    """Return a compact, display-ready intelligence card for mobile clients."""
+
+    provenance = item.get("provenance") if isinstance(item.get("provenance"), list) else []
+    compact_provenance = []
+    for record in provenance[:3]:
+        if not isinstance(record, dict):
+            continue
+        compact_provenance.append(
+            {
+                "fact": record.get("fact"),
+                "source": record.get("source"),
+                "provider": record.get("provider"),
+                "id": record.get("experiment_id") or record.get("asset_id") or record.get("document_id") or record.get("resource_id") or record.get("session_id"),
+            }
+        )
+    return {
+        "item_id": item.get("item_id"),
+        "title": item.get("title"),
+        "subtitle": item.get("summary"),
+        "type": item.get("item_type"),
+        "priority": item.get("priority_score"),
+        "priority_label": item.get("priority"),
+        "timestamp": item.get("timestamp"),
+        "route": item.get("route"),
+        "suggested_action": item.get("suggested_action"),
+        "related_experiments": list(item.get("related_experiments") or [])[:4],
+        "related_resources": list(item.get("related_resources") or [])[:4],
+        "related_literature": list(item.get("related_literature") or [])[:4],
+        "pinned": bool(item.get("pinned")),
+        "dismissed": bool(item.get("dismissed")),
+        "icon": _mobile_intelligence_icon(str(item.get("item_type") or "")),
+        "provenance": compact_provenance,
+    }
+
+
+def _mobile_intelligence_icon(item_type: str) -> str:
+    mapping = {
+        "Experiment Reminder": "science",
+        "Workflow Reminder": "timeline",
+        "Missing Analysis": "analytics",
+        "Missing Notebook": "note",
+        "Protocol Insight": "protocol",
+        "Statistical Finding": "bar_chart",
+        "Knowledge Graph Insight": "hub",
+        "New Literature": "article",
+        "Similar Experiment": "memory",
+        "Resource Warning": "inventory",
+        "Copilot Recommendation": "auto_awesome",
+    }
+    return mapping.get(item_type, "notifications")
+
+
+def _mobile_morning_item(item: dict[str, object]) -> dict[str, object]:
+    """Return a compact Morning Brief item."""
+
+    provenance = item.get("provenance") if isinstance(item.get("provenance"), list) else []
+    return {
+        "title": item.get("title"),
+        "summary": item.get("summary"),
+        "timestamp": item.get("timestamp"),
+        "priority": item.get("priority"),
+        "suggested_action": item.get("suggested_action"),
+        "route": item.get("route"),
+        "related_experiments": list(item.get("related_experiments") or [])[:4],
+        "related_resources": list(item.get("related_resources") or [])[:4],
+        "related_literature": list(item.get("related_literature") or [])[:4],
+        "provenance": [
+            {
+                "fact": record.get("fact"),
+                "source": record.get("source"),
+                "provider": record.get("provider"),
+                "id": record.get("experiment_id") or record.get("asset_id") or record.get("document_id") or record.get("resource_id") or record.get("workflow_id"),
+            }
+            for record in provenance[:3]
+            if isinstance(record, dict)
+        ],
     }
 
 
@@ -3244,6 +3805,7 @@ def _mobile_workspace_payload(workspace: dict[str, object]) -> dict[str, object]
         "key_images": [_mobile_asset_card(asset) for asset in list(workspace.get("microscopy") or [])[:6] if isinstance(asset, dict)],
         "key_graphpad_assets": [_mobile_asset_card(asset) for asset in list(workspace.get("graphpad") or [])[:4] if isinstance(asset, dict)],
         "key_spreadsheets": list(workspace.get("spreadsheets") or [])[:3],
+        "key_resources": [_mobile_resource_card(resource) for resource in list(workspace.get("resources") or [])[:6] if isinstance(resource, dict)],
         "research_copilot_summary": {
             "provider": copilot.get("provider"),
             "natural_summary": copilot.get("natural_summary"),
@@ -3260,12 +3822,64 @@ def _mobile_workspace_payload(workspace: dict[str, object]) -> dict[str, object]
     }
 
 
+def _mobile_quantification_payload(workspace: dict[str, object]) -> dict[str, object]:
+    """Return a compact Quantification Workspace for mobile clients."""
+
+    experiment = workspace.get("experiment") if isinstance(workspace.get("experiment"), dict) else {}
+    overview = workspace.get("overview") if isinstance(workspace.get("overview"), dict) else {}
+    copilot = workspace.get("research_copilot") if isinstance(workspace.get("research_copilot"), dict) else {}
+    sections = copilot.get("sections") if isinstance(copilot.get("sections"), dict) else {}
+    return {
+        "experiment": _mobile_experiment_minimal(experiment),
+        "overview": overview,
+        "raw_images": list(workspace.get("raw_images") or [])[:8],
+        "processed_images": list(workspace.get("processed_images") or [])[:4],
+        "quantification_tables": list(workspace.get("quantification_tables") or [])[:6],
+        "statistical_analysis": list(workspace.get("statistical_analysis") or [])[:6],
+        "graphpad_assets": list(workspace.get("graphpad_assets") or [])[:6],
+        "representative_figures": list(workspace.get("representative_figures") or [])[:3],
+        "timeline_events": list(workspace.get("timeline_events") or [])[:10],
+        "knowledge_graph": {
+            "markers": list((workspace.get("knowledge_graph") or {}).get("markers") or [])[:8]
+            if isinstance(workspace.get("knowledge_graph"), dict)
+            else [],
+            "compounds": list((workspace.get("knowledge_graph") or {}).get("compounds") or [])[:8]
+            if isinstance(workspace.get("knowledge_graph"), dict)
+            else [],
+            "entities": list((workspace.get("knowledge_graph") or {}).get("entities") or [])[:8]
+            if isinstance(workspace.get("knowledge_graph"), dict)
+            else [],
+        },
+        "evidence_summary": (workspace.get("evidence") or {}).get("summary") if isinstance(workspace.get("evidence"), dict) else None,
+        "workflow": workspace.get("workflow") or {},
+        "copilot": {
+            "provider": copilot.get("provider"),
+            "current_quantitative_evidence": list(sections.get("current_quantitative_evidence") or [])[:3],
+            "missing_analyses": list(sections.get("missing_analyses") or [])[:4],
+            "recommended_next_steps": list(sections.get("recommended_next_steps") or [])[:3],
+        },
+        "future_modules": list(workspace.get("future_modules") or [])[:12],
+        "limitations": list(workspace.get("limitations") or [])[:6],
+    }
+
+
 def _mobile_experiment_minimal(experiment: dict[str, object]) -> dict[str, object]:
     return {
         "id": experiment.get("id"),
         "title": experiment.get("title") or experiment.get("experiment_id"),
         "human_experiment_id": experiment.get("experiment_id"),
         "route": _mobile_route(f"/experiments/{experiment.get('id')}"),
+    }
+
+
+def _mobile_resource_card(resource: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": resource.get("resource_id"),
+        "title": resource.get("name"),
+        "subtitle": f"{resource.get('resource_type') or 'resource'} · {resource.get('vendor') or 'local'}",
+        "type": resource.get("resource_type") or "resource",
+        "route": f"#/resources/{resource.get('resource_id')}",
+        "provenance": _compact_provenance("resource", "resource_catalog", resource_id=resource.get("resource_id")),
     }
 
 
@@ -3364,7 +3978,90 @@ def mobile_dashboard() -> dict[str, object]:
             for index, experiment in enumerate(experiments[:5])
         )
     cards.append(_mobile_dashboard_card("Ask ResearchOS", "Use local evidence and Copilot context.", "quick_action", 50, route=_mobile_route("/assistant/ask"), action="ask_assistant"))
-    return {"cards": sorted(cards, key=lambda item: int(item["priority"])), "quick_actions": ["new_experiment", "start_session", "search", "ask_copilot"]}
+    feed = lab_intelligence_service.build_feed(limit=12)
+    morning = overnight_intelligence_service.morning_brief(period="today", limit=6)
+    intelligence_cards = [_mobile_intelligence_card(item) for item in list(feed.get("items") or [])[:8] if isinstance(item, dict)]
+    morning_card = _mobile_dashboard_card(
+        "Morning Brief",
+        str(morning.get("summary") or "No observed changes today."),
+        "morning_brief",
+        0,
+        route="/mobile/intelligence/morning",
+        action="open_morning_brief",
+        provenance=_compact_provenance("morning_brief", "ResearchOS", workspace_id=workspace.get("workspace_id")),
+    )
+    return {
+        "cards": [morning_card, *(intelligence_cards or sorted(cards, key=lambda item: int(item["priority"])))],
+        "static_cards": sorted(cards, key=lambda item: int(item["priority"])),
+        "intelligence_feed": {
+            "total_items": feed.get("total_items", 0),
+            "items": intelligence_cards,
+            "filters": feed.get("filters", []),
+        },
+        "morning_brief": morning,
+        "quick_actions": ["new_experiment", "start_session", "search", "ask_copilot"],
+    }
+
+
+@app.get("/mobile/intelligence/feed", tags=["mobile"])
+def mobile_intelligence_feed(
+    item_type: str | None = Query(default=None),
+    include_dismissed: bool = Query(default=False),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict[str, object]:
+    """Return compact Laboratory Intelligence cards for mobile clients."""
+
+    feed = lab_intelligence_service.build_feed(
+        item_type=item_type,
+        include_dismissed=include_dismissed,
+        limit=limit,
+    )
+    return {
+        "generated_at": feed.get("generated_at"),
+        "total_items": feed.get("total_items", 0),
+        "items": [_mobile_intelligence_card(item) for item in list(feed.get("items") or []) if isinstance(item, dict)],
+        "filters": feed.get("filters", []),
+        "priority_counts": feed.get("priority_counts", {}),
+    }
+
+
+@app.post("/mobile/intelligence/feed/{item_id}/dismiss", tags=["mobile"])
+def mobile_dismiss_intelligence_item(item_id: str) -> dict[str, object]:
+    """Dismiss one Laboratory Intelligence item from mobile."""
+
+    return lab_intelligence_service.set_item_state(item_id, dismissed=True)
+
+
+@app.post("/mobile/intelligence/feed/{item_id}/pin", tags=["mobile"])
+def mobile_pin_intelligence_item(item_id: str, request: LabIntelligenceStateRequest | None = Body(default=None)) -> dict[str, object]:
+    """Pin or unpin one Laboratory Intelligence item from mobile."""
+
+    pinned = True if request is None or request.pinned is None else request.pinned
+    return lab_intelligence_service.set_item_state(item_id, pinned=pinned)
+
+
+@app.get("/mobile/intelligence/morning", tags=["mobile"])
+def mobile_morning_intelligence_brief(
+    period: Literal["today", "yesterday", "last_week"] = Query(default="today"),
+    limit: int = Query(default=8, ge=1, le=30),
+) -> dict[str, object]:
+    """Return a compact Morning Brief for mobile clients."""
+
+    brief = overnight_intelligence_service.morning_brief(period=period, limit=limit)
+    sections = brief.get("sections") if isinstance(brief.get("sections"), dict) else {}
+    return {
+        "generated_at": brief.get("generated_at"),
+        "period": brief.get("period"),
+        "period_label": brief.get("period_label"),
+        "summary": brief.get("summary"),
+        "total_items": brief.get("total_items", 0),
+        "sections": {
+            key: [_mobile_morning_item(item) for item in list(value or [])[:limit] if isinstance(item, dict)]
+            for key, value in sections.items()
+        },
+        "section_counts": brief.get("section_counts", {}),
+        "principle": brief.get("principle"),
+    }
 
 
 @app.get("/mobile/search", tags=["mobile"])
@@ -3398,6 +4095,13 @@ def mobile_experiments() -> dict[str, object]:
     return {"experiments": [_mobile_experiment_card(store, experiment) for experiment in experiments], "count": len(experiments)}
 
 
+@app.post("/mobile/experiments/create", tags=["mobile"])
+def mobile_create_experiment(request: NewExperimentWizardRequest) -> dict[str, object]:
+    """Create a planned experiment from the mobile New Experiment Wizard."""
+
+    return _create_experiment_from_wizard(request, mobile=True)
+
+
 @app.get("/mobile/experiments/{experiment_id}", tags=["mobile"])
 def mobile_experiment_detail(experiment_id: str) -> dict[str, object]:
     """Return compact experiment detail for mobile."""
@@ -3429,6 +4133,16 @@ def mobile_experiment_workspace(experiment_id: str) -> dict[str, object]:
     """Return a mobile-optimized experiment workspace."""
 
     return _mobile_workspace_payload(_mobile_experiment_workspace(experiment_id))
+
+
+@app.get("/mobile/experiments/{experiment_id}/quantification", tags=["mobile"])
+def mobile_experiment_quantification_workspace(experiment_id: str) -> dict[str, object]:
+    """Return a mobile-optimized Quantification Workspace."""
+
+    workspace = quantification_workspace_service.build(experiment_id, use_ai=False)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail=f"Quantification workspace not found: {experiment_id}")
+    return _mobile_quantification_payload(workspace)
 
 
 @app.get("/mobile/experiments/{experiment_id}/timeline", tags=["mobile"])
@@ -4360,6 +5074,250 @@ def spreadsheet_asset_detail(asset_id: str) -> AssetResponse:
     return AssetResponse(**_asset_with_link_info(store, asset))
 
 
+@app.get("/resources", response_model=list[ResourceResponse], tags=["resources"])
+def resources(
+    resource_type: ResourceType | None = Query(default=None),
+    query: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+) -> list[ResourceResponse]:
+    """List reusable laboratory resources."""
+
+    store = SQLiteStore(settings=settings)
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    return [
+        ResourceResponse(**resource)
+        for resource in store.list_resources(
+            resource_type=resource_type,
+            query=query,
+            workspace_id=resolved_workspace_id,
+        )
+    ]
+
+
+@app.get("/resources/type/{resource_type}", response_model=list[ResourceResponse], tags=["resources"])
+def resources_by_type(resource_type: str, workspace_id: str | None = Query(default=None)) -> list[ResourceResponse]:
+    """Return resources of one normalized resource type."""
+
+    normalized_type = normalize_resource_type(resource_type)
+    if normalized_type not in RESOURCE_TYPES:
+        raise HTTPException(status_code=404, detail=f"Unknown resource type: {resource_type}")
+    return resources(resource_type=normalized_type, query=None, workspace_id=workspace_id)
+
+
+@app.get("/resources/{resource_id}", response_model=ResourceResponse, tags=["resources"])
+def resource_detail(resource_id: str) -> ResourceResponse:
+    """Return one reusable resource with usage history."""
+
+    store = SQLiteStore(settings=settings)
+    resource = store.get_resource(resource_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail=f"Resource not found: {resource_id}")
+    return ResourceResponse(**resource)
+
+
+@app.post("/resources", response_model=ResourceResponse, tags=["resources"])
+def create_resource(request: ResourceRequest) -> ResourceResponse:
+    """Create a reusable laboratory resource."""
+
+    return ResourceResponse(**_save_resource_request(request))
+
+
+@app.put("/resources/{resource_id}", response_model=ResourceResponse, tags=["resources"])
+def update_resource(resource_id: str, request: ResourceRequest) -> ResourceResponse:
+    """Update a reusable laboratory resource."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_resource(resource_id) is None:
+        raise HTTPException(status_code=404, detail=f"Resource not found: {resource_id}")
+    return ResourceResponse(**_save_resource_request(request, resource_id=resource_id))
+
+
+@app.get("/inventory", response_model=list[InventoryItemResponse], tags=["inventory"])
+def inventory_items(
+    vendor: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    storage_location: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+) -> list[InventoryItemResponse]:
+    """List local lab inventory items."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        InventoryItemResponse(**item)
+        for item in store.list_inventory_items(
+            vendor=vendor,
+            category=category,
+            storage_location=storage_location,
+            query=query,
+            workspace_id=_current_workspace_id(workspace_id),
+        )
+    ]
+
+
+@app.post("/inventory", response_model=InventoryItemResponse, tags=["inventory"])
+def create_inventory_item(request: InventoryItemRequest) -> InventoryItemResponse:
+    """Create a local inventory item."""
+
+    return InventoryItemResponse(**_save_inventory_request(request))
+
+
+@app.get("/inventory/export-csv", tags=["inventory"])
+def export_inventory_csv(workspace_id: str | None = Query(default=None)) -> Response:
+    """Export inventory as a spreadsheet-compatible CSV."""
+
+    store = SQLiteStore(settings=settings)
+    csv_text = records_to_csv(
+        store.list_inventory_items(workspace_id=_current_workspace_id(workspace_id)),
+        INVENTORY_CSV_FIELDS,
+    )
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="researchos_inventory.csv"'},
+    )
+
+
+@app.get("/inventory/{item_id}", response_model=InventoryItemResponse, tags=["inventory"])
+def inventory_item_detail(item_id: str) -> InventoryItemResponse:
+    """Return one inventory item."""
+
+    store = SQLiteStore(settings=settings)
+    item = store.get_inventory_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    return InventoryItemResponse(**item)
+
+
+@app.put("/inventory/{item_id}", response_model=InventoryItemResponse, tags=["inventory"])
+def update_inventory_item(item_id: str, request: InventoryItemRequest) -> InventoryItemResponse:
+    """Update one inventory item."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_inventory_item(item_id) is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    return InventoryItemResponse(**_save_inventory_request(request, item_id=item_id))
+
+
+@app.delete("/inventory/{item_id}", tags=["inventory"])
+def delete_inventory_item(item_id: str) -> dict[str, object]:
+    """Delete one inventory item."""
+
+    store = SQLiteStore(settings=settings)
+    if not store.delete_inventory_item(item_id):
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    return {"deleted": True, "item_id": item_id}
+
+
+@app.get("/inventory/{item_id}/methods-citation", tags=["inventory"])
+def inventory_methods_citation(item_id: str) -> dict[str, object]:
+    """Return paper-methods reagent citation text for an inventory item."""
+
+    store = SQLiteStore(settings=settings)
+    item = store.get_inventory_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    linked_resource = store.get_resource(str(item.get("linked_resource_id"))) if item.get("linked_resource_id") else None
+    return {
+        "item_id": item_id,
+        "methods_citation": methods_citation(item, linked_resource),
+        "reagent_details": {
+            "name": item.get("name"),
+            "vendor": item.get("vendor") or (linked_resource or {}).get("vendor"),
+            "catalog_number": item.get("catalog_number") or (linked_resource or {}).get("catalog_number"),
+            "rrid": item.get("rrid") or (linked_resource or {}).get("rrid"),
+            "lot_number": item.get("lot_number") or (linked_resource or {}).get("lot_number"),
+        },
+        "linked_resource": linked_resource,
+    }
+
+
+@app.get("/purchases", response_model=list[PurchaseRecordResponse], tags=["purchasing"])
+def purchases(
+    vendor: str | None = Query(default=None),
+    grant_or_funding_source: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+) -> list[PurchaseRecordResponse]:
+    """List local purchase records."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        PurchaseRecordResponse(**record)
+        for record in store.list_purchase_records(
+            vendor=vendor,
+            grant_or_funding_source=grant_or_funding_source,
+            status=status,
+            query=query,
+            workspace_id=_current_workspace_id(workspace_id),
+        )
+    ]
+
+
+@app.post("/purchases", response_model=PurchaseRecordResponse, tags=["purchasing"])
+def create_purchase(request: PurchaseRecordRequest) -> PurchaseRecordResponse:
+    """Create a purchase record."""
+
+    return PurchaseRecordResponse(**_save_purchase_request(request))
+
+
+@app.get("/purchases/export-csv", tags=["purchasing"])
+def export_purchases_csv(workspace_id: str | None = Query(default=None)) -> Response:
+    """Export purchases as a spreadsheet-compatible CSV."""
+
+    store = SQLiteStore(settings=settings)
+    csv_text = records_to_csv(
+        store.list_purchase_records(workspace_id=_current_workspace_id(workspace_id)),
+        PURCHASE_CSV_FIELDS,
+    )
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="researchos_purchases.csv"'},
+    )
+
+
+@app.post("/purchases/import-csv", tags=["purchasing"])
+def import_purchases_csv(request: PurchaseCsvImportRequest) -> dict[str, object]:
+    """Import Oracle/exported purchasing CSV rows into local purchase records."""
+
+    if request.provider != "oracle_purchasing":
+        raise HTTPException(status_code=400, detail="Only oracle_purchasing CSV imports are scaffolded currently.")
+    imported = []
+    for row in parse_csv_text(request.csv_text):
+        normalized = normalize_purchase_csv_row(row)
+        if not normalized.get("item_name"):
+            continue
+        imported.append(_save_purchase_request(PurchaseRecordRequest(**normalized)))
+    return {
+        "provider": ORACLE_PURCHASING_PROVIDER,
+        "imported_count": len(imported),
+        "records": imported,
+    }
+
+
+@app.get("/purchases/{purchase_id}", response_model=PurchaseRecordResponse, tags=["purchasing"])
+def purchase_detail(purchase_id: str) -> PurchaseRecordResponse:
+    """Return one purchase record."""
+
+    store = SQLiteStore(settings=settings)
+    record = store.get_purchase_record(purchase_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Purchase record not found: {purchase_id}")
+    return PurchaseRecordResponse(**record)
+
+
+@app.put("/purchases/{purchase_id}", response_model=PurchaseRecordResponse, tags=["purchasing"])
+def update_purchase(purchase_id: str, request: PurchaseRecordRequest) -> PurchaseRecordResponse:
+    """Update one purchase record."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_purchase_record(purchase_id) is None:
+        raise HTTPException(status_code=404, detail=f"Purchase record not found: {purchase_id}")
+    return PurchaseRecordResponse(**_save_purchase_request(request, purchase_id=purchase_id))
+
+
 @app.get("/assets", response_model=list[AssetResponse], tags=["assets"])
 def assets(
     asset_type: AssetType | None = Query(default=None),
@@ -4504,6 +5462,13 @@ def experiments(workspace_id: str | None = Query(default=None)) -> list[Experime
     ]
 
 
+@app.post("/experiments/create", tags=["experiments"])
+def create_experiment(request: NewExperimentWizardRequest) -> dict[str, object]:
+    """Create a planned experiment from the New Experiment Wizard."""
+
+    return _create_experiment_from_wizard(request, mobile=False)
+
+
 @app.post("/experiments/compare", response_model=ExperimentCompareResponse, tags=["experiments"])
 def experiment_compare(request: ExperimentCompareRequest) -> ExperimentCompareResponse:
     """Compare selected experiments using structured extracted fields."""
@@ -4576,6 +5541,16 @@ def experiment_workspace(experiment_id: str, use_ai: bool = Query(True)) -> dict
     )
     if workspace is None:
         raise HTTPException(status_code=404, detail=f"Experiment workspace not found: {experiment_id}")
+    return workspace
+
+
+@app.get("/experiments/{experiment_id}/quantification", tags=["experiments"])
+def experiment_quantification_workspace(experiment_id: str, use_ai: bool = Query(False)) -> dict[str, object]:
+    """Return the Quantification Workspace for one experiment."""
+
+    workspace = quantification_workspace_service.build(experiment_id, use_ai=use_ai)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail=f"Quantification workspace not found: {experiment_id}")
     return workspace
 
 

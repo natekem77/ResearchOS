@@ -14,7 +14,8 @@ class CopilotScreen extends StatefulWidget {
 }
 
 class _CopilotScreenState extends State<CopilotScreen> {
-  final TextEditingController _controller = TextEditingController(text: 'What needs attention today?');
+  final TextEditingController _controller =
+      TextEditingController(text: 'What needs attention today?');
   Future<Map<String, dynamic>>? _future;
 
   void _ask() {
@@ -56,15 +57,20 @@ class _CopilotScreenState extends State<CopilotScreen> {
         ),
         Expanded(
           child: _future == null
-              ? const Center(child: Text('Ask about today, active sessions, or experiment evidence.'))
+              ? const Center(
+                  child: Text(
+                      'Ask about today, active sessions, or experiment evidence.'))
               : FutureBuilder<Map<String, dynamic>>(
                   future: _future,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const LoadingView(message: 'Research Copilot is checking local evidence...');
+                      return const LoadingView(
+                          message:
+                              'Research Copilot is checking local evidence...');
                     }
                     if (snapshot.hasError) {
-                      return ErrorView(message: snapshot.error.toString(), onRetry: _ask);
+                      return ErrorView(
+                          message: snapshot.error.toString(), onRetry: _ask);
                     }
                     final answer = snapshot.data ?? const {};
                     return ListView(
@@ -72,7 +78,8 @@ class _CopilotScreenState extends State<CopilotScreen> {
                       children: [
                         ResearchOsCopilotCard(
                           title: 'Direct answer',
-                          message: answer['direct_answer']?.toString() ?? 'No answer returned.',
+                          message: answer['direct_answer']?.toString() ??
+                              'No answer returned.',
                         ),
                         ResearchOsCopilotCard(
                           title: 'Limitations',

@@ -32,6 +32,19 @@ Dashboard:
 curl http://127.0.0.1:8001/mobile/dashboard
 ```
 
+Laboratory Intelligence:
+
+```bash
+curl http://127.0.0.1:8001/mobile/intelligence/feed
+curl "http://127.0.0.1:8001/mobile/intelligence/feed?item_type=Missing%20Analysis"
+curl -X POST http://127.0.0.1:8001/mobile/intelligence/feed/feed:ITEM_ID/pin \
+  -H "Content-Type: application/json" \
+  -d '{"pinned":true}'
+curl -X POST http://127.0.0.1:8001/mobile/intelligence/feed/feed:ITEM_ID/dismiss \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
 Search:
 
 ```bash
@@ -44,6 +57,7 @@ Experiments:
 curl http://127.0.0.1:8001/mobile/experiments
 curl http://127.0.0.1:8001/mobile/experiments/NK_Expt_31
 curl http://127.0.0.1:8001/mobile/experiments/NK_Expt_31/workspace
+curl http://127.0.0.1:8001/mobile/experiments/NK_Expt_31/quantification
 curl http://127.0.0.1:8001/mobile/experiments/NK_Expt_31/timeline
 ```
 

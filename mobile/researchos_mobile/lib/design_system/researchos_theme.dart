@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'researchos_spacing.dart';
+import 'researchos_tokens.dart';
 
 class ResearchOsTheme {
   const ResearchOsTheme._();
@@ -29,16 +30,29 @@ class ResearchOsTheme {
       colorScheme: colorScheme,
       visualDensity: VisualDensity.standard,
       textTheme: textTheme.copyWith(
-        headlineSmall: textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
-        titleLarge: textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700),
-        titleMedium: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-        labelLarge: textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+        headlineMedium: textTheme.headlineMedium
+            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: 0),
+        headlineSmall: textTheme.headlineSmall
+            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: 0),
+        titleLarge: textTheme.titleLarge
+            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: 0),
+        titleMedium: textTheme.titleMedium
+            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: 0),
+        titleSmall: textTheme.titleSmall
+            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: 0),
+        bodyLarge:
+            textTheme.bodyLarge?.copyWith(height: 1.35, letterSpacing: 0),
+        bodyMedium:
+            textTheme.bodyMedium?.copyWith(height: 1.35, letterSpacing: 0),
+        labelLarge: textTheme.labelLarge
+            ?.copyWith(fontWeight: FontWeight.w800, letterSpacing: 0),
       ),
       cardTheme: CardThemeData(
         clipBehavior: Clip.antiAlias,
         elevation: 0,
         margin: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
-        shape: const RoundedRectangleBorder(borderRadius: ResearchOsSpacing.radius),
+        shape: const RoundedRectangleBorder(
+            borderRadius: ResearchOsSpacing.radius),
         color: colorScheme.surfaceContainerLow,
       ),
       appBarTheme: AppBarTheme(
@@ -46,6 +60,7 @@ class ResearchOsTheme {
         elevation: 0,
         backgroundColor: colorScheme.surface,
         foregroundColor: colorScheme.onSurface,
+        surfaceTintColor: Colors.transparent,
         titleTextStyle: textTheme.titleLarge?.copyWith(
           color: colorScheme.onSurface,
           fontWeight: FontWeight.w800,
@@ -54,24 +69,38 @@ class ResearchOsTheme {
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           minimumSize: const Size(48, 48),
-          shape: const RoundedRectangleBorder(borderRadius: ResearchOsSpacing.compactRadius),
-          textStyle: textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+          shape: const RoundedRectangleBorder(
+              borderRadius: ResearchOsSpacing.compactRadius),
+          textStyle:
+              textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+        ),
+      ),
+      iconButtonTheme: IconButtonThemeData(
+        style: IconButton.styleFrom(
+          minimumSize: const Size.square(ResearchOsTokens.minTouchTarget),
+          shape: const RoundedRectangleBorder(
+              borderRadius: ResearchOsSpacing.compactRadius),
         ),
       ),
       chipTheme: ChipThemeData(
-        shape: const RoundedRectangleBorder(borderRadius: ResearchOsSpacing.compactRadius),
+        shape: const RoundedRectangleBorder(
+            borderRadius: ResearchOsSpacing.compactRadius),
         side: BorderSide(color: colorScheme.outlineVariant),
       ),
       inputDecorationTheme: const InputDecorationTheme(
-        border: OutlineInputBorder(borderRadius: ResearchOsSpacing.compactRadius),
+        border:
+            OutlineInputBorder(borderRadius: ResearchOsSpacing.compactRadius),
       ),
       navigationBarTheme: NavigationBarThemeData(
         height: 70,
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        indicatorShape: const RoundedRectangleBorder(borderRadius: ResearchOsSpacing.compactRadius),
+        indicatorShape: const RoundedRectangleBorder(
+            borderRadius: ResearchOsSpacing.compactRadius),
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           return textTheme.labelSmall?.copyWith(
-            fontWeight: states.contains(WidgetState.selected) ? FontWeight.w800 : FontWeight.w600,
+            fontWeight: states.contains(WidgetState.selected)
+                ? FontWeight.w800
+                : FontWeight.w600,
           );
         }),
       ),

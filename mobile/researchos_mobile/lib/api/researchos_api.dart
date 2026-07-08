@@ -38,6 +38,35 @@ class ResearchOsApi {
         .toList();
   }
 
+  Future<Map<String, dynamic>> intelligenceFeed({String? itemType}) {
+    final path = itemType == null || itemType.trim().isEmpty
+        ? '/mobile/intelligence/feed'
+        : '/mobile/intelligence/feed?item_type=${Uri.encodeQueryComponent(itemType.trim())}';
+    return _getMap(path);
+  }
+
+  Future<Map<String, dynamic>> morningBrief({String period = 'today'}) {
+    return _getMap(
+        '/mobile/intelligence/morning?period=${Uri.encodeQueryComponent(period)}');
+  }
+
+  Future<Map<String, dynamic>> dismissIntelligenceItem(String itemId) {
+    return _postMap(
+      '/mobile/intelligence/feed/${Uri.encodeComponent(itemId)}/dismiss',
+      {},
+    );
+  }
+
+  Future<Map<String, dynamic>> pinIntelligenceItem(
+    String itemId, {
+    required bool pinned,
+  }) {
+    return _postMap(
+      '/mobile/intelligence/feed/${Uri.encodeComponent(itemId)}/pin',
+      {'pinned': pinned},
+    );
+  }
+
   Future<List<ExperimentCard>> experiments() async {
     final json = await _getMap('/mobile/experiments');
     final experiments = json['experiments'];
@@ -54,6 +83,54 @@ class ResearchOsApi {
     return _getMap('/mobile/experiments/${Uri.encodeComponent(experimentId)}');
   }
 
+  Future<Map<String, dynamic>> experimentWorkspace(String experimentId) {
+    return _getMap(
+        '/mobile/experiments/${Uri.encodeComponent(experimentId)}/workspace');
+  }
+
+  Future<Map<String, dynamic>> quantificationWorkspace(String experimentId) {
+    return _getMap(
+        '/mobile/experiments/${Uri.encodeComponent(experimentId)}/quantification');
+  }
+
+  Future<Map<String, dynamic>> createExperiment(Map<String, dynamic> payload) {
+    return _postMap('/mobile/experiments/create', payload);
+  }
+
+  Future<List<Map<String, dynamic>>> protocols() async {
+    final json = await _getList('/protocols');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<List<Map<String, dynamic>>> resources(
+      {String? query, String? type}) async {
+    final params = <String>[];
+    if (query != null && query.trim().isNotEmpty) {
+      params.add('query=${Uri.encodeQueryComponent(query.trim())}');
+    }
+    if (type != null && type.trim().isNotEmpty) {
+      params.add('resource_type=${Uri.encodeQueryComponent(type.trim())}');
+    }
+    final path =
+        params.isEmpty ? '/resources' : '/resources?${params.join('&')}';
+    final json = await _getList(path);
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> createResource(Map<String, dynamic> payload) {
+    return _postMap('/resources', payload);
+  }
+
+  Future<List<Map<String, dynamic>>> searchKnowledgeGraph(String query) async {
+    final json = await _getMap(
+        '/knowledgegraph/search?q=${Uri.encodeQueryComponent(query)}');
+    final results = json['results'];
+    if (results is List) {
+      return results.whereType<Map<String, dynamic>>().toList();
+    }
+    return const [];
+  }
+
   Future<Map<String, dynamic>> search(String query) {
     return _getMap('/mobile/search?q=${Uri.encodeQueryComponent(query)}');
   }
@@ -67,17 +144,21 @@ class ResearchOsApi {
     return null;
   }
 
-  Future<MobileSession> startSession({String? experimentId, String? notes}) async {
+  Future<MobileSession> startSession(
+      {String? experimentId, String? notes}) async {
     final json = await _postMap(
       '/mobile/sessions/start',
       {
-        if (experimentId != null && experimentId.trim().isNotEmpty) 'experiment_id': experimentId.trim(),
+        if (experimentId != null && experimentId.trim().isNotEmpty)
+          'experiment_id': experimentId.trim(),
         if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
       },
     );
     final sessionId = json['session_id']?.toString();
     final session = json['session'];
-    if (session is Map<String, dynamic> && sessionId != null && sessionId.isNotEmpty) {
+    if (session is Map<String, dynamic> &&
+        sessionId != null &&
+        sessionId.isNotEmpty) {
       return MobileSession.fromJson({...session, 'session_id': sessionId});
     }
     throw const ResearchOsApiException('Unexpected session start response.');
@@ -118,7 +199,8 @@ class ResearchOsApi {
     return _postMap(
       '/mobile/sessions/${Uri.encodeComponent(sessionId)}/treatment',
       {
-        if (compound != null && compound.trim().isNotEmpty) 'compound': compound.trim(),
+        if (compound != null && compound.trim().isNotEmpty)
+          'compound': compound.trim(),
         if (dose != null && dose.trim().isNotEmpty) 'dose': dose.trim(),
         if (units != null && units.trim().isNotEmpty) 'units': units.trim(),
         if (time != null && time.trim().isNotEmpty) 'time': time.trim(),
@@ -135,7 +217,8 @@ class ResearchOsApi {
     return _postMap(
       '/mobile/sessions/${Uri.encodeComponent(sessionId)}/media-change',
       {
-        if (mediaType != null && mediaType.trim().isNotEmpty) 'media_type': mediaType.trim(),
+        if (mediaType != null && mediaType.trim().isNotEmpty)
+          'media_type': mediaType.trim(),
         if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
       },
     );
@@ -149,7 +232,8 @@ class ResearchOsApi {
     return _postMap(
       '/mobile/sessions/${Uri.encodeComponent(sessionId)}/voice-note',
       {
-        if (transcript != null && transcript.trim().isNotEmpty) 'transcript': transcript.trim(),
+        if (transcript != null && transcript.trim().isNotEmpty)
+          'transcript': transcript.trim(),
         'placeholder': placeholder,
       },
     );
@@ -186,7 +270,8 @@ class ResearchOsApi {
   }
 
   Future<Map<String, dynamic>> copilot(String message) {
-    return _postMap('/mobile/assistant/copilot', {'message': message, 'use_ai': false});
+    return _postMap(
+        '/mobile/assistant/copilot', {'message': message, 'use_ai': false});
   }
 
   Future<MobileUser> currentUser() async {
@@ -201,7 +286,8 @@ class ResearchOsApi {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     final response = await _client.get(uri);
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ResearchOsApiException('Request failed (${response.statusCode}): $path');
+      throw ResearchOsApiException(
+          'Request failed (${response.statusCode}): $path');
     }
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) {
@@ -210,7 +296,22 @@ class ResearchOsApi {
     return decoded;
   }
 
-  Future<Map<String, dynamic>> _postMap(String path, Map<String, dynamic> body) async {
+  Future<List<dynamic>> _getList(String path) async {
+    final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
+    final response = await _client.get(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ResearchOsApiException(
+          'Request failed (${response.statusCode}): $path');
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! List) {
+      throw const ResearchOsApiException('Unexpected API response shape.');
+    }
+    return decoded;
+  }
+
+  Future<Map<String, dynamic>> _postMap(
+      String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     final response = await _client.post(
       uri,
@@ -218,7 +319,8 @@ class ResearchOsApi {
       body: jsonEncode(body),
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ResearchOsApiException('Request failed (${response.statusCode}): $path');
+      throw ResearchOsApiException(
+          'Request failed (${response.statusCode}): $path');
     }
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) {

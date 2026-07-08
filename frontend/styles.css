@@ -344,14 +344,65 @@ button {
   margin: 16px 0;
 }
 
-.daily-dashboard-panel {
+.daily-dashboard-panel,
+.morning-brief-panel {
   margin-top: 16px;
 }
 
-.daily-dashboard-grid {
+.daily-dashboard-grid,
+.morning-brief-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
+}
+
+.morning-brief-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.intelligence-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.intelligence-toolbar .secondary-button.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.intelligence-feed {
+  display: grid;
+  gap: 10px;
+}
+
+.intelligence-item {
+  border: 1px solid var(--line);
+}
+
+.intelligence-item a {
+  display: grid;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.intelligence-feed-header,
+.intelligence-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.intelligence-feed-header span:not(.status-pill) {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.intelligence-actions {
+  margin-top: 8px;
 }
 
 .daily-card {
@@ -973,6 +1024,12 @@ button {
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .sample-dictation-row {

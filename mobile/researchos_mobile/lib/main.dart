@@ -5,6 +5,10 @@ import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
 import 'screens/copilot_screen.dart';
 import 'screens/experiments_screen.dart';
+import 'screens/intelligence_feed_screen.dart';
+import 'screens/morning_brief_screen.dart';
+import 'screens/new_experiment_wizard_screen.dart';
+import 'screens/resources_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/server_connection_screen.dart';
 import 'screens/settings_screen.dart';
@@ -69,13 +73,27 @@ class ResearchOsHome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final screens = [
+      MorningBriefScreen(api: api),
+      IntelligenceFeedScreen(api: api),
       BenchModeScreen(api: api),
+      NewExperimentWizardScreen(api: api),
       ExperimentsScreen(api: api),
+      ResourcesScreen(api: api),
       SearchScreen(api: api),
       CopilotScreen(api: api),
       SettingsScreen(api: api),
     ];
-    final titles = ['Bench Mode', 'Experiments', 'Search', 'Copilot', 'Settings'];
+    final titles = [
+      'Morning Brief',
+      'Intelligence',
+      'Bench Mode',
+      'New Experiment',
+      'Experiments',
+      'Resources',
+      'Search',
+      'Copilot',
+      'Settings'
+    ];
     return ResearchOsScaffold(
       title: titles[selectedIndex],
       currentIndex: selectedIndex,

@@ -18,10 +18,12 @@ class ResearchOsResponsive extends StatelessWidget {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        if (constraints.maxWidth >= ResearchOsBreakpoints.desktop && desktop != null) {
+        if (constraints.maxWidth >= ResearchOsBreakpoints.desktop &&
+            desktop != null) {
           return desktop!;
         }
-        if (constraints.maxWidth >= ResearchOsBreakpoints.tablet && tablet != null) {
+        if (constraints.maxWidth >= ResearchOsBreakpoints.tablet &&
+            tablet != null) {
           return tablet!;
         }
         return phone;

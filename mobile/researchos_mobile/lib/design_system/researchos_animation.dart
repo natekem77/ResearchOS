@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 
+import 'researchos_tokens.dart';
+
 class ResearchOsAnimation {
   const ResearchOsAnimation._();
 
-  static const Duration fast = Duration(milliseconds: 160);
-  static const Duration normal = Duration(milliseconds: 240);
-  static const Curve standard = Curves.easeOutCubic;
+  static const Duration fast = ResearchOsTokens.motionFast;
+  static const Duration normal = ResearchOsTokens.motionStandard;
+  static const Duration slow = ResearchOsTokens.motionSlow;
+  static const Curve standard = ResearchOsTokens.motionCurve;
 }
 
 class FadeSlideIn extends StatelessWidget {
@@ -34,6 +37,63 @@ class FadeSlideIn extends StatelessWidget {
         );
       },
       child: child,
+    );
+  }
+}
+
+class ResearchOsShimmer extends StatefulWidget {
+  const ResearchOsShimmer({
+    super.key,
+    required this.child,
+  });
+
+  final Widget child;
+
+  @override
+  State<ResearchOsShimmer> createState() => _ResearchOsShimmerState();
+}
+
+class _ResearchOsShimmerState extends State<ResearchOsShimmer>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        return ShaderMask(
+          shaderCallback: (bounds) {
+            return LinearGradient(
+              begin: Alignment(-1.4 + (_controller.value * 2.8), 0),
+              end: Alignment(-0.4 + (_controller.value * 2.8), 0),
+              colors: [
+                colorScheme.surfaceContainerHighest,
+                colorScheme.surfaceContainerLow,
+                colorScheme.surfaceContainerHighest,
+              ],
+            ).createShader(bounds);
+          },
+          child: child,
+        );
+      },
+      child: widget.child,
     );
   }
 }

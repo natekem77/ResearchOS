@@ -80,7 +80,9 @@ class _TimelineRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(item.title, style: Theme.of(context).textTheme.titleSmall),
-                if (item.timestamp != null) Text(item.timestamp!, style: Theme.of(context).textTheme.labelSmall),
+                if (item.timestamp != null)
+                  Text(item.timestamp!,
+                      style: Theme.of(context).textTheme.labelSmall),
                 if (item.subtitle.isNotEmpty) Text(item.subtitle),
               ],
             ),

@@ -17,6 +17,7 @@ GROUPS = (
     "experiments",
     "notebook_entries",
     "entities",
+    "resources",
     "images",
     "graphpad",
     "spreadsheets",
@@ -111,6 +112,7 @@ class UniversalSearchService:
         documents = [document.__dict__ for document in self.store.get_all_research_documents()]
         experiments = self.store.list_experiments()
         assets = self.store.list_assets(query=None)
+        resources = self.store.list_resources()
 
         for experiment in experiments:
             items.append(_experiment_item(experiment))
@@ -146,18 +148,21 @@ class UniversalSearchService:
         experiment_context = _experiment_context_by_reference(experiments)
         for asset in assets:
             items.append(_asset_item(asset, experiment_context))
+        for resource in resources:
+            items.append(_resource_item(resource))
 
         items.extend(_command_items())
         self._items = items
         self._fingerprint = fingerprint
         return items
 
-    def _current_fingerprint(self) -> tuple[int, int, int, int]:
+    def _current_fingerprint(self) -> tuple[int, int, int, int, int]:
         documents = self.store.list_documents()
         experiments = self.store.list_experiments()
         assets = self.store.list_assets(query=None)
         entries = self.store.list_pending_entries()
-        return (len(documents), len(experiments), len(assets), len(entries))
+        resources = self.store.list_resources()
+        return (len(documents), len(experiments), len(assets), len(entries), len(resources))
 
     def _related_entities(self, parsed: dict[str, Any]) -> list[dict[str, Any]]:
         related: dict[str, dict[str, Any]] = {}
@@ -314,6 +319,40 @@ def _asset_item(asset: dict[str, Any], experiment_context: dict[str, str] | None
         provider=str(asset.get("provider") or "asset"),
         metadata={"asset_type": asset.get("asset_type"), "experiment_id": asset.get("experiment_id"), "confidence": 5},
         updated_at=str(asset.get("updated_at") or asset.get("created_at") or ""),
+    )
+
+
+def _resource_item(resource: dict[str, Any]) -> SearchItem:
+    aliases = resource.get("aliases") if isinstance(resource.get("aliases"), list) else []
+    usages = resource.get("usages") if isinstance(resource.get("usages"), list) else []
+    text = " ".join(
+        str(value)
+        for value in [
+            resource.get("resource_id"),
+            resource.get("resource_type"),
+            resource.get("name"),
+            " ".join(str(alias) for alias in aliases),
+            resource.get("vendor"),
+            resource.get("catalog_number"),
+            resource.get("lot_number"),
+            resource.get("rrid"),
+            resource.get("storage_location"),
+            resource.get("concentration"),
+            resource.get("units"),
+            resource.get("notes"),
+        ]
+        if value
+    )
+    return SearchItem(
+        group="resources",
+        id=str(resource.get("resource_id") or ""),
+        title=str(resource.get("name") or resource.get("resource_id") or "Resource"),
+        subtitle=f"{resource.get('resource_type') or 'resource'} · {len(usages)} usage record(s)",
+        text=text,
+        href=f"#/resources/{resource.get('resource_id')}",
+        provider="resource_catalog",
+        metadata={"resource_type": resource.get("resource_type"), "confidence": 7},
+        updated_at=str(resource.get("updated_at") or resource.get("created_at") or ""),
     )
 
 

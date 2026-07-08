@@ -31,6 +31,8 @@
           <a href="#/experiments" data-nav="experiments">Experiments</a>
           <a href="#/workflows" data-nav="workflows">Workflows</a>
           <a href="#/protocols" data-nav="protocols">Protocols</a>
+          <a href="#/inventory" data-nav="inventory">Inventory</a>
+          <a href="#/purchases" data-nav="purchases">Purchasing</a>
           <a href="#/documents" data-nav="documents">Documents</a>
           <a href="#/assets" data-nav="assets">Assets</a>
           <a href="#/data" data-nav="data">Data</a>
@@ -144,6 +146,18 @@
                 <span>Today's sessions</span>
                 <strong id="metricSessionsToday">0</strong>
               </article>
+            </section>
+
+            <section class="panel morning-brief-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Morning Brief</p>
+                  <h2>Overnight Intelligence</h2>
+                </div>
+                <span class="status-pill ok">Observed changes</span>
+              </div>
+              <p class="card-copy" id="morningBriefSummary">Loading morning brief...</p>
+              <div class="morning-brief-grid" id="morningBriefCards"></div>
             </section>
 
             <section class="panel daily-dashboard-panel">
@@ -442,6 +456,135 @@
 
           <section class="view" id="protocolDetailView">
             <article class="panel" id="protocolDetail"></article>
+          </section>
+
+          <section class="view" id="inventoryView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Lab Operations</p>
+                  <h2>Inventory</h2>
+                </div>
+                <a class="secondary-link-button" href="/inventory/export-csv">Export CSV</a>
+              </div>
+              <div class="asset-filters">
+                <input id="inventorySearchInput" type="search" placeholder="Search inventory..." />
+                <input id="inventoryCategoryFilter" type="text" placeholder="Category" />
+                <input id="inventoryVendorFilter" type="text" placeholder="Vendor" />
+                <input id="inventoryLocationFilter" type="text" placeholder="Storage location" />
+              </div>
+              <form class="entry-draft-form" id="inventoryForm">
+                <label for="inventoryName">Name</label>
+                <input id="inventoryName" type="text" placeholder="Anti-BRN3B antibody" required />
+                <label for="inventoryCategory">Category</label>
+                <input id="inventoryCategory" type="text" placeholder="antibody, compound, consumable..." />
+                <label for="inventoryVendor">Vendor</label>
+                <input id="inventoryVendor" type="text" placeholder="Vendor" />
+                <label for="inventoryCatalog">Catalog number</label>
+                <input id="inventoryCatalog" type="text" placeholder="Catalog number" />
+                <label for="inventoryLot">Lot number</label>
+                <input id="inventoryLot" type="text" placeholder="Lot number" />
+                <label for="inventoryRrid">RRID</label>
+                <input id="inventoryRrid" type="text" placeholder="RRID:AB_..." />
+                <div class="form-grid">
+                  <div>
+                    <label for="inventoryQuantity">Quantity</label>
+                    <input id="inventoryQuantity" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="inventoryThreshold">Reorder threshold</label>
+                    <input id="inventoryThreshold" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="inventoryPrice">Price</label>
+                    <input id="inventoryPrice" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="inventoryUnit">Unit</label>
+                    <input id="inventoryUnit" type="text" placeholder="mL, vial, box" />
+                  </div>
+                </div>
+                <label for="inventoryLocation">Storage location</label>
+                <input id="inventoryLocation" type="text" placeholder="-20C box A" />
+                <label for="inventoryExpiration">Expiration date</label>
+                <input id="inventoryExpiration" type="date" />
+                <label for="inventoryResource">Linked resource ID</label>
+                <input id="inventoryResource" type="text" placeholder="resource:..." />
+                <label for="inventoryNotes">Notes</label>
+                <textarea id="inventoryNotes" rows="2"></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Save Inventory Item</button>
+                </div>
+              </form>
+              <p class="demo-status" id="inventoryStatus"></p>
+              <div class="item-list" id="inventoryList"></div>
+            </article>
+          </section>
+
+          <section class="view" id="purchasesView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Oracle-ready</p>
+                  <h2>Purchasing</h2>
+                </div>
+                <a class="secondary-link-button" href="/purchases/export-csv">Export CSV</a>
+              </div>
+              <div class="asset-filters">
+                <input id="purchaseSearchInput" type="search" placeholder="Search purchases..." />
+                <input id="purchaseVendorFilter" type="text" placeholder="Vendor" />
+                <input id="purchaseGrantFilter" type="text" placeholder="Grant/funding" />
+                <input id="purchaseStatusFilter" type="text" placeholder="Status" />
+              </div>
+              <form class="entry-draft-form" id="purchaseForm">
+                <label for="purchaseItemName">Item name</label>
+                <input id="purchaseItemName" type="text" placeholder="SAG" required />
+                <label for="purchaseVendor">Vendor</label>
+                <input id="purchaseVendor" type="text" />
+                <label for="purchaseCatalog">Catalog number</label>
+                <input id="purchaseCatalog" type="text" />
+                <div class="form-grid">
+                  <div>
+                    <label for="purchaseDate">Purchase date</label>
+                    <input id="purchaseDate" type="date" />
+                  </div>
+                  <div>
+                    <label for="purchaseCost">Cost</label>
+                    <input id="purchaseCost" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="purchaseQuantity">Quantity</label>
+                    <input id="purchaseQuantity" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="purchaseStatus">Status</label>
+                    <input id="purchaseStatus" type="text" value="planned" />
+                  </div>
+                </div>
+                <label for="purchaseGrant">Grant or funding source</label>
+                <input id="purchaseGrant" type="text" />
+                <label for="purchasePurchaser">Purchaser</label>
+                <input id="purchasePurchaser" type="text" />
+                <label for="purchasePo">Oracle PO number</label>
+                <input id="purchasePo" type="text" />
+                <label for="purchaseInvoice">Invoice number</label>
+                <input id="purchaseInvoice" type="text" />
+                <label for="purchaseNotes">Notes</label>
+                <textarea id="purchaseNotes" rows="2"></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Save Purchase Record</button>
+                </div>
+              </form>
+              <form class="entry-draft-form" id="purchaseImportForm">
+                <label for="purchaseCsvText">Import Oracle/exported CSV</label>
+                <textarea id="purchaseCsvText" rows="4" placeholder="PO Number,Supplier,Item,Amount,Grant..."></textarea>
+                <div class="entry-actions">
+                  <button type="submit" class="secondary-button">Import CSV</button>
+                </div>
+              </form>
+              <p class="demo-status" id="purchaseStatusMessage"></p>
+              <div class="item-list" id="purchasesList"></div>
+            </article>
           </section>
 
           <section class="view" id="documentsView">

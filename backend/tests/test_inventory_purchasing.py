@@ -1,0 +1,121 @@
+"""Tests for inventory and purchasing foundation."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from app import main
+from app.config import Settings
+from app.storage import SQLiteStore
+
+
+class InventoryPurchasingTests(unittest.TestCase):
+    """Inventory and purchasing should support local lab operations."""
+
+    def _settings(self, tmpdir: str) -> Settings:
+        return Settings(database_url=f"sqlite:///{Path(tmpdir) / 'researchos.db'}")
+
+    def test_inventory_crud_and_methods_citation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(tmpdir)
+            store = SQLiteStore(settings=settings)
+            resource = store.save_resource(
+                resource_type="antibody",
+                name="Anti-BRN3B",
+                vendor="DemoBio",
+                catalog_number="AB-123",
+                rrid="RRID:AB_123",
+            )
+            item = store.save_inventory_item(
+                name="Anti-BRN3B",
+                category="antibody",
+                vendor="DemoBio",
+                catalog_number="AB-123",
+                lot_number="LOT-85",
+                rrid="RRID:AB_123",
+                quantity=1,
+                reorder_threshold=2,
+                linked_resource_id=str(resource["resource_id"]),
+            )
+            listed = store.list_inventory_items(vendor="DemoBio")
+            updated = store.save_inventory_item(
+                item_id=str(item["item_id"]),
+                name="Anti-BRN3B",
+                category="antibody",
+                vendor="DemoBio",
+                catalog_number="AB-123",
+                lot_number="LOT-86",
+            )
+            deleted = store.delete_inventory_item(str(item["item_id"]))
+
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(updated["lot_number"], "LOT-86")
+        self.assertTrue(deleted)
+
+    def test_purchase_crud_and_api_csv_import_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                created = main.create_purchase(
+                    main.PurchaseRecordRequest(
+                        item_name="SAG",
+                        vendor="DemoChem",
+                        catalog_number="SAG-001",
+                        purchase_date="2026-07-08",
+                        cost=125.5,
+                        quantity=1,
+                        grant_or_funding_source="Demo Grant",
+                        purchaser="Nathan",
+                        oracle_po_number="PO-85",
+                        status="ordered",
+                    )
+                )
+                listed = main.purchases(vendor=None, grant_or_funding_source=None, status=None, query=None, workspace_id=None)
+                exported = main.export_purchases_csv(workspace_id=None)
+                imported = main.import_purchases_csv(
+                    main.PurchaseCsvImportRequest(
+                        csv_text="PO Number,Supplier,Item,Amount,Grant,Buyer\nPO-86,DemoBio,Anti-SIX6,88.00,Vision Grant,Nathan\n"
+                    )
+                )
+                detail = main.purchase_detail(created.purchase_id)
+            finally:
+                main.settings = original_settings
+
+        self.assertEqual(len(listed), 1)
+        self.assertIn("SAG", exported.body.decode("utf-8"))
+        self.assertEqual(imported["imported_count"], 1)
+        self.assertEqual(detail.oracle_po_number, "PO-85")
+
+    def test_inventory_api_and_export_methods_citation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                item = main.create_inventory_item(
+                    main.InventoryItemRequest(
+                        name="Anti-SIX6",
+                        category="antibody",
+                        vendor="DemoBio",
+                        catalog_number="SIX6-001",
+                        lot_number="LOT-SIX6",
+                        rrid="RRID:AB_SIX6",
+                        quantity=2,
+                        reorder_threshold=1,
+                    )
+                )
+                listed = main.inventory_items(vendor=None, category=None, storage_location=None, query=None, workspace_id=None)
+                citation = main.inventory_methods_citation(item.item_id)
+                exported = main.export_inventory_csv(workspace_id=None)
+            finally:
+                main.settings = original_settings
+
+        self.assertEqual(len(listed), 1)
+        self.assertIn("RRID:AB_SIX6", citation["methods_citation"])
+        self.assertIn("Anti-SIX6", exported.body.decode("utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -67,7 +67,8 @@ class ExperimentCard {
   factory ExperimentCard.fromJson(Map<String, dynamic> json) {
     return ExperimentCard(
       id: json['id']?.toString() ?? '',
-      title: json['title']?.toString() ?? json['id']?.toString() ?? 'Experiment',
+      title:
+          json['title']?.toString() ?? json['id']?.toString() ?? 'Experiment',
       humanExperimentId: json['human_experiment_id']?.toString(),
       date: json['date']?.toString(),
       workflowStage: json['workflow_stage']?.toString(),
@@ -141,7 +142,9 @@ class MobileUser {
       email: json['email']?.toString(),
       role: json['role']?.toString() ?? 'viewer',
       authMode: json['auth_mode']?.toString() ?? 'dev',
-      workspaceName: workspace is Map<String, dynamic> ? workspace['name']?.toString() : null,
+      workspaceName: workspace is Map<String, dynamic>
+          ? workspace['name']?.toString()
+          : null,
     );
   }
 
@@ -171,9 +174,15 @@ class MobileSettings {
       appVersion: json['app_version']?.toString() ?? 'ResearchOS',
       serverUrl: json['server_url']?.toString() ?? '',
       authMode: json['auth_mode']?.toString() ?? 'dev',
-      workspaceName: workspace is Map<String, dynamic> ? workspace['name']?.toString() : null,
-      oneNoteStatus: oneNote is Map<String, dynamic> ? oneNote['status']?.toString() ?? 'unknown' : 'unknown',
-      productionStatus: production is Map<String, dynamic> ? production['status']?.toString() ?? 'preview' : 'preview',
+      workspaceName: workspace is Map<String, dynamic>
+          ? workspace['name']?.toString()
+          : null,
+      oneNoteStatus: oneNote is Map<String, dynamic>
+          ? oneNote['status']?.toString() ?? 'unknown'
+          : 'unknown',
+      productionStatus: production is Map<String, dynamic>
+          ? production['status']?.toString() ?? 'preview'
+          : 'preview',
     );
   }
 
@@ -187,7 +196,10 @@ class MobileSettings {
 
 List<String> _stringList(Object? value) {
   if (value is List) {
-    return value.map((item) => item.toString()).where((item) => item.isNotEmpty).toList();
+    return value
+        .map((item) => item.toString())
+        .where((item) => item.isNotEmpty)
+        .toList();
   }
   return const [];
 }

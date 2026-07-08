@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'researchos_spacing.dart';
+import 'researchos_tokens.dart';
 
 class ResearchOsActionButton extends StatelessWidget {
   const ResearchOsActionButton({
@@ -25,10 +26,11 @@ class ResearchOsActionButton extends StatelessWidget {
       child: FilledButton.tonalIcon(
         style: FilledButton.styleFrom(
           alignment: Alignment.center,
-          minimumSize: const Size.fromHeight(80),
+          minimumSize: const Size.fromHeight(ResearchOsTokens.benchTouchTarget),
           padding: const EdgeInsets.all(ResearchOsSpacing.lg),
           foregroundColor: destructive ? colorScheme.error : null,
-          shape: const RoundedRectangleBorder(borderRadius: ResearchOsSpacing.radius),
+          shape: const RoundedRectangleBorder(
+              borderRadius: ResearchOsSpacing.radius),
         ),
         onPressed: onPressed,
         icon: Icon(icon, size: 30),

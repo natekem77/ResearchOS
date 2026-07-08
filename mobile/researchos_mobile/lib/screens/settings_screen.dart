@@ -44,7 +44,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           return const LoadingView(message: 'Loading settings...');
         }
         if (snapshot.hasError) {
-          return ErrorView(message: snapshot.error.toString(), onRetry: _reload);
+          return ErrorView(
+              message: snapshot.error.toString(), onRetry: _reload);
         }
         final data = snapshot.data!;
         return ListView(
@@ -56,7 +57,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               leading: const Icon(Icons.person_outline),
             ),
             InfoCard(
-              title: data.settings.workspaceName ?? data.user.workspaceName ?? 'Workspace',
+              title: data.settings.workspaceName ??
+                  data.user.workspaceName ??
+                  'Workspace',
               subtitle: 'Server: ${data.settings.serverUrl}',
               leading: const Icon(Icons.groups_outlined),
             ),
@@ -72,7 +75,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const Padding(
               padding: EdgeInsets.all(12),
-              child: Text('Authentication, OneNote login, and offline sync are not implemented in this mobile preview.'),
+              child: Text(
+                  'Authentication, OneNote login, and offline sync are not implemented in this mobile preview.'),
             ),
           ],
         );

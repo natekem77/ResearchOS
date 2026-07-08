@@ -6,6 +6,7 @@ from typing import Any
 
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import Settings, get_settings
+from app.evidence_engine import EvidenceEngine
 from app.global_knowledge_graph import KnowledgeGraphService
 from app.graphpad_provider import compact_graphpad_statistics_summary
 from app.research_copilot import ResearchCopilotService
@@ -48,10 +49,11 @@ def build_experiment_workspace(
     statistics_assets = _dedupe_assets([*(neighborhood.get("statistics") or []), *graphpad])
     statistics = [_statistics_workspace_summary(asset, resolved_settings) for asset in statistics_assets]
     literature = neighborhood.get("literature") or []
+    resources = neighborhood.get("resources") or []
     entities = neighborhood.get("entities") or []
     related_entities = _related_entities(entities)
     related_experiments = _related_experiments(service, related_entities, str(experiment.get("id") or experiment_id))
-    provenance = _provenance(experiment, notebook_entries, timeline, microscopy, graphpad, spreadsheets, statistics, literature, entities)
+    provenance = _provenance(experiment, notebook_entries, timeline, microscopy, graphpad, spreadsheets, statistics, literature, resources, entities)
     conclusions = _workspace_conclusions(experiment, statistics, literature)
     limitations = _workspace_limitations(neighborhood, statistics, literature)
     ai_summary = _workspace_summary(experiment, neighborhood, statistics, literature, limitations, resolved_settings, use_ai)
@@ -59,6 +61,7 @@ def build_experiment_workspace(
     lifecycle = _workflow_as_lifecycle(workflow)
     notebook_entries = [_notebook_with_lifecycle_stage(entry, str(workflow.get("current_stage") or "Planning")) for entry in notebook_entries]
     scientific_memory = _workspace_memory(resolved_settings, store, service, experiment)
+    evidence = _workspace_evidence(resolved_settings, store, service, experiment)
 
     compounds = _entity_names(entities, "compound", experiment.get("compounds") or [])
     markers = _entity_names(entities, "marker", experiment.get("markers") or [])
@@ -75,6 +78,7 @@ def build_experiment_workspace(
         "spreadsheets": spreadsheets,
         "statistics": statistics,
         "literature": literature,
+        "resources": resources,
         "compounds": compounds,
         "markers": markers,
         "genes": genes,
@@ -85,6 +89,7 @@ def build_experiment_workspace(
         "workflow": workflow,
         "lifecycle": lifecycle,
         "scientific_memory": scientific_memory,
+        "evidence": evidence,
         "conclusions": conclusions,
         "limitations": limitations,
         "provenance": provenance,
@@ -106,9 +111,11 @@ def build_experiment_workspace(
             "spreadsheets": spreadsheets,
             "statistics": statistics,
             "literature": literature,
+            "resources": resources,
             "connected_experiments": related_experiments,
             "related_entities": related_entities,
             "scientific_memory": scientific_memory,
+            "evidence": evidence,
             "files": _workspace_files(microscopy, graphpad, spreadsheets),
             "ai_summary": ai_summary,
             "limitations": limitations,
@@ -140,6 +147,33 @@ def _workspace_memory(
         ).similar_payload(experiment_id, limit=5)
     except LookupError:
         return {"most_similar_experiments": [], "limitations": ["Scientific Memory could not build this experiment profile."]}
+
+
+def _workspace_evidence(
+    settings: Settings,
+    store: SQLiteStore,
+    knowledge_graph: KnowledgeGraphService,
+    experiment: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach deterministic evidence synthesis to the workspace."""
+
+    query_terms = [
+        str(experiment.get("experiment_id") or experiment.get("id") or ""),
+        *[str(item) for item in experiment.get("compounds", []) if item],
+        *[str(item) for item in experiment.get("markers", []) if item],
+    ]
+    question = "What evidence is connected to " + " ".join(term for term in query_terms if term).strip()
+    if not question.strip():
+        return {
+            "question": "",
+            "summary": "No experiment identifiers or scientific entities are available for evidence synthesis.",
+            "supporting_evidence": [],
+            "contradictory_evidence": [],
+            "missing_evidence": [],
+            "confidence": {"level": "insufficient", "score": 0.0},
+            "provenance": [],
+        }
+    return EvidenceEngine(settings=settings, store=store, knowledge_graph=knowledge_graph).query(question).as_dict()
 
 
 def _asset_only_neighborhood(experiment_id: str, linked_assets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -337,6 +371,7 @@ def _provenance(
     spreadsheets: list[dict[str, Any]],
     statistics: list[dict[str, Any]],
     literature: list[dict[str, Any]],
+    resources: list[dict[str, Any]],
     entities: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     records = [
@@ -349,6 +384,7 @@ def _provenance(
     records.extend(_prov("spreadsheet", "asset", item.get("provider"), asset=item.get("asset_id"), timestamp=item.get("updated_at")) for item in spreadsheets)
     records.extend(_prov("statistics", "statistics_interpreter", item.get("provider"), asset=item.get("asset_id"), timestamp=item.get("updated_at")) for item in statistics)
     records.extend(_prov("literature", "document", item.get("provider"), document=item.get("id"), timestamp=item.get("updated_at")) for item in literature)
+    records.extend(_prov("resource", "resource_catalog", item.get("resource_type"), document=item.get("resource_id"), timestamp=item.get("updated_at")) for item in resources)
     records.extend(_prov("entity", "knowledge_graph", "knowledgegraph", document=item.get("entity"), timestamp=None) for item in entities)
     return [record for record in records if record]
 

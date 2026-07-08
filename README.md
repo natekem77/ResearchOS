@@ -123,9 +123,11 @@ Tailscale URL, or emulator loopback address. `http://127.0.0.1:8001` only works
 when the Flutter app runs on the same machine as the backend.
 
 See [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md),
-[docs/MOBILE_API.md](docs/MOBILE_API.md), and
-[docs/BENCH_MODE.md](docs/BENCH_MODE.md). The reusable Flutter design system is
-documented in [docs/MOBILE_DESIGN_SYSTEM.md](docs/MOBILE_DESIGN_SYSTEM.md).
+[docs/MOBILE_API.md](docs/MOBILE_API.md),
+[docs/BENCH_MODE.md](docs/BENCH_MODE.md), and
+[docs/NEW_EXPERIMENT_WIZARD.md](docs/NEW_EXPERIMENT_WIZARD.md). The reusable Flutter design system is
+documented in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md) and
+[docs/MOBILE_DESIGN_SYSTEM.md](docs/MOBILE_DESIGN_SYSTEM.md).
 
 ## ResearchOS v0.1 Demo Release
 
@@ -158,10 +160,12 @@ Release notes:
 - [docs/EXPERIMENT_TIMELINES.md](docs/EXPERIMENT_TIMELINES.md)
 - [docs/MICROSCOPY_PROVIDER.md](docs/MICROSCOPY_PROVIDER.md)
 - [docs/SCIENTIFIC_REASONING.md](docs/SCIENTIFIC_REASONING.md)
+- [docs/EVIDENCE_ENGINE.md](docs/EVIDENCE_ENGINE.md)
 - [docs/EXPERIMENT_PLANNER.md](docs/EXPERIMENT_PLANNER.md)
 - [docs/SPREADSHEET_PROVIDER.md](docs/SPREADSHEET_PROVIDER.md)
 - [docs/QUANTITATIVE_SUMMARIES.md](docs/QUANTITATIVE_SUMMARIES.md)
 - [docs/STATISTICS_ENGINE.md](docs/STATISTICS_ENGINE.md)
+- [docs/QUANTIFICATION_WORKSPACE.md](docs/QUANTIFICATION_WORKSPACE.md)
 - [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md)
 - [docs/KNOWLEDGE_GRAPH_ASSISTANT.md](docs/KNOWLEDGE_GRAPH_ASSISTANT.md)
 - [docs/SCIENTIFIC_MEMORY.md](docs/SCIENTIFIC_MEMORY.md)
@@ -175,12 +179,18 @@ Release notes:
 - [docs/EXTENSION_SDK.md](docs/EXTENSION_SDK.md)
 - [docs/UNIVERSAL_SEARCH.md](docs/UNIVERSAL_SEARCH.md)
 - [docs/DAILY_DASHBOARD.md](docs/DAILY_DASHBOARD.md)
+- [docs/LAB_INTELLIGENCE.md](docs/LAB_INTELLIGENCE.md)
+- [docs/OVERNIGHT_INTELLIGENCE.md](docs/OVERNIGHT_INTELLIGENCE.md)
 - [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md)
 - [docs/MOBILE_APP_ARCHITECTURE.md](docs/MOBILE_APP_ARCHITECTURE.md)
 - [docs/MOBILE_API_REQUIREMENTS.md](docs/MOBILE_API_REQUIREMENTS.md)
 - [docs/MOBILE_API.md](docs/MOBILE_API.md)
 - [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md)
 - [docs/BENCH_MODE.md](docs/BENCH_MODE.md)
+- [docs/NEW_EXPERIMENT_WIZARD.md](docs/NEW_EXPERIMENT_WIZARD.md)
+- [docs/RESEARCH_RESOURCES.md](docs/RESEARCH_RESOURCES.md)
+- [docs/INVENTORY_AND_PURCHASING.md](docs/INVENTORY_AND_PURCHASING.md)
+- [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md)
 - [docs/MOBILE_DESIGN_SYSTEM.md](docs/MOBILE_DESIGN_SYSTEM.md)
 - [docs/AUTH_AND_USERS.md](docs/AUTH_AND_USERS.md)
 - [docs/MICROSOFT_IDENTITY_ROADMAP.md](docs/MICROSOFT_IDENTITY_ROADMAP.md)

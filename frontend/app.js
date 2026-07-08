@@ -8,6 +8,8 @@ const state = {
   experiments: [],
   workflows: [],
   protocols: [],
+  inventory: [],
+  purchases: [],
   sessions: [],
   selectedExperimentIds: new Set(),
   health: null,
@@ -17,6 +19,7 @@ const state = {
   currentWorkspace: null,
   authReadiness: null,
   dailyDashboard: null,
+  intelligenceFilter: null,
   providerStatus: null,
   agentStatus: null,
   deploymentStatus: null,
@@ -51,6 +54,8 @@ const views = {
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
   protocolDetail: $("#protocolDetailView"),
+  inventory: $("#inventoryView"),
+  purchases: $("#purchasesView"),
   documents: $("#documentsView"),
   assets: $("#assetsView"),
   assetDetail: $("#assetDetailView"),
@@ -306,6 +311,8 @@ function route() {
     experiments: ["Experiments", "Experiment Index"],
     workflows: ["Workflows", "Research Workflow Engine"],
     protocols: ["Protocols", "Protocol Signals"],
+    inventory: ["Inventory", "Lab Inventory"],
+    purchases: ["Purchasing", "Oracle-ready Records"],
     documents: ["Documents", "Document Library"],
     assets: ["Assets", "Research Asset Graph"],
     data: ["Data", "Quantitative Spreadsheets"],
@@ -385,10 +392,161 @@ function renderDailyDashboard() {
   if (workspace.name) {
     summary.textContent = `${workspace.name}: ${summary.textContent}`;
   }
+  const feed = dashboard.laboratory_intelligence_feed;
+  if (feed && Array.isArray(feed.items)) {
+    const items = state.intelligenceFilter
+      ? feed.items.filter((item) => item.item_type === state.intelligenceFilter)
+      : feed.items;
+    const filters = feed.filters || [];
+    target.innerHTML = `
+      <div class="intelligence-toolbar">
+        <button class="secondary-button ${state.intelligenceFilter ? "" : "active"}" type="button" data-intelligence-filter="">All</button>
+        ${filters.map((filter) => `
+          <button class="secondary-button ${state.intelligenceFilter === filter.item_type ? "active" : ""}" type="button" data-intelligence-filter="${escapeHtml(filter.item_type)}">
+            ${escapeHtml(filter.item_type)} <span>${escapeHtml(filter.count)}</span>
+          </button>
+        `).join("")}
+      </div>
+      <div class="intelligence-feed">
+        ${items.length ? items.map(renderIntelligenceFeedItem).join("") : `<div class="empty-state">No Laboratory Intelligence items match this filter.</div>`}
+      </div>
+    `;
+    bindIntelligenceFeedControls();
+    return;
+  }
   target.innerHTML = (dashboard.sections || []).length
     ? dashboard.sections.map(renderDailyDashboardCard).join("")
     : `<div class="empty-state">No dashboard sections available.</div>`;
   bindDailyDashboardReorder();
+}
+
+function renderMorningBrief() {
+  const summary = $("#morningBriefSummary");
+  const target = $("#morningBriefCards");
+  if (!summary || !target) return;
+  const brief = state.dailyDashboard?.morning_brief;
+  if (!brief) {
+    summary.textContent = "Morning Brief is loading local ResearchOS state.";
+    target.innerHTML = `<div class="empty-state">Morning Brief unavailable.</div>`;
+    return;
+  }
+  summary.textContent = brief.summary || "No observed ResearchOS changes were detected.";
+  const sections = brief.sections || {};
+  const sectionLabels = {
+    new_experiments: "New experiments",
+    updated_experiments: "Updated experiments",
+    completed_workflows: "Completed workflows",
+    missing_analyses: "Missing analyses",
+    new_literature: "New literature",
+    knowledge_graph_changes: "Knowledge Graph changes",
+    protocol_updates: "Protocol updates",
+    resource_alerts: "Resource alerts",
+    research_copilot_insights: "Research Copilot insights",
+    suggested_priorities: "Suggested priorities",
+  };
+  const cards = Object.entries(sectionLabels)
+    .map(([key, label]) => renderMorningBriefSection(label, sections[key] || []))
+    .join("");
+  target.innerHTML = cards || `<div class="empty-state">No Morning Brief sections available.</div>`;
+}
+
+function renderMorningBriefSection(label, items) {
+  return `
+    <details class="daily-card morning-brief-card" ${items.length ? "open" : ""}>
+      <summary>
+        <span>${escapeHtml(label)}</span>
+        <small>${items.length}</small>
+      </summary>
+      <div class="daily-card-items">
+        ${items.length ? items.slice(0, 5).map(renderMorningBriefItem).join("") : `<div class="empty-state">No observed updates.</div>`}
+      </div>
+    </details>
+  `;
+}
+
+function renderMorningBriefItem(item) {
+  const href = feedItemHref(item);
+  const provenance = (item.provenance || [])
+    .map((prov) => [prov.fact, prov.source, prov.provider, prov.experiment_id, prov.asset_id, prov.document_id, prov.resource_id, prov.workflow_id].filter(Boolean).join(" / "))
+    .filter(Boolean)
+    .join(" | ") || "ResearchOS provenance";
+  const content = `
+    <strong>${escapeHtml(item.title || "Morning Brief item")}</strong>
+    <span>${escapeHtml(item.summary || "")}</span>
+    <small><b>${escapeHtml(item.priority || "low")}</b> · ${escapeHtml(item.suggested_action || "Review source records.")}</small>
+    <small>${escapeHtml(provenance)}</small>
+  `;
+  return href
+    ? `<a class="daily-card-item" href="${escapeHtml(href)}">${content}</a>`
+    : `<article class="daily-card-item">${content}</article>`;
+}
+
+function renderIntelligenceFeedItem(item) {
+  const href = feedItemHref(item);
+  const provenance = (item.provenance || [])
+    .map((prov) => [prov.fact, prov.source, prov.provider, prov.experiment_id, prov.asset_id, prov.document_id, prov.resource_id, prov.session_id].filter(Boolean).join(" / "))
+    .filter(Boolean)
+    .join(" | ") || "ResearchOS provenance";
+  const content = `
+    <div class="intelligence-feed-header">
+      <span class="status-pill ${priorityClass(item.priority)}">${escapeHtml(item.priority || "low")}</span>
+      <span>${escapeHtml(item.item_type || "Laboratory Intelligence")}</span>
+      ${item.pinned ? `<span class="status-pill ok">Pinned</span>` : ""}
+    </div>
+    <strong>${escapeHtml(item.title || "Feed item")}</strong>
+    <span>${escapeHtml(item.summary || "")}</span>
+    <small><b>Suggested action:</b> ${escapeHtml(item.suggested_action || "Review source records.")}</small>
+    <small>${escapeHtml(provenance)}</small>
+  `;
+  return `
+    <article class="daily-card-item intelligence-item" data-intelligence-item="${escapeHtml(item.item_id)}">
+      ${href ? `<a href="${escapeHtml(href)}">${content}</a>` : content}
+      <div class="intelligence-actions">
+        <button class="secondary-button" type="button" data-intelligence-pin="${escapeHtml(item.item_id)}">${item.pinned ? "Unpin" : "Pin"}</button>
+        <button class="secondary-button" type="button" data-intelligence-dismiss="${escapeHtml(item.item_id)}">Dismiss</button>
+      </div>
+    </article>
+  `;
+}
+
+function feedItemHref(item) {
+  const route = String(item.route || "");
+  if (route.startsWith("#/")) return route;
+  const mobileExperiment = route.match(/^\/mobile\/experiments\/([^/]+)\/workspace$/);
+  if (mobileExperiment) return `#/experiments/${mobileExperiment[1]}/workspace`;
+  return "";
+}
+
+function priorityClass(priority) {
+  if (priority === "critical" || priority === "high") return "warning";
+  if (priority === "medium") return "pending";
+  return "ok";
+}
+
+function bindIntelligenceFeedControls() {
+  $$("[data-intelligence-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const value = button.dataset.intelligenceFilter || null;
+      state.intelligenceFilter = value || null;
+      renderDailyDashboard();
+    });
+  });
+  $$("[data-intelligence-dismiss]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await requestJson(`/intelligence/feed/${encodeURIComponent(button.dataset.intelligenceDismiss)}/dismiss`, { method: "POST" });
+      await refreshData();
+    });
+  });
+  $$("[data-intelligence-pin]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const item = (state.dailyDashboard?.laboratory_intelligence_feed?.items || []).find((candidate) => candidate.item_id === button.dataset.intelligencePin);
+      await requestJson(`/intelligence/feed/${encodeURIComponent(button.dataset.intelligencePin)}/pin`, {
+        method: "POST",
+        body: JSON.stringify({ pinned: !item?.pinned }),
+      });
+      await refreshData();
+    });
+  });
 }
 
 function renderDailyDashboardCard(section) {
@@ -1336,6 +1494,152 @@ function renderProtocols() {
         )
         .join("")
     : `<div class="empty-state">No protocols detected.</div>`;
+}
+
+function renderInventory() {
+  const target = $("#inventoryList");
+  if (!target) return;
+  const query = ($("#inventorySearchInput")?.value || "").trim().toLowerCase();
+  const category = ($("#inventoryCategoryFilter")?.value || "").trim().toLowerCase();
+  const vendor = ($("#inventoryVendorFilter")?.value || "").trim().toLowerCase();
+  const location = ($("#inventoryLocationFilter")?.value || "").trim().toLowerCase();
+  const items = (state.inventory || []).filter((item) => {
+    const haystack = [item.name, item.category, item.vendor, item.catalog_number, item.lot_number, item.rrid, item.storage_location].join(" ").toLowerCase();
+    return (!query || haystack.includes(query))
+      && (!category || String(item.category || "").toLowerCase().includes(category))
+      && (!vendor || String(item.vendor || "").toLowerCase().includes(vendor))
+      && (!location || String(item.storage_location || "").toLowerCase().includes(location));
+  });
+  target.innerHTML = items.length
+    ? items.map(renderInventoryItem).join("")
+    : `<div class="empty-state">No inventory items match this filter.</div>`;
+}
+
+function renderInventoryItem(item) {
+  const lowStock = item.quantity != null && item.reorder_threshold != null && Number(item.quantity) <= Number(item.reorder_threshold);
+  return `
+    <article class="record-card">
+      <h3>${escapeHtml(item.name)}</h3>
+      <p>${escapeHtml([item.vendor, item.catalog_number, item.lot_number, item.rrid].filter(Boolean).join(" · ") || "No vendor/catalog metadata.")}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(item.category || "uncategorized")}</span>
+        <span class="tag">${escapeHtml(item.storage_location || "no location")}</span>
+        <span class="tag">${escapeHtml(item.quantity ?? "no quantity")} ${escapeHtml(item.unit || "")}</span>
+        ${lowStock ? `<span class="tag warning">reorder</span>` : ""}
+        ${item.expiration_date ? `<span class="tag">expires ${escapeHtml(item.expiration_date)}</span>` : ""}
+        ${item.linked_resource_id ? `<a class="mini-chip" href="#/resources">${escapeHtml(item.linked_resource_id)}</a>` : ""}
+      </div>
+      <button type="button" class="secondary-button methods-citation-button" data-inventory-citation="${escapeHtml(item.item_id)}">Methods citation</button>
+      <p class="card-copy" id="citation-${escapeHtml(item.item_id)}"></p>
+    </article>
+  `;
+}
+
+function renderPurchases() {
+  const target = $("#purchasesList");
+  if (!target) return;
+  const query = ($("#purchaseSearchInput")?.value || "").trim().toLowerCase();
+  const vendor = ($("#purchaseVendorFilter")?.value || "").trim().toLowerCase();
+  const grant = ($("#purchaseGrantFilter")?.value || "").trim().toLowerCase();
+  const status = ($("#purchaseStatusFilter")?.value || "").trim().toLowerCase();
+  const purchases = (state.purchases || []).filter((record) => {
+    const haystack = [record.item_name, record.vendor, record.catalog_number, record.oracle_po_number, record.invoice_number, record.grant_or_funding_source, record.status].join(" ").toLowerCase();
+    return (!query || haystack.includes(query))
+      && (!vendor || String(record.vendor || "").toLowerCase().includes(vendor))
+      && (!grant || String(record.grant_or_funding_source || "").toLowerCase().includes(grant))
+      && (!status || String(record.status || "").toLowerCase().includes(status));
+  });
+  target.innerHTML = purchases.length
+    ? purchases.map(renderPurchaseRecord).join("")
+    : `<div class="empty-state">No purchase records match this filter.</div>`;
+}
+
+function renderPurchaseRecord(record) {
+  return `
+    <article class="record-card">
+      <h3>${escapeHtml(record.item_name)}</h3>
+      <p>${escapeHtml([record.vendor, record.catalog_number, record.oracle_po_number, record.invoice_number].filter(Boolean).join(" · ") || "No purchasing identifiers.")}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(record.status || "planned")}</span>
+        <span class="tag">${escapeHtml(formatDate(record.purchase_date))}</span>
+        <span class="tag">${escapeHtml(record.quantity ?? "no quantity")} item(s)</span>
+        <span class="tag">$${escapeHtml(record.cost ?? "0")}</span>
+        <span class="tag">${escapeHtml(record.grant_or_funding_source || "no grant")}</span>
+      </div>
+      <p>${escapeHtml(record.notes || "")}</p>
+    </article>
+  `;
+}
+
+function numberOrNull(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function saveInventoryItem() {
+  const payload = {
+    name: $("#inventoryName").value.trim(),
+    category: $("#inventoryCategory").value.trim() || null,
+    vendor: $("#inventoryVendor").value.trim() || null,
+    catalog_number: $("#inventoryCatalog").value.trim() || null,
+    lot_number: $("#inventoryLot").value.trim() || null,
+    rrid: $("#inventoryRrid").value.trim() || null,
+    price: numberOrNull($("#inventoryPrice").value),
+    unit: $("#inventoryUnit").value.trim() || null,
+    storage_location: $("#inventoryLocation").value.trim() || null,
+    quantity: numberOrNull($("#inventoryQuantity").value),
+    reorder_threshold: numberOrNull($("#inventoryThreshold").value),
+    expiration_date: $("#inventoryExpiration").value || null,
+    notes: $("#inventoryNotes").value.trim() || null,
+    linked_resource_id: $("#inventoryResource").value.trim() || null,
+  };
+  const saved = await requestJson("/inventory", { method: "POST", body: JSON.stringify(payload) });
+  $("#inventoryForm").reset();
+  $("#inventoryStatus").textContent = `Saved inventory item: ${saved.name}`;
+  await refreshData();
+}
+
+async function savePurchaseRecord() {
+  const payload = {
+    item_name: $("#purchaseItemName").value.trim(),
+    vendor: $("#purchaseVendor").value.trim() || null,
+    catalog_number: $("#purchaseCatalog").value.trim() || null,
+    purchase_date: $("#purchaseDate").value || null,
+    cost: numberOrNull($("#purchaseCost").value),
+    quantity: numberOrNull($("#purchaseQuantity").value),
+    grant_or_funding_source: $("#purchaseGrant").value.trim() || null,
+    purchaser: $("#purchasePurchaser").value.trim() || null,
+    oracle_po_number: $("#purchasePo").value.trim() || null,
+    invoice_number: $("#purchaseInvoice").value.trim() || null,
+    status: $("#purchaseStatus").value.trim() || "planned",
+    notes: $("#purchaseNotes").value.trim() || null,
+  };
+  const saved = await requestJson("/purchases", { method: "POST", body: JSON.stringify(payload) });
+  $("#purchaseForm").reset();
+  $("#purchaseStatusMessage").textContent = `Saved purchase record: ${saved.item_name}`;
+  await refreshData();
+}
+
+async function importPurchaseCsv() {
+  const csvText = $("#purchaseCsvText").value.trim();
+  if (!csvText) {
+    $("#purchaseStatusMessage").textContent = "Paste CSV text before importing.";
+    return;
+  }
+  const payload = await requestJson("/purchases/import-csv", {
+    method: "POST",
+    body: JSON.stringify({ provider: "oracle_purchasing", csv_text: csvText }),
+  });
+  $("#purchaseCsvText").value = "";
+  $("#purchaseStatusMessage").textContent = `Imported ${payload.imported_count} purchase record(s) from CSV.`;
+  await refreshData();
+}
+
+async function showMethodsCitation(itemId) {
+  const citation = await requestJson(`/inventory/${encodeURIComponent(itemId)}/methods-citation`);
+  const target = $(`#citation-${CSS.escape(itemId)}`);
+  if (target) target.textContent = citation.methods_citation;
 }
 
 async function renderProtocolWorkspace(protocolId) {
@@ -3848,7 +4152,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, purchases, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -3858,6 +4162,8 @@ async function refreshData() {
     requestJson("/experiments"),
     requestJson("/workflows"),
     requestJson("/protocols"),
+    requestJson("/inventory"),
+    requestJson("/purchases"),
     requestJson("/sessions"),
     requestJson("/entries"),
     requestJson("/api/compounds"),
@@ -3877,6 +4183,8 @@ async function refreshData() {
   state.experiments = experiments;
   state.workflows = workflows;
   state.protocols = protocols;
+  state.inventory = inventory;
+  state.purchases = purchases;
   state.sessions = sessions;
   state.pendingEntries = pendingEntries;
   state.graphStats = graphStats;
@@ -3894,6 +4202,7 @@ async function refreshData() {
 
 function renderAll() {
   setStatus();
+  renderMorningBrief();
   renderDailyDashboard();
   renderCurrentSessionCard();
   renderMetrics();
@@ -3911,6 +4220,8 @@ function renderAll() {
   renderStatistics();
   renderPapers();
   renderProtocols();
+  renderInventory();
+  renderPurchases();
   renderWorkflows();
   renderSessions();
   renderExperimentsTable();
@@ -4236,6 +4547,39 @@ $("#agentCards")?.addEventListener("click", (event) => {
 
 $("#assetTypeFilter")?.addEventListener("change", renderAssets);
 $("#assetSearchInput")?.addEventListener("input", renderAssets);
+$("#inventorySearchInput")?.addEventListener("input", renderInventory);
+$("#inventoryCategoryFilter")?.addEventListener("input", renderInventory);
+$("#inventoryVendorFilter")?.addEventListener("input", renderInventory);
+$("#inventoryLocationFilter")?.addEventListener("input", renderInventory);
+$("#purchaseSearchInput")?.addEventListener("input", renderPurchases);
+$("#purchaseVendorFilter")?.addEventListener("input", renderPurchases);
+$("#purchaseGrantFilter")?.addEventListener("input", renderPurchases);
+$("#purchaseStatusFilter")?.addEventListener("input", renderPurchases);
+$("#inventoryForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveInventoryItem().catch((error) => {
+    $("#inventoryStatus").textContent = `Inventory save failed: ${error.message}`;
+  });
+});
+$("#purchaseForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  savePurchaseRecord().catch((error) => {
+    $("#purchaseStatusMessage").textContent = `Purchase save failed: ${error.message}`;
+  });
+});
+$("#purchaseImportForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  importPurchaseCsv().catch((error) => {
+    $("#purchaseStatusMessage").textContent = `CSV import failed: ${error.message}`;
+  });
+});
+$("#inventoryList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-inventory-citation]");
+  if (!button) return;
+  showMethodsCitation(button.dataset.inventoryCitation).catch((error) => {
+    $("#inventoryStatus").textContent = `Citation failed: ${error.message}`;
+  });
+});
 $("#imageMarkerFilter")?.addEventListener("change", renderImages);
 $("#scanGraphPadButton")?.addEventListener("click", () => {
   scanGraphPadAssets().catch((error) => {

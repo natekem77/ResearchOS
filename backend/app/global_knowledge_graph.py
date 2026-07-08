@@ -17,6 +17,7 @@ from time import perf_counter
 from typing import Any
 
 from app.config import Settings, get_settings
+from app.resources import resource_entity_type
 from app.statistics_engine import interpret_statistics_asset
 from app.storage import SQLiteStore
 
@@ -62,6 +63,17 @@ ENTITY_FIELD_ALIASES = {
     "sequencing_clusters": "sequencing_cluster",
     "treatment": "treatment",
     "treatments": "treatment",
+    "reagent": "reagent",
+    "reagents": "reagent",
+    "primer": "primer",
+    "primers": "primer",
+    "vector": "vector",
+    "vectors": "vector",
+    "plasmid": "plasmid",
+    "plasmids": "plasmid",
+    "consumable": "consumable",
+    "consumables": "consumable",
+    "equipment": "equipment",
     "unknown_scientific_term": "unknown_scientific_term",
     "unknown_scientific_terms": "unknown_scientific_term",
 }
@@ -137,6 +149,7 @@ class KnowledgeGraph:
     documents: dict[str, dict[str, Any]] = field(default_factory=dict)
     assets: dict[str, dict[str, Any]] = field(default_factory=dict)
     pending_entries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    resources: dict[str, dict[str, Any]] = field(default_factory=dict)
     built_at: float = 0.0
     build_seconds: float = 0.0
 
@@ -167,6 +180,7 @@ class KnowledgeGraphService:
         ]
         experiments = self.store.list_experiments(workspace_id=self.workspace_id)
         assets = self.store.list_assets(query=None, workspace_id=self.workspace_id)
+        resources = self.store.list_resources(workspace_id=self.workspace_id)
         pending_entries = [
             self.store.get_pending_entry(entry["id"])
             for entry in self.store.list_pending_entries(workspace_id=self.workspace_id)
@@ -175,9 +189,10 @@ class KnowledgeGraphService:
         graph.documents = {str(document["id"]): document for document in documents}
         graph.experiments = {str(experiment["id"]): experiment for experiment in experiments}
         graph.assets = {str(asset["asset_id"]): asset for asset in assets}
+        graph.resources = {str(resource["resource_id"]): resource for resource in resources}
         graph.pending_entries = {str(entry["id"]): entry for entry in pending_entries if entry}
 
-        self._register_aliases(graph, documents, assets, pending_entries)
+        self._register_aliases(graph, documents, assets, pending_entries, resources)
 
         for document in documents:
             object_type = "literature" if document.get("provider") == "literature" else "notebook_entry"
@@ -243,6 +258,31 @@ class KnowledgeGraphService:
                     statistics_entities,
                     "statistics metadata",
                 )
+
+        for resource in resources:
+            entities = _entities_from_resource(resource)
+            self._add_object_entities(
+                graph,
+                "resource",
+                str(resource["resource_id"]),
+                resource,
+                entities,
+                "resource catalog",
+            )
+            for usage in resource.get("usages") or []:
+                if not isinstance(usage, dict):
+                    continue
+                object_type = str(usage.get("object_type") or "")
+                object_id = str(usage.get("object_id") or "")
+                if object_type and object_id:
+                    self._add_object_entities(
+                        graph,
+                        object_type,
+                        object_id,
+                        resource,
+                        entities,
+                        f"resource usage: {usage.get('usage_type') or 'referenced'}",
+                    )
 
         for entry in pending_entries:
             if not entry:
@@ -360,6 +400,7 @@ class KnowledgeGraphService:
         graphpad_assets = self._objects_for_entity(entity.name, {"graphpad_asset"})
         spreadsheet_assets = self._objects_for_entity(entity.name, {"spreadsheet_asset"})
         statistics = self._objects_for_entity(entity.name, {"statistical_analysis"})
+        resources = self._objects_for_entity(entity.name, {"resource"})
         return {
             "entity": entity.name,
             "entity_type": entity.entity_type,
@@ -370,6 +411,7 @@ class KnowledgeGraphService:
             "graphpad_assets": graphpad_assets,
             "spreadsheet_assets": spreadsheet_assets,
             "statistics": statistics,
+            "resources": resources,
             "related_entities": self.related_entities(entity.name, limit=20),
             "relationships": [relationship.as_dict() for relationship in entity.relationships[:200]],
             "relationship_counts": dict(sorted(relationship_counts.items())),
@@ -473,6 +515,7 @@ class KnowledgeGraphService:
         statistics_assets = [asset for asset in linked_assets if _asset_has_statistics(asset)]
         source_document = graph.documents.get(source_document_id)
         related_literature = self._literature_for_entities(graph, entity_keys)
+        related_resources = self._resources_for_entities(graph, entity_keys)
         entities = [self._entity_payload(graph.entities[key], graph) for key in entity_keys if key in graph.entities]
         entities.sort(key=lambda item: (str(item["entity_type"]), str(item["entity"]).lower()))
         return {
@@ -483,6 +526,7 @@ class KnowledgeGraphService:
             "statistics": [_asset_summary(asset) for asset in statistics_assets],
             "spreadsheets": [_asset_summary(asset) for asset in linked_assets if _asset_object_type(asset) == "spreadsheet_asset"],
             "literature": [_document_summary(document) for document in related_literature],
+            "resources": [_resource_summary(resource) for resource in related_resources],
             "entities": entities,
             "compounds": [item["entity"] for item in entities if item["entity_type"] == "compound"],
             "markers": [item["entity"] for item in entities if item["entity_type"] == "marker"],
@@ -568,6 +612,8 @@ class KnowledgeGraphService:
         if relationship.object_type in {"notebook_entry", "literature"}:
             document = graph.documents.get(relationship.object_id) or graph.pending_entries.get(relationship.object_id, {})
             return _document_summary(document)
+        if relationship.object_type == "resource":
+            return _resource_summary(graph.resources.get(relationship.object_id, {}))
         asset = graph.assets.get(relationship.object_id, {})
         return _asset_summary(asset)
 
@@ -602,8 +648,9 @@ class KnowledgeGraphService:
         documents: list[dict[str, Any]],
         assets: list[dict[str, Any]],
         pending_entries: list[dict[str, Any] | None],
+        resources: list[dict[str, Any]],
     ) -> None:
-        for payload in [*documents, *assets, *(entry for entry in pending_entries if entry)]:
+        for payload in [*documents, *assets, *resources, *(entry for entry in pending_entries if entry)]:
             metadata = _metadata(payload)
             for canonical, alias in _aliases_from_metadata(metadata):
                 canonical_key = _alias_key(canonical)
@@ -622,6 +669,22 @@ class KnowledgeGraphService:
             if entity_keys.intersection(keys):
                 literature.append(document)
         return literature[:20]
+
+    def _resources_for_entities(self, graph: KnowledgeGraph, entity_keys: set[str]) -> list[dict[str, Any]]:
+        resources = []
+        seen: set[str] = set()
+        for key in entity_keys:
+            entity = graph.entities.get(key)
+            if entity is None:
+                continue
+            for relationship in entity.relationships:
+                if relationship.object_type != "resource" or relationship.object_id in seen:
+                    continue
+                seen.add(relationship.object_id)
+                resource = graph.resources.get(relationship.object_id)
+                if resource:
+                    resources.append(resource)
+        return resources[:50]
 
 
 def _entities_from_experiment(experiment: dict[str, Any]) -> dict[str, list[str]]:
@@ -680,6 +743,18 @@ def _entities_from_pending_entry(entry: dict[str, Any]) -> dict[str, list[str]]:
     structured = entry.get("structured") if isinstance(entry.get("structured"), dict) else {}
     entities = _entities_from_metadata(structured)
     entities.setdefault("sample", []).extend(_generic_scientific_terms(str(entry.get("experiment_id") or "")))
+    return _dedupe_entities(entities)
+
+
+def _entities_from_resource(resource: dict[str, Any]) -> dict[str, list[str]]:
+    metadata = _metadata(resource)
+    entities = _entities_from_metadata(metadata)
+    resource_type = str(resource.get("resource_type") or "other")
+    entity_type = resource_entity_type(resource_type)
+    values = [str(resource.get("name") or ""), *[str(alias) for alias in resource.get("aliases") or []]]
+    entities.setdefault(entity_type, []).extend(values)
+    if resource.get("rrid"):
+        entities.setdefault("unknown_scientific_term", []).append(str(resource["rrid"]))
     return _dedupe_entities(entities)
 
 
@@ -873,6 +948,25 @@ def _asset_summary(asset: dict[str, Any]) -> dict[str, Any]:
         "path": asset.get("path"),
         "experiment_id": asset.get("experiment_id"),
         "metadata": metadata,
+    }
+
+
+def _resource_summary(resource: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "resource_id": resource.get("resource_id"),
+        "resource_type": resource.get("resource_type"),
+        "name": resource.get("name"),
+        "aliases": resource.get("aliases") or [],
+        "vendor": resource.get("vendor"),
+        "catalog_number": resource.get("catalog_number"),
+        "lot_number": resource.get("lot_number"),
+        "rrid": resource.get("rrid"),
+        "storage_location": resource.get("storage_location"),
+        "concentration": resource.get("concentration"),
+        "units": resource.get("units"),
+        "expiration": resource.get("expiration"),
+        "notes": resource.get("notes"),
+        "usages": resource.get("usages") or [],
     }
 
 

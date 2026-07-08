@@ -16,5 +16,6 @@ class ResearchOsSpacing {
   static const EdgeInsets sheet = EdgeInsets.fromLTRB(xl, xl, xl, xl);
 
   static const BorderRadius radius = BorderRadius.all(Radius.circular(12));
-  static const BorderRadius compactRadius = BorderRadius.all(Radius.circular(8));
+  static const BorderRadius compactRadius =
+      BorderRadius.all(Radius.circular(8));
 }
