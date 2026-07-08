@@ -111,7 +111,7 @@ class AuthUsersTests(unittest.TestCase):
             current = current_workspace(settings, store)
 
         self.assertEqual(workspace["workspace_id"], "workspace:demo-lab")
-        self.assertEqual(workspace["name"], "Demo Lab Workspace")
+        self.assertEqual(workspace["name"], "ResearchOS Demo Lab")
         self.assertEqual(current["current_user_membership"]["role"], "admin")
         self.assertEqual(current["counts"]["documents"], 0)
 

@@ -264,6 +264,8 @@ class SQLiteStore:
                     institution TEXT,
                     description TEXT,
                     owner_user_id TEXT,
+                    created_by TEXT,
+                    default_role TEXT NOT NULL DEFAULT 'researcher',
                     settings_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -320,6 +322,14 @@ class SQLiteStore:
         }
         if "workspace_id" not in document_columns:
             connection.execute("ALTER TABLE documents ADD COLUMN workspace_id TEXT")
+        workspace_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(lab_workspaces)").fetchall()
+        }
+        if "created_by" not in workspace_columns:
+            connection.execute("ALTER TABLE lab_workspaces ADD COLUMN created_by TEXT")
+        if "default_role" not in workspace_columns:
+            connection.execute("ALTER TABLE lab_workspaces ADD COLUMN default_role TEXT NOT NULL DEFAULT 'researcher'")
 
     def _workspace_clause(self, workspace_id: str | None) -> tuple[str, list[str]]:
         """Return a permissive workspace filter for scaffolded isolation."""
@@ -1398,6 +1408,8 @@ class SQLiteStore:
         institution: str | None = None,
         description: str | None = None,
         owner_user_id: str | None = None,
+        created_by: str | None = None,
+        default_role: str = "researcher",
         settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create or update one lab workspace."""
@@ -1406,14 +1418,17 @@ class SQLiteStore:
             connection.execute(
                 """
                 INSERT INTO lab_workspaces (
-                    workspace_id, name, institution, description, owner_user_id, settings_json
+                    workspace_id, name, institution, description, owner_user_id,
+                    created_by, default_role, settings_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace_id) DO UPDATE SET
                     name = excluded.name,
                     institution = excluded.institution,
                     description = excluded.description,
                     owner_user_id = excluded.owner_user_id,
+                    created_by = COALESCE(lab_workspaces.created_by, excluded.created_by),
+                    default_role = excluded.default_role,
                     settings_json = excluded.settings_json
                 """,
                 (
@@ -1422,6 +1437,8 @@ class SQLiteStore:
                     institution,
                     description,
                     owner_user_id,
+                    created_by or owner_user_id,
+                    default_role,
                     json.dumps(settings or {}, sort_keys=True),
                 ),
             )
@@ -1491,14 +1508,44 @@ class SQLiteStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT *
-                FROM workspace_memberships
-                WHERE workspace_id = ?
-                ORDER BY joined_at ASC
+                SELECT
+                    wm.workspace_id,
+                    wm.user_id,
+                    wm.role,
+                    wm.joined_at,
+                    u.email,
+                    u.display_name,
+                    u.auth_provider
+                FROM workspace_memberships wm
+                LEFT JOIN users u ON u.user_id = wm.user_id
+                WHERE wm.workspace_id = ?
+                ORDER BY wm.joined_at ASC
                 """,
                 (workspace_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def workspace_member(self, workspace_id: str, user_id: str) -> dict[str, Any] | None:
+        """Return one workspace membership with user display metadata."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    wm.workspace_id,
+                    wm.user_id,
+                    wm.role,
+                    wm.joined_at,
+                    u.email,
+                    u.display_name,
+                    u.auth_provider
+                FROM workspace_memberships wm
+                LEFT JOIN users u ON u.user_id = wm.user_id
+                WHERE wm.workspace_id = ? AND wm.user_id = ?
+                """,
+                (workspace_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_active_workspace_id(self, user_id: str) -> str | None:
         """Return the user's active workspace pointer, if one has been selected."""

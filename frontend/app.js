@@ -1514,6 +1514,7 @@ function renderCurrentUserSettings() {
   const resourcePermissions = permissionSummary.resource_permissions || {};
   const workspace = state.currentWorkspace || user?.current_workspace || state.dailyDashboard?.workspace || {};
   const membership = workspace.current_user_membership || {};
+  const members = workspace.members || [];
   if (!user) {
     target.innerHTML = `<div class="empty-state">Current user is not available.</div>`;
     return;
@@ -1557,6 +1558,14 @@ function renderCurrentUserSettings() {
       membership.role === "admin" ? "configured" : "active",
       membership.role || user.role || "admin",
       workspace.workspace_id || "workspace:demo-lab",
+    ),
+    providerCard(
+      "Workspace members",
+      "active",
+      `${members.length || 1} member${(members.length || 1) === 1 ? "" : "s"}`,
+      members
+        .map((member) => `${member.display_name || member.email || member.user_id}: ${member.role}`)
+        .join(" · ") || `${user.display_name || user.email}: ${membership.role || user.role || "admin"}`,
     ),
     providerCard(
       "Identity provider",

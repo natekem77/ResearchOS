@@ -246,6 +246,8 @@ class WorkspaceResponse(BaseModel):
     description: str | None = None
     created_at: str | None = None
     owner_user_id: str | None = None
+    created_by: str | None = None
+    default_role: str = "researcher"
     settings: dict[str, object] = Field(default_factory=dict)
     current_user_membership: dict[str, object] | None = None
     members: list[dict[str, object]] = Field(default_factory=list)
@@ -259,6 +261,24 @@ class BootstrapWorkspaceRequest(BaseModel):
     institution: str = "ResearchOS Local Demo"
     description: str = "Default local development workspace for ResearchOS demos."
     settings: dict[str, object] = Field(default_factory=dict)
+
+
+class CreateWorkspaceRequest(BaseModel):
+    """Create a new lab workspace."""
+
+    workspace_id: str | None = None
+    name: str
+    description: str = ""
+    institution: str | None = None
+    default_role: Literal["admin", "researcher", "viewer"] = "researcher"
+    settings: dict[str, object] = Field(default_factory=dict)
+
+
+class AddWorkspaceMemberRequest(BaseModel):
+    """Add or update a user membership in a workspace."""
+
+    user_id: str
+    role: Literal["admin", "researcher", "viewer"] = "researcher"
 
 
 class SetCurrentWorkspaceRequest(BaseModel):
@@ -2050,6 +2070,30 @@ def workspaces() -> list[WorkspaceResponse]:
     ]
 
 
+@app.post("/workspaces", response_model=WorkspaceResponse, tags=["workspaces"])
+def create_workspace(request: CreateWorkspaceRequest) -> WorkspaceResponse:
+    """Create a lab workspace and add the current user as admin."""
+
+    current = _require_admin()
+    store = SQLiteStore(settings=settings)
+    requested_id = request.workspace_id.strip() if request.workspace_id else ""
+    workspace_id = requested_id or f"workspace:{uuid.uuid4().hex[:16]}"
+    if store.get_workspace(workspace_id) is not None:
+        raise HTTPException(status_code=409, detail=f"Workspace already exists: {workspace_id}")
+    workspace = store.upsert_workspace(
+        workspace_id=workspace_id,
+        name=request.name.strip(),
+        institution=request.institution.strip() if request.institution else None,
+        description=request.description.strip() or None,
+        owner_user_id=str(current["user_id"]),
+        created_by=str(current["user_id"]),
+        default_role=request.default_role,
+        settings=dict(request.settings),
+    )
+    store.upsert_workspace_membership(workspace_id, str(current["user_id"]), "admin")
+    return WorkspaceResponse(**workspace_with_membership(store, workspace, str(current["user_id"])))
+
+
 @app.get("/workspaces/current", response_model=WorkspaceResponse, tags=["workspaces"])
 def get_current_lab_workspace() -> WorkspaceResponse:
     """Return the active lab workspace for the current user."""
@@ -2057,6 +2101,33 @@ def get_current_lab_workspace() -> WorkspaceResponse:
     store = SQLiteStore(settings=settings)
     workspace = ActiveWorkspaceService(settings, store).get_current_workspace()
     return WorkspaceResponse(**workspace)
+
+
+@app.get("/workspaces/{workspace_id}/members", tags=["workspaces"])
+def workspace_members(workspace_id: str) -> list[dict[str, object]]:
+    """Return members of one lab workspace."""
+
+    _require_admin()
+    store = SQLiteStore(settings=settings)
+    if store.get_workspace(workspace_id) is None:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}")
+    return store.list_workspace_memberships(workspace_id)
+
+
+@app.post("/workspaces/{workspace_id}/members", tags=["workspaces"])
+def add_workspace_member(workspace_id: str, request: AddWorkspaceMemberRequest) -> dict[str, object]:
+    """Add or update a user's workspace membership."""
+
+    _require_admin()
+    store = SQLiteStore(settings=settings)
+    if store.get_workspace(workspace_id) is None:
+        raise HTTPException(status_code=404, detail=f"Workspace not found: {workspace_id}")
+    if store.get_user(request.user_id) is None:
+        raise HTTPException(status_code=404, detail=f"User not found: {request.user_id}")
+    store.upsert_workspace_membership(workspace_id, request.user_id, request.role)
+    member = store.workspace_member(workspace_id, request.user_id)
+    assert member is not None
+    return member
 
 
 @app.post("/workspaces/current", response_model=WorkspaceResponse, tags=["workspaces"])
@@ -2093,10 +2164,12 @@ def bootstrap_workspace(request: BootstrapWorkspaceRequest | None = Body(default
     if request is not None:
         workspace = store.upsert_workspace(
             workspace_id=str(workspace["workspace_id"]),
-            name=request.name.strip() or "Demo Lab Workspace",
+            name=request.name.strip() or "ResearchOS Demo Lab",
             institution=request.institution.strip() or None,
             description=request.description.strip() or None,
             owner_user_id=str(current["user_id"]),
+            created_by=str(current["user_id"]),
+            default_role=str(workspace.get("default_role") or "researcher"),
             settings={**dict(workspace.get("settings") or {}), **dict(request.settings)},
         )
         store.upsert_workspace_membership(str(workspace["workspace_id"]), str(current["user_id"]), "admin")

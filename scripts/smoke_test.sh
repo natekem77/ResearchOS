@@ -45,9 +45,13 @@ request GET "/auth/me" >/dev/null
 request GET "/auth/permissions" >/dev/null
 request GET "/users" >/dev/null
 request GET "/workspaces" >/dev/null
+SMOKE_WORKSPACE_ID="workspace:smoke-$(date +%s)"
+request POST "/workspaces" "{\"workspace_id\":\"$SMOKE_WORKSPACE_ID\",\"name\":\"Smoke Test Lab\",\"description\":\"Smoke test workspace\",\"default_role\":\"researcher\"}" >/dev/null
 request POST "/workspaces/bootstrap-default" "{}" >/dev/null
 request GET "/workspaces/current" >/dev/null
 request POST "/workspaces/current" '{"workspace_id":"workspace:demo-lab"}' >/dev/null
+request GET "/workspaces/workspace:demo-lab/members" >/dev/null
+request POST "/workspaces/workspace:demo-lab/members" '{"user_id":"user:dev-local","role":"admin"}' >/dev/null
 request GET "/status/deployment" >/dev/null
 request GET "/status/onenote-readiness" >/dev/null
 request GET "/status/automation" >/dev/null

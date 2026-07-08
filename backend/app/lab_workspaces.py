@@ -43,10 +43,12 @@ class ActiveWorkspaceService:
         user = current_user(self.settings, self.store)
         workspace = self.store.upsert_workspace(
             workspace_id=DEFAULT_WORKSPACE_ID,
-            name="Demo Lab Workspace",
+            name="ResearchOS Demo Lab",
             institution="ResearchOS Local Demo",
             description="Default local development workspace for demos, PWA testing, and early lab-server setup.",
             owner_user_id=str(user["user_id"]),
+            created_by=str(user["user_id"]),
+            default_role="researcher",
             settings={
                 "mode": "development" if not self.settings.auth_enabled else "auth_enabled",
                 "strict_isolation": False,

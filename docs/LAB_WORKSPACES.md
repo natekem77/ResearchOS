@@ -10,17 +10,19 @@ Each workspace has:
 
 - `workspace_id`
 - `name`
-- `institution`
 - `description`
 - `created_at`
-- `owner_user_id`
+- `created_by`
+- `default_role`
+- `owner_user_id` for compatibility with earlier local builds
+- `institution` for optional deployment metadata
 - `settings`
 
 The default development workspace is:
 
 ```text
 workspace_id: workspace:demo-lab
-name: Demo Lab Workspace
+name: ResearchOS Demo Lab
 institution: ResearchOS Local Demo
 ```
 
@@ -47,10 +49,32 @@ List workspaces:
 curl http://127.0.0.1:8001/workspaces
 ```
 
+Create a workspace:
+
+```bash
+curl -X POST http://127.0.0.1:8001/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Example PI Lab","description":"Shared lab workspace","default_role":"researcher"}'
+```
+
 Get one workspace:
 
 ```bash
 curl http://127.0.0.1:8001/workspaces/workspace:demo-lab
+```
+
+List workspace members:
+
+```bash
+curl http://127.0.0.1:8001/workspaces/workspace:demo-lab/members
+```
+
+Add or update a member:
+
+```bash
+curl -X POST http://127.0.0.1:8001/workspaces/workspace:demo-lab/members \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"user:local-dev","role":"researcher"}'
 ```
 
 Bootstrap the default workspace:
@@ -107,7 +131,7 @@ In local development and demos:
 
 - auth enforcement is disabled
 - ResearchOS creates the local dev admin user
-- ResearchOS creates `Demo Lab Workspace`
+- ResearchOS creates `ResearchOS Demo Lab`
 - the local dev user is attached as workspace admin
 - existing local data remains visible
 
@@ -131,6 +155,16 @@ The workspace model prepares for:
 - future workspace-scoped dashboards and assets
 
 Strict isolation is not enabled yet.
+
+## PI / Admin / Researcher / Viewer Model
+
+The current role scaffold supports:
+
+- `admin`: intended for PI/admin users who can manage workspace settings, users, and future approvals.
+- `researcher`: intended for lab members who can create, edit, import, and analyze research objects.
+- `viewer`: intended for read-only collaborators, rotation students, or review-only access.
+
+The `default_role` on a workspace controls the proposed role for future member invites. The API still requires explicit role assignment for now.
 
 ## Future Multi-Lab / Cloud Mode
 
