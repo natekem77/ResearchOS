@@ -169,6 +169,28 @@ a {
   gap: 8px;
 }
 
+.global-search-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--surface-2);
+  font-weight: 800;
+}
+
+kbd {
+  min-height: 22px;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.72rem;
+}
+
 .status-pill,
 .tag,
 .mini-chip,
@@ -194,6 +216,22 @@ button {
 .status-pill.ok {
   color: var(--accent-strong);
   background: var(--accent-soft);
+}
+
+.workflow-progress {
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--line);
+  margin: 0.7rem 0;
+}
+
+.workflow-progress span {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  background: var(--accent);
 }
 
 .release-badge {
@@ -295,6 +333,64 @@ button {
   grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 12px;
   margin: 16px 0;
+}
+
+.daily-dashboard-panel {
+  margin-top: 16px;
+}
+
+.daily-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.daily-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-2);
+}
+
+.daily-card.dragging {
+  opacity: 0.62;
+}
+
+.daily-card summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: grab;
+  font-weight: 850;
+}
+
+.daily-card summary small {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.daily-card-items {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.daily-card-item {
+  display: grid;
+  gap: 4px;
+  border-radius: 8px;
+  padding: 9px;
+  color: inherit;
+  background: var(--surface);
+  text-decoration: none;
+}
+
+.daily-card-item span,
+.daily-card-item small {
+  color: var(--muted);
 }
 
 .metric-card {
@@ -412,6 +508,105 @@ button {
   border-radius: 9px;
   padding: 13px;
   background: var(--surface-2);
+}
+
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  align-items: start;
+  justify-items: center;
+  padding: min(8vh, 72px) 18px 18px;
+  background: rgb(15 23 42 / 0.38);
+  backdrop-filter: blur(12px);
+}
+
+.search-overlay[hidden] {
+  display: none;
+}
+
+.search-dialog {
+  width: min(920px, 100%);
+  max-height: min(82vh, 840px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  background: var(--surface);
+  box-shadow: 0 24px 80px rgb(15 23 42 / 0.22);
+}
+
+.search-dialog-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.search-dialog-header h2 {
+  margin: 0;
+}
+
+.global-search-input {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 14px;
+  color: var(--text);
+  background: var(--surface-2);
+  font: inherit;
+  font-size: 1rem;
+}
+
+.global-search-meta {
+  margin: 10px 0 14px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.global-search-results {
+  display: grid;
+  gap: 12px;
+}
+
+.universal-result-group {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.universal-result-group h3 {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.universal-result {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border-radius: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.universal-result:hover,
+.universal-result:focus {
+  outline: 0;
+  background: var(--surface-2);
+}
+
+.universal-result strong {
+  color: var(--text);
+}
+
+.universal-result span,
+.universal-result small {
+  color: var(--muted);
 }
 
 .app-footer {
@@ -1084,6 +1279,7 @@ mark {
 
   .metric-grid,
   .dashboard-grid,
+  .daily-dashboard-grid,
   .suggested-question-grid,
   .detail-grid,
   .graph-stat-grid,
@@ -1189,6 +1385,7 @@ mark {
   .chat-form,
   .metric-grid,
   .dashboard-grid,
+  .daily-dashboard-grid,
   .suggested-question-grid,
   .detail-grid,
   .settings-grid,

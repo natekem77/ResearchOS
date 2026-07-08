@@ -6,10 +6,15 @@ const state = {
   images: [],
   statistics: [],
   experiments: [],
+  workflows: [],
+  protocols: [],
+  sessions: [],
   selectedExperimentIds: new Set(),
   health: null,
   auth: null,
+  dailyDashboard: null,
   providerStatus: null,
+  agentStatus: null,
   deploymentStatus: null,
   oneNoteReadiness: null,
   ontology: {},
@@ -32,11 +37,14 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const views = {
   dashboard: $("#dashboardView"),
   "new-experiment": $("#newExperimentView"),
+  sessions: $("#sessionsView"),
   "saved-drafts": $("#savedDraftsView"),
   savedDraftDetail: $("#savedDraftDetailView"),
   experiments: $("#experimentsView"),
+  workflows: $("#workflowsView"),
   experimentDetail: $("#experimentDetailView"),
   protocols: $("#protocolsView"),
+  protocolDetail: $("#protocolDetailView"),
   documents: $("#documentsView"),
   assets: $("#assetsView"),
   assetDetail: $("#assetDetailView"),
@@ -211,6 +219,14 @@ function route() {
     return;
   }
 
+  if (view === "protocols" && id) {
+    views.protocolDetail.classList.add("active");
+    activateNav("protocols");
+    renderProtocolWorkspace(decodeURIComponent(id));
+    setHeader("Protocol Workspace", "Protocol Intelligence");
+    return;
+  }
+
   if (view === "saved-drafts" && id) {
     views.savedDraftDetail.classList.add("active");
     activateNav("saved-drafts");
@@ -266,8 +282,10 @@ function route() {
   const titles = {
     dashboard: ["Dashboard", "ResearchOS Dashboard"],
     "new-experiment": ["New Experiment", "Dictation Draft"],
+    sessions: ["Sessions", "Experiment Sessions"],
     "saved-drafts": ["Saved Drafts", "Pending Notebook Entries"],
     experiments: ["Experiments", "Experiment Index"],
+    workflows: ["Workflows", "Research Workflow Engine"],
     protocols: ["Protocols", "Protocol Signals"],
     documents: ["Documents", "Document Library"],
     assets: ["Assets", "Research Asset Graph"],
@@ -293,8 +311,13 @@ function allMarkers() {
   return (state.ontology.markers || []).map((entity) => entity.name);
 }
 
-function protocolDocuments() {
-  return state.documents.filter((document) => /protocol/i.test(document.title));
+function activeSession() {
+  return state.sessions.find((session) => session.status === "active") || null;
+}
+
+function todaysSessions() {
+  const today = new Date().toISOString().slice(0, 10);
+  return state.sessions.filter((session) => String(session.start_time || "").startsWith(today));
 }
 
 function graphPadAssets() {
@@ -324,6 +347,294 @@ function renderMetrics() {
   $("#metricCellLines").textContent = (state.ontology["cell-lines"] || []).length;
   $("#metricOrganoidBatches").textContent = (state.ontology["organoid-batches"] || []).length;
   $("#metricReadyDrafts").textContent = state.pendingEntries.filter((entry) => entry.status === "ready_for_onenote").length;
+  $("#metricSessionsToday").textContent = todaysSessions().length;
+}
+
+function renderDailyDashboard() {
+  const target = $("#dailyDashboardCards");
+  const summary = $("#dailyDashboardSummary");
+  if (!target || !summary) return;
+  const dashboard = state.dailyDashboard;
+  if (!dashboard) {
+    summary.textContent = "Daily dashboard is loading local ResearchOS state.";
+    target.innerHTML = `<div class="empty-state">Daily dashboard unavailable.</div>`;
+    return;
+  }
+  summary.textContent = dashboard.assistant_summary?.text || "Daily dashboard generated from local ResearchOS records.";
+  target.innerHTML = (dashboard.sections || []).length
+    ? dashboard.sections.map(renderDailyDashboardCard).join("")
+    : `<div class="empty-state">No dashboard sections available.</div>`;
+  bindDailyDashboardReorder();
+}
+
+function renderDailyDashboardCard(section) {
+  return `
+    <details class="daily-card" open draggable="true" data-dashboard-card="${escapeHtml(section.id)}">
+      <summary>
+        <span>${escapeHtml(section.title)}</span>
+        <small>drag to reorder</small>
+      </summary>
+      <div class="daily-card-items">
+        ${(section.items || []).map(renderDailyDashboardItem).join("") || `<div class="empty-state">No items in this section.</div>`}
+      </div>
+    </details>
+  `;
+}
+
+function renderDailyDashboardItem(item) {
+  const content = `
+    <strong>${escapeHtml(item.title || "Dashboard item")}</strong>
+    <span>${escapeHtml(item.summary || "")}</span>
+    <small>${escapeHtml(item.category || "observed")} · ${escapeHtml((item.provenance || []).map((prov) => [prov.fact, prov.source, prov.provider, prov.id, prov.experiment_id, prov.asset_id, prov.document_id].filter(Boolean).join(" / ")).join(" | ") || "ResearchOS provenance")}</small>
+  `;
+  return item.href
+    ? `<a class="daily-card-item" href="${escapeHtml(item.href)}">${content}</a>`
+    : `<article class="daily-card-item">${content}</article>`;
+}
+
+function bindDailyDashboardReorder() {
+  const cards = $$("#dailyDashboardCards [data-dashboard-card]");
+  let dragged = null;
+  cards.forEach((card) => {
+    card.addEventListener("dragstart", () => {
+      dragged = card;
+      card.classList.add("dragging");
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging");
+      dragged = null;
+    });
+    card.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      if (!dragged || dragged === card) return;
+      const parent = card.parentElement;
+      const after = event.clientY > card.getBoundingClientRect().top + card.offsetHeight / 2;
+      parent.insertBefore(dragged, after ? card.nextSibling : card);
+    });
+  });
+}
+
+function renderCurrentSessionCard() {
+  const target = $("#currentSessionCard");
+  if (!target) return;
+  const session = activeSession();
+  if (!session) {
+    target.innerHTML = `
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Current session</p>
+          <h2>No active experiment session</h2>
+        </div>
+        <a class="secondary-link-button" href="#/sessions">Start Session</a>
+      </div>
+      <p class="card-copy">Sessions become the live container for notes, observations, treatments, media changes, files, images, and notebook drafts while an experiment is running.</p>
+    `;
+    return;
+  }
+  target.innerHTML = `
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Current session</p>
+        <h2>${escapeHtml(session.experiment_id || session.session_id)}</h2>
+      </div>
+      <a class="secondary-link-button" href="#/sessions">Open Sessions</a>
+    </div>
+    <div class="detail-grid">
+      ${detailField("Started", formatDate(session.start_time))}
+      ${detailField("Timer", sessionDuration(session))}
+      ${detailField("Timeline events", (session.timeline || []).length)}
+      ${detailField("Files/images", (session.assets || []).length)}
+    </div>
+  `;
+}
+
+function renderSessions() {
+  renderSessionExperimentOptions();
+  renderSessionTimer();
+  renderActiveSessionWorkspace();
+  const list = $("#sessionsList");
+  if (!list) return;
+  const sessions = todaysSessions().length ? todaysSessions() : state.sessions;
+  list.innerHTML = sessions.length
+    ? sessions.map(renderSessionListItem).join("")
+    : `<div class="empty-state">No experiment sessions yet.</div>`;
+}
+
+function renderSessionExperimentOptions() {
+  const select = $("#sessionExperimentSelect");
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML = `
+    <option value="">Unlinked session</option>
+    ${state.experiments
+      .map((experiment) => `<option value="${escapeHtml(experiment.experiment_id || experiment.id)}">${escapeHtml(experiment.experiment_id || experiment.title || experiment.id)}</option>`)
+      .join("")}
+  `;
+  if ([...select.options].some((option) => option.value === current)) {
+    select.value = current;
+  }
+}
+
+function renderSessionListItem(session) {
+  return `
+    <article class="record-card">
+      <h3>${escapeHtml(session.experiment_id || session.session_id)}</h3>
+      <p>${escapeHtml(session.notes || "No session notes.")}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(session.status)}</span>
+        <span class="tag">${escapeHtml(formatDate(session.start_time))}</span>
+        <span class="tag">${escapeHtml((session.timeline || []).length)} events</span>
+      </div>
+    </article>
+  `;
+}
+
+function renderActiveSessionWorkspace() {
+  const target = $("#activeSessionWorkspace");
+  if (!target) return;
+  const session = activeSession();
+  if (!session) {
+    target.innerHTML = `
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Workspace</p>
+          <h2>No active session</h2>
+        </div>
+      </div>
+      <div class="empty-state">Start a session to capture notes, observations, treatments, media changes, files, and images.</div>
+    `;
+    return;
+  }
+  const timeline = session.timeline || [];
+  const noteEvents = timeline.filter((event) => ["voice_note", "manual_note", "observation", "treatment", "media_change", "notebook_draft_updated"].includes(event.event_type));
+  const fileEvents = timeline.filter((event) => ["file_imported", "graphpad_imported", "spreadsheet_imported"].includes(event.event_type));
+  const imageEvents = timeline.filter((event) => event.event_type === "image_imported");
+  target.innerHTML = `
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">Active Session</p>
+        <h2>${escapeHtml(session.experiment_id || session.session_id)}</h2>
+      </div>
+      <span class="status-pill ok">${escapeHtml(sessionDuration(session))}</span>
+    </div>
+    <form class="entry-draft-form" id="sessionEventForm">
+      <label for="sessionEventType">Append to session</label>
+      <select id="sessionEventType">
+        <option value="manual_note">Manual note</option>
+        <option value="voice_note">Voice note transcript</option>
+        <option value="observation">Observation</option>
+        <option value="treatment">Treatment</option>
+        <option value="media_change">Media change</option>
+        <option value="image_imported">Image imported</option>
+        <option value="file_imported">File imported</option>
+        <option value="graphpad_imported">GraphPad imported</option>
+        <option value="spreadsheet_imported">Spreadsheet imported</option>
+        <option value="notebook_draft_updated">Notebook draft updated</option>
+      </select>
+      <label for="sessionEventTitle">Title</label>
+      <input id="sessionEventTitle" type="text" placeholder="D32 SIX6/BRN3B image captured" />
+      <label for="sessionEventContent">Details</label>
+      <textarea id="sessionEventContent" rows="3" placeholder="Observation, treatment, media change, transcript, or file note..."></textarea>
+      <label for="sessionEventAsset">Asset ID (optional)</label>
+      <input id="sessionEventAsset" type="text" placeholder="asset:..." />
+      <div class="entry-actions">
+        <button type="submit">Append Event</button>
+      </div>
+    </form>
+    <div class="detail-grid">
+      ${detailField("Status", session.status)}
+      ${detailField("Started", formatDate(session.start_time))}
+      ${detailField("Voice transcripts", (session.voice_transcripts || []).length)}
+      ${detailField("Timeline events", timeline.length)}
+    </div>
+    ${workspaceSection("Timeline", timeline, renderSessionTimelineEvent)}
+    ${workspaceSection("Recent Notes", noteEvents.slice(-8).reverse(), renderSessionTimelineEvent)}
+    ${workspaceSection("Files", fileEvents.slice(-8).reverse(), renderSessionTimelineEvent)}
+    ${workspaceSection("Images", imageEvents.slice(-8).reverse(), renderSessionTimelineEvent)}
+  `;
+  $("#sessionEventForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    appendSessionEvent(session.session_id).catch((error) => {
+      $("#sessionStatus").textContent = `Could not append event: ${error.message}`;
+    });
+  });
+}
+
+function renderSessionTimelineEvent(event) {
+  return `
+    <article class="timeline-item">
+      <div class="timeline-item-header">${timelineBadge(event.event_type)}<strong>${escapeHtml(event.title)}</strong></div>
+      <span>${escapeHtml(formatDate(event.created_at))}${event.asset_id ? ` · ${escapeHtml(event.asset_id)}` : ""}</span>
+      <p>${escapeHtml(event.content || "")}</p>
+    </article>
+  `;
+}
+
+function sessionDuration(session) {
+  if (!session?.start_time) return "No timer";
+  const start = new Date(String(session.start_time).replace(" ", "T"));
+  const end = session.end_time ? new Date(String(session.end_time).replace(" ", "T")) : new Date();
+  const seconds = Math.max(0, Math.floor((end.getTime() - start.getTime()) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
+function renderSessionTimer() {
+  const timer = $("#sessionTimer");
+  if (!timer) return;
+  const session = activeSession();
+  timer.textContent = session ? `Active: ${sessionDuration(session)}` : "No active session";
+  timer.className = `status-pill ${session ? "ok" : ""}`;
+}
+
+async function startExperimentSession() {
+  const experimentId = $("#sessionExperimentSelect").value || null;
+  const notes = $("#sessionStartNotes").value.trim() || null;
+  $("#sessionStatus").textContent = "Starting session...";
+  await requestJson("/sessions/start", {
+    method: "POST",
+    body: JSON.stringify({ experiment_id: experimentId, notes }),
+  });
+  $("#sessionStartNotes").value = "";
+  await refreshData();
+  $("#sessionStatus").textContent = "Session started.";
+  recordActivity("Session started", experimentId || "Unlinked session");
+}
+
+async function endActiveSession() {
+  const session = activeSession();
+  if (!session) {
+    $("#sessionStatus").textContent = "No active session to end.";
+    return;
+  }
+  await requestJson(`/sessions/${encodeURIComponent(session.session_id)}/end`, {
+    method: "POST",
+    body: JSON.stringify({ notes: "Session ended from ResearchOS UI." }),
+  });
+  await refreshData();
+  $("#sessionStatus").textContent = "Session ended.";
+  recordActivity("Session ended", session.experiment_id || session.session_id);
+}
+
+async function appendSessionEvent(sessionId) {
+  const title = $("#sessionEventTitle").value.trim();
+  if (!title) {
+    $("#sessionStatus").textContent = "Add a title before appending a session event.";
+    return;
+  }
+  await requestJson(`/sessions/${encodeURIComponent(sessionId)}/events`, {
+    method: "POST",
+    body: JSON.stringify({
+      event_type: $("#sessionEventType").value,
+      title,
+      content: $("#sessionEventContent").value.trim() || null,
+      asset_id: $("#sessionEventAsset").value.trim() || null,
+    }),
+  });
+  await refreshData();
+  $("#sessionStatus").textContent = "Session event appended.";
+  recordActivity("Session event", title);
 }
 
 function renderTimeline() {
@@ -982,20 +1293,117 @@ function renderPapers() {
 }
 
 function renderProtocols() {
-  const protocols = protocolDocuments();
+  const protocols = state.protocols || [];
   $("#protocolsList").innerHTML = protocols.length
     ? protocols
         .map(
-          (document) => `
+          (protocol) => `
             <article class="record-card">
-              <h3><a href="${graphEntityLink("protocols", document.id, document.title)}">${escapeHtml(document.title)}</a></h3>
-              <p>${escapeHtml(document.source_path || document.source_id)}</p>
-              <div class="meta"><span class="tag">${escapeHtml(document.provider)}</span></div>
+              <h3><a href="#/protocols/${encodeURIComponent(protocol.id)}">${escapeHtml(protocol.title)}</a></h3>
+              <p>${escapeHtml(protocol.source_path || protocol.source_document_id || "Protocol detected from local records.")}</p>
+              <div class="meta">
+                <span class="tag">${escapeHtml(protocol.version)}</span>
+                <span class="tag">${escapeHtml(protocol.provider)}</span>
+                <span class="tag">${escapeHtml(protocol.linked_experiment_count || 0)} experiments</span>
+              </div>
+              <p>${escapeHtml(protocol.success_metrics?.method || "Protocol metrics are derived from linked local evidence.")}</p>
             </article>
           `,
         )
         .join("")
     : `<div class="empty-state">No protocols detected.</div>`;
+}
+
+async function renderProtocolWorkspace(protocolId) {
+  const target = $("#protocolDetail");
+  target.innerHTML = `<div class="empty-state">Loading protocol workspace...</div>`;
+  try {
+    const protocol = await requestJson(`/protocols/${encodeURIComponent(protocolId)}`);
+    const history = protocol.history || [];
+    const comparable = history.filter((item) => item.id !== protocol.id)[0];
+    target.innerHTML = `
+      <a class="inline-link" href="#/protocols">Back to protocols</a>
+      <div class="detail-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(protocol.version || "Protocol")}</p>
+          <h2>${escapeHtml(protocol.title || "Protocol Workspace")}</h2>
+        </div>
+        <div class="prompt-row">
+          <span class="status-pill ok">${escapeHtml(protocol.provider || "local")}</span>
+          ${comparable ? `<button type="button" class="secondary-button" id="compareProtocolButton" data-other-id="${escapeHtml(comparable.id)}">Compare versions</button>` : ""}
+        </div>
+      </div>
+      <div class="detail-grid">
+        ${detailField("Linked experiments", protocol.usage_statistics?.experiment_count)}
+        ${detailField("First used", formatDate(protocol.usage_statistics?.first_used))}
+        ${detailField("Last used", formatDate(protocol.usage_statistics?.last_used))}
+        ${detailField("Success rate", protocol.success_metrics?.success_rate ?? "Not enough data")}
+        ${detailField("Positive outcomes", protocol.success_metrics?.positive_outcome_count)}
+        ${detailField("Concern count", protocol.success_metrics?.concern_count)}
+      </div>
+      <section class="detail-section">
+        <h3>Research Copilot</h3>
+        <p>${escapeHtml(protocol.research_copilot?.performance_summary || "Protocol performance summary unavailable.")}</p>
+        <h4>Potential concerns</h4>
+        <ul>${listItems(protocol.research_copilot?.potential_concerns || [])}</ul>
+        <h4>Suggested improvements</h4>
+        <ul>${listItems(protocol.research_copilot?.suggested_improvements || [])}</ul>
+        <p class="privacy-note">${escapeHtml(protocol.research_copilot?.guardrail || "ResearchOS never automatically edits protocols.")}</p>
+      </section>
+      ${workspaceSection("Version History", history, renderProtocolHistoryItem)}
+      <section class="detail-section" id="protocolComparisonPanel" hidden></section>
+      ${workspaceSection("Timeline", protocol.timeline || [], renderWorkspaceTimelineEvent)}
+      ${workspaceSection("Experiments", protocol.experiments || [], renderWorkspaceExperiment)}
+      ${workspaceSection("Related Literature", protocol.related_literature || [], renderWorkspaceDocument)}
+      ${workspaceSection("Statistics", protocol.statistics || [], renderWorkspaceStatistic)}
+      ${tagSection("Detected protocol terms", protocol.usage_statistics?.protocol_terms || [])}
+      <details class="detail-section">
+        <summary><h3>Source Content</h3></summary>
+        <pre class="markdown-preview">${escapeHtml(protocol.content || "No source content available.")}</pre>
+      </details>
+    `;
+    const compareButton = $("#compareProtocolButton");
+    if (compareButton) {
+      compareButton.addEventListener("click", () => compareProtocolVersions(protocol.id, compareButton.dataset.otherId));
+    }
+  } catch (error) {
+    target.innerHTML = `<div class="empty-state">Protocol workspace unavailable: ${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function renderProtocolHistoryItem(protocol) {
+  return `
+    <a class="item-link" href="#/protocols/${encodeURIComponent(protocol.id)}">
+      <strong>${escapeHtml(protocol.title)}</strong>
+      <span>${escapeHtml(protocol.version)} · ${escapeHtml(formatDate(protocol.updated_at || protocol.created_at))} · ${escapeHtml(protocol.linked_experiment_count || 0)} experiments</span>
+    </a>
+  `;
+}
+
+async function compareProtocolVersions(protocolId, otherId) {
+  const panel = $("#protocolComparisonPanel");
+  panel.hidden = false;
+  panel.innerHTML = `<div class="empty-state">Comparing protocol versions...</div>`;
+  try {
+    const comparison = await requestJson(`/protocols/${encodeURIComponent(protocolId)}/compare/${encodeURIComponent(otherId)}`);
+    panel.innerHTML = `
+      <h3>Protocol Version Comparison</h3>
+      <p>${escapeHtml(comparison.left?.title || "Left protocol")} vs ${escapeHtml(comparison.right?.title || "right protocol")}</p>
+      <div class="detail-grid">
+        ${detailField("Added lines", comparison.summary?.added_count)}
+        ${detailField("Removed lines", comparison.summary?.removed_count)}
+        ${detailField("Changed", comparison.summary?.changed ? "Yes" : "No")}
+      </div>
+      <h4>Detected changes</h4>
+      <ul>${listItems(comparison.summary?.interpretation || [])}</ul>
+      <details>
+        <summary><h4>Text diff</h4></summary>
+        <pre class="markdown-preview">${escapeHtml((comparison.changes?.diff || []).join("\n"))}</pre>
+      </details>
+    `;
+  } catch (error) {
+    panel.innerHTML = `<div class="empty-state">Protocol comparison failed: ${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function statusLabel(status) {
@@ -1035,6 +1443,7 @@ function renderProviderSettings() {
   const status = state.providerStatus;
   if (!status) {
     $("#providerCards").innerHTML = `<div class="empty-state">Provider status is not available.</div>`;
+    renderAgentSettings();
     renderOneNoteReadinessSettings();
     renderDeploymentSettings();
     return;
@@ -1071,8 +1480,42 @@ function renderProviderSettings() {
       status.vector_index.message,
     ),
   ].join("");
+  renderAgentSettings();
   renderOneNoteReadinessSettings();
   renderDeploymentSettings();
+}
+
+function renderAgentSettings() {
+  const target = $("#agentCards");
+  if (!target) return;
+  const status = state.agentStatus;
+  if (!status) {
+    target.innerHTML = `<div class="empty-state">Agent status is not available.</div>`;
+    return;
+  }
+  target.innerHTML = (status.agents || []).length
+    ? status.agents.map(renderAgentCard).join("")
+    : `<div class="empty-state">No scientific agents are registered.</div>`;
+}
+
+function renderAgentCard(agent) {
+  return `
+    <article class="provider-card">
+      <div class="provider-card-header">
+        <span>${escapeHtml(agent.name)}</span>
+        <strong class="status-pill ${agent.enabled ? "ok" : "warn"}">${agent.enabled ? "Enabled" : "Disabled"}</strong>
+      </div>
+      <p>${escapeHtml(agent.description)}</p>
+      <small>${escapeHtml(agent.run_count)} runs · ${escapeHtml(agent.error_count)} errors · last: ${escapeHtml(agent.last_run || "never")}</small>
+      ${agent.last_error ? `<p class="privacy-note">${escapeHtml(agent.last_error)}</p>` : ""}
+      <div class="meta">${(agent.event_types || []).slice(0, 5).map((value) => `<span class="tag">${escapeHtml(value)}</span>`).join("")}</div>
+      <div class="entry-actions">
+        <button type="button" class="secondary-button agent-toggle" data-agent-id="${escapeHtml(agent.agent_id)}" data-agent-action="${agent.enabled ? "disable" : "enable"}">
+          ${agent.enabled ? "Disable" : "Enable"}
+        </button>
+      </div>
+    </article>
+  `;
 }
 
 function renderOneNoteReadinessSettings() {
@@ -1807,6 +2250,8 @@ async function renderExperimentWorkspace(experimentId) {
         <p>${escapeHtml(summary.text || "No workspace summary available.")}</p>
         <div class="meta"><span class="tag">${escapeHtml(summary.provider || "local-fallback")}</span></div>
       </section>
+      ${renderResearchCopilotCard(workspace.research_copilot)}
+      ${renderWorkflowCard(workspace.workflow || workspace.lifecycle)}
       <div class="detail-grid">
         ${detailField("Date", formatDate(experiment.date))}
         ${detailField("Researcher", experiment.researcher)}
@@ -1843,6 +2288,129 @@ async function renderExperimentWorkspace(experimentId) {
   } catch (error) {
     target.innerHTML = `<div class="empty-state">Experiment workspace unavailable: ${escapeHtml(error.message)}</div>`;
   }
+}
+
+function renderWorkflowCard(workflow) {
+  if (!workflow) return "";
+  const stage = workflow.stage || {};
+  const progress = workflow.progress || {};
+  return `
+    <section class="detail-section">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Experiment Workflow</p>
+          <h3>${escapeHtml(workflow.current_stage || "Planning")}</h3>
+        </div>
+        <span class="status-pill ok">${escapeHtml((stage.allowed_transitions || workflow.allowed_transitions || []).join(" / ") || "No transitions")}</span>
+      </div>
+      <div class="workflow-progress" aria-label="Workflow progress">
+        <span style="width:${Number(progress.percent || 0)}%"></span>
+      </div>
+      <p>${escapeHtml(stage.description || "Workflow stage context is available locally.")}</p>
+      <h4>Recommended next actions</h4>
+      <ul>${listItems(workflow.recommended_next_actions || workflow.suggested_next_actions || [])}</ul>
+      <h4>Blocking issues</h4>
+      <ul>${listItems(workflow.blocking_issues || [])}</ul>
+      <h4>Completion criteria</h4>
+      <ul>${listItems(stage.completion_criteria || workflow.completion_criteria || [])}</ul>
+      <h4>Workflow history</h4>
+      <ul>${listItems((workflow.history || []).slice(-4).map((item) => `${item.from_stage || "Start"} -> ${item.to_stage}`))}</ul>
+      <div class="meta">${(workflow.remaining_stages || []).slice(0, 8).map((name) => `<span class="tag">${escapeHtml(name)}</span>`).join("")}</div>
+    </section>
+  `;
+}
+
+function renderWorkflows() {
+  const target = $("#workflowCards");
+  if (!target) return;
+  target.innerHTML = state.workflows.length
+    ? state.workflows.map(renderWorkflowCardSummary).join("")
+    : `<div class="empty-state">No experiment workflows available. Load demo notes or extract experiments first.</div>`;
+}
+
+function renderWorkflowCardSummary(workflow) {
+  const experiment = workflow.subject || {};
+  const progress = workflow.progress || {};
+  return `
+    <article class="provider-card">
+      <div class="provider-card-header">
+        <span>${escapeHtml(experiment.experiment_id || experiment.title || workflow.subject_id)}</span>
+        <strong class="status-pill ok">${escapeHtml(workflow.current_stage)}</strong>
+      </div>
+      <div class="workflow-progress"><span style="width:${Number(progress.percent || 0)}%"></span></div>
+      <p>${escapeHtml((workflow.suggested_next_actions || [])[0] || "Workflow is ready for review.")}</p>
+      <div class="meta">
+        ${(workflow.blocking_issues || []).slice(0, 3).map((issue) => `<span class="tag">${escapeHtml(issue)}</span>`).join("")}
+      </div>
+      <div class="entry-actions">
+        <a class="secondary-link-button" href="#/experiments/${encodeURIComponent(experiment.id || workflow.subject_id)}/workspace">Open Workspace</a>
+      </div>
+    </article>
+  `;
+}
+
+function renderResearchCopilotCard(copilot) {
+  if (!copilot || !copilot.sections) {
+    return `
+      <section class="detail-section">
+        <h3>Research Copilot</h3>
+        <div class="empty-state">Research Copilot synthesis is not available for this workspace.</div>
+      </section>
+    `;
+  }
+
+  const labels = {
+    key_findings: "Key findings",
+    potential_concerns: "Potential concerns",
+    suggested_follow_up_experiments: "Suggested follow-up experiments",
+    related_experiments: "Related experiments",
+    related_literature: "Related literature",
+    experimental_gaps: "Experimental gaps",
+    potential_manuscript_statements: "Potential manuscript statements",
+    grant_proposal_ideas: "Grant proposal ideas",
+    questions_worth_investigating: "Questions worth investigating",
+  };
+
+  return `
+    <section class="detail-section copilot-card">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Workspace synthesis</p>
+          <h3>Research Copilot</h3>
+        </div>
+        <span class="status-pill ok">${escapeHtml(copilot.provider || "local-fallback")}</span>
+      </div>
+      <p>${escapeHtml(copilot.natural_summary || "Copilot summary unavailable.")}</p>
+      <div class="source-list">
+        ${Object.entries(labels).map(([key, label]) => renderCopilotSection(label, copilot.sections[key] || [])).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderCopilotSection(title, statements) {
+  return `
+    <details class="result" open>
+      <summary><h3>${escapeHtml(title)}</h3></summary>
+      ${statements.length ? statements.map(renderCopilotStatement).join("") : `<div class="empty-state">No ${escapeHtml(title.toLowerCase())} available.</div>`}
+    </details>
+  `;
+}
+
+function renderCopilotStatement(statement) {
+  const provenance = Array.isArray(statement.provenance) ? statement.provenance : [];
+  return `
+    <article class="copilot-statement">
+      <div class="meta"><span class="tag">${escapeHtml(statement.category || "inferred")}</span></div>
+      <p>${escapeHtml(statement.text || "")}</p>
+      <small>${escapeHtml(
+        provenance
+          .map((item) => [item.fact, item.source, item.provider, item.document, item.asset].filter(Boolean).join(" · "))
+          .filter(Boolean)
+          .join(" | ") || "ResearchOS workspace provenance",
+      )}</small>
+    </article>
+  `;
 }
 
 function workspaceSection(title, items, renderer) {
@@ -2780,6 +3348,133 @@ async function runLiteratureComparison(message, target) {
   }
 }
 
+function openGlobalSearch() {
+  const overlay = $("#globalSearchOverlay");
+  const input = $("#globalSearchInput");
+  overlay.hidden = false;
+  input.focus();
+  input.select();
+}
+
+function closeGlobalSearch() {
+  $("#globalSearchOverlay").hidden = true;
+}
+
+async function runUniversalSearch(query) {
+  const output = $("#globalSearchResults");
+  const meta = $("#globalSearchMeta");
+  if (!query.trim()) {
+    meta.textContent = "Type to search notebooks, experiments, entities, assets, literature, and commands.";
+    output.innerHTML = "";
+    return;
+  }
+  meta.textContent = "Searching all ResearchOS providers...";
+  const payload = await requestJson(`/search/universal?q=${encodeURIComponent(query)}&limit_per_group=6`);
+  meta.textContent = `${payload.total_results} result${payload.total_results === 1 ? "" : "s"} for "${payload.query}"`;
+  renderUniversalSearchResults(output, payload);
+}
+
+function renderUniversalSearchResults(target, payload) {
+  const grouped = payload.grouped_results || {};
+  const labels = {
+    experiments: "Experiments",
+    notebook_entries: "Notebook entries",
+    entities: "Knowledge Graph entities",
+    images: "Microscopy / images",
+    graphpad: "GraphPad",
+    spreadsheets: "Spreadsheets",
+    statistics: "Statistics",
+    literature: "Literature",
+    timeline: "Timeline",
+    commands: "Commands",
+  };
+  const sections = Object.entries(labels)
+    .map(([group, label]) => {
+      const results = grouped[group] || [];
+      if (!results.length) return "";
+      return `
+        <section class="universal-result-group">
+          <h3>${escapeHtml(label)}</h3>
+          ${results.map(renderUniversalResult).join("")}
+        </section>
+      `;
+    })
+    .join("");
+  const suggestions = (payload.suggested_queries || []).length
+    ? `
+      <section class="universal-result-group">
+        <h3>Suggested queries</h3>
+        ${(payload.suggested_queries || []).map((query) => `
+          <button type="button" class="mini-chip universal-suggestion" data-query="${escapeHtml(query)}">${escapeHtml(query)}</button>
+        `).join("")}
+      </section>
+    `
+    : "";
+  target.innerHTML = sections || `<div class="empty-state">No universal search results found.</div>`;
+  target.insertAdjacentHTML("beforeend", suggestions);
+  $$(".universal-suggestion").forEach((button) => {
+    button.addEventListener("click", () => {
+      $("#globalSearchInput").value = button.dataset.query || "";
+      runUniversalSearch($("#globalSearchInput").value).catch((error) => {
+        $("#globalSearchMeta").textContent = `Universal search failed: ${error.message}`;
+      });
+    });
+  });
+}
+
+function renderUniversalResult(result) {
+  return `
+    <a class="universal-result" href="${escapeHtml(result.href || "#/dashboard")}" data-universal-result>
+      <strong>${escapeHtml(result.title || result.id || "Result")}</strong>
+      <span>${escapeHtml(result.subtitle || result.provider || "")}</span>
+      <small>${escapeHtml(result.provider || result.type || "")} · score ${escapeHtml(result.score ?? "n/a")}</small>
+    </a>
+  `;
+}
+
+function bindUniversalSearch() {
+  const button = $("#globalSearchButton");
+  const close = $("#globalSearchClose");
+  const overlay = $("#globalSearchOverlay");
+  const input = $("#globalSearchInput");
+  const results = $("#globalSearchResults");
+  let timer = null;
+
+  button?.addEventListener("click", openGlobalSearch);
+  close?.addEventListener("click", closeGlobalSearch);
+  overlay?.addEventListener("click", (event) => {
+    if (event.target === overlay) closeGlobalSearch();
+  });
+  results?.addEventListener("click", (event) => {
+    const link = event.target.closest("[data-universal-result]");
+    if (!link) return;
+    closeGlobalSearch();
+  });
+  input?.addEventListener("input", () => {
+    clearTimeout(timer);
+    const query = input.value.trim();
+    if (query.length < 2) {
+      $("#globalSearchMeta").textContent = "Type at least two characters to search.";
+      results.innerHTML = "";
+      return;
+    }
+    timer = setTimeout(() => {
+      runUniversalSearch(query).catch((error) => {
+        $("#globalSearchMeta").textContent = `Universal search failed: ${error.message}`;
+      });
+    }, 160);
+  });
+  window.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openGlobalSearch();
+    }
+    if (event.key === "Escape" && !overlay.hidden) {
+      closeGlobalSearch();
+    }
+  });
+}
+
 function bindSearch(formSelector, inputSelector, outputSelector) {
   const form = $(formSelector);
   const input = $(inputSelector);
@@ -2954,6 +3649,11 @@ async function loadStatus() {
     state.providerStatus = null;
   }
   try {
+    state.agentStatus = await requestJson("/agents");
+  } catch (error) {
+    state.agentStatus = null;
+  }
+  try {
     state.deploymentStatus = await requestJson("/status/deployment");
   } catch (error) {
     state.deploymentStatus = null;
@@ -2967,7 +3667,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -2975,6 +3675,9 @@ async function refreshData() {
     requestJson("/images"),
     requestJson("/statistics"),
     requestJson("/experiments"),
+    requestJson("/workflows"),
+    requestJson("/protocols"),
+    requestJson("/sessions"),
     requestJson("/entries"),
     requestJson("/api/compounds"),
     requestJson("/api/markers"),
@@ -2982,6 +3685,7 @@ async function refreshData() {
     requestJson("/api/organoid-batches"),
     requestJson("/graph/stats"),
     requestJson("/entry-templates"),
+    requestJson("/api/dashboard/daily?use_ai=false"),
   ]);
   state.documents = documents;
   state.papers = papers;
@@ -2990,9 +3694,13 @@ async function refreshData() {
   state.images = images;
   state.statistics = statistics;
   state.experiments = experiments;
+  state.workflows = workflows;
+  state.protocols = protocols;
+  state.sessions = sessions;
   state.pendingEntries = pendingEntries;
   state.graphStats = graphStats;
   state.entryTemplates = entryTemplates;
+  state.dailyDashboard = dailyDashboard;
   state.ontology = {
     compounds,
     markers,
@@ -3005,6 +3713,8 @@ async function refreshData() {
 
 function renderAll() {
   setStatus();
+  renderDailyDashboard();
+  renderCurrentSessionCard();
   renderMetrics();
   renderTimeline();
   renderRecentExperimentTimeline();
@@ -3020,6 +3730,8 @@ function renderAll() {
   renderStatistics();
   renderPapers();
   renderProtocols();
+  renderWorkflows();
+  renderSessions();
   renderExperimentsTable();
   renderProviderSettings();
   renderEntryTemplates();
@@ -3242,6 +3954,21 @@ $("#settingsApprovalButton").addEventListener("click", () => {
   const approvalInfo = $("#approvalInfo");
   approvalInfo.hidden = !approvalInfo.hidden;
 });
+$("#agentCards")?.addEventListener("click", (event) => {
+  const button = event.target.closest(".agent-toggle");
+  if (!button) return;
+  const agentId = button.dataset.agentId;
+  const action = button.dataset.agentAction;
+  requestJson(`/agents/${encodeURIComponent(agentId)}/${action}`, { method: "POST" })
+    .then((status) => {
+      state.agentStatus = status;
+      renderAgentSettings();
+      $("#settingsActionStatus").textContent = `${action === "enable" ? "Enabled" : "Disabled"} ${agentId}.`;
+    })
+    .catch((error) => {
+      $("#settingsActionStatus").textContent = `Agent update failed: ${error.message}`;
+    });
+});
 
 $("#assetTypeFilter")?.addEventListener("change", renderAssets);
 $("#assetSearchInput")?.addEventListener("input", renderAssets);
@@ -3271,6 +3998,17 @@ $("#savePlanDraftButton")?.addEventListener("click", () => {
     $("#plannerStatus").textContent = `Could not save plan draft: ${error.message}`;
   });
 });
+$("#sessionStartForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  startExperimentSession().catch((error) => {
+    $("#sessionStatus").textContent = `Could not start session: ${error.message}`;
+  });
+});
+$("#endSessionButton")?.addEventListener("click", () => {
+  endActiveSession().catch((error) => {
+    $("#sessionStatus").textContent = `Could not end session: ${error.message}`;
+  });
+});
 
 bindSearch("#dashboardSearchForm", "#dashboardSearchInput", "#dashboardSearchResults");
 bindSearch("#searchForm", "#searchInput", "#searchResults");
@@ -3284,10 +4022,15 @@ bindDashboardSuggestedQuestions();
 bindSuggestedPrompts();
 bindAssistantModeToggle();
 bindKnowledgeGraphQuestionButtons();
+bindUniversalSearch();
 setupVoiceDictation();
 registerServiceWorker();
 
 window.addEventListener("hashchange", route);
+window.setInterval(() => {
+  renderSessionTimer();
+  renderCurrentSessionCard();
+}, 30000);
 
 async function boot() {
   await loadStatus();

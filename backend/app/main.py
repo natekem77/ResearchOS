@@ -12,11 +12,23 @@ from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.agents.manager import create_default_agent_manager
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import get_settings
+from app.dashboard_service import DashboardService
 from app.entry_drafting import available_entry_templates, draft_entry_from_notes
+from app.events.automation_engine import AutomationEngine
+from app.events.event_bus import get_event_bus
+from app.events.event_models import EventType, ResearchOSEvent
 from app.experiment_comparison import compare_experiments
 from app.experiment_extraction import extract_experiment
+from app.experiment_lifecycle import (
+    LIFECYCLE_STAGES,
+    lifecycle_definition,
+    recommended_actions_for_experiment,
+    remaining_stages,
+    validate_transition,
+)
 from app.experiment_planner import plan_follow_up_experiment
 from app.experiment_workspace import build_experiment_workspace
 from app.graph_auth import build_auth_url, exchange_code_for_token, get_token_status
@@ -36,6 +48,7 @@ from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
 from app.microscopy_provider import microscopy_assets, microscopy_status, scan_microscopy_assets
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
+from app.protocol_intelligence import ProtocolService
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
 from app.scientific_reasoning import reason_scientifically
@@ -48,7 +61,9 @@ from app.spreadsheet_provider import (
 )
 from app.statistics_engine import interpret_statistics_asset
 from app.storage import SQLiteStore
+from app.universal_search import UniversalSearchService
 from app.vector_index import ChromaVectorIndex
+from app.workflow_engine import WorkflowEngine, experiment_workflow_id
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -56,6 +71,24 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 knowledge_graph_service = KnowledgeGraphService(settings=settings)
+dashboard_service = DashboardService(settings=settings, knowledge_graph=knowledge_graph_service)
+protocol_service = ProtocolService(settings=settings)
+universal_search_service = UniversalSearchService(settings=settings, knowledge_graph=knowledge_graph_service)
+event_bus = get_event_bus()
+automation_engine = AutomationEngine(
+    event_bus=event_bus,
+    refreshables={
+        "knowledge_graph": knowledge_graph_service,
+        "search_index": universal_search_service,
+        "dashboard": dashboard_service,
+    },
+)
+automation_engine.start()
+agent_manager = create_default_agent_manager(
+    event_bus=event_bus,
+    refreshables={"knowledge_graph": knowledge_graph_service},
+)
+agent_manager.start()
 
 app = FastAPI(
     title=settings.project_name,
@@ -71,11 +104,47 @@ if FRONTEND_DIR.exists():
     )
 
 
+def _publish_event(event_type: EventType, source: str, payload: dict[str, object]) -> None:
+    """Publish a ResearchOS event without letting automation break API work."""
+
+    try:
+        event_bus.publish(ResearchOSEvent(event_type=event_type, source=source, payload=payload))
+    except Exception as exc:
+        logger.warning("ResearchOS event publication failed for %s: %s", event_type.value, exc)
+
+
 class HealthResponse(BaseModel):
     """Response model for the health check endpoint."""
 
     status: Literal["ok"]
     project: Literal["ResearchOS"]
+
+
+class AgentStatusResponse(BaseModel):
+    """Deterministic scientific agent status."""
+
+    agent_id: str
+    name: str
+    description: str
+    enabled: bool
+    event_types: list[str]
+    run_count: int
+    error_count: int
+    last_run: str | None = None
+    last_error: str | None = None
+    last_event_type: str | None = None
+    actions: list[str] = Field(default_factory=list)
+
+
+class AgentManagerStatusResponse(BaseModel):
+    """Agent manager status for Settings UI."""
+
+    started: bool
+    agent_count: int
+    enabled_count: int
+    handled_event_count: int
+    agents: list[AgentStatusResponse]
+    failures: list[dict[str, object]] = Field(default_factory=list)
 
 
 class AuthStatusResponse(BaseModel):
@@ -384,6 +453,74 @@ class PendingEntryResponse(PendingEntrySummaryResponse):
     markdown: str
 
 
+SessionStatus = Literal["active", "ended"]
+SessionEventType = Literal[
+    "voice_note",
+    "manual_note",
+    "observation",
+    "treatment",
+    "media_change",
+    "image_imported",
+    "file_imported",
+    "graphpad_imported",
+    "spreadsheet_imported",
+    "notebook_draft_updated",
+]
+
+
+class SessionStartRequest(BaseModel):
+    """Start a live experiment session."""
+
+    experiment_id: str | None = None
+    notes: str | None = None
+
+
+class SessionEndRequest(BaseModel):
+    """End a live experiment session."""
+
+    notes: str | None = None
+
+
+class SessionEventAppendRequest(BaseModel):
+    """Append one timeline event to a session."""
+
+    event_type: SessionEventType = "manual_note"
+    title: str
+    content: str | None = None
+    asset_id: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class SessionEventResponse(BaseModel):
+    """One event in an experiment session timeline."""
+
+    event_id: str
+    session_id: str
+    event_type: SessionEventType
+    title: str
+    content: str | None = None
+    asset_id: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    created_at: str
+
+
+class SessionResponse(BaseModel):
+    """Experiment session workspace response."""
+
+    session_id: str
+    experiment_id: str | None = None
+    start_time: str
+    end_time: str | None = None
+    status: SessionStatus
+    notes: str | None = None
+    voice_transcripts: list[str] = Field(default_factory=list)
+    assets: list[dict[str, object]] = Field(default_factory=list)
+    timeline: list[SessionEventResponse] = Field(default_factory=list)
+    recent_notes: list[SessionEventResponse] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
 AssetType = Literal[
     "notebook",
     "protocol",
@@ -624,6 +761,67 @@ class ExperimentTimelineResponse(BaseModel):
     human_experiment_id: str | None = None
     title: str
     events: list[ExperimentTimelineEventResponse]
+
+
+class ExperimentLifecycleTransitionRequest(BaseModel):
+    """Lifecycle transition request."""
+
+    to_stage: str
+    reason: str | None = None
+    actor: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ExperimentLifecycleResponse(BaseModel):
+    """Experiment lifecycle state, rules, and recommendations."""
+
+    experiment_id: str
+    current_stage: str
+    allowed_transitions: list[str]
+    completion_criteria: list[str]
+    recommended_next_actions: list[str]
+    remaining_stages: list[str]
+    history: list[dict[str, object]] = Field(default_factory=list)
+    all_stages: list[str] = Field(default_factory=lambda: list(LIFECYCLE_STAGES))
+
+
+class WorkflowTransitionRequest(BaseModel):
+    """Generic workflow transition request."""
+
+    to_stage: str
+    reason: str | None = None
+    actor: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class WorkflowNoteRequest(BaseModel):
+    """Append a note to the current or specified workflow stage."""
+
+    note: str
+    stage: str | None = None
+    actor: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class WorkflowResponse(BaseModel):
+    """Generic workflow payload."""
+
+    workflow_id: str
+    workflow_type: str
+    subject_id: str
+    subject: dict[str, object] = Field(default_factory=dict)
+    current_stage: str
+    stage: dict[str, object]
+    definition: dict[str, object]
+    progress: dict[str, object]
+    completed_stages: list[str]
+    remaining_stages: list[str]
+    suggested_next_actions: list[str]
+    recommended_next_actions: list[str]
+    blocking_issues: list[str]
+    history: list[dict[str, object]] = Field(default_factory=list)
+    notes: list[dict[str, object]] = Field(default_factory=list)
+    metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class ExtractRequest(BaseModel):
@@ -1043,12 +1241,57 @@ def global_knowledge_graph_experiment(experiment_id: str) -> dict[str, object]:
     return neighborhood
 
 
+@app.get("/search/universal", tags=["search"])
+def universal_search(q: str = Query(..., min_length=1), limit_per_group: int = Query(8, ge=1, le=25)) -> dict[str, object]:
+    """Search all local ResearchOS objects across providers."""
+
+    return universal_search_service.search(q, limit_per_group=limit_per_group)
+
+
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 def health() -> HealthResponse:
     """Return a minimal health check for uptime probes and local smoke tests."""
 
     logger.debug("Health check requested.")
     return HealthResponse(status="ok", project="ResearchOS")
+
+
+@app.get("/status/automation", tags=["system"])
+def automation_status() -> dict[str, object]:
+    """Return event bus and automation engine diagnostics."""
+
+    return {
+        "event_bus": {
+            "processed_event_count": len(event_bus.history()),
+            "recent_events": [event.as_dict() for event in event_bus.history()[-10:]],
+        },
+        "automation_engine": automation_engine.status(),
+    }
+
+
+@app.get("/agents", response_model=AgentManagerStatusResponse, tags=["agents"])
+def agents() -> AgentManagerStatusResponse:
+    """Return deterministic scientific agent status."""
+
+    return AgentManagerStatusResponse(**agent_manager.status())
+
+
+@app.post("/agents/{agent_id}/enable", response_model=AgentManagerStatusResponse, tags=["agents"])
+def enable_agent(agent_id: str) -> AgentManagerStatusResponse:
+    """Enable one deterministic scientific agent."""
+
+    if not agent_manager.enable_agent(agent_id):
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    return AgentManagerStatusResponse(**agent_manager.status())
+
+
+@app.post("/agents/{agent_id}/disable", response_model=AgentManagerStatusResponse, tags=["agents"])
+def disable_agent(agent_id: str) -> AgentManagerStatusResponse:
+    """Disable one deterministic scientific agent."""
+
+    if not agent_manager.disable_agent(agent_id):
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    return AgentManagerStatusResponse(**agent_manager.status())
 
 
 def _deployment_status() -> dict[str, object]:
@@ -1403,6 +1646,147 @@ def organoid_batch_api(entity_name: str) -> OntologyEntityResponse:
     return _ontology_entity("organoid-batches", entity_name)
 
 
+@app.get("/api/dashboard/daily", tags=["dashboard"])
+def daily_dashboard(use_ai: bool = Query(True)) -> dict[str, object]:
+    """Return the daily ResearchOS attention dashboard."""
+
+    return dashboard_service.build(use_ai=use_ai)
+
+
+@app.get("/workflows", response_model=list[WorkflowResponse], tags=["workflows"])
+def workflows() -> list[WorkflowResponse]:
+    """Return ResearchOS workflows for extracted experiments."""
+
+    store = SQLiteStore(settings=settings)
+    return [WorkflowResponse(**workflow) for workflow in WorkflowEngine(store).list_workflows()]
+
+
+@app.get("/workflows/definitions", tags=["workflows"])
+def workflow_definitions() -> dict[str, object]:
+    """Return registered workflow definitions and future workflow types."""
+
+    store = SQLiteStore(settings=settings)
+    definitions = WorkflowEngine(store).definitions()
+    return {
+        "definitions": definitions,
+        "future_workflow_types": [
+            "Experiment",
+            "Protocol Development",
+            "RNA-seq Analysis",
+            "Microscopy Analysis",
+            "Manuscript",
+            "Grant",
+            "Patent",
+            "Publication",
+        ],
+    }
+
+
+@app.get("/workflows/experiment/{experiment_id}", response_model=WorkflowResponse, tags=["workflows"])
+def experiment_workflow(experiment_id: str) -> WorkflowResponse:
+    """Return or create the workflow for an extracted experiment."""
+
+    store = SQLiteStore(settings=settings)
+    workflow = WorkflowEngine(store).workflow_for_experiment_reference(experiment_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    return WorkflowResponse(**workflow)
+
+
+@app.get("/workflows/{workflow_id}", response_model=WorkflowResponse, tags=["workflows"])
+def workflow_detail(workflow_id: str) -> WorkflowResponse:
+    """Return one generic workflow."""
+
+    store = SQLiteStore(settings=settings)
+    workflow = WorkflowEngine(store).get_workflow(workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
+    return WorkflowResponse(**workflow)
+
+
+@app.post("/workflows/{workflow_id}/transition", response_model=WorkflowResponse, tags=["workflows"])
+def workflow_transition(workflow_id: str, request: WorkflowTransitionRequest) -> WorkflowResponse:
+    """Transition one workflow and publish workflow automation events."""
+
+    store = SQLiteStore(settings=settings)
+    try:
+        workflow = WorkflowEngine(store).transition(
+            workflow_id,
+            request.to_stage,
+            reason=request.reason,
+            actor=request.actor or "ResearchOS",
+            metadata=dict(request.metadata),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _publish_event(
+        EventType.WORKFLOW_TRANSITIONED,
+        "workflow_engine",
+        {"workflow_id": workflow_id, "to_stage": workflow.get("current_stage"), "workflow_type": workflow.get("workflow_type")},
+    )
+    return WorkflowResponse(**workflow)
+
+
+@app.post("/workflows/{workflow_id}/note", response_model=WorkflowResponse, tags=["workflows"])
+def workflow_note(workflow_id: str, request: WorkflowNoteRequest) -> WorkflowResponse:
+    """Append a workflow note to the current or specified stage."""
+
+    store = SQLiteStore(settings=settings)
+    try:
+        workflow = WorkflowEngine(store).add_note(
+            workflow_id,
+            request.note.strip(),
+            actor=request.actor or "ResearchOS",
+            stage=request.stage,
+            metadata=dict(request.metadata),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _publish_event(
+        EventType.WORKFLOW_NOTE_ADDED,
+        "workflow_engine",
+        {"workflow_id": workflow_id, "stage": workflow.get("current_stage"), "workflow_type": workflow.get("workflow_type")},
+    )
+    return WorkflowResponse(**workflow)
+
+
+@app.get("/protocols", tags=["protocols"])
+def protocols() -> list[dict[str, object]]:
+    """Return detected read-only protocol objects."""
+
+    return protocol_service.list_protocols()
+
+
+@app.get("/protocols/{protocol_id}/history", tags=["protocols"])
+def protocol_history(protocol_id: str) -> list[dict[str, object]]:
+    """Return version history for a detected protocol family."""
+
+    history = protocol_service.history(protocol_id)
+    if not history:
+        raise HTTPException(status_code=404, detail="Protocol not found.")
+    return history
+
+
+@app.get("/protocols/{protocol_id}/compare/{other_id}", tags=["protocols"])
+def protocol_compare(protocol_id: str, other_id: str) -> dict[str, object]:
+    """Compare two detected protocol versions without editing either source."""
+
+    comparison = protocol_service.compare(protocol_id, other_id)
+    if comparison is None:
+        raise HTTPException(status_code=404, detail="One or both protocols were not found.")
+    return comparison
+
+
+@app.get("/protocols/{protocol_id}", tags=["protocols"])
+def protocol_detail(protocol_id: str) -> dict[str, object]:
+    """Return the Protocol Workspace for one detected protocol."""
+
+    protocol = protocol_service.get_protocol(protocol_id)
+    if protocol is None:
+        raise HTTPException(status_code=404, detail="Protocol not found.")
+    return protocol
+
+
 @app.get("/", include_in_schema=False)
 @app.get("/dashboard", include_in_schema=False)
 def homepage() -> FileResponse:
@@ -1521,6 +1905,27 @@ def sync_onenote() -> IngestResponse:
             ),
         ) from exc
 
+    _publish_event(
+        EventType.PROVIDER_SYNCED,
+        "onenote",
+        {
+            "provider": "onenote",
+            "documents_ingested": result.documents_ingested,
+            "chunks_indexed": result.chunks_indexed,
+            "experiments_extracted": result.experiments_extracted,
+        },
+    )
+    _publish_event(
+        EventType.NOTEBOOK_IMPORTED,
+        "onenote",
+        {"provider": "onenote", "documents_ingested": result.documents_ingested},
+    )
+    if result.experiments_extracted:
+        _publish_event(
+            EventType.EXPERIMENT_EXTRACTED,
+            "onenote",
+            {"provider": "onenote", "experiments_extracted": result.experiments_extracted},
+        )
     return IngestResponse(**result.__dict__)
 
 
@@ -1536,6 +1941,21 @@ def ingest_markdown(
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    _publish_event(
+        EventType.NOTEBOOK_IMPORTED,
+        "markdown",
+        {
+            "folder_path": str(resolved_request.folder_path),
+            "documents_ingested": result.documents_ingested,
+            "chunks_indexed": result.chunks_indexed,
+        },
+    )
+    if result.experiments_extracted:
+        _publish_event(
+            EventType.EXPERIMENT_EXTRACTED,
+            "markdown",
+            {"folder_path": str(resolved_request.folder_path), "experiments_extracted": result.experiments_extracted},
+        )
     return IngestResponse(**result.__dict__)
 
 
@@ -1553,6 +1973,11 @@ def ingest_papers() -> PaperIngestResponse:
         if result.documents_ingested
         else "No paper files found. Add .pdf, .txt, or .md files under samples/papers or data/papers."
     )
+    _publish_event(
+        EventType.LITERATURE_IMPORTED,
+        "literature",
+        {"documents_ingested": result.documents_ingested, "chunks_indexed": result.chunks_indexed},
+    )
     return PaperIngestResponse(message=message, **result.__dict__)
 
 
@@ -1564,6 +1989,21 @@ def demo_reset() -> DemoResetResponse:
     store = SQLiteStore(settings=settings)
     deleted_count = store.delete_documents_by_source_prefix(str(sample_path))
     result = ingest_markdown_folder(sample_path)
+    _publish_event(
+        EventType.NOTEBOOK_IMPORTED,
+        "demo",
+        {
+            "folder_path": str(sample_path),
+            "documents_deleted": deleted_count,
+            "documents_ingested": result.documents_ingested,
+        },
+    )
+    if result.experiments_extracted:
+        _publish_event(
+            EventType.EXPERIMENT_EXTRACTED,
+            "demo",
+            {"folder_path": str(sample_path), "experiments_extracted": result.experiments_extracted},
+        )
 
     return DemoResetResponse(
         documents_deleted=deleted_count,
@@ -1780,7 +2220,137 @@ def save_entry_draft(request: PendingEntrySaveRequest) -> PendingEntryResponse:
         markdown=request.markdown,
         status=request.status,
     )
+    _publish_event(
+        EventType.DRAFT_CREATED,
+        "entries",
+        {"entry_id": saved.get("id"), "experiment_id": saved.get("experiment_id"), "status": saved.get("status")},
+    )
     return PendingEntryResponse(**saved)
+
+
+@app.post("/sessions/start", response_model=SessionResponse, tags=["sessions"])
+def start_session(request: SessionStartRequest) -> SessionResponse:
+    """Start a live experiment session."""
+
+    store = SQLiteStore(settings=settings)
+    session = store.start_session(
+        experiment_id=request.experiment_id.strip() if request.experiment_id else None,
+        notes=request.notes.strip() if request.notes else None,
+    )
+    _publish_event(
+        EventType.SESSION_STARTED,
+        "sessions",
+        {"session_id": session.get("session_id"), "experiment_id": session.get("experiment_id")},
+    )
+    return SessionResponse(**session)
+
+
+@app.post("/sessions/{session_id}/end", response_model=SessionResponse, tags=["sessions"])
+def end_session(session_id: str, request: SessionEndRequest | None = Body(default=None)) -> SessionResponse:
+    """End a live experiment session."""
+
+    store = SQLiteStore(settings=settings)
+    session = store.end_session(session_id, notes=request.notes.strip() if request and request.notes else None)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    experiment_reference = session.get("experiment_id")
+    if experiment_reference:
+        experiment = store.find_experiment_by_reference(str(experiment_reference))
+        if experiment is not None:
+            workflow = WorkflowEngine(store).workflow_for_experiment(experiment)
+            if workflow.get("current_stage") == "Running":
+                transitioned = WorkflowEngine(store).transition(
+                    str(workflow["workflow_id"]),
+                    "Waiting",
+                    reason="Session completed.",
+                    actor="SessionAgent",
+                    metadata={"session_id": session_id},
+                )
+                _publish_event(
+                    EventType.WORKFLOW_TRANSITIONED,
+                    "sessions",
+                    {
+                        "session_id": session_id,
+                        "experiment_id": experiment.get("id"),
+                        "workflow_id": transitioned.get("workflow_id"),
+                        "to_stage": transitioned.get("current_stage"),
+                    },
+                )
+    _publish_event(
+        EventType.SESSION_ENDED,
+        "sessions",
+        {"session_id": session.get("session_id"), "experiment_id": session.get("experiment_id")},
+    )
+    return SessionResponse(**session)
+
+
+@app.get("/sessions", response_model=list[SessionResponse], tags=["sessions"])
+def sessions() -> list[SessionResponse]:
+    """List live and completed experiment sessions."""
+
+    store = SQLiteStore(settings=settings)
+    return [SessionResponse(**session) for session in store.list_sessions()]
+
+
+@app.get("/sessions/{session_id}", response_model=SessionResponse, tags=["sessions"])
+def session_detail(session_id: str) -> SessionResponse:
+    """Return one experiment session workspace."""
+
+    store = SQLiteStore(settings=settings)
+    session = store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return SessionResponse(**session)
+
+
+@app.get("/sessions/{session_id}/timeline", response_model=list[SessionEventResponse], tags=["sessions"])
+def session_timeline(session_id: str) -> list[SessionEventResponse]:
+    """Return one session timeline."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return [SessionEventResponse(**event) for event in store.session_timeline(session_id)]
+
+
+@app.post("/sessions/{session_id}/events", response_model=SessionEventResponse, tags=["sessions"])
+def append_session_event(session_id: str, request: SessionEventAppendRequest) -> SessionEventResponse:
+    """Append a note, observation, treatment, media change, image, or file event."""
+
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Session event title must not be empty.")
+    store = SQLiteStore(settings=settings)
+    event = store.append_session_event(
+        session_id=session_id,
+        event_type=request.event_type,
+        title=request.title.strip(),
+        content=request.content.strip() if request.content else None,
+        asset_id=request.asset_id.strip() if request.asset_id else None,
+        metadata=dict(request.metadata),
+    )
+    if event is None:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    _publish_event(
+        EventType.SESSION_EVENT_APPENDED,
+        "sessions",
+        {
+            "session_id": session_id,
+            "event_id": event.get("event_id"),
+            "event_type": event.get("event_type"),
+            "asset_id": event.get("asset_id"),
+        },
+    )
+    if event.get("event_type") == "image_imported":
+        _publish_event(EventType.IMAGE_IMPORTED, "sessions", {"session_id": session_id, "asset_id": event.get("asset_id")})
+    elif event.get("event_type") == "file_imported":
+        _publish_event(EventType.ASSET_REGISTERED, "sessions", {"session_id": session_id, "asset_id": event.get("asset_id")})
+    elif event.get("event_type") == "graphpad_imported":
+        _publish_event(EventType.GRAPHPAD_PARSED, "sessions", {"session_id": session_id, "asset_id": event.get("asset_id")})
+    elif event.get("event_type") == "spreadsheet_imported":
+        _publish_event(EventType.SPREADSHEET_PARSED, "sessions", {"session_id": session_id, "asset_id": event.get("asset_id")})
+    elif event.get("event_type") == "notebook_draft_updated":
+        _publish_event(EventType.DRAFT_CREATED, "sessions", {"session_id": session_id})
+    return SessionEventResponse(**event)
 
 
 @app.get("/entries", response_model=list[PendingEntrySummaryResponse], tags=["entries"])
@@ -2021,6 +2591,31 @@ def _image_assets_for_experiment_reference(
     ]
 
 
+def _resolve_experiment_reference(store: SQLiteStore, experiment_id: str) -> dict[str, object]:
+    """Return an experiment by internal or human reference."""
+
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    return experiment
+
+
+def _lifecycle_payload(store: SQLiteStore, experiment: dict[str, object]) -> dict[str, object]:
+    """Build lifecycle response payload with rules and deterministic next actions."""
+
+    workflow = WorkflowEngine(store).workflow_for_experiment(experiment)
+    return {
+        "experiment_id": str(experiment["id"]),
+        "current_stage": str(workflow["current_stage"]),
+        "allowed_transitions": list(workflow["stage"].get("allowed_transitions", [])),
+        "completion_criteria": list(workflow["stage"].get("completion_criteria", [])),
+        "recommended_next_actions": list(workflow["recommended_next_actions"]),
+        "remaining_stages": list(workflow["remaining_stages"]),
+        "history": list(workflow["history"]),
+        "all_stages": [stage["name"] for stage in workflow["definition"].get("stages", []) if isinstance(stage, dict)],
+    }
+
+
 def _timeline_timestamp(*values: object) -> str:
     """Return the first useful timestamp as a readable ISO-like value."""
 
@@ -2125,6 +2720,43 @@ def _experiment_timeline(
                 "title": str(entry.get("title") or "Pending notebook entry"),
                 "description": f"Local ResearchOS draft entry with status {entry.get('status') or 'draft'}.",
                 "source": "pending_entries",
+                "linked_asset_ids": [],
+                "linked_document_ids": [],
+            }
+        )
+
+    for lifecycle_event in store.experiment_lifecycle_history(str(experiment["id"])):
+        from_stage = lifecycle_event.get("from_stage")
+        to_stage = lifecycle_event.get("to_stage")
+        events.append(
+            {
+                "timestamp": _timeline_timestamp(lifecycle_event.get("created_at")),
+                "event_type": "lifecycle_transition",
+                "title": f"Lifecycle: {to_stage}",
+                "description": (
+                    f"Stage changed from {from_stage or 'none'} to {to_stage}."
+                    + (f" Reason: {lifecycle_event.get('reason')}" if lifecycle_event.get("reason") else "")
+                ),
+                "source": str(lifecycle_event.get("actor") or "ResearchOS"),
+                "linked_asset_ids": [],
+                "linked_document_ids": [],
+            }
+        )
+
+    workflow_id = experiment_workflow_id(str(experiment["id"]))
+    for workflow_event in store.workflow_history(workflow_id):
+        from_stage = workflow_event.get("from_stage")
+        to_stage = workflow_event.get("to_stage")
+        events.append(
+            {
+                "timestamp": _timeline_timestamp(workflow_event.get("created_at")),
+                "event_type": "workflow_transition",
+                "title": f"Workflow: {to_stage}",
+                "description": (
+                    f"Workflow stage changed from {from_stage or 'none'} to {to_stage}."
+                    + (f" Reason: {workflow_event.get('reason')}" if workflow_event.get("reason") else "")
+                ),
+                "source": str(workflow_event.get("actor") or "ResearchOS"),
                 "linked_asset_ids": [],
                 "linked_document_ids": [],
             }
@@ -2296,6 +2928,17 @@ def graphpad_provider_scan() -> GraphPadScanResponse:
 
     store = SQLiteStore(settings=settings)
     result = scan_graphpad_assets(settings=settings)
+    for asset in result.registered_assets:
+        _publish_event(EventType.ASSET_REGISTERED, "graphpad", {"asset_id": asset.get("asset_id"), "provider": "graphpad"})
+        _publish_event(EventType.GRAPHPAD_PARSED, "graphpad", {"asset_id": asset.get("asset_id"), "filename": asset.get("filename")})
+        if isinstance(asset.get("metadata"), dict) and asset["metadata"].get("statistics"):
+            _publish_event(EventType.STATISTICS_GENERATED, "graphpad", {"asset_id": asset.get("asset_id")})
+    if result.assets_registered or result.assets_skipped:
+        _publish_event(
+            EventType.PROVIDER_SYNCED,
+            "graphpad",
+            {"provider": "graphpad", "assets_registered": result.assets_registered, "assets_skipped": result.assets_skipped},
+        )
     return GraphPadScanResponse(
         provider=result.provider,
         folders=result.folders,
@@ -2380,6 +3023,15 @@ def images_provider_scan() -> ImageProviderScanResponse:
 
     store = SQLiteStore(settings=settings)
     result = scan_microscopy_assets(settings=settings)
+    for asset in result.registered_assets:
+        _publish_event(EventType.ASSET_REGISTERED, "microscopy", {"asset_id": asset.get("asset_id"), "provider": "microscopy"})
+        _publish_event(EventType.IMAGE_IMPORTED, "microscopy", {"asset_id": asset.get("asset_id"), "filename": asset.get("filename")})
+    if result.assets_registered or result.assets_skipped:
+        _publish_event(
+            EventType.PROVIDER_SYNCED,
+            "microscopy",
+            {"provider": "microscopy", "assets_registered": result.assets_registered, "assets_skipped": result.assets_skipped},
+        )
     return ImageProviderScanResponse(
         provider=result.provider,
         folders=result.folders,
@@ -2434,6 +3086,17 @@ def spreadsheets_provider_scan() -> SpreadsheetProviderScanResponse:
 
     store = SQLiteStore(settings=settings)
     result = scan_spreadsheet_assets(settings=settings)
+    for asset in result.registered_assets:
+        _publish_event(EventType.ASSET_REGISTERED, "spreadsheet", {"asset_id": asset.get("asset_id"), "provider": "spreadsheet"})
+        _publish_event(EventType.SPREADSHEET_PARSED, "spreadsheet", {"asset_id": asset.get("asset_id"), "filename": asset.get("filename")})
+        if isinstance(asset.get("metadata"), dict) and asset["metadata"].get("statistics"):
+            _publish_event(EventType.STATISTICS_GENERATED, "spreadsheet", {"asset_id": asset.get("asset_id")})
+    if result.assets_registered or result.assets_skipped:
+        _publish_event(
+            EventType.PROVIDER_SYNCED,
+            "spreadsheet",
+            {"provider": "spreadsheet", "assets_registered": result.assets_registered, "assets_skipped": result.assets_skipped},
+        )
     return SpreadsheetProviderScanResponse(
         provider=result.provider,
         folders=result.folders,
@@ -2537,6 +3200,11 @@ def register_asset(request: AssetRegisterRequest) -> AssetResponse:
         path=request.path.strip(),
         metadata=request.metadata,
     )
+    _publish_event(
+        EventType.ASSET_REGISTERED,
+        request.provider.strip() or "local",
+        {"asset_id": asset.get("asset_id"), "asset_type": asset.get("asset_type"), "experiment_id": asset.get("experiment_id")},
+    )
     return AssetResponse(**_asset_with_link_info(store, asset))
 
 
@@ -2548,6 +3216,11 @@ def link_asset(request: AssetLinkRequest) -> AssetResponse:
     asset = store.link_asset(request.asset_id, request.experiment_id)
     if asset is None:
         raise HTTPException(status_code=404, detail=f"Asset not found: {request.asset_id}")
+    _publish_event(
+        EventType.ASSET_LINKED,
+        str(asset.get("provider") or "local"),
+        {"asset_id": asset.get("asset_id"), "experiment_id": request.experiment_id},
+    )
     return AssetResponse(**_asset_with_link_info(store, asset))
 
 
@@ -2676,6 +3349,43 @@ def experiment_workspace(experiment_id: str, use_ai: bool = Query(True)) -> dict
     return workspace
 
 
+@app.get("/experiments/{experiment_id}/lifecycle", response_model=ExperimentLifecycleResponse, tags=["experiments"])
+def experiment_lifecycle(experiment_id: str) -> ExperimentLifecycleResponse:
+    """Return lifecycle state, rules, and recommended next actions."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = _resolve_experiment_reference(store, experiment_id)
+    return ExperimentLifecycleResponse(**_lifecycle_payload(store, experiment))
+
+
+@app.post("/experiments/{experiment_id}/transition", response_model=ExperimentLifecycleResponse, tags=["experiments"])
+def transition_experiment_lifecycle(
+    experiment_id: str,
+    request: ExperimentLifecycleTransitionRequest,
+) -> ExperimentLifecycleResponse:
+    """Transition an experiment workflow through the legacy lifecycle API."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = _resolve_experiment_reference(store, experiment_id)
+    try:
+        workflow = WorkflowEngine(store).workflow_for_experiment(experiment)
+        transitioned = WorkflowEngine(store).transition(
+            str(workflow["workflow_id"]),
+            request.to_stage,
+            reason=request.reason,
+            actor=request.actor or "ResearchOS",
+            metadata=dict(request.metadata),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _publish_event(
+        EventType.WORKFLOW_TRANSITIONED,
+        "experiment_lifecycle",
+        {"experiment_id": experiment.get("id"), "workflow_id": transitioned.get("workflow_id"), "to_stage": transitioned.get("current_stage")},
+    )
+    return ExperimentLifecycleResponse(**_lifecycle_payload(store, experiment))
+
+
 @app.get("/experiments/{experiment_id}/images", response_model=list[AssetResponse], tags=["experiments"])
 def experiment_images(experiment_id: str) -> list[AssetResponse]:
     """Return microscopy/image assets linked to an extracted or human experiment ID."""
@@ -2753,6 +3463,16 @@ def extract(request: ExtractRequest) -> ExtractResponse:
             store.upsert_experiment(experiment)
             extracted_count += 1
 
+    if extracted_count:
+        _publish_event(
+            EventType.EXPERIMENT_EXTRACTED,
+            "experiment_extraction",
+            {
+                "document_id": request.document_id,
+                "documents_scanned": len(documents_to_scan),
+                "experiments_extracted": extracted_count,
+            },
+        )
     return ExtractResponse(
         documents_scanned=len(documents_to_scan),
         experiments_extracted=extracted_count,

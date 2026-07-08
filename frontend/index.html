@@ -26,8 +26,10 @@
         <nav class="side-nav" aria-label="Primary navigation">
           <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
           <a href="#/new-experiment" data-nav="new-experiment">New Experiment</a>
+          <a href="#/sessions" data-nav="sessions">Sessions</a>
           <a href="#/saved-drafts" data-nav="saved-drafts">Saved Drafts</a>
           <a href="#/experiments" data-nav="experiments">Experiments</a>
+          <a href="#/workflows" data-nav="workflows">Workflows</a>
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/documents" data-nav="documents">Documents</a>
           <a href="#/assets" data-nav="assets">Assets</a>
@@ -55,6 +57,10 @@
             <h1 id="viewTitle">ResearchOS Dashboard</h1>
           </div>
           <div class="topbar-status">
+            <button type="button" class="global-search-button" id="globalSearchButton" aria-label="Open universal search">
+              Search
+              <kbd>Ctrl K</kbd>
+            </button>
             <span class="status-pill ok release-badge">ResearchOS v0.2 preview</span>
             <span class="status-pill" id="providerStatus">Provider: checking</span>
             <span class="status-pill" id="syncStatus">Sync: not loaded</span>
@@ -130,7 +136,25 @@
                 <span>Drafts ready for OneNote</span>
                 <strong id="metricReadyDrafts">0</strong>
               </article>
+              <article class="metric-card">
+                <span>Today's sessions</span>
+                <strong id="metricSessionsToday">0</strong>
+              </article>
             </section>
+
+            <section class="panel daily-dashboard-panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Today</p>
+                  <h2>Daily Dashboard</h2>
+                </div>
+                <span class="status-pill ok">Local evidence</span>
+              </div>
+              <p class="card-copy" id="dailyDashboardSummary">Loading daily ResearchOS attention summary...</p>
+              <div class="daily-dashboard-grid" id="dailyDashboardCards"></div>
+            </section>
+
+            <section class="panel" id="currentSessionCard"></section>
 
             <section class="dashboard-grid">
               <article class="panel suggested-panel">
@@ -331,6 +355,41 @@
             <article class="panel" id="savedDraftDetail"></article>
           </section>
 
+          <section class="view" id="sessionsView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Live workflow</p>
+                  <h2>Experiment Sessions</h2>
+                </div>
+                <span class="status-pill" id="sessionTimer">No active session</span>
+              </div>
+              <form class="entry-draft-form" id="sessionStartForm">
+                <label for="sessionExperimentSelect">Experiment</label>
+                <select id="sessionExperimentSelect"></select>
+                <label for="sessionStartNotes">Session notes</label>
+                <textarea id="sessionStartNotes" rows="3" placeholder="Starting media change, treatment, imaging session, or analysis..."></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Start Session</button>
+                  <button type="button" id="endSessionButton" class="secondary-button">End Active Session</button>
+                </div>
+              </form>
+              <p class="demo-status" id="sessionStatus"></p>
+            </article>
+
+            <article class="panel" id="activeSessionWorkspace"></article>
+
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">History</p>
+                  <h2>Today's Sessions</h2>
+                </div>
+              </div>
+              <div class="item-list" id="sessionsList"></div>
+            </article>
+          </section>
+
           <section class="view" id="experimentsView">
             <article class="panel">
               <div class="panel-heading">
@@ -375,6 +434,10 @@
               </div>
               <div class="item-list" id="protocolsList"></div>
             </article>
+          </section>
+
+          <section class="view" id="protocolDetailView">
+            <article class="panel" id="protocolDetail"></article>
           </section>
 
           <section class="view" id="documentsView">
@@ -634,6 +697,15 @@
               </div>
               <div class="settings-grid" id="providerCards"></div>
               <div class="settings-grid" id="oneNoteReadinessCards"></div>
+              <section class="detail-section">
+                <div class="panel-heading">
+                  <div>
+                    <p class="eyebrow">Deterministic automation</p>
+                    <h3>Scientific Agents</h3>
+                  </div>
+                </div>
+                <div class="settings-grid" id="agentCards"></div>
+              </section>
               <div class="approval-note" id="oneNoteReadinessInfo">
                 <h3>OneNote readiness</h3>
                 <p id="oneNoteReadinessCopy">Loading OneNote readiness status...</p>
@@ -658,6 +730,19 @@
             </article>
           </section>
 
+          <section class="view" id="workflowsView">
+            <section class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Workflow Engine</p>
+                  <h2>Research Workflows</h2>
+                </div>
+                <span class="status-pill ok">Experiment workflow active</span>
+              </div>
+              <div class="card-grid" id="workflowCards"></div>
+            </section>
+          </section>
+
           <footer class="app-footer" aria-label="ResearchOS footer">
             <strong>ResearchOS v0.2 preview</strong>
             <span>Local-first</span>
@@ -668,12 +753,29 @@
       </div>
     </div>
 
+    <div class="search-overlay" id="globalSearchOverlay" hidden>
+      <div class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="globalSearchTitle">
+        <div class="search-dialog-header">
+          <div>
+            <p class="eyebrow">Universal Scientific Search</p>
+            <h2 id="globalSearchTitle">Search ResearchOS</h2>
+          </div>
+          <button type="button" class="secondary-button" id="globalSearchClose">Close</button>
+        </div>
+        <label class="sr-only" for="globalSearchInput">Search all ResearchOS objects</label>
+        <input id="globalSearchInput" class="global-search-input" type="search" placeholder='Search SAG, "SAG D32", BRN3B, NK_Expt_31...' autocomplete="off" />
+        <div class="global-search-meta" id="globalSearchMeta">Type to search notebooks, experiments, entities, assets, literature, and commands.</div>
+        <div class="global-search-results" id="globalSearchResults"></div>
+      </div>
+    </div>
+
     <nav class="mobile-bottom-nav" aria-label="Mobile primary navigation">
       <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
       <a href="#/experiments" data-nav="experiments">Experiments</a>
+      <a href="#/workflows" data-nav="workflows">Workflows</a>
       <a href="#/new-experiment" data-nav="new-experiment">New Entry</a>
+      <a href="#/sessions" data-nav="sessions">Sessions</a>
       <a href="#/chat" data-nav="chat">Assistant</a>
-      <a href="#/graph" data-nav="graph">Graph</a>
     </nav>
 
     <script src="/frontend-assets/app.js" defer></script>

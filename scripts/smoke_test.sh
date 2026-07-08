@@ -43,10 +43,30 @@ request GET "/frontend-assets/manifest.webmanifest" >/dev/null
 request GET "/auth/status" >/dev/null
 request GET "/status/deployment" >/dev/null
 request GET "/status/onenote-readiness" >/dev/null
+request GET "/status/automation" >/dev/null
+request GET "/agents" >/dev/null
+request GET "/api/dashboard/daily?use_ai=false" >/dev/null
 request GET "/demo/status" >/dev/null
 request POST "/demo/reset" "{}" >/dev/null
 request GET "/documents" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
+WORKFLOWS_FILE="$(request GET "/workflows")"
+request GET "/workflows/definitions" >/dev/null
+request GET "/protocols" >/dev/null
+request GET "/sessions" >/dev/null
+SESSION_FILE="$(request POST "/sessions/start" '{"experiment_id":"SMOKE_SESSION","notes":"Smoke test session started."}')"
+SESSION_ID="$(
+  python3 - "$SESSION_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["session_id"])
+PY
+)"
+request POST "/sessions/$SESSION_ID/events" '{"event_type":"observation","title":"Smoke observation","content":"Session timeline smoke test."}' >/dev/null
+request GET "/sessions/$SESSION_ID/timeline" >/dev/null
+request POST "/sessions/$SESSION_ID/end" '{"notes":"Smoke test session ended."}' >/dev/null
 request GET "/providers/graphpad/status" >/dev/null
 request POST "/providers/graphpad/scan" "{}" >/dev/null
 request GET "/providers/images/status" >/dev/null
@@ -95,6 +115,7 @@ request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/download" >/dev/null
 request GET "/assets" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/graph/stats" >/dev/null
+request GET "/search/universal?q=SAG" >/dev/null
 request GET "/knowledgegraph" >/dev/null
 request GET "/knowledgegraph/search?q=SAG" >/dev/null
 request GET "/knowledgegraph/entity/SAG" >/dev/null
@@ -156,6 +177,26 @@ print(json.dumps({"asset_id": sys.argv[1], "experiment_id": sys.argv[2]}))
 PY
 )"
 request POST "/assets/link" "$IMAGE_LINK_BODY" >/dev/null
+request GET "/experiments/$FIRST_EXPERIMENT_ID/lifecycle" >/dev/null
+WORKFLOW_ID="$(
+  python3 - "$WORKFLOWS_FILE" "$FIRST_EXPERIMENT_ID" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    workflows = json.load(handle)
+
+for workflow in workflows:
+    if workflow.get("subject_id") == sys.argv[2]:
+        print(workflow["workflow_id"])
+        break
+else:
+    print(f"workflow:experiment:{sys.argv[2]}")
+PY
+)"
+request GET "/workflows/$WORKFLOW_ID" >/dev/null
+request GET "/workflows/experiment/$FIRST_EXPERIMENT_ID" >/dev/null
+request POST "/workflows/$WORKFLOW_ID/note" '{"note":"Smoke test workflow note.","actor":"smoke_test"}' >/dev/null
 request GET "/experiments/$FIRST_EXPERIMENT_ID/timeline" >/dev/null
 request GET "/experiments/$FIRST_EXPERIMENT_ID/workspace?use_ai=false" >/dev/null
 request GET "/knowledgegraph/experiment/$FIRST_EXPERIMENT_ID" >/dev/null

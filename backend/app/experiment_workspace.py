@@ -8,9 +8,11 @@ from app.ai_providers import AIProviderError, get_ai_provider
 from app.config import Settings, get_settings
 from app.global_knowledge_graph import KnowledgeGraphService
 from app.graphpad_provider import compact_graphpad_statistics_summary
+from app.research_copilot import ResearchCopilotService
 from app.spreadsheet_provider import compact_spreadsheet_summary
 from app.statistics_engine import interpret_statistics_asset
 from app.storage import SQLiteStore
+from app.workflow_engine import WorkflowEngine
 
 
 def build_experiment_workspace(
@@ -52,6 +54,9 @@ def build_experiment_workspace(
     conclusions = _workspace_conclusions(experiment, statistics, literature)
     limitations = _workspace_limitations(neighborhood, statistics, literature)
     ai_summary = _workspace_summary(experiment, neighborhood, statistics, literature, limitations, resolved_settings, use_ai)
+    workflow = _workspace_workflow(store, experiment)
+    lifecycle = _workflow_as_lifecycle(workflow)
+    notebook_entries = [_notebook_with_lifecycle_stage(entry, str(workflow.get("current_stage") or "Planning")) for entry in notebook_entries]
 
     compounds = _entity_names(entities, "compound", experiment.get("compounds") or [])
     markers = _entity_names(entities, "marker", experiment.get("markers") or [])
@@ -59,7 +64,7 @@ def build_experiment_workspace(
     proteins = _entity_names(entities, "protein", [])
     organoid_batches = _entity_names(entities, "organoid_batch", [experiment.get("organoid_batch")] if experiment.get("organoid_batch") else [])
 
-    return {
+    workspace = {
         "experiment": experiment,
         "notebook_entries": notebook_entries,
         "timeline": timeline,
@@ -75,11 +80,15 @@ def build_experiment_workspace(
         "organoid_batches": organoid_batches,
         "related_experiments": related_experiments,
         "related_entities": related_entities,
+        "workflow": workflow,
+        "lifecycle": lifecycle,
         "conclusions": conclusions,
         "limitations": limitations,
         "provenance": provenance,
         "sections": {
             "overview": _overview_section(experiment, compounds, markers, organoid_batches),
+            "workflow": workflow,
+            "lifecycle": lifecycle,
             "timeline": timeline.get("events") or [],
             "experimental_setup": _experimental_setup(experiment),
             "treatments": experiment.get("treatments") or [],
@@ -103,6 +112,8 @@ def build_experiment_workspace(
         },
         "ai_summary": ai_summary,
     }
+    workspace["research_copilot"] = ResearchCopilotService(settings=resolved_settings).build(workspace, use_ai=use_ai)
+    return workspace
 
 
 def _asset_only_neighborhood(experiment_id: str, linked_assets: list[dict[str, Any]]) -> dict[str, Any]:
@@ -123,6 +134,52 @@ def _asset_only_neighborhood(experiment_id: str, linked_assets: list[dict[str, A
         "literature": [],
         "entities": _asset_only_entities(linked_assets),
     }
+
+
+def _workspace_workflow(store: SQLiteStore, experiment: dict[str, Any]) -> dict[str, Any]:
+    """Return workflow context for an experiment workspace."""
+
+    experiment_id = str(experiment.get("id") or "")
+    if not experiment_id:
+        return {
+            "workflow_id": "",
+            "workflow_type": "experiment",
+            "current_stage": "Planning",
+            "history": [],
+            "completed_stages": [],
+            "remaining_stages": [],
+            "suggested_next_actions": [],
+            "recommended_next_actions": [],
+            "blocking_issues": [],
+            "progress": {"percent": 0},
+        }
+    return WorkflowEngine(store).workflow_for_experiment(experiment)
+
+
+def _workflow_as_lifecycle(workflow: dict[str, Any]) -> dict[str, Any]:
+    """Expose workflow data through the legacy lifecycle workspace field."""
+
+    stage = workflow.get("stage") if isinstance(workflow.get("stage"), dict) else {}
+    definition = workflow.get("definition") if isinstance(workflow.get("definition"), dict) else {}
+    stages = definition.get("stages") if isinstance(definition.get("stages"), list) else []
+    return {
+        "current_stage": workflow.get("current_stage", "Planning"),
+        "allowed_transitions": stage.get("allowed_transitions", []),
+        "completion_criteria": stage.get("completion_criteria", []),
+        "recommended_next_actions": workflow.get("recommended_next_actions", []),
+        "remaining_stages": workflow.get("remaining_stages", []),
+        "history": workflow.get("history", []),
+        "all_stages": [item.get("name") for item in stages if isinstance(item, dict) and item.get("name")],
+    }
+
+
+def _notebook_with_lifecycle_stage(entry: dict[str, Any], stage: str) -> dict[str, Any]:
+    """Associate read-only source notebook records with current lifecycle context."""
+
+    enriched = dict(entry)
+    enriched["workflow_stage"] = stage
+    enriched["lifecycle_stage"] = stage
+    return enriched
 
 
 def _workspace_asset_kind(asset: dict[str, Any]) -> str:

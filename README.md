@@ -145,6 +145,14 @@ Release notes:
 - [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md)
 - [docs/KNOWLEDGE_GRAPH_ASSISTANT.md](docs/KNOWLEDGE_GRAPH_ASSISTANT.md)
 - [docs/EXPERIMENT_WORKSPACE.md](docs/EXPERIMENT_WORKSPACE.md)
+- [docs/EXPERIMENT_LIFECYCLE.md](docs/EXPERIMENT_LIFECYCLE.md)
+- [docs/WORKFLOW_ENGINE.md](docs/WORKFLOW_ENGINE.md)
+- [docs/PROTOCOL_INTELLIGENCE.md](docs/PROTOCOL_INTELLIGENCE.md)
+- [docs/EXPERIMENT_SESSIONS.md](docs/EXPERIMENT_SESSIONS.md)
+- [docs/AUTOMATION_ENGINE.md](docs/AUTOMATION_ENGINE.md)
+- [docs/AGENT_FRAMEWORK.md](docs/AGENT_FRAMEWORK.md)
+- [docs/UNIVERSAL_SEARCH.md](docs/UNIVERSAL_SEARCH.md)
+- [docs/DAILY_DASHBOARD.md](docs/DAILY_DASHBOARD.md)
 - [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md)
 - [docs/LAB_SERVER_DEPLOYMENT.md](docs/LAB_SERVER_DEPLOYMENT.md)
 - [docs/ONENOTE_READINESS_CHECKLIST.md](docs/ONENOTE_READINESS_CHECKLIST.md)
@@ -360,6 +368,96 @@ proteins, markers, antibodies, cell lines, samples, batches, treatments, and
 new lab-specific entity types are automatically indexed.
 
 See [docs/GLOBAL_KNOWLEDGE_GRAPH.md](docs/GLOBAL_KNOWLEDGE_GRAPH.md).
+
+## Protocol Intelligence
+
+Protocol Intelligence detects protocol-like ResearchDocuments and protocol
+assets, versions them, links them to experiments, computes usage/success
+signals, and compares protocol versions without editing source protocols.
+
+Useful endpoints:
+
+```bash
+curl http://127.0.0.1:8001/protocols
+curl http://127.0.0.1:8001/protocols/protocol:example
+curl http://127.0.0.1:8001/protocols/protocol:example/history
+curl http://127.0.0.1:8001/protocols/protocol:example/compare/protocol:other
+```
+
+The dashboard Protocols page opens a Protocol Workspace with version history,
+timeline, linked experiments, related literature, statistics, success metrics,
+and a read-only Research Copilot summary. See
+[docs/PROTOCOL_INTELLIGENCE.md](docs/PROTOCOL_INTELLIGENCE.md).
+
+## Event Bus and Automation Engine
+
+ResearchOS now has a synchronous event bus and automation engine. Providers
+publish events such as `NotebookImported`, `AssetRegistered`,
+`SpreadsheetParsed`, `ImageImported`, and `ExperimentExtracted`; the automation
+engine refreshes derived layers and emits `KnowledgeGraphUpdated`,
+`WorkspaceUpdated`, `TimelineUpdated`, `DashboardUpdated`, and
+`SearchIndexUpdated`.
+
+Useful endpoint:
+
+```bash
+curl http://127.0.0.1:8001/status/automation
+```
+
+Future providers should publish events instead of directly calling Knowledge
+Graph, Workspace, Timeline, Search, Dashboard, or Copilot services. See
+[docs/AUTOMATION_ENGINE.md](docs/AUTOMATION_ENGINE.md).
+
+## Scientific Agent Framework
+
+ResearchOS Scientific Agents are deterministic workflow agents that react to
+EventBus events. They are not LLM agents and must not invent observations.
+
+Useful endpoints:
+
+```bash
+curl http://127.0.0.1:8001/agents
+curl -X POST http://127.0.0.1:8001/agents/statistics_agent/disable
+curl -X POST http://127.0.0.1:8001/agents/statistics_agent/enable
+```
+
+The Settings page shows agent status, last run, errors, and enable/disable
+controls. See [docs/AGENT_FRAMEWORK.md](docs/AGENT_FRAMEWORK.md).
+
+## Experiment Sessions
+
+Experiment Sessions are live workflow containers for active lab work. Start a
+session, append notes/observations/treatments/media changes/files/images, and
+end the session when the experiment work is complete.
+
+Useful endpoints:
+
+```bash
+curl -X POST http://127.0.0.1:8001/sessions/start \
+  -H "Content-Type: application/json" \
+  -d '{"experiment_id":"NK_Expt_31","notes":"Starting D32 staining session."}'
+
+curl http://127.0.0.1:8001/sessions
+```
+
+The dashboard shows the active session and today's sessions. See
+[docs/EXPERIMENT_SESSIONS.md](docs/EXPERIMENT_SESSIONS.md).
+
+## Universal Scientific Search
+
+Open the global search overlay from any page with `Ctrl+K` or `Cmd+K`, or use
+the API directly:
+
+```bash
+curl "http://127.0.0.1:8001/search/universal?q=SAG"
+curl "http://127.0.0.1:8001/search/universal?q=%22SAG%20D32%22"
+curl "http://127.0.0.1:8001/search/universal?q=BRN3B"
+```
+
+Universal Search groups results across experiments, notebook entries, Knowledge
+Graph entities, microscopy/images, GraphPad, spreadsheets, statistics,
+literature, timeline events, and commands. See
+[docs/UNIVERSAL_SEARCH.md](docs/UNIVERSAL_SEARCH.md).
 
 ## Knowledge Graph Assistant
 
