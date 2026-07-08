@@ -646,6 +646,44 @@ class MobileSessionNoteRequest(BaseModel):
     text: str
 
 
+class MobileObservationRequest(BaseModel):
+    """One-tap observation captured in Bench Mode."""
+
+    text: str
+
+
+class MobileTreatmentRequest(BaseModel):
+    """Minimal treatment record captured in Bench Mode."""
+
+    compound: str | None = None
+    dose: str | None = None
+    units: str | None = None
+    time: str | None = None
+    notes: str | None = None
+
+
+class MobileMediaChangeRequest(BaseModel):
+    """Minimal media-change record captured in Bench Mode."""
+
+    media_type: str | None = None
+    notes: str | None = None
+
+
+class MobileVoiceNoteRequest(BaseModel):
+    """Voice-note placeholder or future speech transcript captured in Bench Mode."""
+
+    transcript: str | None = None
+    placeholder: bool = True
+
+
+class MobileAttachPlaceholderRequest(BaseModel):
+    """Placeholder record for future camera/file/provider attachment flows."""
+
+    attachment_type: Literal["image", "file", "graphpad", "sequencing", "other"] = "file"
+    title: str | None = None
+    notes: str | None = None
+
+
 class SessionEventResponse(BaseModel):
     """One event in an experiment session timeline."""
 
@@ -3451,6 +3489,126 @@ def mobile_session_note(session_id: str, request: MobileSessionNoteRequest) -> d
         ),
     )
     return {"event": event.model_dump(), "session_id": session_id}
+
+
+def _mobile_bench_event(
+    session_id: str,
+    event_type: SessionEventType,
+    title: str,
+    content: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Append a typed Bench Mode action through the canonical session event API."""
+
+    event = append_session_event(
+        session_id,
+        SessionEventAppendRequest(
+            event_type=event_type,
+            title=title,
+            content=content,
+            metadata={"source": "mobile_bench", **(metadata or {})},
+        ),
+    )
+    return {
+        "session_id": session_id,
+        "event": event.model_dump(),
+        "timeline_updated": True,
+        "workspace_update_requested": True,
+    }
+
+
+@app.post("/mobile/sessions/{session_id}/observation", tags=["mobile"])
+def mobile_session_observation(session_id: str, request: MobileObservationRequest) -> dict[str, object]:
+    """Capture a one-tap Bench Mode observation."""
+
+    text = request.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Observation text must not be empty.")
+    return _mobile_bench_event(
+        session_id=session_id,
+        event_type="observation",
+        title="Observation",
+        content=text,
+        metadata={"action": "observation"},
+    )
+
+
+@app.post("/mobile/sessions/{session_id}/treatment", tags=["mobile"])
+def mobile_session_treatment(session_id: str, request: MobileTreatmentRequest) -> dict[str, object]:
+    """Capture a minimal treatment event from Bench Mode."""
+
+    metadata = {
+        "action": "treatment",
+        "compound": request.compound.strip() if request.compound else None,
+        "dose": request.dose.strip() if request.dose else None,
+        "units": request.units.strip() if request.units else None,
+        "time": request.time.strip() if request.time else None,
+    }
+    metadata = {key: value for key, value in metadata.items() if value is not None}
+    parts = [
+        f"compound={metadata['compound']}" if metadata.get("compound") else None,
+        f"dose={metadata['dose']} {metadata.get('units', '')}".strip() if metadata.get("dose") else None,
+        f"time={metadata['time']}" if metadata.get("time") else None,
+        request.notes.strip() if request.notes and request.notes.strip() else None,
+    ]
+    content = "; ".join(part for part in parts if part)
+    if not content:
+        raise HTTPException(status_code=400, detail="Treatment requires at least one field.")
+    return _mobile_bench_event(
+        session_id=session_id,
+        event_type="treatment",
+        title="Treatment",
+        content=content,
+        metadata=metadata,
+    )
+
+
+@app.post("/mobile/sessions/{session_id}/media-change", tags=["mobile"])
+def mobile_session_media_change(session_id: str, request: MobileMediaChangeRequest) -> dict[str, object]:
+    """Capture a minimal media-change event from Bench Mode."""
+
+    media_type = request.media_type.strip() if request.media_type else ""
+    notes = request.notes.strip() if request.notes else ""
+    content = "; ".join(part for part in [f"media={media_type}" if media_type else None, notes or None] if part)
+    if not content:
+        raise HTTPException(status_code=400, detail="Media change requires media type or notes.")
+    return _mobile_bench_event(
+        session_id=session_id,
+        event_type="media_change",
+        title="Media Change",
+        content=content,
+        metadata={"action": "media_change", "media_type": media_type} if media_type else {"action": "media_change"},
+    )
+
+
+@app.post("/mobile/sessions/{session_id}/voice-note", tags=["mobile"])
+def mobile_session_voice_note(session_id: str, request: MobileVoiceNoteRequest) -> dict[str, object]:
+    """Capture a voice-note placeholder or future speech transcript from Bench Mode."""
+
+    transcript = request.transcript.strip() if request.transcript else ""
+    content = transcript or "Voice capture placeholder. Speech-to-text is not enabled yet."
+    return _mobile_bench_event(
+        session_id=session_id,
+        event_type="voice_note",
+        title="Voice Note",
+        content=content,
+        metadata={"action": "voice_note", "placeholder": request.placeholder},
+    )
+
+
+@app.post("/mobile/sessions/{session_id}/attach-placeholder", tags=["mobile"])
+def mobile_session_attach_placeholder(session_id: str, request: MobileAttachPlaceholderRequest) -> dict[str, object]:
+    """Record a placeholder for future camera, file, GraphPad, or sequencing attachment."""
+
+    title = request.title.strip() if request.title else f"{request.attachment_type.title()} Attachment Placeholder"
+    notes = request.notes.strip() if request.notes else f"{request.attachment_type.title()} attachment is not implemented yet."
+    return _mobile_bench_event(
+        session_id=session_id,
+        event_type="manual_note",
+        title=title,
+        content=notes,
+        metadata={"action": "attach_placeholder", "attachment_type": request.attachment_type},
+    )
 
 
 @app.post("/mobile/sessions/{session_id}/end", tags=["mobile"])

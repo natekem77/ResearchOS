@@ -57,16 +57,23 @@ Current action buttons:
 The current prototype records timestamped session notes through:
 
 ```http
-POST /mobile/sessions/{session_id}/note
+POST /mobile/sessions/{session_id}/observation
+POST /mobile/sessions/{session_id}/treatment
+POST /mobile/sessions/{session_id}/media-change
+POST /mobile/sessions/{session_id}/voice-note
+POST /mobile/sessions/{session_id}/attach-placeholder
 ```
 
-It does not yet access the device microphone, camera, file picker, barcode scanner, microscope, or sequencing instrument.
+Each endpoint appends a session timeline event and publishes a ResearchOS EventBus event through the existing session-event pipeline.
+
+The prototype does not yet access the device microphone, camera, file picker, barcode scanner, microscope, or sequencing instrument.
 
 ## Voice Workflow
 
 Current behavior:
 
-- Voice Note immediately appends a placeholder transcript to the active session.
+- Voice Note immediately calls `POST /mobile/sessions/{session_id}/voice-note`.
+- If speech recognition is unavailable, it appends a placeholder transcript to the active session.
 - This validates the interaction flow without requiring device speech APIs.
 
 Future behavior:
@@ -85,7 +92,8 @@ Voice capture must never silently write final notebook content. The scientist re
 
 Current behavior:
 
-- Capture Image records a placeholder session note.
+- Capture Image calls `POST /mobile/sessions/{session_id}/attach-placeholder` with `attachment_type="image"`.
+- No real camera or gallery access is implemented yet.
 
 Future behavior:
 
@@ -104,7 +112,8 @@ Microscope integrations should follow the same asset workflow rather than implem
 Current behavior:
 
 - Treatment opens a bottom sheet for compound, dose, units, time, and notes.
-- The entry is appended to the session timeline.
+- It calls `POST /mobile/sessions/{session_id}/treatment`.
+- The backend appends a timestamped treatment event to the session timeline.
 
 Future behavior:
 
@@ -120,7 +129,8 @@ Future behavior:
 Current behavior:
 
 - Media Change opens a bottom sheet for media type and notes.
-- The entry is appended to the session timeline.
+- It calls `POST /mobile/sessions/{session_id}/media-change`.
+- The backend appends a timestamped media-change event to the session timeline.
 
 Future behavior:
 

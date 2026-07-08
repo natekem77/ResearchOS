@@ -106,6 +106,11 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 PY
 )"
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/note" '{"note_type":"observation","text":"Mobile smoke observation."}' >/dev/null
+request POST "/mobile/sessions/$MOBILE_SESSION_ID/observation" '{"text":"Bench Mode observation smoke test."}' >/dev/null
+request POST "/mobile/sessions/$MOBILE_SESSION_ID/treatment" '{"compound":"SAG","dose":"100","units":"nM","time":"D32","notes":"Bench Mode treatment smoke test."}' >/dev/null
+request POST "/mobile/sessions/$MOBILE_SESSION_ID/media-change" '{"media_type":"retinal differentiation medium","notes":"Bench Mode media change smoke test."}' >/dev/null
+request POST "/mobile/sessions/$MOBILE_SESSION_ID/voice-note" '{"transcript":"Bench Mode voice placeholder smoke test.","placeholder":true}' >/dev/null
+request POST "/mobile/sessions/$MOBILE_SESSION_ID/attach-placeholder" '{"attachment_type":"image","title":"Bench Mode image placeholder","notes":"Camera capture not implemented yet."}' >/dev/null
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/end" '{"notes":"Mobile smoke session ended."}' >/dev/null
 request GET "/providers/graphpad/status" >/dev/null
 request POST "/providers/graphpad/scan" "{}" >/dev/null

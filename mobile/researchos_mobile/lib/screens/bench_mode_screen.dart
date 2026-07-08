@@ -16,6 +16,7 @@ class BenchModeScreen extends StatefulWidget {
 
 class _BenchModeScreenState extends State<BenchModeScreen> {
   late Future<_BenchState> _future;
+  bool _actionInFlight = false;
 
   @override
   void initState() {
@@ -42,20 +43,40 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     });
   }
 
-  Future<void> _appendNote(String noteType, String text) async {
+  Future<String?> _activeSessionId() async {
     final state = await _future;
     final session = state.session;
     if (session == null) {
       _showSnack('No active session.');
+      return null;
+    }
+    return session.sessionId;
+  }
+
+  Future<void> _runBenchAction(Future<void> Function(String sessionId) action) async {
+    if (_actionInFlight) {
       return;
     }
-    await widget.api.appendSessionNote(
-      sessionId: session.sessionId,
-      noteType: noteType,
-      text: text,
-    );
-    _showSnack('Added to session timeline.');
-    _reload();
+    final sessionId = await _activeSessionId();
+    if (sessionId == null) {
+      return;
+    }
+    setState(() {
+      _actionInFlight = true;
+    });
+    try {
+      await action(sessionId);
+      _showSnack('Added to session timeline.');
+      _reload();
+    } catch (error) {
+      _showSnack('Action failed: $error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _actionInFlight = false;
+        });
+      }
+    }
   }
 
   void _showSnack(String message) {
@@ -66,9 +87,11 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
   }
 
   Future<void> _quickVoiceNote() async {
-    await _appendNote(
-      'voice_transcript',
-      'Voice capture placeholder. Speech-to-text will be added in a future milestone.',
+    await _runBenchAction(
+      (sessionId) => widget.api.recordVoiceNote(
+        sessionId: sessionId,
+        transcript: 'Voice capture placeholder. Speech-to-text will be added in a future milestone.',
+      ),
     );
   }
 
@@ -85,7 +108,7 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
 
   Future<void> _openTextSheet({
     required String title,
-    required String noteType,
+    required Future<void> Function(String sessionId, String text) onSubmit,
     String hint = 'Add a timestamped note...',
     List<Widget> extraFields = const [],
     String Function(String text)? formatText,
@@ -132,7 +155,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     if (result == null || result.isEmpty) {
       return;
     }
-    await _appendNote(noteType, formatText == null ? result : formatText(result));
+    final text = formatText == null ? result : formatText(result);
+    await _runBenchAction((sessionId) => onSubmit(sessionId, text));
   }
 
   Future<void> _openTreatmentSheet() async {
@@ -142,7 +166,16 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     final time = TextEditingController();
     await _openTextSheet(
       title: 'Treatment',
-      noteType: 'treatment',
+      onSubmit: (sessionId, notes) {
+        return widget.api.recordTreatment(
+          sessionId: sessionId,
+          compound: compound.text,
+          dose: dose.text,
+          units: units.text,
+          time: time.text,
+          notes: notes,
+        );
+      },
       hint: 'Notes, lot number, deviations...',
       extraFields: [
         Row(
@@ -162,15 +195,6 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
         ),
         const SizedBox(height: ResearchOsSpacing.md),
       ],
-      formatText: (notes) {
-        final pieces = [
-          if (compound.text.trim().isNotEmpty) 'compound=${compound.text.trim()}',
-          if (dose.text.trim().isNotEmpty) 'dose=${dose.text.trim()} ${units.text.trim()}',
-          if (time.text.trim().isNotEmpty) 'time=${time.text.trim()}',
-          'notes=$notes',
-        ];
-        return pieces.join('; ');
-      },
     );
   }
 
@@ -178,15 +202,18 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     final media = TextEditingController();
     await _openTextSheet(
       title: 'Media Change',
-      noteType: 'media_change',
+      onSubmit: (sessionId, notes) {
+        return widget.api.recordMediaChange(
+          sessionId: sessionId,
+          mediaType: media.text,
+          notes: notes,
+        );
+      },
       hint: 'Volume, media condition, observations...',
       extraFields: [
         _smallField(media, 'Media type'),
         const SizedBox(height: ResearchOsSpacing.md),
       ],
-      formatText: (notes) {
-        return media.text.trim().isEmpty ? notes : 'media=${media.text.trim()}; notes=$notes';
-      },
     );
   }
 
@@ -226,13 +253,20 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
               _ActionGrid(
                 actions: [
                   _BenchAction(Icons.mic, 'Voice Note', _quickVoiceNote),
-                  _BenchAction(Icons.edit_note, 'Observation', () => _openTextSheet(title: 'Observation', noteType: 'observation')),
+                  _BenchAction(
+                    Icons.edit_note,
+                    'Observation',
+                    () => _openTextSheet(
+                      title: 'Observation',
+                      onSubmit: (sessionId, text) => widget.api.recordObservation(sessionId: sessionId, text: text),
+                    ),
+                  ),
                   _BenchAction(Icons.water_drop_outlined, 'Media Change', _openMediaChangeSheet),
                   _BenchAction(Icons.medication_outlined, 'Treatment', _openTreatmentSheet),
-                  _BenchAction(Icons.photo_camera_outlined, 'Capture Image', () async => _appendNote('observation', 'Image capture placeholder. Camera/gallery import will be added later.')),
-                  _BenchAction(Icons.attach_file, 'Attach File', () async => _appendNote('manual_note', 'File attachment placeholder. Native file import will be added later.')),
-                  _BenchAction(Icons.bar_chart, 'Add GraphPad', () async => _appendNote('manual_note', 'GraphPad import placeholder. Upload/scan workflow will be added later.')),
-                  _BenchAction(Icons.biotech_outlined, 'Add Sequencing', () async => _appendNote('manual_note', 'Sequencing attachment placeholder. Provider integration will be added later.')),
+                  _BenchAction(Icons.photo_camera_outlined, 'Capture Image', () => _placeholder('image', 'Image capture placeholder', 'Camera/gallery import will be added later.')),
+                  _BenchAction(Icons.attach_file, 'Attach File', () => _placeholder('file', 'File attachment placeholder', 'Native file import will be added later.')),
+                  _BenchAction(Icons.bar_chart, 'Add GraphPad', () => _placeholder('graphpad', 'GraphPad import placeholder', 'Upload/scan workflow will be added later.')),
+                  _BenchAction(Icons.biotech_outlined, 'Add Sequencing', () => _placeholder('sequencing', 'Sequencing attachment placeholder', 'Provider integration will be added later.')),
                   _BenchAction(Icons.check_circle_outline, 'Finish Session', _finishSession, destructive: true),
                 ],
               ),
@@ -240,6 +274,17 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
           ),
         );
       },
+    );
+  }
+
+  Future<void> _placeholder(String attachmentType, String title, String notes) async {
+    await _runBenchAction(
+      (sessionId) => widget.api.attachPlaceholder(
+        sessionId: sessionId,
+        attachmentType: attachmentType,
+        title: title,
+        notes: notes,
+      ),
     );
   }
 }

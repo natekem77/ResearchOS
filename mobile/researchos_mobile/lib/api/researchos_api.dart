@@ -81,6 +81,80 @@ class ResearchOsApi {
     );
   }
 
+  Future<Map<String, dynamic>> recordObservation({
+    required String sessionId,
+    required String text,
+  }) {
+    return _postMap(
+      '/mobile/sessions/${Uri.encodeComponent(sessionId)}/observation',
+      {'text': text},
+    );
+  }
+
+  Future<Map<String, dynamic>> recordTreatment({
+    required String sessionId,
+    String? compound,
+    String? dose,
+    String? units,
+    String? time,
+    String? notes,
+  }) {
+    return _postMap(
+      '/mobile/sessions/${Uri.encodeComponent(sessionId)}/treatment',
+      {
+        if (compound != null && compound.trim().isNotEmpty) 'compound': compound.trim(),
+        if (dose != null && dose.trim().isNotEmpty) 'dose': dose.trim(),
+        if (units != null && units.trim().isNotEmpty) 'units': units.trim(),
+        if (time != null && time.trim().isNotEmpty) 'time': time.trim(),
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> recordMediaChange({
+    required String sessionId,
+    String? mediaType,
+    String? notes,
+  }) {
+    return _postMap(
+      '/mobile/sessions/${Uri.encodeComponent(sessionId)}/media-change',
+      {
+        if (mediaType != null && mediaType.trim().isNotEmpty) 'media_type': mediaType.trim(),
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> recordVoiceNote({
+    required String sessionId,
+    String? transcript,
+    bool placeholder = true,
+  }) {
+    return _postMap(
+      '/mobile/sessions/${Uri.encodeComponent(sessionId)}/voice-note',
+      {
+        if (transcript != null && transcript.trim().isNotEmpty) 'transcript': transcript.trim(),
+        'placeholder': placeholder,
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> attachPlaceholder({
+    required String sessionId,
+    required String attachmentType,
+    String? title,
+    String? notes,
+  }) {
+    return _postMap(
+      '/mobile/sessions/${Uri.encodeComponent(sessionId)}/attach-placeholder',
+      {
+        'attachment_type': attachmentType,
+        if (title != null && title.trim().isNotEmpty) 'title': title.trim(),
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+      },
+    );
+  }
+
   Future<MobileSession> endSession(String sessionId, {String? notes}) async {
     final json = await _postMap(
       '/mobile/sessions/${Uri.encodeComponent(sessionId)}/end',
