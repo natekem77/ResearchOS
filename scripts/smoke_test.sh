@@ -46,6 +46,8 @@ request GET "/auth/permissions" >/dev/null
 request GET "/users" >/dev/null
 request GET "/workspaces" >/dev/null
 request POST "/workspaces/bootstrap-default" "{}" >/dev/null
+request GET "/workspaces/current" >/dev/null
+request POST "/workspaces/current" '{"workspace_id":"workspace:demo-lab"}' >/dev/null
 request GET "/status/deployment" >/dev/null
 request GET "/status/onenote-readiness" >/dev/null
 request GET "/status/automation" >/dev/null
@@ -54,11 +56,15 @@ request GET "/api/dashboard/daily?use_ai=false" >/dev/null
 request GET "/demo/status" >/dev/null
 request POST "/demo/reset" "{}" >/dev/null
 request GET "/documents" >/dev/null
+request GET "/documents?workspace_id=workspace:demo-lab" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
+request GET "/experiments?workspace_id=workspace:demo-lab" >/dev/null
 WORKFLOWS_FILE="$(request GET "/workflows")"
+request GET "/workflows?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/workflows/definitions" >/dev/null
 request GET "/protocols" >/dev/null
 request GET "/sessions" >/dev/null
+request GET "/sessions?workspace_id=workspace:demo-lab" >/dev/null
 SESSION_FILE="$(request POST "/sessions/start" '{"experiment_id":"SMOKE_SESSION","notes":"Smoke test session started."}')"
 SESSION_ID="$(
   python3 - "$SESSION_FILE" <<'PY'
@@ -80,8 +86,11 @@ request GET "/providers/spreadsheets/status" >/dev/null
 request POST "/providers/spreadsheets/scan" "{}" >/dev/null
 request GET "/experiments/NK_Expt_31/workspace?use_ai=false" >/dev/null
 SPREADSHEETS_FILE="$(request GET "/spreadsheets")"
+request GET "/spreadsheets?workspace_id=workspace:demo-lab" >/dev/null
 IMAGES_FILE="$(request GET "/images")"
+request GET "/images?workspace_id=workspace:demo-lab" >/dev/null
 STATISTICS_FILE="$(request GET "/statistics")"
+request GET "/statistics?workspace_id=workspace:demo-lab" >/dev/null
 GRAPH_PAD_STAT_ASSET_ID="$(
   python3 - "$STATISTICS_FILE" <<'PY'
 import json
@@ -118,10 +127,13 @@ request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/summary" >/dev/null
 request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/compact-summary" >/dev/null
 request GET "/spreadsheets/$SPREADSHEET_ASSET_ID/download" >/dev/null
 request GET "/assets" >/dev/null
+request GET "/assets?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/papers" >/dev/null
+request GET "/papers?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/graph/stats" >/dev/null
 request GET "/search/universal?q=SAG" >/dev/null
 request GET "/knowledgegraph" >/dev/null
+request GET "/knowledgegraph?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/knowledgegraph/search?q=SAG" >/dev/null
 request GET "/knowledgegraph/entity/SAG" >/dev/null
 request GET "/knowledgegraph/type/marker" >/dev/null
@@ -129,6 +141,7 @@ request GET "/entry-templates" >/dev/null
 request POST "/entries/draft" '{"template":"retinal_organoid","dictation":"Create NK Expt 31. Date today. Researcher Nathan. D18 SAG plus GRKi rescue with 100 nM SAG and 250 nM GRK inhibitor. DMSO control. Readouts SIX6 and BRN3B. Next steps quantify SIX6 intensity.","use_ai":false}' >/dev/null
 SAVED_ENTRY_FILE="$(request POST "/entries/save-draft" '{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1","template":"general_experiment","structured":{"title":"Smoke Test Pending Entry","experiment_id":"SMOKE-ENTRY-1"},"markdown":"# Smoke Test Pending Entry\n\nLocal pending entry smoke test.","status":"draft"}')"
 request GET "/entries" >/dev/null
+request GET "/entries?workspace_id=workspace:demo-lab" >/dev/null
 SAVED_ENTRY_ID="$(
   python3 - "$SAVED_ENTRY_FILE" <<'PY'
 import json

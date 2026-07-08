@@ -75,7 +75,10 @@ def microscopy_status(settings: Settings | None = None) -> dict[str, Any]:
     }
 
 
-def scan_microscopy_assets(settings: Settings | None = None) -> ImageScanResult:
+def scan_microscopy_assets(
+    settings: Settings | None = None,
+    workspace_id: str | None = None,
+) -> ImageScanResult:
     """Discover supported image files and register/update image assets."""
 
     resolved_settings = settings or get_settings()
@@ -108,6 +111,7 @@ def scan_microscopy_assets(settings: Settings | None = None) -> ImageScanResult:
             provider=MICROSCOPY_PROVIDER,
             path=stored_path,
             metadata=metadata,
+            workspace_id=workspace_id,
         )
         registered_assets.append(asset)
 

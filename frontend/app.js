@@ -14,6 +14,7 @@ const state = {
   auth: null,
   currentUser: null,
   currentPermissions: null,
+  currentWorkspace: null,
   dailyDashboard: null,
   providerStatus: null,
   agentStatus: null,
@@ -159,6 +160,18 @@ function setStatus() {
     : state.lastSync
     ? `Sync: ${state.lastSync.toLocaleTimeString()}`
     : "Sync: not loaded";
+  renderWorkspaceSwitcher();
+}
+
+function renderWorkspaceSwitcher() {
+  const target = $("#workspaceSwitcher");
+  if (!target) return;
+  const workspace = state.currentWorkspace || state.currentUser?.current_workspace || state.dailyDashboard?.workspace || {};
+  const name = workspace.name || "Demo Lab Workspace";
+  const workspaceId = workspace.workspace_id || "workspace:demo-lab";
+  target.innerHTML = `<option value="${escapeHtml(workspaceId)}">${escapeHtml(name)}</option>`;
+  target.disabled = true;
+  target.title = "Workspace switching is scaffolded; strict workspace isolation is not enforced yet.";
 }
 
 function recordActivity(title, meta) {
@@ -363,6 +376,10 @@ function renderDailyDashboard() {
     return;
   }
   summary.textContent = dashboard.assistant_summary?.text || "Daily dashboard generated from local ResearchOS records.";
+  const workspace = state.currentWorkspace || dashboard.workspace || {};
+  if (workspace.name) {
+    summary.textContent = `${workspace.name}: ${summary.textContent}`;
+  }
   target.innerHTML = (dashboard.sections || []).length
     ? dashboard.sections.map(renderDailyDashboardCard).join("")
     : `<div class="empty-state">No dashboard sections available.</div>`;
@@ -1495,7 +1512,7 @@ function renderCurrentUserSettings() {
   const user = state.currentUser;
   const permissionSummary = state.currentPermissions || user?.permission_summary || {};
   const resourcePermissions = permissionSummary.resource_permissions || {};
-  const workspace = user?.current_workspace || state.dailyDashboard?.workspace || {};
+  const workspace = state.currentWorkspace || user?.current_workspace || state.dailyDashboard?.workspace || {};
   const membership = workspace.current_user_membership || {};
   if (!user) {
     target.innerHTML = `<div class="empty-state">Current user is not available.</div>`;
@@ -3717,6 +3734,11 @@ async function loadStatus() {
     state.currentPermissions = await requestJson("/auth/permissions");
   } catch (error) {
     state.currentPermissions = null;
+  }
+  try {
+    state.currentWorkspace = await requestJson("/workspaces/current");
+  } catch (error) {
+    state.currentWorkspace = null;
   }
   try {
     state.providerStatus = await requestJson("/status/providers");

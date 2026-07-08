@@ -300,12 +300,12 @@ class WorkflowEngine:
 
         return [definition.as_dict() for definition in WORKFLOW_DEFINITIONS.values()]
 
-    def list_workflows(self) -> list[dict[str, Any]]:
+    def list_workflows(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Return workflows for all extracted experiments."""
 
         return [
             self.workflow_for_experiment(experiment)
-            for experiment in self.store.list_experiments()
+            for experiment in self.store.list_experiments(workspace_id=workspace_id)
         ]
 
     def get_workflow(self, workflow_id: str) -> dict[str, Any] | None:

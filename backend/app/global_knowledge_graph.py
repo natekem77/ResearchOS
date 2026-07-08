@@ -144,9 +144,15 @@ class KnowledgeGraph:
 class KnowledgeGraphService:
     """Build and query the global ResearchOS knowledge graph."""
 
-    def __init__(self, settings: Settings | None = None, store: SQLiteStore | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        store: SQLiteStore | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
         self.store = store or SQLiteStore(settings=self.settings)
+        self.workspace_id = workspace_id
         self._graph: KnowledgeGraph | None = None
         self._fingerprint: tuple[int, int] | None = None
 
@@ -155,10 +161,16 @@ class KnowledgeGraphService:
 
         started = perf_counter()
         graph = KnowledgeGraph()
-        documents = [document.__dict__ for document in self.store.get_all_research_documents()]
-        experiments = self.store.list_experiments()
-        assets = self.store.list_assets(query=None)
-        pending_entries = [self.store.get_pending_entry(entry["id"]) for entry in self.store.list_pending_entries()]
+        documents = [
+            document.__dict__
+            for document in self.store.get_all_research_documents(workspace_id=self.workspace_id)
+        ]
+        experiments = self.store.list_experiments(workspace_id=self.workspace_id)
+        assets = self.store.list_assets(query=None, workspace_id=self.workspace_id)
+        pending_entries = [
+            self.store.get_pending_entry(entry["id"])
+            for entry in self.store.list_pending_entries(workspace_id=self.workspace_id)
+        ]
 
         graph.documents = {str(document["id"]): document for document in documents}
         graph.experiments = {str(experiment["id"]): experiment for experiment in experiments}

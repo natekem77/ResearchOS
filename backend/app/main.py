@@ -45,7 +45,7 @@ from app.graphpad_provider import (
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.knowledge_graph_assistant import answer_with_knowledge_graph
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
-from app.lab_workspaces import bootstrap_default_workspace, current_workspace, workspace_with_membership
+from app.lab_workspaces import ActiveWorkspaceService, bootstrap_default_workspace, current_workspace, workspace_with_membership
 from app.literature_comparison import compare_lab_with_literature
 from app.logging import configure_logging
 from app.microscopy_provider import microscopy_assets, microscopy_status, scan_microscopy_assets
@@ -130,6 +130,26 @@ def _current_user_payload() -> dict[str, object]:
         "permission_summary": permission_summary(user),
         "current_workspace": workspace,
     }
+
+
+def _current_workspace_id(requested_workspace_id: str | None = None) -> str | None:
+    """Resolve requested workspace scope or the active/default workspace."""
+
+    if requested_workspace_id:
+        return requested_workspace_id
+    store = SQLiteStore(settings=settings)
+    workspace = ActiveWorkspaceService(settings, store).get_current_workspace()
+    workspace_id = workspace.get("workspace_id")
+    return str(workspace_id) if workspace_id else None
+
+
+def _record_matches_workspace(record: dict[str, object], workspace_id: str | None) -> bool:
+    """Keep matching and legacy unscoped rows during workspace scaffolding."""
+
+    if not workspace_id:
+        return True
+    record_workspace_id = record.get("workspace_id")
+    return record_workspace_id in (None, "", workspace_id)
 
 
 def _require_admin() -> dict[str, object]:
@@ -239,6 +259,12 @@ class BootstrapWorkspaceRequest(BaseModel):
     institution: str = "ResearchOS Local Demo"
     description: str = "Default local development workspace for ResearchOS demos."
     settings: dict[str, object] = Field(default_factory=dict)
+
+
+class SetCurrentWorkspaceRequest(BaseModel):
+    """Select the active workspace for the current user."""
+
+    workspace_id: str
 
 
 class OneNoteMetadataResponse(BaseModel):
@@ -1283,10 +1309,20 @@ def graph_entity(entity_type: str, entity_name: str) -> GraphEntityResponse:
 
 
 @app.get("/knowledgegraph", tags=["knowledgegraph"])
-def global_knowledge_graph() -> dict[str, object]:
+def global_knowledge_graph(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
     """Return global provider-agnostic knowledge graph statistics."""
 
-    return knowledge_graph_service.summary()
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    if workspace_id:
+        scoped_service = KnowledgeGraphService(settings=settings, workspace_id=resolved_workspace_id)
+        summary = scoped_service.summary()
+    else:
+        summary = knowledge_graph_service.summary()
+    return {
+        **summary,
+        "workspace_id": resolved_workspace_id,
+        "workspace_scoping": "metadata_only",
+    }
 
 
 @app.get("/knowledgegraph/search", tags=["knowledgegraph"])
@@ -1736,11 +1772,12 @@ def daily_dashboard(use_ai: bool = Query(True)) -> dict[str, object]:
 
 
 @app.get("/workflows", response_model=list[WorkflowResponse], tags=["workflows"])
-def workflows() -> list[WorkflowResponse]:
+def workflows(workspace_id: str | None = Query(default=None)) -> list[WorkflowResponse]:
     """Return ResearchOS workflows for extracted experiments."""
 
     store = SQLiteStore(settings=settings)
-    return [WorkflowResponse(**workflow) for workflow in WorkflowEngine(store).list_workflows()]
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    return [WorkflowResponse(**workflow) for workflow in WorkflowEngine(store).list_workflows(workspace_id=resolved_workspace_id)]
 
 
 @app.get("/workflows/definitions", tags=["workflows"])
@@ -2013,6 +2050,27 @@ def workspaces() -> list[WorkspaceResponse]:
     ]
 
 
+@app.get("/workspaces/current", response_model=WorkspaceResponse, tags=["workspaces"])
+def get_current_lab_workspace() -> WorkspaceResponse:
+    """Return the active lab workspace for the current user."""
+
+    store = SQLiteStore(settings=settings)
+    workspace = ActiveWorkspaceService(settings, store).get_current_workspace()
+    return WorkspaceResponse(**workspace)
+
+
+@app.post("/workspaces/current", response_model=WorkspaceResponse, tags=["workspaces"])
+def set_current_lab_workspace(request: SetCurrentWorkspaceRequest) -> WorkspaceResponse:
+    """Set the active lab workspace for the current user."""
+
+    store = SQLiteStore(settings=settings)
+    try:
+        workspace = ActiveWorkspaceService(settings, store).set_current_workspace(request.workspace_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return WorkspaceResponse(**workspace)
+
+
 @app.get("/workspaces/{workspace_id}", response_model=WorkspaceResponse, tags=["workspaces"])
 def workspace_detail(workspace_id: str) -> WorkspaceResponse:
     """Return one lab workspace."""
@@ -2085,8 +2143,9 @@ def sync_onenote() -> IngestResponse:
     """Read OneNote pages into local ResearchOS storage without writing back."""
 
     try:
+        workspace_id = _current_workspace_id()
         documents = sync_onenote_pages()
-        result = ingest_documents(documents=documents, provider="onenote")
+        result = ingest_documents(documents=documents, provider="onenote", workspace_id=workspace_id)
     except MissingGraphTokenError as exc:
         raise HTTPException(
             status_code=401,
@@ -2138,7 +2197,7 @@ def ingest_markdown(
 
     resolved_request = request or MarkdownIngestRequest()
     try:
-        result = ingest_markdown_folder(resolved_request.folder_path)
+        result = ingest_markdown_folder(resolved_request.folder_path, workspace_id=_current_workspace_id())
     except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2165,7 +2224,7 @@ def ingest_papers() -> PaperIngestResponse:
     """Ingest local literature files from samples/papers and data/papers."""
 
     try:
-        result = ingest_literature()
+        result = ingest_literature(workspace_id=_current_workspace_id())
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2189,7 +2248,7 @@ def demo_reset() -> DemoResetResponse:
     sample_path = PROJECT_ROOT / "samples" / "lab_notes"
     store = SQLiteStore(settings=settings)
     deleted_count = store.delete_documents_by_source_prefix(str(sample_path))
-    result = ingest_markdown_folder(sample_path)
+    result = ingest_markdown_folder(sample_path, workspace_id=_current_workspace_id())
     _publish_event(
         EventType.NOTEBOOK_IMPORTED,
         "demo",
@@ -2282,11 +2341,12 @@ def demo_status() -> DemoStatusResponse:
 
 
 @app.get("/documents", response_model=list[DocumentSummaryResponse], tags=["documents"])
-def documents() -> list[DocumentSummaryResponse]:
+def documents(workspace_id: str | None = Query(default=None)) -> list[DocumentSummaryResponse]:
     """List locally ingested research documents."""
 
     store = SQLiteStore(settings=settings)
-    return [DocumentSummaryResponse(**document) for document in store.list_documents()]
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    return [DocumentSummaryResponse(**document) for document in store.list_documents(workspace_id=resolved_workspace_id)]
 
 
 @app.get("/documents/{document_id}", response_model=DocumentDetailResponse, tags=["documents"])
@@ -2302,12 +2362,13 @@ def document_detail(document_id: str) -> DocumentDetailResponse:
 
 
 @app.get("/papers", response_model=list[PaperSummaryResponse], tags=["literature"])
-def papers() -> list[PaperSummaryResponse]:
+def papers(workspace_id: str | None = Query(default=None)) -> list[PaperSummaryResponse]:
     """List locally ingested literature papers."""
 
     store = SQLiteStore(settings=settings)
+    resolved_workspace_id = _current_workspace_id(workspace_id)
     paper_summaries = []
-    for document in store.list_documents():
+    for document in store.list_documents(workspace_id=resolved_workspace_id):
         if document["provider"] != "literature":
             continue
         detail = store.get_document(str(document["id"]))
@@ -2496,11 +2557,12 @@ def end_session(session_id: str, request: SessionEndRequest | None = Body(defaul
 
 
 @app.get("/sessions", response_model=list[SessionResponse], tags=["sessions"])
-def sessions() -> list[SessionResponse]:
+def sessions(workspace_id: str | None = Query(default=None)) -> list[SessionResponse]:
     """List live and completed experiment sessions."""
 
     store = SQLiteStore(settings=settings)
-    return [SessionResponse(**session) for session in store.list_sessions()]
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    return [SessionResponse(**session) for session in store.list_sessions(workspace_id=resolved_workspace_id)]
 
 
 @app.get("/sessions/{session_id}", response_model=SessionResponse, tags=["sessions"])
@@ -2565,11 +2627,12 @@ def append_session_event(session_id: str, request: SessionEventAppendRequest) ->
 
 
 @app.get("/entries", response_model=list[PendingEntrySummaryResponse], tags=["entries"])
-def pending_entries() -> list[PendingEntrySummaryResponse]:
+def pending_entries(workspace_id: str | None = Query(default=None)) -> list[PendingEntrySummaryResponse]:
     """List locally saved pending notebook-entry drafts."""
 
     store = SQLiteStore(settings=settings)
-    return [PendingEntrySummaryResponse(**entry) for entry in store.list_pending_entries()]
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    return [PendingEntrySummaryResponse(**entry) for entry in store.list_pending_entries(workspace_id=resolved_workspace_id)]
 
 
 @app.get("/entries/{entry_id}/markdown", response_model=ExportMarkdownResponse, tags=["entries"])
@@ -3138,7 +3201,7 @@ def graphpad_provider_scan() -> GraphPadScanResponse:
     """Scan configured GraphPad folders and register discovered files as assets."""
 
     store = SQLiteStore(settings=settings)
-    result = scan_graphpad_assets(settings=settings)
+    result = scan_graphpad_assets(settings=settings, workspace_id=_current_workspace_id())
     for asset in result.registered_assets:
         _publish_event(EventType.ASSET_REGISTERED, "graphpad", {"asset_id": asset.get("asset_id"), "provider": "graphpad"})
         _publish_event(EventType.GRAPHPAD_PARSED, "graphpad", {"asset_id": asset.get("asset_id"), "filename": asset.get("filename")})
@@ -3211,13 +3274,15 @@ def statistics_interpretation(asset_id: str) -> StatisticsInterpretationResponse
 
 
 @app.get("/statistics", response_model=list[AssetResponse], tags=["statistics"])
-def statistics() -> list[AssetResponse]:
+def statistics(workspace_id: str | None = Query(default=None)) -> list[AssetResponse]:
     """Return assets containing extracted statistics metadata."""
 
     store = SQLiteStore(settings=settings)
+    resolved_workspace_id = _current_workspace_id(workspace_id)
     return [
         AssetResponse(**_asset_with_link_info(store, asset))
         for asset in graphpad_statistics_assets(settings=settings)
+        if _record_matches_workspace(asset, resolved_workspace_id)
     ]
 
 
@@ -3233,7 +3298,7 @@ def images_provider_scan() -> ImageProviderScanResponse:
     """Scan configured image folders and register discovered files as assets."""
 
     store = SQLiteStore(settings=settings)
-    result = scan_microscopy_assets(settings=settings)
+    result = scan_microscopy_assets(settings=settings, workspace_id=_current_workspace_id())
     for asset in result.registered_assets:
         _publish_event(EventType.ASSET_REGISTERED, "microscopy", {"asset_id": asset.get("asset_id"), "provider": "microscopy"})
         _publish_event(EventType.IMAGE_IMPORTED, "microscopy", {"asset_id": asset.get("asset_id"), "filename": asset.get("filename")})
@@ -3262,13 +3327,15 @@ def images_provider_scan() -> ImageProviderScanResponse:
 
 
 @app.get("/images", response_model=list[AssetResponse], tags=["images"])
-def images() -> list[AssetResponse]:
+def images(workspace_id: str | None = Query(default=None)) -> list[AssetResponse]:
     """Return registered microscopy/image assets."""
 
     store = SQLiteStore(settings=settings)
+    resolved_workspace_id = _current_workspace_id(workspace_id)
     return [
         AssetResponse(**_asset_with_link_info(store, asset))
         for asset in microscopy_assets(settings=settings)
+        if _record_matches_workspace(asset, resolved_workspace_id)
     ]
 
 
@@ -3296,7 +3363,7 @@ def spreadsheets_provider_scan() -> SpreadsheetProviderScanResponse:
     """Scan configured spreadsheet folders and register quantitative assets."""
 
     store = SQLiteStore(settings=settings)
-    result = scan_spreadsheet_assets(settings=settings)
+    result = scan_spreadsheet_assets(settings=settings, workspace_id=_current_workspace_id())
     for asset in result.registered_assets:
         _publish_event(EventType.ASSET_REGISTERED, "spreadsheet", {"asset_id": asset.get("asset_id"), "provider": "spreadsheet"})
         _publish_event(EventType.SPREADSHEET_PARSED, "spreadsheet", {"asset_id": asset.get("asset_id"), "filename": asset.get("filename")})
@@ -3327,13 +3394,15 @@ def spreadsheets_provider_scan() -> SpreadsheetProviderScanResponse:
 
 
 @app.get("/spreadsheets", response_model=list[AssetResponse], tags=["spreadsheets"])
-def spreadsheets() -> list[AssetResponse]:
+def spreadsheets(workspace_id: str | None = Query(default=None)) -> list[AssetResponse]:
     """Return registered generic spreadsheet assets."""
 
     store = SQLiteStore(settings=settings)
+    resolved_workspace_id = _current_workspace_id(workspace_id)
     return [
         AssetResponse(**_asset_with_link_info(store, asset))
         for asset in spreadsheet_assets(settings=settings)
+        if _record_matches_workspace(asset, resolved_workspace_id)
     ]
 
 
@@ -3386,13 +3455,15 @@ def spreadsheet_asset_detail(asset_id: str) -> AssetResponse:
 def assets(
     asset_type: AssetType | None = Query(default=None),
     query: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
 ) -> list[AssetResponse]:
     """List registered research assets with optional type/search filters."""
 
     store = SQLiteStore(settings=settings)
+    resolved_workspace_id = _current_workspace_id(workspace_id)
     return [
         AssetResponse(**_asset_with_link_info(store, asset))
-        for asset in store.list_assets(asset_type=asset_type, query=query)
+        for asset in store.list_assets(asset_type=asset_type, query=query, workspace_id=resolved_workspace_id)
     ]
 
 
@@ -3480,13 +3551,14 @@ def delete_asset(asset_id: str) -> dict[str, object]:
 
 
 @app.get("/experiments", response_model=list[ExperimentResponse], tags=["experiments"])
-def experiments() -> list[ExperimentResponse]:
+def experiments(workspace_id: str | None = Query(default=None)) -> list[ExperimentResponse]:
     """List structured experiments extracted from research documents."""
 
     store = SQLiteStore(settings=settings)
+    resolved_workspace_id = _current_workspace_id(workspace_id)
     return [
         ExperimentResponse(**_experiment_with_assets(store, experiment))
-        for experiment in store.list_experiments()
+        for experiment in store.list_experiments(workspace_id=resolved_workspace_id)
     ]
 
 

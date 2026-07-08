@@ -180,6 +180,15 @@ a {
   font-weight: 800;
 }
 
+.workspace-switcher {
+  min-height: 36px;
+  max-width: 220px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--surface-2);
+  font-weight: 750;
+}
+
 kbd {
   min-height: 22px;
   padding: 2px 6px;

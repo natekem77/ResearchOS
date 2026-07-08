@@ -279,6 +279,12 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_workspace_memberships_user_id
                     ON workspace_memberships(user_id);
 
+                CREATE TABLE IF NOT EXISTS active_workspaces (
+                    user_id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
@@ -315,7 +321,19 @@ class SQLiteStore:
         if "workspace_id" not in document_columns:
             connection.execute("ALTER TABLE documents ADD COLUMN workspace_id TEXT")
 
-    def upsert_document(self, document: ResearchDocument, chunks: list[DocumentChunk]) -> None:
+    def _workspace_clause(self, workspace_id: str | None) -> tuple[str, list[str]]:
+        """Return a permissive workspace filter for scaffolded isolation."""
+
+        if not workspace_id:
+            return "", []
+        return "(workspace_id = ? OR workspace_id IS NULL)", [workspace_id]
+
+    def upsert_document(
+        self,
+        document: ResearchDocument,
+        chunks: list[DocumentChunk],
+        workspace_id: str | None = None,
+    ) -> None:
         """Store one document and replace its chunks atomically."""
 
         with self._connect() as connection:
@@ -323,9 +341,9 @@ class SQLiteStore:
                 """
                 INSERT INTO documents (
                     id, provider, source_id, title, content, source_path, source_url,
-                    created_at, updated_at, metadata_json
+                    created_at, updated_at, metadata_json, workspace_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     provider = excluded.provider,
                     source_id = excluded.source_id,
@@ -336,6 +354,7 @@ class SQLiteStore:
                     created_at = excluded.created_at,
                     updated_at = excluded.updated_at,
                     metadata_json = excluded.metadata_json,
+                    workspace_id = COALESCE(excluded.workspace_id, documents.workspace_id),
                     ingested_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -349,6 +368,7 @@ class SQLiteStore:
                     document.created_at,
                     document.updated_at,
                     json.dumps(document.metadata, sort_keys=True),
+                    workspace_id,
                 ),
             )
             connection.execute("DELETE FROM chunks WHERE document_id = ?", (document.id,))
@@ -369,17 +389,21 @@ class SQLiteStore:
                 ],
             )
 
-    def list_documents(self) -> list[dict[str, Any]]:
+    def list_documents(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Return stored document summaries."""
 
+        clause, values = self._workspace_clause(workspace_id)
+        where = f"WHERE {clause}" if clause else ""
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT id, provider, source_id, title, source_path, source_url,
-                       created_at, updated_at, ingested_at
+                       created_at, updated_at, workspace_id, ingested_at
                 FROM documents
+                {where}
                 ORDER BY ingested_at DESC, title ASC
-                """
+                """,
+                values,
             ).fetchall()
 
         return [dict(row) for row in rows]
@@ -446,15 +470,21 @@ class SQLiteStore:
         """Store or update an extracted experiment."""
 
         with self._connect() as connection:
+            source_row = connection.execute(
+                "SELECT workspace_id FROM documents WHERE id = ?",
+                (experiment.source_document_id,),
+            ).fetchone()
+            workspace_id = source_row["workspace_id"] if source_row else None
             connection.execute(
                 """
                 INSERT INTO experiments (
                     id, source_document_id, source_provider, title, experiment_id, date,
                     researcher, cell_line, organoid_batch, compounds_json,
                     treatments_json, concentrations_json, time_points_json, markers_json,
-                    antibodies_json, imaging_methods_json, sequencing_json, notes, conclusions
+                    antibodies_json, imaging_methods_json, sequencing_json, notes, conclusions,
+                    workspace_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     source_document_id = excluded.source_document_id,
                     source_provider = excluded.source_provider,
@@ -474,6 +504,7 @@ class SQLiteStore:
                     sequencing_json = excluded.sequencing_json,
                     notes = excluded.notes,
                     conclusions = excluded.conclusions,
+                    workspace_id = COALESCE(excluded.workspace_id, experiments.workspace_id),
                     extracted_at = CURRENT_TIMESTAMP
                 """,
                 (
@@ -496,19 +527,24 @@ class SQLiteStore:
                     json.dumps(experiment.sequencing),
                     experiment.notes,
                     experiment.conclusions,
+                    workspace_id,
                 ),
             )
 
-    def list_experiments(self) -> list[dict[str, Any]]:
+    def list_experiments(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Return all extracted experiments."""
 
+        clause, values = self._workspace_clause(workspace_id)
+        where = f"WHERE {clause}" if clause else ""
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM experiments
+                {where}
                 ORDER BY COALESCE(date, extracted_at) DESC, title ASC
-                """
+                """,
+                values,
             ).fetchall()
 
         return [self._experiment_row_to_dict(row) for row in rows]
@@ -547,17 +583,21 @@ class SQLiteStore:
 
         return self._experiment_row_to_dict(row)
 
-    def get_all_research_documents(self) -> list[ResearchDocument]:
+    def get_all_research_documents(self, workspace_id: str | None = None) -> list[ResearchDocument]:
         """Return stored documents as ResearchDocument objects for extraction."""
 
+        clause, values = self._workspace_clause(workspace_id)
+        where = f"WHERE {clause}" if clause else ""
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT id, provider, source_id, title, content, source_path, source_url,
                        created_at, updated_at, metadata_json
                 FROM documents
+                {where}
                 ORDER BY ingested_at DESC, title ASC
-                """
+                """,
+                values,
             ).fetchall()
 
         documents: list[ResearchDocument] = []
@@ -719,16 +759,20 @@ class SQLiteStore:
             raise RuntimeError(f"Pending entry was not saved: {resolved_id}")
         return saved
 
-    def list_pending_entries(self) -> list[dict[str, Any]]:
+    def list_pending_entries(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Return pending notebook-entry drafts."""
 
+        clause, values = self._workspace_clause(workspace_id)
+        where = f"WHERE {clause}" if clause else ""
         with self._connect() as connection:
             rows = connection.execute(
-                """
-                SELECT id, title, experiment_id, template, status, created_at, updated_at
+                f"""
+                SELECT id, title, experiment_id, template, status, workspace_id, created_at, updated_at
                 FROM pending_entries
+                {where}
                 ORDER BY updated_at DESC, created_at DESC
-                """
+                """,
+                values,
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -815,16 +859,20 @@ class SQLiteStore:
             )
         return self.get_session(session_id)
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
         """Return laboratory experiment sessions."""
 
+        clause, values = self._workspace_clause(workspace_id)
+        where = f"WHERE {clause}" if clause else ""
         with self._connect() as connection:
             rows = connection.execute(
-                """
+                f"""
                 SELECT *
                 FROM experiment_sessions
+                {where}
                 ORDER BY COALESCE(end_time, start_time) DESC, start_time DESC
-                """
+                """,
+                values,
             ).fetchall()
         return [self._session_row_to_dict(row) for row in rows]
 
@@ -1117,28 +1165,33 @@ class SQLiteStore:
             ).fetchone()
         return self._workflow_state_row_to_dict(row) if row else None
 
-    def list_workflow_states(self, workflow_type: str | None = None) -> list[dict[str, Any]]:
+    def list_workflow_states(
+        self,
+        workflow_type: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Return persisted workflow states."""
 
+        clauses: list[str] = []
+        values: list[str] = []
+        if workflow_type:
+            clauses.append("workflow_type = ?")
+            values.append(workflow_type)
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as connection:
-            if workflow_type:
-                rows = connection.execute(
-                    """
-                    SELECT *
-                    FROM workflow_states
-                    WHERE workflow_type = ?
-                    ORDER BY updated_at DESC, created_at DESC
-                    """,
-                    (workflow_type,),
-                ).fetchall()
-            else:
-                rows = connection.execute(
-                    """
-                    SELECT *
-                    FROM workflow_states
-                    ORDER BY updated_at DESC, created_at DESC
-                    """
-                ).fetchall()
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM workflow_states
+                {where}
+                ORDER BY updated_at DESC, created_at DESC
+                """,
+                values,
+            ).fetchall()
         return [self._workflow_state_row_to_dict(row) for row in rows]
 
     def transition_workflow(
@@ -1447,6 +1500,35 @@ class SQLiteStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_active_workspace_id(self, user_id: str) -> str | None:
+        """Return the user's active workspace pointer, if one has been selected."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT workspace_id FROM active_workspaces WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return str(row["workspace_id"]) if row else None
+
+    def set_active_workspace(self, user_id: str, workspace_id: str) -> dict[str, Any] | None:
+        """Persist the active workspace pointer for one user."""
+
+        workspace = self.get_workspace(workspace_id)
+        if workspace is None:
+            return None
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO active_workspaces (user_id, workspace_id, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    workspace_id = excluded.workspace_id,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, workspace_id),
+            )
+        return workspace
+
     def workspace_counts(self, workspace_id: str) -> dict[str, int]:
         """Return workspace-level counts without enforcing strict isolation."""
 
@@ -1576,6 +1658,7 @@ class SQLiteStore:
         asset_type: str | None = None,
         query: str | None = None,
         experiment_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return registered research assets, optionally filtered."""
 
@@ -1591,6 +1674,10 @@ class SQLiteStore:
             clauses.append("(LOWER(title) LIKE ? OR LOWER(filename) LIKE ? OR LOWER(path) LIKE ?)")
             needle = f"%{query.lower()}%"
             values.extend([needle, needle, needle])
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         with self._connect() as connection:

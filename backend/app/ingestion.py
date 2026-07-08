@@ -24,21 +24,25 @@ class IngestionResult:
     experiments_extracted: int
 
 
-def ingest_markdown_folder(folder_path: str | Path) -> IngestionResult:
+def ingest_markdown_folder(folder_path: str | Path, workspace_id: str | None = None) -> IngestionResult:
     """Load Markdown documents, store them in SQLite, and index their chunks."""
 
     documents = load_markdown_folder(folder_path)
-    return ingest_documents(documents=documents, provider="markdown")
+    return ingest_documents(documents=documents, provider="markdown", workspace_id=workspace_id)
 
 
-def ingest_literature(paths: list[str | Path] | None = None) -> IngestionResult:
+def ingest_literature(paths: list[str | Path] | None = None, workspace_id: str | None = None) -> IngestionResult:
     """Load local literature files, store them, and index their chunks."""
 
     documents = load_literature_documents(paths)
-    return ingest_documents(documents=documents, provider="literature")
+    return ingest_documents(documents=documents, provider="literature", workspace_id=workspace_id)
 
 
-def ingest_documents(documents: list[ResearchDocument], provider: str) -> IngestionResult:
+def ingest_documents(
+    documents: list[ResearchDocument],
+    provider: str,
+    workspace_id: str | None = None,
+) -> IngestionResult:
     """Store provider-normalized documents, chunks, vectors, and experiments."""
 
     store = SQLiteStore()
@@ -48,7 +52,7 @@ def ingest_documents(documents: list[ResearchDocument], provider: str) -> Ingest
     experiment_count = 0
     for document in documents:
         chunks = chunk_document(document)
-        store.upsert_document(document, chunks)
+        store.upsert_document(document, chunks, workspace_id=workspace_id)
         index.upsert_chunks(document, chunks)
         chunk_count += len(chunks)
 

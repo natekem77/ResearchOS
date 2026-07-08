@@ -2,7 +2,7 @@
 
 ResearchOS now has a Lab Workspace foundation for future multi-user lab-server, mobile, PWA, and cloud deployments.
 
-This is metadata scaffolding only. Strict workspace isolation is not enforced yet, and local demo mode remains permissive.
+This is metadata scaffolding only. Strict workspace isolation is not enforced yet, and local demo mode remains permissive. Workspace-scoped list endpoints currently include both matching records and older records with no `workspace_id` so existing demo data remains visible.
 
 ## LabWorkspace Model
 
@@ -61,11 +61,45 @@ curl -X POST http://127.0.0.1:8001/workspaces/bootstrap-default \
   -d '{}'
 ```
 
+Get the active workspace:
+
+```bash
+curl http://127.0.0.1:8001/workspaces/current
+```
+
+Set the active workspace:
+
+```bash
+curl -X POST http://127.0.0.1:8001/workspaces/current \
+  -H "Content-Type: application/json" \
+  -d '{"workspace_id":"workspace:demo-lab"}'
+```
+
 The current user response also includes `current_workspace`:
 
 ```bash
 curl http://127.0.0.1:8001/auth/me
 ```
+
+Workspace-aware list endpoints accept an optional `workspace_id` query parameter:
+
+```bash
+curl "http://127.0.0.1:8001/experiments?workspace_id=workspace:demo-lab"
+curl "http://127.0.0.1:8001/assets?workspace_id=workspace:demo-lab"
+curl "http://127.0.0.1:8001/knowledgegraph?workspace_id=workspace:demo-lab"
+```
+
+The same pattern is available for documents, entries, sessions, workflows, spreadsheets, statistics, images, and papers.
+
+## ActiveWorkspaceService
+
+`ActiveWorkspaceService` centralizes workspace selection:
+
+- `ensure_default_workspace()` creates `Demo Lab Workspace` and attaches the local dev user.
+- `get_current_workspace()` returns the selected workspace or falls back to the default.
+- `set_current_workspace()` records the current user's active workspace in SQLite.
+
+This service avoids process-local state so scripts, browser sessions, and restarted servers all resolve the same active workspace.
 
 ## Single-User Mode
 
@@ -161,7 +195,7 @@ The Daily Dashboard includes workspace information and workspace-level counts in
 ## Current Limitations
 
 - Workspace isolation is not enforced.
-- There is no workspace switcher yet.
+- The workspace switcher is a placeholder; full switching and isolation will come later.
 - There is no membership management UI yet.
 - Provider settings are not workspace-specific yet.
 - Microsoft Graph tokens are not per-workspace/per-user yet.

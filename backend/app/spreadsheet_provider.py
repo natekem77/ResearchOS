@@ -80,7 +80,10 @@ def spreadsheet_status(settings: Settings | None = None) -> dict[str, Any]:
     }
 
 
-def scan_spreadsheet_assets(settings: Settings | None = None) -> SpreadsheetScanResult:
+def scan_spreadsheet_assets(
+    settings: Settings | None = None,
+    workspace_id: str | None = None,
+) -> SpreadsheetScanResult:
     """Discover supported spreadsheet files and register/update assets."""
 
     resolved_settings = settings or get_settings()
@@ -113,6 +116,7 @@ def scan_spreadsheet_assets(settings: Settings | None = None) -> SpreadsheetScan
             provider=SPREADSHEET_PROVIDER,
             path=stored_path,
             metadata=metadata,
+            workspace_id=workspace_id,
         )
         registered_assets.append(asset)
 

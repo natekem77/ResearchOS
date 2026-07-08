@@ -87,7 +87,10 @@ def graphpad_status(settings: Settings | None = None) -> dict[str, Any]:
     }
 
 
-def scan_graphpad_assets(settings: Settings | None = None) -> GraphPadScanResult:
+def scan_graphpad_assets(
+    settings: Settings | None = None,
+    workspace_id: str | None = None,
+) -> GraphPadScanResult:
     """Discover supported GraphPad-related files and register new assets."""
 
     resolved_settings = settings or get_settings()
@@ -120,6 +123,7 @@ def scan_graphpad_assets(settings: Settings | None = None) -> GraphPadScanResult
             provider=GRAPHPAD_PROVIDER,
             path=stored_path,
             metadata=metadata,
+            workspace_id=workspace_id,
         )
         registered_assets.append(asset)
 
