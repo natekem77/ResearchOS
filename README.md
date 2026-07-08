@@ -107,6 +107,24 @@ Still local/demo-only in this preview:
 
 See [docs/V0_2_PREVIEW_RELEASE_NOTES.md](docs/V0_2_PREVIEW_RELEASE_NOTES.md).
 
+## ResearchOS Mobile Preview
+
+An initial Flutter app scaffold lives in `mobile/researchos_mobile`. It is a
+thin mobile client for the `/mobile/*` API layer and currently includes server
+connection, dashboard, experiments, search, experiment detail, and settings
+screens.
+
+Flutter is not required to run the backend demo. To work on the mobile app,
+install Flutter, run `flutter create .` inside `mobile/researchos_mobile`, then
+run `flutter pub get` and `flutter run`.
+
+Physical iPhone and Android devices need a reachable lab-server URL, HTTPS URL,
+Tailscale URL, or emulator loopback address. `http://127.0.0.1:8001` only works
+when the Flutter app runs on the same machine as the backend.
+
+See [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md) and
+[docs/MOBILE_API.md](docs/MOBILE_API.md).
+
 ## ResearchOS v0.1 Demo Release
 
 This repository is prepared as a `v0.1 demo` for PI/lab discussion and UCSD IT
@@ -159,6 +177,7 @@ Release notes:
 - [docs/MOBILE_APP_ARCHITECTURE.md](docs/MOBILE_APP_ARCHITECTURE.md)
 - [docs/MOBILE_API_REQUIREMENTS.md](docs/MOBILE_API_REQUIREMENTS.md)
 - [docs/MOBILE_API.md](docs/MOBILE_API.md)
+- [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md)
 - [docs/AUTH_AND_USERS.md](docs/AUTH_AND_USERS.md)
 - [docs/MICROSOFT_IDENTITY_ROADMAP.md](docs/MICROSOFT_IDENTITY_ROADMAP.md)
 - [docs/PRODUCTION_SAFETY_CHECKLIST.md](docs/PRODUCTION_SAFETY_CHECKLIST.md)
