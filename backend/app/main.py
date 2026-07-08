@@ -2,6 +2,7 @@
 
 import logging
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -62,6 +63,7 @@ from app.spreadsheet_provider import (
 from app.statistics_engine import interpret_statistics_asset
 from app.storage import SQLiteStore
 from app.universal_search import UniversalSearchService
+from app.users import auth_mode, current_user, normalize_role, user_with_permissions
 from app.vector_index import ChromaVectorIndex
 from app.workflow_engine import WorkflowEngine, experiment_workflow_id
 
@@ -113,6 +115,24 @@ def _publish_event(event_type: EventType, source: str, payload: dict[str, object
         logger.warning("ResearchOS event publication failed for %s: %s", event_type.value, exc)
 
 
+def _current_user_payload() -> dict[str, object]:
+    """Return current user with auth mode metadata."""
+
+    store = SQLiteStore(settings=settings)
+    user = current_user(settings, store)
+    return {**user, "auth_mode": auth_mode(settings), "auth_enabled": settings.auth_enabled}
+
+
+def _require_admin() -> dict[str, object]:
+    """Return current user or raise if admin access is unavailable."""
+
+    user = _current_user_payload()
+    permissions = user.get("permissions") if isinstance(user.get("permissions"), dict) else {}
+    if not permissions.get("can_admin"):
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return user
+
+
 class HealthResponse(BaseModel):
     """Response model for the health check endpoint."""
 
@@ -157,6 +177,30 @@ class AuthStatusResponse(BaseModel):
     expires_at: int | None
     scopes: list[str]
     token_type: str | None
+
+
+class UserResponse(BaseModel):
+    """ResearchOS user response."""
+
+    user_id: str
+    email: str
+    display_name: str
+    role: Literal["admin", "researcher", "viewer"]
+    created_at: str | None = None
+    last_login: str | None = None
+    auth_provider: str
+    permissions: dict[str, bool]
+    auth_mode: str | None = None
+    auth_enabled: bool | None = None
+
+
+class BootstrapAdminRequest(BaseModel):
+    """Create or update an initial ResearchOS admin user."""
+
+    email: str
+    display_name: str
+    user_id: str | None = None
+    auth_provider: str = "local"
 
 
 class OneNoteMetadataResponse(BaseModel):
@@ -1822,6 +1866,17 @@ def auth_login() -> RedirectResponse:
     return RedirectResponse(auth_url)
 
 
+@app.get("/auth/me", response_model=UserResponse, tags=["auth"])
+def auth_me() -> UserResponse:
+    """Return the current ResearchOS application user.
+
+    This is separate from Microsoft Graph `/auth/status`. In development mode,
+    it returns a local admin user so demos and local workflows remain unblocked.
+    """
+
+    return UserResponse(**_current_user_payload())
+
+
 @app.get("/auth/callback", response_model=AuthStatusResponse, tags=["auth"])
 def auth_callback(
     code: str = Query(..., description="Authorization code returned by Microsoft."),
@@ -1843,6 +1898,52 @@ def auth_status() -> AuthStatusResponse:
 
     token_status = get_token_status(settings=settings)
     return AuthStatusResponse(**token_status.__dict__)
+
+
+@app.get("/users", response_model=list[UserResponse], tags=["users"])
+def users() -> list[UserResponse]:
+    """Return ResearchOS users."""
+
+    current = _require_admin()
+    store = SQLiteStore(settings=settings)
+    if not settings.auth_enabled:
+        current_user(settings, store)
+    return [
+        UserResponse(**{**user_with_permissions(user), "auth_mode": current["auth_mode"], "auth_enabled": current["auth_enabled"]})
+        for user in store.list_users()
+    ]
+
+
+@app.get("/users/{user_id}", response_model=UserResponse, tags=["users"])
+def user_detail(user_id: str) -> UserResponse:
+    """Return one ResearchOS user."""
+
+    current = _require_admin()
+    store = SQLiteStore(settings=settings)
+    user = store.get_user(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
+    return UserResponse(**{**user_with_permissions(user), "auth_mode": current["auth_mode"], "auth_enabled": current["auth_enabled"]})
+
+
+@app.post("/users/bootstrap-admin", response_model=UserResponse, tags=["users"])
+def bootstrap_admin(request: BootstrapAdminRequest) -> UserResponse:
+    """Create or update an initial admin user for future multi-user setup."""
+
+    current = _require_admin()
+    role = normalize_role("admin")
+    store = SQLiteStore(settings=settings)
+    existing = store.get_user_by_email(request.email.strip())
+    user_id = request.user_id or (str(existing["user_id"]) if existing else f"user:{uuid.uuid4().hex}")
+    user = store.upsert_user(
+        user_id=user_id,
+        email=request.email.strip(),
+        display_name=request.display_name.strip(),
+        role=role,
+        auth_provider=request.auth_provider.strip() or "local",
+        mark_login=False,
+    )
+    return UserResponse(**{**user_with_permissions(user), "auth_mode": current["auth_mode"], "auth_enabled": current["auth_enabled"]})
 
 
 @app.get("/onenote/notebooks", response_model=list[OneNoteMetadataResponse], tags=["onenote"])

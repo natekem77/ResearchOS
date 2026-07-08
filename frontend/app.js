@@ -12,6 +12,7 @@ const state = {
   selectedExperimentIds: new Set(),
   health: null,
   auth: null,
+  currentUser: null,
   dailyDashboard: null,
   providerStatus: null,
   agentStatus: null,
@@ -1443,6 +1444,7 @@ function renderProviderSettings() {
   const status = state.providerStatus;
   if (!status) {
     $("#providerCards").innerHTML = `<div class="empty-state">Provider status is not available.</div>`;
+    renderCurrentUserSettings();
     renderAgentSettings();
     renderOneNoteReadinessSettings();
     renderDeploymentSettings();
@@ -1480,9 +1482,47 @@ function renderProviderSettings() {
       status.vector_index.message,
     ),
   ].join("");
+  renderCurrentUserSettings();
   renderAgentSettings();
   renderOneNoteReadinessSettings();
   renderDeploymentSettings();
+}
+
+function renderCurrentUserSettings() {
+  const target = $("#currentUserCards");
+  if (!target) return;
+  const user = state.currentUser;
+  if (!user) {
+    target.innerHTML = `<div class="empty-state">Current user is not available.</div>`;
+    return;
+  }
+  const permissions = user.permissions || {};
+  target.innerHTML = [
+    providerCard(
+      "Signed in as",
+      "active",
+      user.display_name || user.email || "ResearchOS user",
+      user.email || "",
+    ),
+    providerCard(
+      "Role",
+      user.role === "admin" ? "configured" : "active",
+      user.role || "viewer",
+      `View: ${permissions.can_view ? "yes" : "no"} · Edit: ${permissions.can_edit ? "yes" : "no"} · Admin: ${permissions.can_admin ? "yes" : "no"}`,
+    ),
+    providerCard(
+      "Auth mode",
+      user.auth_enabled ? "configured" : "warn",
+      user.auth_enabled ? "Authentication enforcement enabled." : "Development mode: auth disabled.",
+      user.auth_mode || "unknown",
+    ),
+    providerCard(
+      "Identity provider",
+      "active",
+      user.auth_provider || "local_dev",
+      user.last_login ? `Last login: ${formatDate(user.last_login)}` : "No login timestamp",
+    ),
+  ].join("");
 }
 
 function renderAgentSettings() {
@@ -3642,6 +3682,11 @@ async function loadStatus() {
     state.auth = await requestJson("/auth/status");
   } catch (error) {
     state.auth = null;
+  }
+  try {
+    state.currentUser = await requestJson("/auth/me");
+  } catch (error) {
+    state.currentUser = null;
   }
   try {
     state.providerStatus = await requestJson("/status/providers");

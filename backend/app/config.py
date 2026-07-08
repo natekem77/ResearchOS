@@ -35,6 +35,21 @@ class Settings(BaseSettings):
         description="Base directory for ResearchOS local state and lab data.",
         validation_alias=AliasChoices("DATA_DIR", "RESEARCHOS_DATA_DIR"),
     )
+    auth_enabled: bool = Field(
+        default=False,
+        description="Enable ResearchOS user authentication enforcement. Disabled keeps local demo mode unblocked.",
+        validation_alias=AliasChoices("AUTH_ENABLED", "RESEARCHOS_AUTH_ENABLED"),
+    )
+    dev_user_email: str = Field(
+        default="dev@researchos.local",
+        description="Development-mode user email when ResearchOS auth enforcement is disabled.",
+        validation_alias=AliasChoices("DEV_USER_EMAIL", "RESEARCHOS_DEV_USER_EMAIL"),
+    )
+    dev_user_display_name: str = Field(
+        default="ResearchOS Dev User",
+        description="Development-mode display name when ResearchOS auth enforcement is disabled.",
+        validation_alias=AliasChoices("DEV_USER_DISPLAY_NAME", "RESEARCHOS_DEV_USER_DISPLAY_NAME"),
+    )
 
     database_url: str = Field(
         default="sqlite:///./data/researchos.db",

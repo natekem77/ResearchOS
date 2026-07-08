@@ -241,6 +241,21 @@ class SQLiteStore:
                     ON workflow_history(workflow_id);
                 CREATE INDEX IF NOT EXISTS idx_workflow_notes_workflow_id
                     ON workflow_notes(workflow_id);
+
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    display_name TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    auth_provider TEXT NOT NULL DEFAULT 'local_dev',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_login TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_users_email
+                    ON users(email);
+                CREATE INDEX IF NOT EXISTS idx_users_role
+                    ON users(role);
                 """
             )
 
@@ -1173,6 +1188,73 @@ class SQLiteStore:
                 (workflow_type,),
             ).fetchall()
         return {str(row["stage"]): int(row["count"]) for row in rows}
+
+    def upsert_user(
+        self,
+        user_id: str,
+        email: str,
+        display_name: str,
+        role: str,
+        auth_provider: str = "local_dev",
+        mark_login: bool = False,
+    ) -> dict[str, Any]:
+        """Create or update one ResearchOS user."""
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO users (
+                    user_id, email, display_name, role, auth_provider, last_login
+                )
+                VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE NULL END)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    email = excluded.email,
+                    display_name = excluded.display_name,
+                    role = excluded.role,
+                    auth_provider = excluded.auth_provider,
+                    last_login = CASE
+                        WHEN ? THEN CURRENT_TIMESTAMP
+                        ELSE users.last_login
+                    END
+                """,
+                (user_id, email, display_name, role, auth_provider, mark_login, mark_login),
+            )
+        user = self.get_user(user_id)
+        assert user is not None
+        return user
+
+    def get_user(self, user_id: str) -> dict[str, Any] | None:
+        """Return one user by ID."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_user_by_email(self, email: str) -> dict[str, Any] | None:
+        """Return one user by email."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE lower(email) = lower(?)",
+                (email,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        """Return all ResearchOS users."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM users
+                ORDER BY created_at ASC, email ASC
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def register_asset(
         self,
