@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../design_system/researchos_design_system.dart';
+
 class LoadingView extends StatelessWidget {
   const LoadingView({super.key, this.message = 'Loading ResearchOS...'});
 
@@ -12,7 +14,7 @@ class LoadingView extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           const CircularProgressIndicator(),
-          const SizedBox(height: 16),
+          const SizedBox(height: ResearchOsSpacing.lg),
           Text(message),
         ],
       ),
@@ -34,15 +36,15 @@ class ErrorView extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Padding(
-        padding: const EdgeInsets.all(24),
+        padding: ResearchOsSpacing.screen,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Icon(Icons.cloud_off, size: 44),
-            const SizedBox(height: 16),
+            const SizedBox(height: ResearchOsSpacing.lg),
             Text(message, textAlign: TextAlign.center),
-            const SizedBox(height: 16),
+            const SizedBox(height: ResearchOsSpacing.lg),
             FilledButton.icon(
               onPressed: onRetry,
               icon: const Icon(Icons.refresh),
@@ -71,15 +73,11 @@ class InfoCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: ListTile(
-        leading: leading,
-        title: Text(title),
-        subtitle: subtitle.isEmpty ? null : Text(subtitle),
-        trailing: onTap == null ? null : const Icon(Icons.chevron_right),
-        onTap: onTap,
-      ),
+    return ResearchOsInfoCard(
+      title: title,
+      subtitle: subtitle,
+      icon: leading is Icon ? (leading as Icon).icon : null,
+      onTap: onTap,
     );
   }
 }

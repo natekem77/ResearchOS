@@ -13,10 +13,11 @@ The app is a thin client over the `/mobile/*` API namespace. It does not duplica
 Implemented screens:
 
 - Server Connection
-- Dashboard
+- Bench Mode
 - Experiments
 - Experiment Detail
 - Search
+- Copilot
 - Settings
 
 Implemented API calls:
@@ -28,6 +29,10 @@ Implemented API calls:
 - `GET /mobile/search?q=...`
 - `GET /mobile/auth/me`
 - `GET /mobile/settings`
+- `GET /mobile/sessions/active`
+- `POST /mobile/sessions/{session_id}/note`
+- `POST /mobile/sessions/{session_id}/end`
+- `POST /mobile/assistant/copilot`
 
 Not implemented yet:
 
@@ -37,6 +42,14 @@ Not implemented yet:
 - Push notifications
 - Native file import
 - Full Experiment Workspace rendering
+
+## Bench Mode
+
+Bench Mode is the mobile Home tab. It is designed for active laboratory work:
+large touch targets, minimal typing, portrait-first layout, and fast timestamped
+capture into the active ResearchOS session.
+
+See [docs/BENCH_MODE.md](BENCH_MODE.md).
 
 ## Setup
 

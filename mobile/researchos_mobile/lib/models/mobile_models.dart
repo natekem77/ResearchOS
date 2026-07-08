@@ -91,6 +91,38 @@ class ExperimentCard {
   final List<String> keyMarkers;
 }
 
+class MobileSession {
+  const MobileSession({
+    required this.sessionId,
+    required this.status,
+    this.experimentId,
+    this.title,
+    this.subtitle,
+    this.startTime,
+    this.endTime,
+  });
+
+  factory MobileSession.fromJson(Map<String, dynamic> json) {
+    return MobileSession(
+      sessionId: json['session_id']?.toString() ?? '',
+      experimentId: json['experiment_id']?.toString(),
+      status: json['status']?.toString() ?? 'unknown',
+      title: json['title']?.toString(),
+      subtitle: json['subtitle']?.toString(),
+      startTime: json['start_time']?.toString(),
+      endTime: json['end_time']?.toString(),
+    );
+  }
+
+  final String sessionId;
+  final String? experimentId;
+  final String status;
+  final String? title;
+  final String? subtitle;
+  final String? startTime;
+  final String? endTime;
+}
+
 class MobileUser {
   const MobileUser({
     required this.userId,

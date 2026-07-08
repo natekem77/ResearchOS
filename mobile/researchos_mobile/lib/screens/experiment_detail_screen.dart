@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
+import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import '../widgets/state_views.dart';
 
@@ -48,30 +49,32 @@ class _ExperimentDetailScreenState extends State<ExperimentDetailScreen> {
           }
           final data = snapshot.data ?? const {};
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: ResearchOsSpacing.screen,
             children: [
-              InfoCard(
+              ResearchOsExperimentCard(
                 title: widget.experiment.title,
                 subtitle: 'Stage: ${data['workflow_stage'] ?? widget.experiment.workflowStage ?? 'Unknown'}',
-                leading: const Icon(Icons.timeline),
+                stage: data['workflow_stage']?.toString() ?? widget.experiment.workflowStage ?? 'Planning',
+                compounds: widget.experiment.keyCompounds,
+                markers: widget.experiment.keyMarkers,
               ),
               InfoCard(
                 title: 'Assets',
                 subtitle: '${data['linked_assets_count'] ?? 0} linked assets · ${data['image_count'] ?? 0} images · ${data['notebook_count'] ?? 0} notebook records',
                 leading: const Icon(Icons.folder_outlined),
               ),
-              InfoCard(
+              ResearchOsStatisticsCard(
                 title: 'Statistics',
-                subtitle: data['statistics_summary']?.toString() ?? 'No compact statistics summary available.',
-                leading: const Icon(Icons.bar_chart),
+                value: data['statistics_summary']?.toString() ?? 'No compact statistics summary available.',
+                interpretation: 'Detailed statistics remain available from the ResearchOS backend.',
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: ResearchOsSpacing.sm),
               Text('Quick actions', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: const [
+              const SizedBox(height: ResearchOsSpacing.sm),
+              const Wrap(
+                spacing: ResearchOsSpacing.sm,
+                runSpacing: ResearchOsSpacing.sm,
+                children: [
                   ActionChip(label: Text('Open workspace'), onPressed: null),
                   ActionChip(label: Text('Start session'), onPressed: null),
                   ActionChip(label: Text('Ask Copilot'), onPressed: null),

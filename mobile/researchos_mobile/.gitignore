@@ -2,6 +2,9 @@
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
+.metadata
+*.iml
+.idea/
 build/
 coverage/
 pubspec.lock

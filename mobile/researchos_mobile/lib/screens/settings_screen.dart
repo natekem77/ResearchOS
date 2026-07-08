@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
+import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import '../widgets/state_views.dart';
 
@@ -47,7 +48,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         }
         final data = snapshot.data!;
         return ListView(
-          padding: const EdgeInsets.all(16),
+          padding: ResearchOsSpacing.screen,
           children: [
             InfoCard(
               title: data.user.displayName,

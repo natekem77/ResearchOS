@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'api/researchos_api.dart';
-import 'screens/dashboard_screen.dart';
+import 'design_system/researchos_design_system.dart';
+import 'screens/bench_mode_screen.dart';
+import 'screens/copilot_screen.dart';
 import 'screens/experiments_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/server_connection_screen.dart';
@@ -28,10 +30,9 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
     return MaterialApp(
       title: 'ResearchOS',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2563EB)),
-      ),
+      theme: ResearchOsTheme.light(),
+      darkTheme: ResearchOsTheme.dark(),
+      themeMode: ThemeMode.system,
       home: _api == null
           ? ServerConnectionScreen(
               onConnected: (serverUrl) {
@@ -68,12 +69,13 @@ class ResearchOsHome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final screens = [
-      DashboardScreen(api: api),
+      BenchModeScreen(api: api),
       ExperimentsScreen(api: api),
       SearchScreen(api: api),
+      CopilotScreen(api: api),
       SettingsScreen(api: api),
     ];
-    final titles = ['ResearchOS', 'Experiments', 'Search', 'Settings'];
+    final titles = ['Bench Mode', 'Experiments', 'Search', 'Copilot', 'Settings'];
     return ResearchOsScaffold(
       title: titles[selectedIndex],
       currentIndex: selectedIndex,

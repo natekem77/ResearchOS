@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
+import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import '../widgets/state_views.dart';
 
@@ -46,9 +47,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return RefreshIndicator(
           onRefresh: () async => _reload(),
           child: ListView.separated(
-            padding: const EdgeInsets.all(16),
+            padding: ResearchOsSpacing.screen,
             itemCount: cards.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 8),
+            separatorBuilder: (_, __) => const SizedBox(height: ResearchOsSpacing.sm),
             itemBuilder: (context, index) {
               final card = cards[index];
               return InfoCard(

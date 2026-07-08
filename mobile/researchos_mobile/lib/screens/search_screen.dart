@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
+import '../design_system/researchos_design_system.dart';
 import '../widgets/state_views.dart';
 
 class SearchScreen extends StatefulWidget {
@@ -31,7 +32,7 @@ class _SearchScreenState extends State<SearchScreen> {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.all(16),
+          padding: ResearchOsSpacing.screen,
           child: TextField(
             controller: _controller,
             textInputAction: TextInputAction.search,

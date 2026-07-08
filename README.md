@@ -111,8 +111,8 @@ See [docs/V0_2_PREVIEW_RELEASE_NOTES.md](docs/V0_2_PREVIEW_RELEASE_NOTES.md).
 
 An initial Flutter app scaffold lives in `mobile/researchos_mobile`. It is a
 thin mobile client for the `/mobile/*` API layer and currently includes server
-connection, dashboard, experiments, search, experiment detail, and settings
-screens.
+connection, Bench Mode, experiments, search, Copilot, experiment detail, and
+settings screens.
 
 Flutter is not required to run the backend demo. To work on the mobile app,
 install Flutter, run `flutter create .` inside `mobile/researchos_mobile`, then
@@ -122,8 +122,10 @@ Physical iPhone and Android devices need a reachable lab-server URL, HTTPS URL,
 Tailscale URL, or emulator loopback address. `http://127.0.0.1:8001` only works
 when the Flutter app runs on the same machine as the backend.
 
-See [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md) and
-[docs/MOBILE_API.md](docs/MOBILE_API.md).
+See [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md),
+[docs/MOBILE_API.md](docs/MOBILE_API.md), and
+[docs/BENCH_MODE.md](docs/BENCH_MODE.md). The reusable Flutter design system is
+documented in [docs/MOBILE_DESIGN_SYSTEM.md](docs/MOBILE_DESIGN_SYSTEM.md).
 
 ## ResearchOS v0.1 Demo Release
 
@@ -178,6 +180,8 @@ Release notes:
 - [docs/MOBILE_API_REQUIREMENTS.md](docs/MOBILE_API_REQUIREMENTS.md)
 - [docs/MOBILE_API.md](docs/MOBILE_API.md)
 - [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md)
+- [docs/BENCH_MODE.md](docs/BENCH_MODE.md)
+- [docs/MOBILE_DESIGN_SYSTEM.md](docs/MOBILE_DESIGN_SYSTEM.md)
 - [docs/AUTH_AND_USERS.md](docs/AUTH_AND_USERS.md)
 - [docs/MICROSOFT_IDENTITY_ROADMAP.md](docs/MICROSOFT_IDENTITY_ROADMAP.md)
 - [docs/PRODUCTION_SAFETY_CHECKLIST.md](docs/PRODUCTION_SAFETY_CHECKLIST.md)

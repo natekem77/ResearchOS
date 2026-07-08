@@ -12,4 +12,6 @@ http://127.0.0.1:8001
 
 For iPhone, Android, and physical tablets, `127.0.0.1` points to the device itself. Use a reachable lab-server URL, HTTPS URL, Tailscale URL, or emulator loopback address instead.
 
-See [../../docs/FLUTTER_APP.md](../../docs/FLUTTER_APP.md).
+Bench Mode is the Home tab and is designed for one-handed experiment capture during active sessions.
+
+See [../../docs/FLUTTER_APP.md](../../docs/FLUTTER_APP.md), [../../docs/BENCH_MODE.md](../../docs/BENCH_MODE.md), and [../../docs/MOBILE_DESIGN_SYSTEM.md](../../docs/MOBILE_DESIGN_SYSTEM.md).
