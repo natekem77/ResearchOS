@@ -1095,6 +1095,23 @@ class DeploymentStatusResponse(BaseModel):
     warnings: list[str]
 
 
+class ProductionReadinessResponse(BaseModel):
+    """Production safety readiness summary."""
+
+    app_env: str
+    data_classification: str
+    auth_ready: bool
+    https_ready: bool
+    workspace_isolation_ready: bool
+    backup_ready: bool
+    audit_log_ready: bool
+    onenote_read_ready: bool
+    onenote_write_disabled: bool
+    ai_provider_configured: bool
+    warnings: list[str]
+    recommended_next_steps: list[str]
+
+
 class OneNoteReadinessResponse(BaseModel):
     """OneNote auth/sync readiness details safe for Settings UI display."""
 
@@ -1622,6 +1639,79 @@ def deployment_status() -> DeploymentStatusResponse:
     """Return lab-server deployment status without exposing secrets."""
 
     return DeploymentStatusResponse(**_deployment_status())
+
+
+def _production_readiness() -> dict[str, object]:
+    """Summarize production safety gaps without enforcing restrictions."""
+
+    auth = _auth_readiness()
+    onenote = _onenote_readiness()
+    deployment = _deployment_status()
+    public_base_url = str(deployment.get("public_base_url") or "")
+    redirect_uri = str(onenote.get("current_redirect_uri") or settings.microsoft_redirect_uri or "")
+    https_ready = public_base_url.startswith("https://") and (
+        not redirect_uri or redirect_uri.startswith("https://") or "localhost" in redirect_uri
+    )
+    auth_ready = bool(auth.get("auth_enforcement_enabled")) and bool(auth.get("microsoft_login_ready"))
+    workspace_isolation_ready = False
+    backup_ready = False
+    audit_log_ready = False
+    onenote_read_ready = bool(onenote.get("read_only_sync_ready"))
+    onenote_write_disabled = bool(onenote.get("write_back_disabled", True))
+    ai_provider_configured = settings.ai_provider.strip().lower() not in {"", "none"} and (
+        bool(settings.ai_api_key.strip()) or bool(settings.ai_base_url.strip())
+    )
+
+    warnings: list[str] = []
+    next_steps: list[str] = []
+    if settings.environment != "production":
+        warnings.append(f"Current APP_ENV is {settings.environment}; ResearchOS is running in preview/development mode.")
+    if settings.data_classification != "demo":
+        warnings.append(f"DATA_CLASSIFICATION is {settings.data_classification}; confirm lab policies before using real data.")
+    if not auth_ready:
+        warnings.append("Production login is not ready or not enforced.")
+        next_steps.append("Enable Microsoft app login with REQUIRE_LOGIN=true after UCSD/lab approval.")
+    if not https_ready:
+        warnings.append("HTTPS is not configured for the public ResearchOS URL.")
+        next_steps.append("Deploy behind HTTPS before lab-server, PWA, or mobile use.")
+    if not workspace_isolation_ready:
+        warnings.append("Workspace isolation is metadata-only; strict access control is not enforced.")
+        next_steps.append("Enforce workspace membership checks before multi-lab deployment.")
+    if not backup_ready:
+        warnings.append("Automated database backup readiness is not implemented.")
+        next_steps.append("Define SQLite backup/restore policy and test recovery.")
+    if not audit_log_ready:
+        warnings.append("Audit logging is not production-ready.")
+        next_steps.append("Add audit logs for login, sync, data export, write-back, and admin actions.")
+    if ai_provider_configured and settings.data_classification in {"research", "restricted"}:
+        warnings.append("AI provider is configured; review data exposure policy for unpublished or restricted research data.")
+        next_steps.append("Document whether AI calls are local-only or cloud-based for this workspace.")
+    if not onenote_read_ready:
+        warnings.append("OneNote read-only sync is not fully ready for this session.")
+    if onenote_write_disabled:
+        next_steps.append("Keep OneNote write-back disabled until separate UCSD IT approval and review-before-save controls exist.")
+
+    return {
+        "app_env": settings.environment,
+        "data_classification": settings.data_classification,
+        "auth_ready": auth_ready,
+        "https_ready": https_ready,
+        "workspace_isolation_ready": workspace_isolation_ready,
+        "backup_ready": backup_ready,
+        "audit_log_ready": audit_log_ready,
+        "onenote_read_ready": onenote_read_ready,
+        "onenote_write_disabled": onenote_write_disabled,
+        "ai_provider_configured": ai_provider_configured,
+        "warnings": warnings,
+        "recommended_next_steps": next_steps,
+    }
+
+
+@app.get("/status/production-readiness", response_model=ProductionReadinessResponse, tags=["system"])
+def production_readiness() -> ProductionReadinessResponse:
+    """Return production safety readiness without enforcing restrictions."""
+
+    return ProductionReadinessResponse(**_production_readiness())
 
 
 @app.get("/status/onenote-readiness", response_model=OneNoteReadinessResponse, tags=["system"])

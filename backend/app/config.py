@@ -20,7 +20,16 @@ class Settings(BaseSettings):
     """
 
     project_name: str = Field(default="ResearchOS", description="Public project name.")
-    environment: str = Field(default="development", description="Runtime environment.")
+    environment: str = Field(
+        default="development",
+        description="Runtime environment.",
+        validation_alias=AliasChoices("APP_ENV", "RESEARCHOS_ENVIRONMENT", "RESEARCHOS_APP_ENV"),
+    )
+    data_classification: str = Field(
+        default="demo",
+        description="Current data classification: demo, research, or restricted.",
+        validation_alias=AliasChoices("DATA_CLASSIFICATION", "RESEARCHOS_DATA_CLASSIFICATION"),
+    )
     log_level: str = Field(default="INFO", description="Python logging level.")
 
     api_host: str = Field(default="0.0.0.0", description="Host used by local API runners.")

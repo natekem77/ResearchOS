@@ -21,6 +21,7 @@ const state = {
   agentStatus: null,
   deploymentStatus: null,
   oneNoteReadiness: null,
+  productionReadiness: null,
   ontology: {},
   graphStats: null,
   entryTemplates: [],
@@ -1468,6 +1469,7 @@ function renderProviderSettings() {
     renderAgentSettings();
     renderOneNoteReadinessSettings();
     renderDeploymentSettings();
+    renderProductionReadinessSettings();
     return;
   }
 
@@ -1507,6 +1509,7 @@ function renderProviderSettings() {
   renderAgentSettings();
   renderOneNoteReadinessSettings();
   renderDeploymentSettings();
+  renderProductionReadinessSettings();
 }
 
 function renderCurrentUserSettings() {
@@ -3813,6 +3816,11 @@ async function loadStatus() {
   } catch (error) {
     state.oneNoteReadiness = null;
   }
+  try {
+    state.productionReadiness = await requestJson("/status/production-readiness");
+  } catch (error) {
+    state.productionReadiness = null;
+  }
   setStatus();
 }
 
@@ -3920,6 +3928,49 @@ async function ingestPapers() {
   await refreshData();
   recordActivity("Paper ingestion", result.message || `Indexed ${result.documents_ingested} paper document(s)`);
   target.textContent = result.message || `Indexed ${result.documents_ingested} paper document(s).`;
+}
+
+function renderProductionReadinessSettings() {
+  const target = $("#productionReadinessCards");
+  if (!target) return;
+  const readiness = state.productionReadiness;
+  if (!readiness) {
+    target.innerHTML = `<div class="empty-state">Production readiness status is not available.</div>`;
+    return;
+  }
+  const modeStatus = readiness.app_env === "production" ? "configured" : "warn";
+  target.innerHTML = [
+    providerCard(
+      "Current mode",
+      modeStatus,
+      `${readiness.app_env || "development"} / ${readiness.data_classification || "demo"}`,
+      readiness.app_env === "production" ? "Production mode selected." : "Preview/dev mode: do not treat this as production deployment.",
+    ),
+    providerCard(
+      "Core safety gates",
+      readiness.auth_ready && readiness.https_ready && readiness.workspace_isolation_ready ? "configured" : "warn",
+      `Auth: ${readiness.auth_ready ? "ready" : "not ready"} · HTTPS: ${readiness.https_ready ? "ready" : "not ready"} · Workspace isolation: ${readiness.workspace_isolation_ready ? "ready" : "metadata-only"}`,
+      `Backups: ${readiness.backup_ready ? "ready" : "missing"} · Audit logs: ${readiness.audit_log_ready ? "ready" : "missing"}`,
+    ),
+    providerCard(
+      "OneNote and AI",
+      readiness.onenote_write_disabled ? "active" : "warn",
+      `OneNote read: ${readiness.onenote_read_ready ? "ready" : "not ready"} · Write-back: ${readiness.onenote_write_disabled ? "disabled" : "enabled"}`,
+      `AI provider: ${readiness.ai_provider_configured ? "configured" : "not configured"}`,
+    ),
+    providerCard(
+      "Production warnings",
+      readiness.warnings?.length ? "warn" : "configured",
+      readiness.warnings?.length ? `${readiness.warnings.length} warning(s)` : "No production readiness warnings.",
+      (readiness.warnings || []).join(" · ") || "All configured production checks passed.",
+    ),
+    providerCard(
+      "Recommended next steps",
+      readiness.recommended_next_steps?.length ? "active" : "configured",
+      readiness.recommended_next_steps?.length ? `${readiness.recommended_next_steps.length} next step(s)` : "No next steps reported.",
+      (readiness.recommended_next_steps || []).join(" · "),
+    ),
+  ].join("");
 }
 
 async function syncOneNoteFromSettings() {

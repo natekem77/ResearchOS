@@ -55,6 +55,7 @@ request GET "/workspaces/workspace:demo-lab/members" >/dev/null
 request POST "/workspaces/workspace:demo-lab/members" '{"user_id":"user:dev-local","role":"admin"}' >/dev/null
 request GET "/status/deployment" >/dev/null
 request GET "/status/onenote-readiness" >/dev/null
+request GET "/status/production-readiness" >/dev/null
 request GET "/status/automation" >/dev/null
 request GET "/agents" >/dev/null
 request GET "/api/dashboard/daily?use_ai=false" >/dev/null
