@@ -55,6 +55,51 @@ curl http://127.0.0.1:8001/mobile/sessions/active
 curl -X POST http://127.0.0.1:8001/mobile/sessions/start \
   -H "Content-Type: application/json" \
   -d '{"experiment_id":"NK_Expt_31","notes":"Started from mobile."}'
+```
+
+`/mobile/sessions/start` always returns the same response shape. If an active session already exists, ResearchOS returns it instead of creating a duplicate:
+
+```json
+{
+  "session_id": "session:...",
+  "session": {
+    "session_id": "session:...",
+    "experiment_id": "NK_Expt_31",
+    "status": "active"
+  },
+  "active_session": {
+    "session_id": "session:...",
+    "experiment_id": "NK_Expt_31",
+    "status": "active"
+  },
+  "created_new": true,
+  "message": "Started a new mobile Bench Mode session."
+}
+```
+
+Bench Mode actions:
+
+```bash
+curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/observation \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Organoids look healthy today."}'
+curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/treatment \
+  -H "Content-Type: application/json" \
+  -d '{"compound":"SAG","dose":"100","units":"nM","time":"D32","notes":"Added at media change."}'
+curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/media-change \
+  -H "Content-Type: application/json" \
+  -d '{"media_type":"retinal differentiation medium","notes":"Full media change."}'
+curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/voice-note \
+  -H "Content-Type: application/json" \
+  -d '{"transcript":"Placeholder transcript.","placeholder":true}'
+curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/attach-placeholder \
+  -H "Content-Type: application/json" \
+  -d '{"attachment_type":"image","title":"Image placeholder","notes":"Camera capture pending."}'
+```
+
+Generic note and end-session endpoints:
+
+```bash
 curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/note \
   -H "Content-Type: application/json" \
   -d '{"note_type":"observation","text":"Organoids look healthy today."}'

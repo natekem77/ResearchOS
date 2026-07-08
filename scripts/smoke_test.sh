@@ -102,7 +102,7 @@ import json
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as handle:
-    print(json.load(handle)["session"]["session_id"])
+    print(json.load(handle)["session_id"])
 PY
 )"
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/note" '{"note_type":"observation","text":"Mobile smoke observation."}' >/dev/null

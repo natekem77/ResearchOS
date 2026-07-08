@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app import main
 from app.config import Settings
 from app.storage import SQLiteStore
 
@@ -82,6 +83,41 @@ class ExperimentSessionTests(unittest.TestCase):
             )
 
         self.assertIsNone(event)
+
+    def test_mobile_session_start_creates_normalized_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                response = main.mobile_start_session(
+                    main.SessionStartRequest(experiment_id="NK_Expt_31", notes="Started from mobile.")
+                )
+            finally:
+                main.settings = original_settings
+
+        self.assertTrue(response["created_new"])
+        self.assertIsInstance(response["session_id"], str)
+        self.assertEqual(response["session_id"], response["session"]["session_id"])
+        self.assertEqual(response["session_id"], response["active_session"]["session_id"])
+        self.assertIn("Started", response["message"])
+
+    def test_mobile_session_start_returns_existing_active_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                first = main.mobile_start_session(main.SessionStartRequest(experiment_id="NK_Expt_31"))
+                second = main.mobile_start_session(main.SessionStartRequest(experiment_id="NK_Expt_32"))
+                sessions = SQLiteStore(settings=main.settings).list_sessions()
+            finally:
+                main.settings = original_settings
+
+        self.assertTrue(first["created_new"])
+        self.assertFalse(second["created_new"])
+        self.assertEqual(first["session_id"], second["session_id"])
+        self.assertEqual(second["session_id"], second["session"]["session_id"])
+        self.assertEqual(second["session_id"], second["active_session"]["session_id"])
+        self.assertEqual(len([session for session in sessions if session["status"] == "active"]), 1)
 
 
 if __name__ == "__main__":

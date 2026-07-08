@@ -67,6 +67,22 @@ class ResearchOsApi {
     return null;
   }
 
+  Future<MobileSession> startSession({String? experimentId, String? notes}) async {
+    final json = await _postMap(
+      '/mobile/sessions/start',
+      {
+        if (experimentId != null && experimentId.trim().isNotEmpty) 'experiment_id': experimentId.trim(),
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+      },
+    );
+    final sessionId = json['session_id']?.toString();
+    final session = json['session'];
+    if (session is Map<String, dynamic> && sessionId != null && sessionId.isNotEmpty) {
+      return MobileSession.fromJson({...session, 'session_id': sessionId});
+    }
+    throw const ResearchOsApiException('Unexpected session start response.');
+  }
+
   Future<Map<String, dynamic>> appendSessionNote({
     required String sessionId,
     required String noteType,

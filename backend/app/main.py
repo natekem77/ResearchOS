@@ -3467,9 +3467,28 @@ def mobile_active_session() -> dict[str, object]:
 
 @app.post("/mobile/sessions/start", tags=["mobile"])
 def mobile_start_session(request: SessionStartRequest) -> dict[str, object]:
-    """Start a session from mobile bench workflow."""
+    """Start or return the active session from mobile bench workflow."""
 
-    return {"session": _mobile_session_card(start_session(request).model_dump())}
+    store = SQLiteStore(settings=settings)
+    active = next((session for session in store.list_sessions(workspace_id=_current_workspace_id()) if session.get("status") == "active"), None)
+    if active is not None:
+        session = _mobile_session_card(active)
+        return {
+            "session_id": session["session_id"],
+            "session": session,
+            "active_session": session,
+            "created_new": False,
+            "message": "An active session already exists. Returning the existing session.",
+        }
+
+    session = _mobile_session_card(start_session(request).model_dump())
+    return {
+        "session_id": session["session_id"],
+        "session": session,
+        "active_session": session,
+        "created_new": True,
+        "message": "Started a new mobile Bench Mode session.",
+    }
 
 
 @app.post("/mobile/sessions/{session_id}/note", tags=["mobile"])

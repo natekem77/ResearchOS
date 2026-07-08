@@ -57,6 +57,26 @@ Current action buttons:
 The current prototype records timestamped session notes through:
 
 ```http
+POST /mobile/sessions/start
+```
+
+The start endpoint always returns:
+
+```json
+{
+  "session_id": "...",
+  "session": {},
+  "active_session": {},
+  "created_new": true,
+  "message": "..."
+}
+```
+
+If a session is already active, the endpoint returns the existing session with `created_new=false` and the same top-level `session_id`.
+
+Bench actions use:
+
+```http
 POST /mobile/sessions/{session_id}/observation
 POST /mobile/sessions/{session_id}/treatment
 POST /mobile/sessions/{session_id}/media-change
