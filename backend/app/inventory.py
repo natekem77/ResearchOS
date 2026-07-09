@@ -250,3 +250,97 @@ def methods_citation(item: dict[str, Any], linked_resource: dict[str, Any] | Non
     if details:
         parts.append(f"({', '.join(details)})")
     return " ".join(parts)
+
+
+def reagent_methods_entry(
+    item: dict[str, Any],
+    linked_resource: dict[str, Any] | None = None,
+    *,
+    include_lot: bool = True,
+    include_storage: bool = False,
+) -> dict[str, Any]:
+    """Build one paper-ready reagent entry without inventing missing fields."""
+
+    name = item.get("name") or (linked_resource or {}).get("name") or "Unnamed reagent"
+    vendor = item.get("vendor") or (linked_resource or {}).get("vendor")
+    catalog = item.get("catalog_number") or (linked_resource or {}).get("catalog_number")
+    rrid = item.get("rrid") or (linked_resource or {}).get("rrid")
+    lot = item.get("lot_number") or (linked_resource or {}).get("lot_number")
+    concentration = (linked_resource or {}).get("concentration")
+    units = (linked_resource or {}).get("units") or item.get("unit")
+    storage = item.get("storage_location") or (linked_resource or {}).get("storage_location")
+
+    details = []
+    if vendor:
+        details.append(str(vendor))
+    if catalog:
+        details.append(f"catalog {catalog}")
+    if rrid:
+        details.append(f"RRID {rrid}")
+    if include_lot and lot:
+        details.append(f"lot {lot}")
+    if concentration:
+        concentration_text = f"{concentration} {units}".strip() if units else str(concentration)
+        details.append(f"used at {concentration_text}")
+    if include_storage and storage:
+        details.append(f"stored at {storage}")
+
+    warnings = []
+    if not vendor:
+        warnings.append(f"{name}: vendor is missing.")
+    if not catalog:
+        warnings.append(f"{name}: catalog number is missing.")
+    if not rrid and str(item.get("category") or (linked_resource or {}).get("resource_type") or "").lower() in {"antibody", "marker"}:
+        warnings.append(f"{name}: RRID is missing.")
+
+    text = str(name)
+    if details:
+        text = f"{name} ({', '.join(details)})"
+    return {
+        "item_id": item.get("item_id"),
+        "linked_resource_id": item.get("linked_resource_id") or (linked_resource or {}).get("resource_id"),
+        "name": name,
+        "text": text,
+        "warnings": warnings,
+        "fields": {
+            "vendor": vendor,
+            "catalog_number": catalog,
+            "rrid": rrid,
+            "lot_number": lot if include_lot else None,
+            "concentration": concentration,
+            "units": units,
+            "storage_location": storage if include_storage else None,
+        },
+    }
+
+
+def build_reagent_methods_text(
+    entries: list[dict[str, Any]],
+    *,
+    style: str = "paper",
+) -> dict[str, Any]:
+    """Format a complete reagent/materials section from entry records."""
+
+    normalized_style = style if style in {"paper", "grant", "protocol"} else "paper"
+    texts = [str(entry.get("text") or "").strip().rstrip(".") for entry in entries if entry.get("text")]
+    warnings = [warning for entry in entries for warning in entry.get("warnings", [])]
+    if not texts:
+        return {
+            "style": normalized_style,
+            "text": "No reagent inventory items were provided.",
+            "entries": entries,
+            "warnings": ["No inventory items were available to format."],
+        }
+    if normalized_style == "protocol":
+        body = "\n".join(f"- {text}." for text in texts)
+        text = f"Materials and reagents:\n{body}"
+    elif normalized_style == "grant":
+        text = "Key reagents and materials include " + "; ".join(texts) + "."
+    else:
+        text = "Reagents and materials used in this study included " + "; ".join(texts) + "."
+    return {
+        "style": normalized_style,
+        "text": text,
+        "entries": entries,
+        "warnings": warnings,
+    }

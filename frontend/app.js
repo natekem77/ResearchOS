@@ -1532,6 +1532,7 @@ function renderInventoryItem(item) {
         ${item.linked_resource_id ? `<a class="mini-chip" href="#/resources">${escapeHtml(item.linked_resource_id)}</a>` : ""}
       </div>
       <button type="button" class="secondary-button methods-citation-button" data-inventory-citation="${escapeHtml(item.item_id)}">Methods citation</button>
+      <button type="button" class="secondary-button" data-inventory-copy-citation="${escapeHtml(item.item_id)}">Copy Methods Citation</button>
       <p class="card-copy" id="citation-${escapeHtml(item.item_id)}"></p>
     </article>
   `;
@@ -1771,6 +1772,22 @@ async function showMethodsCitation(itemId) {
   const citation = await requestJson(`/inventory/${encodeURIComponent(itemId)}/methods-citation`);
   const target = $(`#citation-${CSS.escape(itemId)}`);
   if (target) target.textContent = citation.methods_citation;
+}
+
+async function copyMethodsCitation(itemId) {
+  const citation = await requestJson(`/inventory/${encodeURIComponent(itemId)}/methods-citation`);
+  await navigator.clipboard?.writeText(citation.methods_citation);
+  const target = $(`#citation-${CSS.escape(itemId)}`);
+  if (target) target.textContent = `Copied: ${citation.methods_citation}`;
+}
+
+async function generateExperimentMethodsText(experimentId) {
+  const payload = await requestJson(`/experiments/${encodeURIComponent(experimentId)}/methods-materials`);
+  const target = $("#methodsMaterialsText");
+  if (target) target.textContent = payload.text || "No methods text generated.";
+  if (payload.text && navigator.clipboard) {
+    await navigator.clipboard.writeText(payload.text);
+  }
 }
 
 async function renderProtocolWorkspace(protocolId) {
@@ -2806,6 +2823,7 @@ async function renderExperimentWorkspace(experimentId) {
   try {
     const workspace = await requestJson(`/experiments/${encodeURIComponent(experimentId)}/workspace?use_ai=false`);
     const experiment = workspace.experiment || {};
+    const methodsMaterials = await requestJson(`/experiments/${encodeURIComponent(experimentId)}/methods-materials`);
     const summary = workspace.ai_summary || {};
     target.innerHTML = `
       <a class="inline-link" href="#/experiments/${encodeURIComponent(experiment.id || experimentId)}">Back to experiment detail</a>
@@ -2832,6 +2850,7 @@ async function renderExperimentWorkspace(experimentId) {
       ${tagSection("Compounds", workspace.compounds || [], "compounds")}
       ${tagSection("Markers", workspace.markers || [], "markers")}
       ${tagSection("Genes", workspace.genes || [], "genes")}
+      ${renderMethodsMaterialsSection(experiment.id || experimentId, methodsMaterials)}
       ${workspaceSection("Scientific Memory", workspace.scientific_memory?.most_similar_experiments || [], renderMemorySimilarity)}
       ${workspaceSection("Timeline", workspace.timeline?.events || [], renderWorkspaceTimelineEvent)}
       ${workspaceSection("Microscopy / Images", workspace.microscopy || [], renderImageAssetCard)}
@@ -2888,6 +2907,25 @@ function renderWorkflowCard(workflow) {
       <h4>Workflow history</h4>
       <ul>${listItems((workflow.history || []).slice(-4).map((item) => `${item.from_stage || "Start"} -> ${item.to_stage}`))}</ul>
       <div class="meta">${(workflow.remaining_stages || []).slice(0, 8).map((name) => `<span class="tag">${escapeHtml(name)}</span>`).join("")}</div>
+    </section>
+  `;
+}
+
+function renderMethodsMaterialsSection(experimentId, payload) {
+  const warnings = payload?.warnings || [];
+  const entries = payload?.entries || [];
+  return `
+    <section class="detail-section" id="methodsMaterialsSection">
+      <div class="panel-heading compact-heading">
+        <div>
+          <p class="eyebrow">Manuscript support</p>
+          <h3>Materials & Reagents</h3>
+        </div>
+        <button type="button" class="secondary-button" data-generate-methods="${escapeHtml(experimentId)}">Generate Methods Text</button>
+      </div>
+      <p class="card-copy" id="methodsMaterialsText">${escapeHtml(payload?.text || "No reagent inventory items are linked to this experiment yet.")}</p>
+      ${warnings.length ? `<div class="empty-state">${warnings.map((warning) => escapeHtml(warning)).join("<br>")}</div>` : ""}
+      ${entries.length ? `<div class="meta">${entries.map((entry) => `<span class="tag">${escapeHtml(entry.name || entry.item_id)}</span>`).join("")}</div>` : ""}
     </section>
   `;
 }
@@ -4731,6 +4769,21 @@ $("#inventoryList")?.addEventListener("click", (event) => {
   if (!button) return;
   showMethodsCitation(button.dataset.inventoryCitation).catch((error) => {
     $("#inventoryStatus").textContent = `Citation failed: ${error.message}`;
+  });
+});
+$("#inventoryList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-inventory-copy-citation]");
+  if (!button) return;
+  copyMethodsCitation(button.dataset.inventoryCopyCitation).catch((error) => {
+    $("#inventoryStatus").textContent = `Copy failed: ${error.message}`;
+  });
+});
+$("#experimentDetail")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-generate-methods]");
+  if (!button) return;
+  generateExperimentMethodsText(button.dataset.generateMethods).catch((error) => {
+    const target = $("#methodsMaterialsText");
+    if (target) target.textContent = `Methods generation failed: ${error.message}`;
   });
 });
 $("#imageMarkerFilter")?.addEventListener("change", renderImages);

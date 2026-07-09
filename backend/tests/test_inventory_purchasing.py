@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app import main
 from app.config import Settings
+from app.experiments import Experiment
 from app.storage import SQLiteStore
 
 
@@ -147,6 +148,56 @@ class InventoryPurchasingTests(unittest.TestCase):
         self.assertEqual(len(listed), 1)
         self.assertIn("RRID:AB_SIX6", citation["methods_citation"])
         self.assertIn("Anti-SIX6", exported.body.decode("utf-8"))
+
+    def test_methods_reagent_builder_and_experiment_materials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                store = SQLiteStore(settings=main.settings)
+                resource = store.save_resource(
+                    resource_type="antibody",
+                    name="BRN3B",
+                    vendor="DemoBio",
+                    catalog_number="BRN3B-1",
+                    rrid="RRID:AB_BRN3B",
+                    concentration="1:500",
+                    units="dilution",
+                )
+                item = main.create_inventory_item(
+                    main.InventoryItemRequest(
+                        name="BRN3B antibody",
+                        category="antibody",
+                        vendor="DemoBio",
+                        catalog_number="BRN3B-1",
+                        lot_number="LOT-BRN3B",
+                        rrid="RRID:AB_BRN3B",
+                        linked_resource_id=str(resource["resource_id"]),
+                    )
+                )
+                store.upsert_experiment(
+                    Experiment(
+                        id="experiment:methods",
+                        source_document_id="doc:methods",
+                        source_provider="markdown",
+                        title="BRN3B staining",
+                        experiment_id="NK_METHODS",
+                        markers=["BRN3B"],
+                    )
+                )
+                built = main.build_methods_reagents(
+                    main.ReagentMethodsRequest(inventory_item_ids=[item.item_id], style="paper")
+                )
+                reagents = main.experiment_reagents("experiment:methods", workspace_id=None)
+                materials = main.experiment_methods_materials("experiment:methods")
+            finally:
+                main.settings = original_settings
+
+        self.assertIn("BRN3B antibody", built["text"])
+        self.assertIn("RRID:AB_BRN3B", built["text"])
+        self.assertEqual(len(reagents["inventory_items"]), 1)
+        self.assertIn("LOT-BRN3B", materials["text"])
+        self.assertEqual(materials["warnings"], [])
 
 
 if __name__ == "__main__":

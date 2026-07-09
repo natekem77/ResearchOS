@@ -52,10 +52,12 @@ from app.inventory import (
     ORACLE_PURCHASING_PROVIDER,
     PURCHASE_CSV_FIELDS,
     apply_purchase_mapping,
+    build_reagent_methods_text,
     methods_citation,
     normalize_purchase_csv_row,
     parse_csv_text,
     purchase_import_preview,
+    reagent_methods_entry,
     records_to_csv,
 )
 from app.knowledge_graph_assistant import answer_with_knowledge_graph
@@ -1004,6 +1006,15 @@ class PurchaseImportTemplateResponse(PurchaseImportTemplateRequest):
     workspace_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class ReagentMethodsRequest(BaseModel):
+    """Request body for building methods-ready reagent text."""
+
+    inventory_item_ids: list[str]
+    style: Literal["paper", "grant", "protocol"] = "paper"
+    include_lot_numbers: bool = True
+    include_storage_locations: bool = False
 
 
 class GraphPadFolderStatusResponse(BaseModel):
@@ -3723,6 +3734,96 @@ def _save_purchase_request(request: PurchaseRecordRequest, purchase_id: str | No
     )
 
 
+def _inventory_item_entry(
+    store: SQLiteStore,
+    item: dict[str, object],
+    *,
+    include_lot_numbers: bool = True,
+    include_storage_locations: bool = False,
+) -> dict[str, object]:
+    """Return one inventory item formatted for methods generation."""
+
+    linked_resource = store.get_resource(str(item.get("linked_resource_id"))) if item.get("linked_resource_id") else None
+    return reagent_methods_entry(
+        item,
+        linked_resource,
+        include_lot=include_lot_numbers,
+        include_storage=include_storage_locations,
+    )
+
+
+def _experiment_reagent_context(
+    store: SQLiteStore,
+    experiment_id: str,
+    workspace_id: str | None = None,
+) -> dict[str, object]:
+    """Resolve inventory/resources that appear linked to an experiment."""
+
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    resolved_workspace = _current_workspace_id(workspace_id or str(experiment.get("workspace_id") or "") or None)
+    entity_names = {
+        str(value).strip().lower()
+        for key in ["compounds", "markers", "antibodies", "treatments"]
+        for value in (experiment.get(key) or [])
+        if str(value).strip()
+    }
+    for key in ["cell_line", "organoid_batch"]:
+        if experiment.get(key):
+            entity_names.add(str(experiment[key]).strip().lower())
+
+    resources = store.list_resources(workspace_id=resolved_workspace)
+    matching_resources = []
+    for resource in resources:
+        names = {str(resource.get("name") or "").strip().lower()}
+        names.update(str(alias).strip().lower() for alias in resource.get("aliases") or [])
+        usages = store.resource_usages(str(resource.get("resource_id")))
+        usage_match = any(
+            str(usage.get("object_id")) in {str(experiment.get("id")), str(experiment.get("experiment_id"))}
+            and str(usage.get("object_type") or "").lower() in {"experiment", "experiments"}
+            for usage in usages
+        )
+        if usage_match or names.intersection(entity_names):
+            matching_resources.append(resource)
+
+    resource_ids = {str(resource.get("resource_id")) for resource in matching_resources if resource.get("resource_id")}
+    inventory = []
+    for item in store.list_inventory_items(workspace_id=resolved_workspace):
+        item_names = {str(item.get("name") or "").strip().lower(), str(item.get("category") or "").strip().lower()}
+        if item.get("linked_resource_id") and str(item.get("linked_resource_id")) in resource_ids:
+            inventory.append(item)
+        elif item_names.intersection(entity_names):
+            inventory.append(item)
+
+    seen_items: set[str] = set()
+    unique_inventory = []
+    for item in inventory:
+        item_id = str(item.get("item_id"))
+        if item_id in seen_items:
+            continue
+        seen_items.add(item_id)
+        unique_inventory.append(item)
+
+    inventory_resource_ids = {str(item.get("linked_resource_id")) for item in unique_inventory if item.get("linked_resource_id")}
+    missing_inventory_resources = [
+        resource
+        for resource in matching_resources
+        if str(resource.get("resource_id")) not in inventory_resource_ids
+    ]
+    warnings = [
+        f"No inventory item is linked to resource {resource.get('name') or resource.get('resource_id')}."
+        for resource in missing_inventory_resources
+    ]
+    return {
+        "experiment": experiment,
+        "inventory_items": unique_inventory,
+        "resources": matching_resources,
+        "missing_inventory_resources": missing_inventory_resources,
+        "warnings": warnings,
+    }
+
+
 def _mobile_dashboard_card(
     title: str,
     subtitle: str,
@@ -5266,6 +5367,80 @@ def inventory_methods_citation(item_id: str) -> dict[str, object]:
             "lot_number": item.get("lot_number") or (linked_resource or {}).get("lot_number"),
         },
         "linked_resource": linked_resource,
+    }
+
+
+@app.post("/methods/reagents", tags=["methods"])
+def build_methods_reagents(request: ReagentMethodsRequest) -> dict[str, object]:
+    """Generate paper/grant/protocol-ready reagent text from inventory records."""
+
+    store = SQLiteStore(settings=settings)
+    entries = []
+    warnings = []
+    for item_id in request.inventory_item_ids:
+        item = store.get_inventory_item(item_id)
+        if item is None:
+            warnings.append(f"Inventory item not found: {item_id}")
+            continue
+        entry = _inventory_item_entry(
+            store,
+            item,
+            include_lot_numbers=request.include_lot_numbers,
+            include_storage_locations=request.include_storage_locations,
+        )
+        entries.append(entry)
+    result = build_reagent_methods_text(entries, style=request.style)
+    return result | {"warnings": [*result.get("warnings", []), *warnings]}
+
+
+@app.get("/experiments/{experiment_id}/reagents", tags=["experiments"])
+def experiment_reagents(
+    experiment_id: str,
+    workspace_id: str | None = None,
+) -> dict[str, object]:
+    """Return inventory items and resources linked to an experiment."""
+
+    context = _experiment_reagent_context(SQLiteStore(settings=settings), experiment_id, workspace_id=workspace_id)
+    store = SQLiteStore(settings=settings)
+    entries = [_inventory_item_entry(store, item) for item in context["inventory_items"]]
+    return {
+        "experiment": context["experiment"],
+        "inventory_items": context["inventory_items"],
+        "resources": context["resources"],
+        "methods_entries": entries,
+        "warnings": [*context["warnings"], *[warning for entry in entries for warning in entry.get("warnings", [])]],
+    }
+
+
+@app.get("/experiments/{experiment_id}/methods-materials", tags=["experiments", "methods"])
+def experiment_methods_materials(
+    experiment_id: str,
+    style: Literal["paper", "grant", "protocol"] = "paper",
+    include_lot_numbers: bool = True,
+    include_storage_locations: bool = False,
+    workspace_id: str | None = None,
+) -> dict[str, object]:
+    """Return a draft Materials/Reagents section for an experiment."""
+
+    store = SQLiteStore(settings=settings)
+    context = _experiment_reagent_context(store, experiment_id, workspace_id=workspace_id)
+    entries = [
+        _inventory_item_entry(
+            store,
+            item,
+            include_lot_numbers=include_lot_numbers,
+            include_storage_locations=include_storage_locations,
+        )
+        for item in context["inventory_items"]
+    ]
+    result = build_reagent_methods_text(entries, style=style)
+    return {
+        "experiment": context["experiment"],
+        "style": result["style"],
+        "text": result["text"],
+        "entries": result["entries"],
+        "resources": context["resources"],
+        "warnings": [*context["warnings"], *result.get("warnings", [])],
     }
 
 

@@ -115,6 +115,27 @@ Anti-BRN3B (DemoBio, catalog AB-123, RRID RRID:AB_123, lot LOT-85)
 
 This helps keep vendor, catalog number, RRID, and lot details consistent across manuscripts and protocols.
 
+## Reagent Methods Builder
+
+ResearchOS can combine multiple inventory records into a draft reagent/materials paragraph:
+
+```bash
+curl -X POST http://127.0.0.1:8001/methods/reagents \
+  -H "Content-Type: application/json" \
+  -d '{"inventory_item_ids":["inventory:ITEM_ID"],"style":"paper"}'
+```
+
+Experiment-linked reagent context is available with:
+
+```bash
+curl http://127.0.0.1:8001/experiments/NK_Expt_31/reagents
+curl http://127.0.0.1:8001/experiments/NK_Expt_31/methods-materials
+```
+
+ResearchOS does not invent catalog numbers, RRIDs, lot numbers, or concentrations. Missing fields are returned as warnings so the lab can clean up inventory records before using the text in a manuscript.
+
+See [METHODS_REAGENT_BUILDER.md](METHODS_REAGENT_BUILDER.md) for details.
+
 ## Relationship to Resources
 
 Inventory items may link to first-class ResearchOS Resources. Resources represent reusable scientific materials across experiments, protocols, sessions, notebooks, statistics, microscopy, literature, and future manuscript drafting.
