@@ -369,6 +369,13 @@ class SQLiteStore:
                     quantity REAL,
                     reorder_threshold REAL,
                     expiration_date TEXT,
+                    barcode TEXT,
+                    qr_code TEXT,
+                    internal_label TEXT,
+                    freezer_box TEXT,
+                    freezer_position TEXT,
+                    shelf TEXT,
+                    room TEXT,
                     notes TEXT,
                     linked_resource_id TEXT,
                     owner_user_id TEXT,
@@ -470,6 +477,13 @@ class SQLiteStore:
             for column in ["owner_user_id", "created_by", "workspace_id"]:
                 if column not in existing:
                     connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+            if table == "inventory_items":
+                for column in ["barcode", "qr_code", "internal_label", "freezer_box", "freezer_position", "shelf", "room"]:
+                    if column not in existing:
+                        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+                connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory_items(barcode)")
+                connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_qr_code ON inventory_items(qr_code)")
+                connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_internal_label ON inventory_items(internal_label)")
         document_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(documents)").fetchall()
@@ -2068,6 +2082,13 @@ class SQLiteStore:
         quantity: float | None = None,
         reorder_threshold: float | None = None,
         expiration_date: str | None = None,
+        barcode: str | None = None,
+        qr_code: str | None = None,
+        internal_label: str | None = None,
+        freezer_box: str | None = None,
+        freezer_position: str | None = None,
+        shelf: str | None = None,
+        room: str | None = None,
         notes: str | None = None,
         linked_resource_id: str | None = None,
         item_id: str | None = None,
@@ -2089,10 +2110,11 @@ class SQLiteStore:
                     INSERT INTO inventory_items (
                         item_id, name, category, vendor, catalog_number, lot_number,
                         rrid, price, unit, storage_location, quantity, reorder_threshold,
-                        expiration_date, notes, linked_resource_id, owner_user_id,
-                        created_by, workspace_id
+                        expiration_date, barcode, qr_code, internal_label,
+                        freezer_box, freezer_position, shelf, room, notes,
+                        linked_resource_id, owner_user_id, created_by, workspace_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -2108,6 +2130,13 @@ class SQLiteStore:
                         quantity,
                         reorder_threshold,
                         expiration_date,
+                        barcode,
+                        qr_code,
+                        internal_label,
+                        freezer_box,
+                        freezer_position,
+                        shelf,
+                        room,
                         notes,
                         linked_resource_id,
                         owner_user_id,
@@ -2131,6 +2160,13 @@ class SQLiteStore:
                         quantity = ?,
                         reorder_threshold = ?,
                         expiration_date = ?,
+                        barcode = ?,
+                        qr_code = ?,
+                        internal_label = ?,
+                        freezer_box = ?,
+                        freezer_position = ?,
+                        shelf = ?,
+                        room = ?,
                         notes = ?,
                         linked_resource_id = ?,
                         owner_user_id = COALESCE(?, owner_user_id),
@@ -2152,6 +2188,13 @@ class SQLiteStore:
                         quantity,
                         reorder_threshold,
                         expiration_date,
+                        barcode,
+                        qr_code,
+                        internal_label,
+                        freezer_box,
+                        freezer_position,
+                        shelf,
+                        room,
                         notes,
                         linked_resource_id,
                         owner_user_id,
@@ -2183,8 +2226,8 @@ class SQLiteStore:
                 values.append(value.lower())
         if query:
             needle = f"%{query.lower()}%"
-            clauses.append("(LOWER(name) LIKE ? OR LOWER(vendor) LIKE ? OR LOWER(catalog_number) LIKE ? OR LOWER(lot_number) LIKE ? OR LOWER(rrid) LIKE ?)")
-            values.extend([needle, needle, needle, needle, needle])
+            clauses.append("(LOWER(name) LIKE ? OR LOWER(vendor) LIKE ? OR LOWER(catalog_number) LIKE ? OR LOWER(lot_number) LIKE ? OR LOWER(rrid) LIKE ? OR LOWER(barcode) LIKE ? OR LOWER(qr_code) LIKE ? OR LOWER(internal_label) LIKE ? OR LOWER(freezer_box) LIKE ? OR LOWER(freezer_position) LIKE ? OR LOWER(shelf) LIKE ? OR LOWER(room) LIKE ?)")
+            values.extend([needle] * 12)
         workspace_clause, workspace_values = self._workspace_clause(workspace_id)
         if workspace_clause:
             clauses.append(workspace_clause)
@@ -2201,6 +2244,32 @@ class SQLiteStore:
                 values,
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def lookup_inventory_item_by_code(
+        self,
+        code: str,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Find an inventory item by barcode, QR code, or internal label."""
+
+        clauses = ["(barcode = ? OR qr_code = ? OR internal_label = ?)"]
+        values: list[Any] = [code, code, code]
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+        with self._connect() as connection:
+            row = connection.execute(
+                f"""
+                SELECT *
+                FROM inventory_items
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                values,
+            ).fetchone()
+        return dict(row) if row else None
 
     def get_inventory_item(self, item_id: str) -> dict[str, Any] | None:
         """Return one inventory item."""

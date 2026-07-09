@@ -205,6 +205,9 @@ request GET "/inventory" >/dev/null
 request GET "/inventory/$SMOKE_INVENTORY_ID" >/dev/null
 request GET "/inventory/$SMOKE_INVENTORY_ID/methods-citation" >/dev/null
 request PUT "/inventory/$SMOKE_INVENTORY_ID" '{"name":"Smoke SAG Inventory","category":"compound","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","lot_number":"LOT-SMOKE-2","quantity":3,"reorder_threshold":1}' >/dev/null
+request POST "/inventory/$SMOKE_INVENTORY_ID/assign-code" '{"barcode":"SMOKE-BARCODE-001","qr_code":"SMOKE-QR-001","internal_label":"SMOKE-SAG-A1","freezer_box":"Box Smoke","freezer_position":"A1","shelf":"Shelf Smoke","room":"Smoke Lab"}' >/dev/null
+request GET "/inventory/lookup?code=SMOKE-QR-001" >/dev/null
+request GET "/inventory/$SMOKE_INVENTORY_ID/label" >/dev/null
 request GET "/inventory/export-csv" >/dev/null
 request GET "/inventory/status" >/dev/null
 request GET "/inventory/reorder-needed" >/dev/null

@@ -1510,7 +1510,7 @@ function renderInventory() {
   const location = ($("#inventoryLocationFilter")?.value || "").trim().toLowerCase();
   const sourceItems = state.inventoryStatus?.items || state.inventory || [];
   const items = sourceItems.filter((item) => {
-    const haystack = [item.name, item.category, item.vendor, item.catalog_number, item.lot_number, item.rrid, item.storage_location].join(" ").toLowerCase();
+    const haystack = [item.name, item.category, item.vendor, item.catalog_number, item.lot_number, item.rrid, item.storage_location, item.barcode, item.qr_code, item.internal_label, item.freezer_box, item.freezer_position, item.shelf, item.room].join(" ").toLowerCase();
     return (!query || haystack.includes(query))
       && (!category || String(item.category || "").toLowerCase().includes(category))
       && (!vendor || String(item.vendor || "").toLowerCase().includes(vendor))
@@ -1551,6 +1551,9 @@ function renderInventoryItem(item) {
       <div class="meta">
         <span class="tag">${escapeHtml(item.category || "uncategorized")}</span>
         <span class="tag">${escapeHtml(item.storage_location || "no location")}</span>
+        ${item.internal_label ? `<span class="tag">${escapeHtml(item.internal_label)}</span>` : ""}
+        ${item.freezer_box || item.freezer_position ? `<span class="tag">${escapeHtml([item.freezer_box, item.freezer_position].filter(Boolean).join(" "))}</span>` : ""}
+        ${item.barcode ? `<span class="tag">barcode ${escapeHtml(item.barcode)}</span>` : ""}
         <span class="tag">${escapeHtml(item.quantity ?? "no quantity")} ${escapeHtml(item.unit || "")}</span>
         ${lowStock ? `<span class="tag warning">reorder</span>` : ""}
         ${item.expired ? `<span class="tag warning">expired</span>` : ""}
@@ -1561,7 +1564,10 @@ function renderInventoryItem(item) {
       <button type="button" class="secondary-button methods-citation-button" data-inventory-citation="${escapeHtml(item.item_id)}">Methods citation</button>
       <button type="button" class="secondary-button" data-inventory-copy-citation="${escapeHtml(item.item_id)}">Copy Methods Citation</button>
       <button type="button" class="secondary-button" data-inventory-usage="${escapeHtml(item.item_id)}">Usage History</button>
+      <button type="button" class="secondary-button" data-inventory-assign-code="${escapeHtml(item.item_id)}">Assign Barcode/QR</button>
+      <button type="button" class="secondary-button" data-inventory-label="${escapeHtml(item.item_id)}">Printable Label</button>
       <p class="card-copy" id="citation-${escapeHtml(item.item_id)}"></p>
+      <div class="item-list" id="label-${escapeHtml(item.item_id)}"></div>
       <div class="item-list" id="usage-${escapeHtml(item.item_id)}"></div>
     </article>
   `;
@@ -1724,6 +1730,13 @@ async function saveInventoryItem() {
     quantity: numberOrNull($("#inventoryQuantity").value),
     reorder_threshold: numberOrNull($("#inventoryThreshold").value),
     expiration_date: $("#inventoryExpiration").value || null,
+    barcode: $("#inventoryBarcode").value.trim() || null,
+    qr_code: $("#inventoryQrCode").value.trim() || null,
+    internal_label: $("#inventoryInternalLabel").value.trim() || null,
+    freezer_box: $("#inventoryFreezerBox").value.trim() || null,
+    freezer_position: $("#inventoryFreezerPosition").value.trim() || null,
+    shelf: $("#inventoryShelf").value.trim() || null,
+    room: $("#inventoryRoom").value.trim() || null,
     notes: $("#inventoryNotes").value.trim() || null,
     linked_resource_id: $("#inventoryResource").value.trim() || null,
   };
@@ -1850,6 +1863,42 @@ async function showInventoryUsage(itemId) {
       </article>
     `).join("")
     : `<div class="empty-state">No usage history recorded for this item.</div>`;
+}
+
+async function assignInventoryCode(itemId) {
+  const barcode = prompt("Barcode value") || "";
+  const qrCode = prompt("QR code value", barcode) || "";
+  const internalLabel = prompt("Internal label", barcode || qrCode) || "";
+  const freezerBox = prompt("Freezer box") || "";
+  const freezerPosition = prompt("Freezer position") || "";
+  const saved = await requestJson(`/inventory/${encodeURIComponent(itemId)}/assign-code`, {
+    method: "POST",
+    body: JSON.stringify({
+      barcode: barcode.trim() || null,
+      qr_code: qrCode.trim() || null,
+      internal_label: internalLabel.trim() || null,
+      freezer_box: freezerBox.trim() || null,
+      freezer_position: freezerPosition.trim() || null,
+    }),
+  });
+  $("#inventoryStatus").textContent = `Assigned code for ${saved.name}.`;
+  await refreshData();
+}
+
+async function showInventoryLabel(itemId) {
+  const label = await requestJson(`/inventory/${encodeURIComponent(itemId)}/label`);
+  const target = $(`#label-${CSS.escape(itemId)}`);
+  if (!target) return;
+  target.innerHTML = `
+    <article class="record-card">
+      <h4>Printable label</h4>
+      ${(label.print_lines || []).filter(Boolean).map((line) => `<p>${escapeHtml(line)}</p>`).join("")}
+      <div class="meta">
+        <span class="tag">Code: ${escapeHtml(label.code_value || "")}</span>
+        ${label.internal_label ? `<span class="tag">${escapeHtml(label.internal_label)}</span>` : ""}
+      </div>
+    </article>
+  `;
 }
 
 async function generateExperimentMethodsText(experimentId) {
@@ -4869,6 +4918,20 @@ $("#inventoryList")?.addEventListener("click", (event) => {
   if (!button) return;
   showInventoryUsage(button.dataset.inventoryUsage).catch((error) => {
     $("#inventoryStatus").textContent = `Usage history failed: ${error.message}`;
+  });
+});
+$("#inventoryList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-inventory-assign-code]");
+  if (!button) return;
+  assignInventoryCode(button.dataset.inventoryAssignCode).catch((error) => {
+    $("#inventoryStatus").textContent = `Code assignment failed: ${error.message}`;
+  });
+});
+$("#inventoryList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-inventory-label]");
+  if (!button) return;
+  showInventoryLabel(button.dataset.inventoryLabel).catch((error) => {
+    $("#inventoryStatus").textContent = `Label preview failed: ${error.message}`;
   });
 });
 $("#experimentDetail")?.addEventListener("click", (event) => {

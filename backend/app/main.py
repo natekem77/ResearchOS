@@ -54,6 +54,7 @@ from app.inventory import (
     apply_purchase_mapping,
     build_reagent_methods_text,
     inventory_item_status,
+    inventory_label_data,
     inventory_status_summary,
     methods_citation,
     normalize_purchase_csv_row,
@@ -927,6 +928,13 @@ class InventoryItemRequest(BaseModel):
     quantity: float | None = None
     reorder_threshold: float | None = None
     expiration_date: str | None = None
+    barcode: str | None = None
+    qr_code: str | None = None
+    internal_label: str | None = None
+    freezer_box: str | None = None
+    freezer_position: str | None = None
+    shelf: str | None = None
+    room: str | None = None
     notes: str | None = None
     linked_resource_id: str | None = None
 
@@ -956,6 +964,18 @@ class InventoryUsageRequest(BaseModel):
     purpose: str | None = None
     notes: str | None = None
     decrement_quantity: bool = False
+
+
+class InventoryCodeAssignmentRequest(BaseModel):
+    """Assign barcode/QR/internal label data to an inventory item."""
+
+    barcode: str | None = None
+    qr_code: str | None = None
+    internal_label: str | None = None
+    freezer_box: str | None = None
+    freezer_position: str | None = None
+    shelf: str | None = None
+    room: str | None = None
 
 
 class InventoryUsageResponse(InventoryUsageRequest):
@@ -3734,6 +3754,13 @@ def _save_inventory_request(request: InventoryItemRequest, item_id: str | None =
         quantity=request.quantity,
         reorder_threshold=request.reorder_threshold,
         expiration_date=request.expiration_date,
+        barcode=request.barcode,
+        qr_code=request.qr_code,
+        internal_label=request.internal_label,
+        freezer_box=request.freezer_box,
+        freezer_position=request.freezer_position,
+        shelf=request.shelf,
+        room=request.room,
         notes=request.notes,
         linked_resource_id=request.linked_resource_id,
         owner_user_id=str(user.get("user_id") or ""),
@@ -5494,6 +5521,20 @@ def inventory_expiring(
     }
 
 
+@app.get("/inventory/lookup", response_model=InventoryItemResponse, tags=["inventory"])
+def inventory_lookup(
+    code: str = Query(..., min_length=1),
+    workspace_id: str | None = Query(default=None),
+) -> InventoryItemResponse:
+    """Lookup inventory by barcode, QR code, or internal label."""
+
+    store = SQLiteStore(settings=settings)
+    item = store.lookup_inventory_item_by_code(code.strip(), workspace_id=_current_workspace_id(workspace_id))
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Inventory code not found: {code}")
+    return InventoryItemResponse(**item)
+
+
 @app.get("/inventory/{item_id}/usage", response_model=list[InventoryUsageResponse], tags=["inventory"])
 def inventory_item_usage(item_id: str, workspace_id: str | None = Query(default=None)) -> list[InventoryUsageResponse]:
     """Return usage history for one inventory item."""
@@ -5516,6 +5557,56 @@ def record_inventory_item_usage(item_id: str, request: InventoryUsageRequest) ->
     store = SQLiteStore(settings=settings)
     usage = _record_inventory_usage(store, item_id, request.experiment_id, request)
     return InventoryUsageResponse(**usage)
+
+
+@app.post("/inventory/{item_id}/assign-code", response_model=InventoryItemResponse, tags=["inventory"])
+def assign_inventory_code(item_id: str, request: InventoryCodeAssignmentRequest) -> InventoryItemResponse:
+    """Assign barcode, QR, internal label, and freezer location fields."""
+
+    store = SQLiteStore(settings=settings)
+    item = store.get_inventory_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    merged = {**item, **request.model_dump(exclude_unset=True)}
+    saved = store.save_inventory_item(
+        item_id=item_id,
+        name=str(merged.get("name") or ""),
+        category=merged.get("category"),
+        vendor=merged.get("vendor"),
+        catalog_number=merged.get("catalog_number"),
+        lot_number=merged.get("lot_number"),
+        rrid=merged.get("rrid"),
+        price=merged.get("price"),
+        unit=merged.get("unit"),
+        storage_location=merged.get("storage_location"),
+        quantity=merged.get("quantity"),
+        reorder_threshold=merged.get("reorder_threshold"),
+        expiration_date=merged.get("expiration_date"),
+        barcode=merged.get("barcode"),
+        qr_code=merged.get("qr_code"),
+        internal_label=merged.get("internal_label"),
+        freezer_box=merged.get("freezer_box"),
+        freezer_position=merged.get("freezer_position"),
+        shelf=merged.get("shelf"),
+        room=merged.get("room"),
+        notes=merged.get("notes"),
+        linked_resource_id=merged.get("linked_resource_id"),
+        owner_user_id=merged.get("owner_user_id"),
+        created_by=merged.get("created_by"),
+        workspace_id=merged.get("workspace_id"),
+    )
+    return InventoryItemResponse(**saved)
+
+
+@app.get("/inventory/{item_id}/label", tags=["inventory"])
+def inventory_label(item_id: str) -> dict[str, object]:
+    """Return printable barcode/QR label data for one inventory item."""
+
+    store = SQLiteStore(settings=settings)
+    item = store.get_inventory_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    return inventory_label_data(item)
 
 
 @app.get("/inventory/{item_id}", response_model=InventoryItemResponse, tags=["inventory"])

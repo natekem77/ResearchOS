@@ -130,6 +130,10 @@ class ResearchOsApi {
     return json.whereType<Map<String, dynamic>>().toList();
   }
 
+  Future<Map<String, dynamic>> lookupInventoryCode(String code) {
+    return _getMap('/inventory/lookup?code=${Uri.encodeQueryComponent(code)}');
+  }
+
   Future<Map<String, dynamic>> recordInventoryUsage({
     required String experimentId,
     required String inventoryItemId,

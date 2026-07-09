@@ -22,6 +22,13 @@ INVENTORY_CSV_FIELDS = [
     "quantity",
     "reorder_threshold",
     "expiration_date",
+    "barcode",
+    "qr_code",
+    "internal_label",
+    "freezer_box",
+    "freezer_position",
+    "shelf",
+    "room",
     "notes",
     "linked_resource_id",
 ]
@@ -287,6 +294,44 @@ def purchase_summary(records: list[dict[str, Any]], recent_limit: int = 10) -> d
         "spend_by_vendor": by_vendor,
         "spend_by_month": sorted(by_month.values(), key=lambda item: str(item["month"]), reverse=True),
         "recent_purchases": recent,
+    }
+
+
+def inventory_label_data(item: dict[str, Any]) -> dict[str, Any]:
+    """Return printable label data for one inventory item."""
+
+    code_value = item.get("qr_code") or item.get("barcode") or item.get("internal_label") or item.get("item_id")
+    storage_parts = [
+        item.get("room"),
+        item.get("shelf"),
+        item.get("freezer_box"),
+        item.get("freezer_position"),
+    ]
+    storage_detail = " / ".join(str(part) for part in storage_parts if part)
+    return {
+        "item_id": item.get("item_id"),
+        "name": item.get("name"),
+        "vendor": item.get("vendor"),
+        "catalog_number": item.get("catalog_number"),
+        "lot_number": item.get("lot_number"),
+        "expiration": item.get("expiration_date"),
+        "storage_location": item.get("storage_location"),
+        "storage_detail": storage_detail,
+        "barcode": item.get("barcode"),
+        "qr_code": item.get("qr_code"),
+        "code_value": code_value,
+        "internal_label": item.get("internal_label"),
+        "freezer_box": item.get("freezer_box"),
+        "freezer_position": item.get("freezer_position"),
+        "shelf": item.get("shelf"),
+        "room": item.get("room"),
+        "print_lines": [
+            str(item.get("name") or "Inventory item"),
+            " | ".join(str(part) for part in [item.get("vendor"), item.get("catalog_number")] if part),
+            " | ".join(str(part) for part in [f"Lot {item.get('lot_number')}" if item.get("lot_number") else None, f"Exp {item.get('expiration_date')}" if item.get("expiration_date") else None] if part),
+            storage_detail or str(item.get("storage_location") or ""),
+            str(code_value or ""),
+        ],
     }
 
 

@@ -54,6 +54,27 @@ curl http://127.0.0.1:8001/inventory/reorder-needed
 curl http://127.0.0.1:8001/inventory/expiring
 ```
 
+## Labels, Barcodes, and Freezer Organization
+
+Inventory items support optional barcode/QR and storage fields:
+
+- barcode
+- QR code
+- internal label
+- freezer box
+- freezer position
+- shelf
+- room
+
+Lookup and label endpoints:
+
+```bash
+curl "http://127.0.0.1:8001/inventory/lookup?code=SMOKE-QR-001"
+curl http://127.0.0.1:8001/inventory/inventory:ITEM_ID/label
+```
+
+See [INVENTORY_LABELS_AND_BARCODES.md](INVENTORY_LABELS_AND_BARCODES.md).
+
 ## Purchasing
 
 Purchase records track:

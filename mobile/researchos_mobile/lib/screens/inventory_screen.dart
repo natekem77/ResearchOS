@@ -14,6 +14,9 @@ class InventoryScreen extends StatefulWidget {
 
 class _InventoryScreenState extends State<InventoryScreen> {
   late Future<Map<String, dynamic>> _future;
+  final _lookupCode = TextEditingController();
+  Map<String, dynamic>? _lookupResult;
+  String? _lookupMessage;
 
   @override
   void initState() {
@@ -25,6 +28,35 @@ class _InventoryScreenState extends State<InventoryScreen> {
     setState(() {
       _future = widget.api.inventoryStatus();
     });
+  }
+
+  @override
+  void dispose() {
+    _lookupCode.dispose();
+    super.dispose();
+  }
+
+  Future<void> _lookup() async {
+    final code = _lookupCode.text.trim();
+    if (code.isEmpty) {
+      setState(() {
+        _lookupMessage = 'Enter a barcode, QR code, or internal label.';
+        _lookupResult = null;
+      });
+      return;
+    }
+    try {
+      final result = await widget.api.lookupInventoryCode(code);
+      setState(() {
+        _lookupResult = result;
+        _lookupMessage = null;
+      });
+    } catch (error) {
+      setState(() {
+        _lookupResult = null;
+        _lookupMessage = 'No inventory item found for $code.';
+      });
+    }
   }
 
   @override
@@ -52,6 +84,53 @@ class _InventoryScreenState extends State<InventoryScreen> {
             children: [
               Text('Inventory',
                   style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: ResearchOsSpacing.md),
+              ResearchOsCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('Scan Inventory',
+                              style: Theme.of(context).textTheme.titleMedium),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () {
+                            setState(() {
+                              _lookupMessage =
+                                  'Camera scanning is a placeholder. Type or paste a code below.';
+                            });
+                          },
+                          icon: const Icon(Icons.qr_code_scanner),
+                          label: const Text('Scan'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: ResearchOsSpacing.md),
+                    TextField(
+                      controller: _lookupCode,
+                      decoration: InputDecoration(
+                        labelText: 'Barcode, QR, or internal label',
+                        suffixIcon: IconButton(
+                          tooltip: 'Lookup inventory code',
+                          onPressed: _lookup,
+                          icon: const Icon(Icons.search),
+                        ),
+                      ),
+                      onSubmitted: (_) => _lookup(),
+                    ),
+                    if (_lookupMessage != null) ...[
+                      const SizedBox(height: ResearchOsSpacing.sm),
+                      Text(_lookupMessage!),
+                    ],
+                    if (_lookupResult != null) ...[
+                      const SizedBox(height: ResearchOsSpacing.md),
+                      _InventoryTile(item: _lookupResult!),
+                    ],
+                  ],
+                ),
+              ),
               const SizedBox(height: ResearchOsSpacing.md),
               Wrap(
                 spacing: ResearchOsSpacing.md,
@@ -145,6 +224,7 @@ class _InventoryTile extends StatelessWidget {
               item['vendor'],
               item['catalog_number'],
               item['storage_location'],
+              item['internal_label'],
             ]
                 .where((value) => value != null && '$value'.isNotEmpty)
                 .join(' · ')),
@@ -156,6 +236,13 @@ class _InventoryTile extends StatelessWidget {
                 Chip(label: Text('Qty ${item['quantity'] ?? 'n/a'}')),
                 if (item['expiration_date'] != null)
                   Chip(label: Text('Exp ${item['expiration_date']}')),
+                if (item['freezer_box'] != null ||
+                    item['freezer_position'] != null)
+                  Chip(
+                      label: Text([
+                    item['freezer_box'],
+                    item['freezer_position'],
+                  ].where((value) => value != null).join(' '))),
                 for (final flag in flags) Chip(label: Text(flag)),
               ],
             ),

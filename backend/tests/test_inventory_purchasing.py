@@ -313,6 +313,46 @@ class InventoryPurchasingTests(unittest.TestCase):
         self.assertEqual(updated_item["quantity"], 1.5)
         self.assertTrue(any(record["usage_type"] == "inventory_used" for record in resource_usages))
 
+    def test_inventory_barcode_lookup_and_label(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                item = main.create_inventory_item(
+                    main.InventoryItemRequest(
+                        name="Barcode SAG",
+                        category="compound",
+                        vendor="DemoChem",
+                        catalog_number="SAG-BC",
+                        lot_number="LOT-BC",
+                        expiration_date="2027-01-01",
+                        storage_location="-20C",
+                    )
+                )
+                assigned = main.assign_inventory_code(
+                    item.item_id,
+                    main.InventoryCodeAssignmentRequest(
+                        barcode="BC-SAG-001",
+                        qr_code="QR-SAG-001",
+                        internal_label="NK-SAG-A1",
+                        freezer_box="Box A",
+                        freezer_position="A1",
+                        shelf="Shelf 2",
+                        room="Lab 310",
+                    ),
+                )
+                looked_up = main.inventory_lookup(code="QR-SAG-001", workspace_id=None)
+                label = main.inventory_label(item.item_id)
+                listed = main.inventory_items(vendor=None, category=None, storage_location=None, query="NK-SAG-A1", workspace_id=None)
+            finally:
+                main.settings = original_settings
+
+        self.assertEqual(assigned.barcode, "BC-SAG-001")
+        self.assertEqual(looked_up.item_id, item.item_id)
+        self.assertEqual(label["code_value"], "QR-SAG-001")
+        self.assertIn("Box A / A1", label["storage_detail"])
+        self.assertEqual(len(listed), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
