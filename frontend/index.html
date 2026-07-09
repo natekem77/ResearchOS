@@ -33,6 +33,7 @@
           <a href="#/protocols" data-nav="protocols">Protocols</a>
           <a href="#/inventory" data-nav="inventory">Inventory</a>
           <a href="#/purchases" data-nav="purchases">Purchasing</a>
+          <a href="#/receiving" data-nav="receiving">Receiving</a>
           <a href="#/documents" data-nav="documents">Documents</a>
           <a href="#/assets" data-nav="assets">Assets</a>
           <a href="#/data" data-nav="data">Data</a>
@@ -744,6 +745,73 @@
               <div class="preview-panel" id="purchaseImportPreview"></div>
               <p class="demo-status" id="purchaseStatusMessage"></p>
               <div class="item-list" id="purchasesList"></div>
+            </article>
+          </section>
+
+          <section class="view" id="receivingView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Inventory intake</p>
+                  <h2>Receiving</h2>
+                </div>
+                <a class="secondary-link-button" href="/receiving/export-csv">Export CSV</a>
+              </div>
+              <form class="entry-draft-form" id="receivingForm">
+                <label for="receivingItemName">Item name</label>
+                <input id="receivingItemName" type="text" placeholder="BMP4, antibody, media..." required />
+                <div class="form-grid">
+                  <div>
+                    <label for="receivingVendor">Vendor</label>
+                    <input id="receivingVendor" type="text" />
+                  </div>
+                  <div>
+                    <label for="receivingCatalog">Catalog number</label>
+                    <input id="receivingCatalog" type="text" />
+                  </div>
+                  <div>
+                    <label for="receivingLot">Lot number</label>
+                    <input id="receivingLot" type="text" />
+                  </div>
+                  <div>
+                    <label for="receivingQuantity">Quantity received</label>
+                    <input id="receivingQuantity" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="receivingUnits">Units</label>
+                    <input id="receivingUnits" type="text" placeholder="vial, box, mL" />
+                  </div>
+                  <div>
+                    <label for="receivingDate">Received date</label>
+                    <input id="receivingDate" type="date" />
+                  </div>
+                  <div>
+                    <label for="receivingExpiration">Expiration date</label>
+                    <input id="receivingExpiration" type="date" />
+                  </div>
+                  <div>
+                    <label for="receivingBarcode">Barcode or label</label>
+                    <input id="receivingBarcode" type="text" />
+                  </div>
+                </div>
+                <label for="receivingLocation">Storage location</label>
+                <input id="receivingLocation" type="text" placeholder="-20C freezer, Box A" />
+                <label for="receivingBy">Received by</label>
+                <input id="receivingBy" type="text" />
+                <label for="receivingPurchaseRequest">Purchase request ID</label>
+                <input id="receivingPurchaseRequest" type="text" placeholder="purchase-request:..." />
+                <label for="receivingPurchaseRecord">Purchase record ID</label>
+                <input id="receivingPurchaseRecord" type="text" placeholder="purchase:..." />
+                <label for="receivingInventoryItem">Existing inventory item ID</label>
+                <input id="receivingInventoryItem" type="text" placeholder="inventory:..." />
+                <label for="receivingNotes">Notes</label>
+                <textarea id="receivingNotes" rows="2"></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Save Receiving Record</button>
+                </div>
+              </form>
+              <p class="demo-status" id="receivingStatus"></p>
+              <div class="item-list" id="receivingList"></div>
             </article>
           </section>
 

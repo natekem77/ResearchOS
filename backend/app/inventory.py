@@ -64,6 +64,25 @@ PURCHASE_REQUEST_CSV_FIELDS = [
     "linked_inventory_item_id",
 ]
 
+RECEIVING_CSV_FIELDS = [
+    "receiving_id",
+    "purchase_request_id",
+    "purchase_record_id",
+    "inventory_item_id",
+    "item_name",
+    "vendor",
+    "catalog_number",
+    "lot_number",
+    "quantity_received",
+    "units",
+    "received_by",
+    "received_date",
+    "expiration_date",
+    "storage_location",
+    "barcode_or_label",
+    "notes",
+]
+
 PURCHASE_REQUEST_STATUSES = {
     "draft",
     "submitted",

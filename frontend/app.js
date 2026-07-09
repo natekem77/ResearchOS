@@ -11,6 +11,7 @@ const state = {
   inventory: [],
   purchases: [],
   purchaseRequests: [],
+  receiving: [],
   inventoryStatus: null,
   purchaseSummary: null,
   purchaseImportTemplates: [],
@@ -61,6 +62,7 @@ const views = {
   protocolDetail: $("#protocolDetailView"),
   inventory: $("#inventoryView"),
   purchases: $("#purchasesView"),
+  receiving: $("#receivingView"),
   documents: $("#documentsView"),
   assets: $("#assetsView"),
   assetDetail: $("#assetDetailView"),
@@ -318,6 +320,7 @@ function route() {
     protocols: ["Protocols", "Protocol Signals"],
     inventory: ["Inventory", "Lab Inventory"],
     purchases: ["Purchasing", "Oracle-ready Records"],
+    receiving: ["Receiving", "Inventory Intake"],
     documents: ["Documents", "Document Library"],
     assets: ["Assets", "Research Asset Graph"],
     data: ["Data", "Quantitative Spreadsheets"],
@@ -1718,6 +1721,7 @@ function renderPurchaseRecord(record) {
         <span class="tag">${escapeHtml(record.grant_or_funding_source || "no grant")}</span>
       </div>
       <p>${escapeHtml(record.notes || "")}</p>
+      <a class="secondary-link-button" href="#/receiving">Receive item</a>
     </article>
   `;
 }
@@ -1737,11 +1741,41 @@ function renderPurchaseRequest(record) {
       </div>
       <p>${escapeHtml(record.notes || "")}</p>
       <div class="entry-actions compact-actions">
+        <a class="secondary-link-button" href="#/receiving">Receive item</a>
         ${status === "draft" ? `<button type="button" class="secondary-button" data-purchase-request-action="submit" data-purchase-request-id="${escapeHtml(record.request_id)}">Submit</button>` : ""}
         ${status === "submitted" ? `<button type="button" class="secondary-button" data-purchase-request-action="approve" data-purchase-request-id="${escapeHtml(record.request_id)}">Approve</button>` : ""}
         ${["submitted", "approved"].includes(status) ? `<button type="button" class="secondary-button" data-purchase-request-action="mark-ordered" data-purchase-request-id="${escapeHtml(record.request_id)}">Mark Ordered</button>` : ""}
         ${status === "ordered" ? `<button type="button" class="secondary-button" data-purchase-request-action="mark-received" data-purchase-request-id="${escapeHtml(record.request_id)}">Mark Received</button>` : ""}
       </div>
+    </article>
+  `;
+}
+
+function renderReceiving() {
+  const target = $("#receivingList");
+  if (!target) return;
+  const records = state.receiving || [];
+  target.innerHTML = records.length
+    ? records.map(renderReceivingRecord).join("")
+    : `<div class="empty-state">No receiving records yet. Receive items after Oracle/manual ordering.</div>`;
+}
+
+function renderReceivingRecord(record) {
+  return `
+    <article class="record-card">
+      <h3>${escapeHtml(record.item_name)}</h3>
+      <p>${escapeHtml([record.vendor, record.catalog_number, record.lot_number].filter(Boolean).join(" · ") || "No vendor/catalog metadata.")}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(formatDate(record.received_date))}</span>
+        <span class="tag">${escapeHtml(record.quantity_received ?? "no quantity")} ${escapeHtml(record.units || "")}</span>
+        <span class="tag">${escapeHtml(record.storage_location || "no storage")}</span>
+        ${record.barcode_or_label ? `<span class="tag">${escapeHtml(record.barcode_or_label)}</span>` : ""}
+        ${record.purchase_request_id ? `<span class="tag">${escapeHtml(record.purchase_request_id)}</span>` : ""}
+        ${record.purchase_record_id ? `<span class="tag">${escapeHtml(record.purchase_record_id)}</span>` : ""}
+        ${record.inventory_item_id ? `<span class="tag">${escapeHtml(record.inventory_item_id)}</span>` : ""}
+      </div>
+      <p>${escapeHtml(record.notes || "")}</p>
+      <button type="button" class="secondary-button" data-receiving-intake="${escapeHtml(record.receiving_id)}">Create/update inventory</button>
     </article>
   `;
 }
@@ -1819,6 +1853,39 @@ async function savePurchaseRequest() {
   const saved = await requestJson("/purchase-requests", { method: "POST", body: JSON.stringify(payload) });
   $("#purchaseRequestForm").reset();
   $("#purchaseStatusMessage").textContent = `Saved purchase request: ${saved.item_name}`;
+  await refreshData();
+}
+
+async function saveReceivingRecord() {
+  const payload = {
+    item_name: $("#receivingItemName").value.trim(),
+    vendor: $("#receivingVendor").value.trim() || null,
+    catalog_number: $("#receivingCatalog").value.trim() || null,
+    lot_number: $("#receivingLot").value.trim() || null,
+    quantity_received: numberOrNull($("#receivingQuantity").value),
+    units: $("#receivingUnits").value.trim() || null,
+    received_by: $("#receivingBy").value.trim() || null,
+    received_date: $("#receivingDate").value || null,
+    expiration_date: $("#receivingExpiration").value || null,
+    storage_location: $("#receivingLocation").value.trim() || null,
+    barcode_or_label: $("#receivingBarcode").value.trim() || null,
+    purchase_request_id: $("#receivingPurchaseRequest").value.trim() || null,
+    purchase_record_id: $("#receivingPurchaseRecord").value.trim() || null,
+    inventory_item_id: $("#receivingInventoryItem").value.trim() || null,
+    notes: $("#receivingNotes").value.trim() || null,
+  };
+  const saved = await requestJson("/receiving", { method: "POST", body: JSON.stringify(payload) });
+  $("#receivingForm").reset();
+  $("#receivingStatus").textContent = `Saved receiving record: ${saved.item_name}`;
+  await refreshData();
+}
+
+async function intakeReceivingRecord(receivingId) {
+  const result = await requestJson(`/receiving/${encodeURIComponent(receivingId)}/create-or-update-inventory`, {
+    method: "POST",
+    body: JSON.stringify({ update_existing: true }),
+  });
+  $("#receivingStatus").textContent = `Inventory updated: ${result.inventory_item?.name || result.inventory_item?.item_id || "item"}`;
   await refreshData();
 }
 
@@ -4523,7 +4590,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4537,6 +4604,7 @@ async function refreshData() {
     requestJson("/inventory/status"),
     requestJson("/purchases"),
     requestJson("/purchase-requests"),
+    requestJson("/receiving"),
     requestJson("/purchases/summary"),
     requestJson("/purchases/import-templates"),
     requestJson("/sessions"),
@@ -4562,6 +4630,7 @@ async function refreshData() {
   state.inventoryStatus = inventoryStatus;
   state.purchases = purchases;
   state.purchaseRequests = purchaseRequests;
+  state.receiving = receiving;
   state.purchaseSummary = purchaseSummary;
   state.purchaseImportTemplates = purchaseImportTemplates;
   state.sessions = sessions;
@@ -4601,6 +4670,7 @@ function renderAll() {
   renderProtocols();
   renderInventory();
   renderPurchases();
+  renderReceiving();
   renderWorkflows();
   renderSessions();
   renderExperimentsTable();
@@ -4944,6 +5014,19 @@ $("#purchaseForm")?.addEventListener("submit", (event) => {
   event.preventDefault();
   savePurchaseRecord().catch((error) => {
     $("#purchaseStatusMessage").textContent = `Purchase save failed: ${error.message}`;
+  });
+});
+$("#receivingForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveReceivingRecord().catch((error) => {
+    $("#receivingStatus").textContent = `Receiving save failed: ${error.message}`;
+  });
+});
+$("#receivingList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-receiving-intake]");
+  if (!button) return;
+  intakeReceivingRecord(button.dataset.receivingIntake).catch((error) => {
+    $("#receivingStatus").textContent = `Inventory intake failed: ${error.message}`;
   });
 });
 $("#purchaseRequestForm")?.addEventListener("submit", (event) => {

@@ -139,6 +139,11 @@ class ResearchOsApi {
     return json.whereType<Map<String, dynamic>>().toList();
   }
 
+  Future<List<Map<String, dynamic>>> receivingRecords() async {
+    final json = await _getList('/receiving');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
   Future<Map<String, dynamic>> requestInventoryReorder(String itemId) {
     return _postMap(
       '/inventory/${Uri.encodeComponent(itemId)}/request-reorder',

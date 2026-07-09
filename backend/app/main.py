@@ -53,6 +53,7 @@ from app.inventory import (
     PURCHASE_CSV_FIELDS,
     PURCHASE_REQUEST_CSV_FIELDS,
     PURCHASE_REQUEST_STATUSES,
+    RECEIVING_CSV_FIELDS,
     apply_purchase_mapping,
     build_reagent_methods_text,
     inventory_item_status,
@@ -1055,6 +1056,44 @@ class PurchaseRequestReceiveRequest(BaseModel):
     """Mark a request received and optionally add the quantity to inventory."""
 
     update_inventory_quantity: bool = False
+    create_receiving_record: bool = False
+
+
+class ReceivingRecordRequest(BaseModel):
+    """Receive an ordered item before adding it to inventory."""
+
+    purchase_request_id: str | None = None
+    purchase_record_id: str | None = None
+    inventory_item_id: str | None = None
+    item_name: str
+    vendor: str | None = None
+    catalog_number: str | None = None
+    lot_number: str | None = None
+    quantity_received: float | None = None
+    units: str | None = None
+    received_by: str | None = None
+    received_date: str | None = None
+    expiration_date: str | None = None
+    storage_location: str | None = None
+    barcode_or_label: str | None = None
+    notes: str | None = None
+
+
+class ReceivingRecordResponse(ReceivingRecordRequest):
+    """Stored receiving/intake record."""
+
+    receiving_id: str
+    owner_user_id: str | None = None
+    created_by: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class ReceivingInventoryIntakeRequest(BaseModel):
+    """Convert a receiving record into inventory."""
+
+    update_existing: bool = True
 
 
 class PurchaseCsvImportRequest(BaseModel):
@@ -3888,6 +3927,140 @@ def _purchase_request_with_status(request_id: str, status: str) -> dict[str, obj
     return _save_purchase_request_workflow(payload, request_id=request_id)
 
 
+def _save_receiving_request(
+    request: ReceivingRecordRequest,
+    receiving_id: str | None = None,
+) -> dict[str, object]:
+    """Persist one receiving/intake record."""
+
+    if not request.item_name.strip():
+        raise HTTPException(status_code=400, detail="Receiving item name is required.")
+    store = SQLiteStore(settings=settings)
+    if request.purchase_request_id and store.get_purchase_request(request.purchase_request_id) is None:
+        raise HTTPException(status_code=404, detail=f"Purchase request not found: {request.purchase_request_id}")
+    linked_purchase = store.get_purchase_record(request.purchase_record_id) if request.purchase_record_id else None
+    if request.purchase_record_id and linked_purchase is None:
+        raise HTTPException(status_code=404, detail=f"Purchase record not found: {request.purchase_record_id}")
+    if request.inventory_item_id and store.get_inventory_item(request.inventory_item_id) is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {request.inventory_item_id}")
+    user, workspace = _current_user_workspace_metadata()
+    notes = request.notes
+    if linked_purchase:
+        purchase_context = "Linked purchase record"
+        details = [
+            f"PO {linked_purchase.get('oracle_po_number')}" if linked_purchase.get("oracle_po_number") else "",
+            f"invoice {linked_purchase.get('invoice_number')}" if linked_purchase.get("invoice_number") else "",
+            f"grant {linked_purchase.get('grant_or_funding_source')}" if linked_purchase.get("grant_or_funding_source") else "",
+        ]
+        purchase_context = f"{purchase_context}: {', '.join([item for item in details if item])}."
+        notes = f"{notes or ''}\n{purchase_context}".strip()
+    saved = store.save_receiving_record(
+        receiving_id=receiving_id,
+        purchase_request_id=request.purchase_request_id,
+        purchase_record_id=request.purchase_record_id,
+        inventory_item_id=request.inventory_item_id,
+        item_name=request.item_name.strip(),
+        vendor=request.vendor,
+        catalog_number=request.catalog_number,
+        lot_number=request.lot_number,
+        quantity_received=request.quantity_received,
+        units=request.units,
+        received_by=request.received_by or str(user.get("display_name") or user.get("email") or ""),
+        received_date=request.received_date or datetime.now(timezone.utc).date().isoformat(),
+        expiration_date=request.expiration_date,
+        storage_location=request.storage_location,
+        barcode_or_label=request.barcode_or_label,
+        notes=notes,
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    _publish_event(EventType.PROVIDER_SYNCED, "inventory", {"event": "receiving_record_saved", "receiving_id": saved.get("receiving_id")})
+    return saved
+
+
+def _receiving_from_purchase_request(request_record: dict[str, object]) -> dict[str, object]:
+    """Create a receiving record from a received purchase request."""
+
+    payload = ReceivingRecordRequest(
+        purchase_request_id=str(request_record.get("request_id") or ""),
+        inventory_item_id=request_record.get("linked_inventory_item_id"),
+        item_name=str(request_record.get("item_name") or ""),
+        vendor=request_record.get("vendor"),
+        catalog_number=request_record.get("catalog_number"),
+        quantity_received=request_record.get("quantity_requested"),
+        received_by=request_record.get("requested_by"),
+        received_date=datetime.now(timezone.utc).date().isoformat(),
+        notes=f"Created when purchase request {request_record.get('request_id')} was marked received.",
+    )
+    return _save_receiving_request(payload)
+
+
+def _intake_receiving_record(
+    receiving_id: str,
+    update_existing: bool = True,
+) -> dict[str, object]:
+    """Create or update inventory from a receiving record."""
+
+    store = SQLiteStore(settings=settings)
+    record = store.get_receiving_record(receiving_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Receiving record not found: {receiving_id}")
+    inventory_item_id = record.get("inventory_item_id")
+    quantity = float(record.get("quantity_received") or 0)
+    inventory_item: dict[str, object] | None = None
+    if inventory_item_id and update_existing:
+        inventory_item = store.update_inventory_quantity(str(inventory_item_id), quantity)
+        if inventory_item is None:
+            raise HTTPException(status_code=404, detail=f"Inventory item not found: {inventory_item_id}")
+    else:
+        inventory_item = store.save_inventory_item(
+            name=str(record.get("item_name") or ""),
+            category="received",
+            vendor=record.get("vendor"),
+            catalog_number=record.get("catalog_number"),
+            lot_number=record.get("lot_number"),
+            unit=record.get("units"),
+            storage_location=record.get("storage_location"),
+            quantity=quantity if record.get("quantity_received") is not None else None,
+            expiration_date=record.get("expiration_date"),
+            barcode=record.get("barcode_or_label"),
+            qr_code=record.get("barcode_or_label"),
+            internal_label=record.get("barcode_or_label"),
+            notes=f"Created from receiving record {receiving_id}. {record.get('notes') or ''}".strip(),
+            workspace_id=record.get("workspace_id"),
+            owner_user_id=record.get("owner_user_id"),
+            created_by=record.get("created_by"),
+        )
+    updated_record = store.save_receiving_record(
+        receiving_id=receiving_id,
+        purchase_request_id=record.get("purchase_request_id"),
+        purchase_record_id=record.get("purchase_record_id"),
+        inventory_item_id=str(inventory_item.get("item_id")),
+        item_name=str(record.get("item_name") or ""),
+        vendor=record.get("vendor"),
+        catalog_number=record.get("catalog_number"),
+        lot_number=record.get("lot_number"),
+        quantity_received=record.get("quantity_received"),
+        units=record.get("units"),
+        received_by=record.get("received_by"),
+        received_date=record.get("received_date"),
+        expiration_date=record.get("expiration_date"),
+        storage_location=record.get("storage_location"),
+        barcode_or_label=record.get("barcode_or_label"),
+        notes=record.get("notes"),
+        owner_user_id=record.get("owner_user_id"),
+        created_by=record.get("created_by"),
+        workspace_id=record.get("workspace_id"),
+    )
+    _publish_event(
+        EventType.PROVIDER_SYNCED,
+        "inventory",
+        {"event": "inventory_intake", "receiving_id": receiving_id, "inventory_item_id": inventory_item.get("item_id")},
+    )
+    return {"receiving": updated_record, "inventory_item": inventory_item}
+
+
 def _inventory_item_entry(
     store: SQLiteStore,
     item: dict[str, object],
@@ -5981,15 +6154,101 @@ def mark_purchase_request_received(
     request_id: str,
     request: PurchaseRequestReceiveRequest | None = None,
 ) -> PurchaseRequestResponse:
-    """Mark a request received and optionally increase linked inventory quantity."""
+    """Mark a request received and optionally create receiving/intake records."""
 
     store = SQLiteStore(settings=settings)
     updated = _purchase_request_with_status(request_id, "received")
+    receiving: dict[str, object] | None = None
+    if request and request.create_receiving_record:
+        receiving = _receiving_from_purchase_request(updated)
     if request and request.update_inventory_quantity and updated.get("linked_inventory_item_id"):
         quantity = updated.get("quantity_requested")
         if quantity is not None:
             store.update_inventory_quantity(str(updated["linked_inventory_item_id"]), float(quantity))
+    if receiving:
+        _publish_event(
+            EventType.PROVIDER_SYNCED,
+            "inventory",
+            {"event": "purchase_request_received", "request_id": request_id, "receiving_id": receiving.get("receiving_id")},
+        )
     return PurchaseRequestResponse(**updated)
+
+
+@app.get("/receiving", response_model=list[ReceivingRecordResponse], tags=["purchasing", "inventory"])
+def receiving_records(
+    query: str | None = Query(default=None),
+    purchase_request_id: str | None = Query(default=None),
+    purchase_record_id: str | None = Query(default=None),
+    inventory_item_id: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+) -> list[ReceivingRecordResponse]:
+    """List receiving/intake records."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        ReceivingRecordResponse(**record)
+        for record in store.list_receiving_records(
+            query=query,
+            purchase_request_id=purchase_request_id,
+            purchase_record_id=purchase_record_id,
+            inventory_item_id=inventory_item_id,
+            workspace_id=_current_workspace_id(workspace_id),
+        )
+    ]
+
+
+@app.post("/receiving", response_model=ReceivingRecordResponse, tags=["purchasing", "inventory"])
+def create_receiving_record(request: ReceivingRecordRequest) -> ReceivingRecordResponse:
+    """Create a receiving record for ordered items arriving in the lab."""
+
+    return ReceivingRecordResponse(**_save_receiving_request(request))
+
+
+@app.get("/receiving/export-csv", tags=["purchasing", "inventory"])
+def export_receiving_csv(workspace_id: str | None = Query(default=None)) -> Response:
+    """Export receiving records as CSV."""
+
+    store = SQLiteStore(settings=settings)
+    csv_text = records_to_csv(
+        store.list_receiving_records(workspace_id=_current_workspace_id(workspace_id)),
+        RECEIVING_CSV_FIELDS,
+    )
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="researchos_receiving.csv"'},
+    )
+
+
+@app.get("/receiving/{receiving_id}", response_model=ReceivingRecordResponse, tags=["purchasing", "inventory"])
+def receiving_detail(receiving_id: str) -> ReceivingRecordResponse:
+    """Return one receiving/intake record."""
+
+    store = SQLiteStore(settings=settings)
+    record = store.get_receiving_record(receiving_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Receiving record not found: {receiving_id}")
+    return ReceivingRecordResponse(**record)
+
+
+@app.put("/receiving/{receiving_id}", response_model=ReceivingRecordResponse, tags=["purchasing", "inventory"])
+def update_receiving_record(receiving_id: str, request: ReceivingRecordRequest) -> ReceivingRecordResponse:
+    """Update one receiving/intake record."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_receiving_record(receiving_id) is None:
+        raise HTTPException(status_code=404, detail=f"Receiving record not found: {receiving_id}")
+    return ReceivingRecordResponse(**_save_receiving_request(request, receiving_id=receiving_id))
+
+
+@app.post("/receiving/{receiving_id}/create-or-update-inventory", tags=["purchasing", "inventory"])
+def create_or_update_inventory_from_receiving(
+    receiving_id: str,
+    request: ReceivingInventoryIntakeRequest | None = None,
+) -> dict[str, object]:
+    """Create a new inventory item or update linked inventory from receiving."""
+
+    return _intake_receiving_record(receiving_id, update_existing=True if request is None else request.update_existing)
 
 
 @app.get("/purchases", response_model=list[PurchaseRecordResponse], tags=["purchasing"])

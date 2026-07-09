@@ -227,8 +227,23 @@ request GET "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID" >/dev/null
 request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/submit" "" >/dev/null
 request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/approve" "" >/dev/null
 request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/mark-ordered" "" >/dev/null
-request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/mark-received" '{"update_inventory_quantity":false}' >/dev/null
+request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/mark-received" '{"update_inventory_quantity":false,"create_receiving_record":true}' >/dev/null
 request GET "/purchase-requests/export-csv" >/dev/null
+SMOKE_RECEIVING_FILE="$(request POST "/receiving" "{\"purchase_request_id\":\"$SMOKE_PURCHASE_REQUEST_ID\",\"item_name\":\"Smoke SAG Received\",\"vendor\":\"ResearchOS\",\"catalog_number\":\"SAG-SMOKE\",\"lot_number\":\"LOT-SMOKE-R\",\"quantity_received\":2,\"units\":\"vial\",\"received_by\":\"ResearchOS\",\"received_date\":\"2026-07-08\",\"expiration_date\":\"2027-01-01\",\"storage_location\":\"Demo freezer\",\"barcode_or_label\":\"SMOKE-RECEIVE-A1\",\"notes\":\"Smoke receiving record.\"}")"
+SMOKE_RECEIVING_ID="$(
+  python3 - "$SMOKE_RECEIVING_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["receiving_id"])
+PY
+)"
+request GET "/receiving" >/dev/null
+request GET "/receiving/$SMOKE_RECEIVING_ID" >/dev/null
+request PUT "/receiving/$SMOKE_RECEIVING_ID" "{\"purchase_request_id\":\"$SMOKE_PURCHASE_REQUEST_ID\",\"item_name\":\"Smoke SAG Received Updated\",\"vendor\":\"ResearchOS\",\"catalog_number\":\"SAG-SMOKE\",\"lot_number\":\"LOT-SMOKE-R2\",\"quantity_received\":2,\"units\":\"vial\",\"received_by\":\"ResearchOS\",\"received_date\":\"2026-07-08\",\"expiration_date\":\"2027-01-01\",\"storage_location\":\"Demo freezer\",\"barcode_or_label\":\"SMOKE-RECEIVE-A1\",\"notes\":\"Updated smoke receiving record.\"}" >/dev/null
+request POST "/receiving/$SMOKE_RECEIVING_ID/create-or-update-inventory" '{"update_existing":true}' >/dev/null
+request GET "/receiving/export-csv" >/dev/null
 request POST "/methods/reagents" "{\"inventory_item_ids\":[\"$SMOKE_INVENTORY_ID\"],\"style\":\"paper\"}" >/dev/null
 request GET "/experiments/$WIZARD_INTERNAL_ID/reagents" >/dev/null
 request POST "/experiments/$WIZARD_INTERNAL_ID/inventory-usage" "{\"inventory_item_id\":\"$SMOKE_INVENTORY_ID\",\"session_id\":\"$SESSION_ID\",\"amount_used\":0.5,\"units\":\"vial\",\"purpose\":\"Smoke reagent usage\",\"notes\":\"Smoke usage record.\",\"decrement_quantity\":false}" >/dev/null

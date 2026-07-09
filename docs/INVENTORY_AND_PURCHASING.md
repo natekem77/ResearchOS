@@ -95,6 +95,25 @@ curl -X POST http://127.0.0.1:8001/inventory/{item_id}/request-reorder
 
 See [PURCHASE_REQUESTS.md](PURCHASE_REQUESTS.md).
 
+## Receiving and Inventory Intake
+
+Receiving records document items that have arrived before they become inventory records:
+
+```bash
+curl http://127.0.0.1:8001/receiving
+curl http://127.0.0.1:8001/receiving/export-csv
+```
+
+A receiving record can create a new inventory item or update an existing one:
+
+```bash
+curl -X POST http://127.0.0.1:8001/receiving/{receiving_id}/create-or-update-inventory \
+  -H "Content-Type: application/json" \
+  -d '{"update_existing":true}'
+```
+
+See [RECEIVING_WORKFLOW.md](RECEIVING_WORKFLOW.md).
+
 Purchase records track:
 
 - item name

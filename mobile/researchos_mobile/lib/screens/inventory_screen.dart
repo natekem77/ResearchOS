@@ -34,7 +34,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
   Future<Map<String, dynamic>> _load() async {
     final status = await widget.api.inventoryStatus();
     final requests = await widget.api.purchaseRequests();
-    return {...status, 'purchase_requests': requests};
+    final receiving = await widget.api.receivingRecords();
+    return {
+      ...status,
+      'purchase_requests': requests,
+      'receiving_records': receiving
+    };
   }
 
   @override
@@ -107,6 +112,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
             .whereType<Map<String, dynamic>>()
             .toList();
         final requests = (status['purchase_requests'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        final receiving = (status['receiving_records'] as List? ?? const [])
             .whereType<Map<String, dynamic>>()
             .toList();
         return RefreshIndicator(
@@ -216,6 +224,36 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           trailing:
                               Text('\$${request['estimated_cost'] ?? '0'}'),
                         ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: ResearchOsSpacing.md),
+              ResearchOsCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Receiving',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: ResearchOsSpacing.sm),
+                    const Text(
+                      'Barcode receiving is prepared for a future camera workflow. For now, receive items in the web app or server API.',
+                    ),
+                    const SizedBox(height: ResearchOsSpacing.sm),
+                    Text('${receiving.length} receiving record(s)'),
+                    for (final record in receiving.take(3))
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                            record['item_name']?.toString() ?? 'Received item'),
+                        subtitle: Text([
+                          record['vendor'],
+                          record['quantity_received'],
+                          record['received_date'],
+                        ]
+                            .where(
+                                (value) => value != null && '$value'.isNotEmpty)
+                            .join(' · ')),
+                      ),
                   ],
                 ),
               ),

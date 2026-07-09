@@ -475,6 +475,39 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_purchase_requests_inventory_item
                     ON purchase_requests(linked_inventory_item_id);
 
+                CREATE TABLE IF NOT EXISTS receiving_records (
+                    receiving_id TEXT PRIMARY KEY,
+                    purchase_request_id TEXT,
+                    purchase_record_id TEXT,
+                    inventory_item_id TEXT,
+                    item_name TEXT NOT NULL,
+                    vendor TEXT,
+                    catalog_number TEXT,
+                    lot_number TEXT,
+                    quantity_received REAL,
+                    units TEXT,
+                    received_by TEXT,
+                    received_date TEXT,
+                    expiration_date TEXT,
+                    storage_location TEXT,
+                    barcode_or_label TEXT,
+                    notes TEXT,
+                    owner_user_id TEXT,
+                    created_by TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_receiving_purchase_request
+                    ON receiving_records(purchase_request_id);
+                CREATE INDEX IF NOT EXISTS idx_receiving_purchase_record
+                    ON receiving_records(purchase_record_id);
+                CREATE INDEX IF NOT EXISTS idx_receiving_inventory_item
+                    ON receiving_records(inventory_item_id);
+                CREATE INDEX IF NOT EXISTS idx_receiving_received_date
+                    ON receiving_records(received_date);
+
                 CREATE TABLE IF NOT EXISTS purchase_import_templates (
                     template_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -496,7 +529,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "purchase_import_templates"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "receiving_records", "purchase_import_templates"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -2771,6 +2804,176 @@ class SQLiteStore:
                 (current + float(quantity_delta), item_id),
             )
         return self.get_inventory_item(item_id)
+
+    def save_receiving_record(
+        self,
+        item_name: str,
+        purchase_request_id: str | None = None,
+        purchase_record_id: str | None = None,
+        inventory_item_id: str | None = None,
+        vendor: str | None = None,
+        catalog_number: str | None = None,
+        lot_number: str | None = None,
+        quantity_received: float | None = None,
+        units: str | None = None,
+        received_by: str | None = None,
+        received_date: str | None = None,
+        expiration_date: str | None = None,
+        storage_location: str | None = None,
+        barcode_or_label: str | None = None,
+        notes: str | None = None,
+        receiving_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update an inventory receiving/intake record."""
+
+        resolved_id = receiving_id or f"receiving:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM receiving_records WHERE receiving_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO receiving_records (
+                        receiving_id, purchase_request_id, purchase_record_id,
+                        inventory_item_id, item_name, vendor, catalog_number,
+                        lot_number, quantity_received, units, received_by,
+                        received_date, expiration_date, storage_location,
+                        barcode_or_label, notes, owner_user_id, created_by,
+                        workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        purchase_request_id,
+                        purchase_record_id,
+                        inventory_item_id,
+                        item_name,
+                        vendor,
+                        catalog_number,
+                        lot_number,
+                        quantity_received,
+                        units,
+                        received_by,
+                        received_date,
+                        expiration_date,
+                        storage_location,
+                        barcode_or_label,
+                        notes,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE receiving_records
+                    SET purchase_request_id = ?,
+                        purchase_record_id = ?,
+                        inventory_item_id = ?,
+                        item_name = ?,
+                        vendor = ?,
+                        catalog_number = ?,
+                        lot_number = ?,
+                        quantity_received = ?,
+                        units = ?,
+                        received_by = ?,
+                        received_date = ?,
+                        expiration_date = ?,
+                        storage_location = ?,
+                        barcode_or_label = ?,
+                        notes = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE receiving_id = ?
+                    """,
+                    (
+                        purchase_request_id,
+                        purchase_record_id,
+                        inventory_item_id,
+                        item_name,
+                        vendor,
+                        catalog_number,
+                        lot_number,
+                        quantity_received,
+                        units,
+                        received_by,
+                        received_date,
+                        expiration_date,
+                        storage_location,
+                        barcode_or_label,
+                        notes,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                        resolved_id,
+                    ),
+                )
+        saved = self.get_receiving_record(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Receiving record was not saved: {resolved_id}")
+        return saved
+
+    def list_receiving_records(
+        self,
+        query: str | None = None,
+        purchase_request_id: str | None = None,
+        purchase_record_id: str | None = None,
+        inventory_item_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return receiving records with optional filters."""
+
+        clauses: list[str] = []
+        values: list[Any] = []
+        for column, value in [
+            ("purchase_request_id", purchase_request_id),
+            ("purchase_record_id", purchase_record_id),
+            ("inventory_item_id", inventory_item_id),
+        ]:
+            if value:
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        if query:
+            needle = f"%{query.lower()}%"
+            clauses.append(
+                "(LOWER(item_name) LIKE ? OR LOWER(vendor) LIKE ? OR LOWER(catalog_number) LIKE ? OR LOWER(lot_number) LIKE ? OR LOWER(barcode_or_label) LIKE ?)"
+            )
+            values.extend([needle] * 5)
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM receiving_records
+                {where}
+                ORDER BY COALESCE(received_date, created_at) DESC, item_name ASC
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_receiving_record(self, receiving_id: str) -> dict[str, Any] | None:
+        """Return one receiving record."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM receiving_records WHERE receiving_id = ?",
+                (receiving_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def save_purchase_import_template(
         self,

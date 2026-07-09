@@ -403,6 +403,61 @@ class InventoryPurchasingTests(unittest.TestCase):
         self.assertEqual(len(listed), 2)
         self.assertIn("Low stock BMP4", exported.body.decode("utf-8"))
 
+    def test_receiving_workflow_and_inventory_intake(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                request = main.create_purchase_request(
+                    main.PurchaseRequestRequest(
+                        item_name="Received SAG",
+                        vendor="DemoChem",
+                        catalog_number="SAG-R",
+                        quantity_requested=2,
+                        status="ordered",
+                    )
+                )
+                received_request = main.mark_purchase_request_received(
+                    request.request_id,
+                    main.PurchaseRequestReceiveRequest(create_receiving_record=True),
+                )
+                receiving_records = main.receiving_records(
+                    query=None,
+                    purchase_request_id=request.request_id,
+                    purchase_record_id=None,
+                    inventory_item_id=None,
+                    workspace_id=None,
+                )
+                manual = main.create_receiving_record(
+                    main.ReceivingRecordRequest(
+                        purchase_request_id=request.request_id,
+                        item_name="Manual SAG intake",
+                        vendor="DemoChem",
+                        catalog_number="SAG-R",
+                        lot_number="LOT-RECEIVE",
+                        quantity_received=3,
+                        units="vial",
+                        storage_location="-20C",
+                        barcode_or_label="SAG-RECEIVE-A1",
+                    )
+                )
+                intake = main.create_or_update_inventory_from_receiving(
+                    manual.receiving_id,
+                    main.ReceivingInventoryIntakeRequest(update_existing=True),
+                )
+                exported = main.export_receiving_csv(workspace_id=None)
+                detail = main.receiving_detail(manual.receiving_id)
+                inventory = main.inventory_items(vendor=None, category=None, storage_location=None, query="SAG-RECEIVE-A1", workspace_id=None)
+            finally:
+                main.settings = original_settings
+
+        self.assertEqual(received_request.status, "received")
+        self.assertEqual(len(receiving_records), 1)
+        self.assertEqual(detail.lot_number, "LOT-RECEIVE")
+        self.assertEqual(intake["inventory_item"]["quantity"], 3.0)
+        self.assertEqual(len(inventory), 1)
+        self.assertIn("Manual SAG intake", exported.body.decode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
