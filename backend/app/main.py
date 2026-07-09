@@ -53,9 +53,12 @@ from app.inventory import (
     PURCHASE_CSV_FIELDS,
     apply_purchase_mapping,
     build_reagent_methods_text,
+    inventory_item_status,
+    inventory_status_summary,
     methods_citation,
     normalize_purchase_csv_row,
     parse_csv_text,
+    purchase_summary,
     purchase_import_preview,
     reagent_methods_entry,
     records_to_csv,
@@ -5316,6 +5319,53 @@ def export_inventory_csv(workspace_id: str | None = Query(default=None)) -> Resp
     )
 
 
+@app.get("/inventory/status", tags=["inventory"])
+def inventory_status(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return derived stock, expiration, and reorder status for inventory."""
+
+    store = SQLiteStore(settings=settings)
+    items = store.list_inventory_items(workspace_id=_current_workspace_id(workspace_id))
+    return inventory_status_summary(items)
+
+
+@app.get("/inventory/reorder-needed", tags=["inventory"])
+def inventory_reorder_needed(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return inventory items at or below reorder threshold."""
+
+    store = SQLiteStore(settings=settings)
+    summary = inventory_status_summary(store.list_inventory_items(workspace_id=_current_workspace_id(workspace_id)))
+    return {
+        "count": summary["reorder_needed_count"],
+        "items": summary["reorder_needed"],
+    }
+
+
+@app.get("/inventory/expiring", tags=["inventory"])
+def inventory_expiring(
+    days: int = Query(default=90, ge=1, le=365),
+    workspace_id: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Return expired and soon-expiring inventory items."""
+
+    store = SQLiteStore(settings=settings)
+    summary = inventory_status_summary(store.list_inventory_items(workspace_id=_current_workspace_id(workspace_id)))
+    items = [
+        item
+        for item in summary["items"]
+        if item.get("expired") or (
+            item.get("days_until_expiration") is not None
+            and 0 <= int(item["days_until_expiration"]) <= days
+        )
+    ]
+    return {
+        "days": days,
+        "count": len(items),
+        "expired_count": summary["expired_count"],
+        "expiring_soon_count": len([item for item in items if item.get("expiring_soon")]),
+        "items": items,
+    }
+
+
 @app.get("/inventory/{item_id}", response_model=InventoryItemResponse, tags=["inventory"])
 def inventory_item_detail(item_id: str) -> InventoryItemResponse:
     """Return one inventory item."""
@@ -5488,6 +5538,29 @@ def export_purchases_csv(workspace_id: str | None = Query(default=None)) -> Resp
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="researchos_purchases.csv"'},
     )
+
+
+@app.get("/purchases/summary", tags=["purchasing"])
+def purchases_summary(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return grant, vendor, month, total, and recent purchase summaries."""
+
+    store = SQLiteStore(settings=settings)
+    records = store.list_purchase_records(workspace_id=_current_workspace_id(workspace_id))
+    return purchase_summary(records)
+
+
+@app.get("/purchases/by-grant", tags=["purchasing"])
+def purchases_by_grant(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return purchase spend grouped by grant or funding source."""
+
+    store = SQLiteStore(settings=settings)
+    records = store.list_purchase_records(workspace_id=_current_workspace_id(workspace_id))
+    summary = purchase_summary(records)
+    return {
+        "total_spend": summary["total_spend"],
+        "purchase_count": summary["purchase_count"],
+        "grants": summary["spend_by_grant"],
+    }
 
 
 @app.post("/purchases/import-csv", tags=["purchasing"])

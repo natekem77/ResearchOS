@@ -24,7 +24,7 @@ class ResearchOsScaffold extends StatelessWidget {
         actions: [
           IconButton(
             tooltip: 'Search',
-            onPressed: () => onDestinationSelected(6),
+            onPressed: () => onDestinationSelected(7),
             icon: const Icon(Icons.manage_search_outlined),
           ),
         ],
@@ -77,6 +77,10 @@ class ResearchOsScaffold extends StatelessWidget {
               icon: Icon(Icons.inventory_2_outlined),
               selectedIcon: Icon(Icons.inventory_2),
               label: 'Resources'),
+          NavigationDestination(
+              icon: Icon(Icons.inventory_outlined),
+              selectedIcon: Icon(Icons.inventory),
+              label: 'Inventory'),
           NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
           NavigationDestination(
               icon: Icon(Icons.auto_awesome_outlined),

@@ -29,6 +29,31 @@ Inventory can be exported as CSV:
 curl http://127.0.0.1:8001/inventory/export-csv
 ```
 
+## Inventory Status and Reordering
+
+ResearchOS derives operational inventory status without changing the stored inventory schema:
+
+- `in_stock`
+- `low_stock`
+- `expired`
+- `expiring_soon`
+- `reorder_needed`
+
+Reorder logic:
+
+- `reorder_needed` is true when `quantity <= reorder_threshold`.
+- `expired` is true when `expiration_date` is in the past.
+- `expiring_soon` is true when `expiration_date` is within 90 days.
+- Expiring windows are grouped into 30, 60, and 90 day buckets.
+
+Endpoints:
+
+```bash
+curl http://127.0.0.1:8001/inventory/status
+curl http://127.0.0.1:8001/inventory/reorder-needed
+curl http://127.0.0.1:8001/inventory/expiring
+```
+
 ## Purchasing
 
 Purchase records track:
@@ -51,6 +76,25 @@ Purchases can be exported as CSV:
 ```bash
 curl http://127.0.0.1:8001/purchases/export-csv
 ```
+
+## Grant Spend Dashboard
+
+Purchasing summaries are computed from local purchase records and imported CSV reports:
+
+```bash
+curl http://127.0.0.1:8001/purchases/summary
+curl http://127.0.0.1:8001/purchases/by-grant
+```
+
+The summary includes:
+
+- total spend
+- spend by grant or funding source
+- spend by vendor
+- spend by month
+- recent purchases
+
+This is intended for day-to-day lab tracking and grant review. It is not a live Oracle balance and does not replace official institutional financial reporting.
 
 ## Oracle-Ready CSV Import
 

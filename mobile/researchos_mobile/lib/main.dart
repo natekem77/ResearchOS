@@ -6,6 +6,7 @@ import 'screens/bench_mode_screen.dart';
 import 'screens/copilot_screen.dart';
 import 'screens/experiments_screen.dart';
 import 'screens/intelligence_feed_screen.dart';
+import 'screens/inventory_screen.dart';
 import 'screens/morning_brief_screen.dart';
 import 'screens/new_experiment_wizard_screen.dart';
 import 'screens/resources_screen.dart';
@@ -79,6 +80,7 @@ class ResearchOsHome extends StatelessWidget {
       NewExperimentWizardScreen(api: api),
       ExperimentsScreen(api: api),
       ResourcesScreen(api: api),
+      InventoryScreen(api: api),
       SearchScreen(api: api),
       CopilotScreen(api: api),
       SettingsScreen(api: api),
@@ -90,6 +92,7 @@ class ResearchOsHome extends StatelessWidget {
       'New Experiment',
       'Experiments',
       'Resources',
+      'Inventory',
       'Search',
       'Copilot',
       'Settings'

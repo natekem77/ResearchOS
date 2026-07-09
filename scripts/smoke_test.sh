@@ -206,6 +206,9 @@ request GET "/inventory/$SMOKE_INVENTORY_ID" >/dev/null
 request GET "/inventory/$SMOKE_INVENTORY_ID/methods-citation" >/dev/null
 request PUT "/inventory/$SMOKE_INVENTORY_ID" '{"name":"Smoke SAG Inventory","category":"compound","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","lot_number":"LOT-SMOKE-2","quantity":3,"reorder_threshold":1}' >/dev/null
 request GET "/inventory/export-csv" >/dev/null
+request GET "/inventory/status" >/dev/null
+request GET "/inventory/reorder-needed" >/dev/null
+request GET "/inventory/expiring" >/dev/null
 request POST "/methods/reagents" "{\"inventory_item_ids\":[\"$SMOKE_INVENTORY_ID\"],\"style\":\"paper\"}" >/dev/null
 request GET "/experiments/$WIZARD_INTERNAL_ID/reagents" >/dev/null
 request GET "/experiments/$WIZARD_INTERNAL_ID/methods-materials" >/dev/null
@@ -222,6 +225,8 @@ PY
 request GET "/purchases" >/dev/null
 request GET "/purchases/$SMOKE_PURCHASE_ID" >/dev/null
 request PUT "/purchases/$SMOKE_PURCHASE_ID" '{"item_name":"Smoke SAG Purchase","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","purchase_date":"2026-07-08","cost":130,"quantity":2,"grant_or_funding_source":"Smoke Grant","purchaser":"ResearchOS","oracle_po_number":"PO-SMOKE","invoice_number":"INV-SMOKE","status":"received","notes":"Updated smoke purchase."}' >/dev/null
+request GET "/purchases/summary" >/dev/null
+request GET "/purchases/by-grant" >/dev/null
 request POST "/purchases/import-csv" '{"csv_text":"PO Number,Supplier,Item,Amount,Grant,Buyer\nPO-SMOKE-CSV,ResearchOS,Smoke CSV Item,44.00,Smoke Grant,ResearchOS\n"}' >/dev/null
 request POST "/purchases/import-preview" '{"csv_text":"Item Description,Supplier,Catalog #,Order Date,Total Cost,Qty,Project/Grant,Requester,PO Number,Invoice Number,Status\nSmoke Mapped Item,ResearchOS,MAP-1,2026-07-08,55.00,1,Smoke Grant,ResearchOS,PO-SMOKE-MAP,INV-MAP,received\n"}' >/dev/null
 request POST "/purchases/import-mapped-csv" '{"csv_text":"Item Description,Supplier,Catalog #,Order Date,Total Cost,Qty,Project/Grant,Requester,PO Number,Invoice Number,Status\nSmoke Mapped Item,ResearchOS,MAP-1,2026-07-08,55.00,1,Smoke Grant,ResearchOS,PO-SMOKE-MAP,INV-MAP,received\n","mapping":{"item_name":"Item Description","vendor":"Supplier","catalog_number":"Catalog #","purchase_date":"Order Date","cost":"Total Cost","quantity":"Qty","grant_or_funding_source":"Project/Grant","purchaser":"Requester","oracle_po_number":"PO Number","invoice_number":"Invoice Number","status":"Status"}}' >/dev/null

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import date, datetime, timedelta
 from typing import Any
 
 
@@ -210,6 +211,85 @@ def purchase_import_preview(csv_text: str) -> dict[str, Any]:
     }
 
 
+def inventory_item_status(item: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    """Derive stock and expiration status flags for one inventory item."""
+
+    current = today or date.today()
+    quantity = _float_or_none(item.get("quantity"))
+    threshold = _float_or_none(item.get("reorder_threshold"))
+    expiration = _parse_date(item.get("expiration_date"))
+    expired = bool(expiration and expiration < current)
+    days_until_expiration = (expiration - current).days if expiration else None
+    expiring_soon = bool(days_until_expiration is not None and 0 <= days_until_expiration <= 90)
+    expiring_window = None
+    if days_until_expiration is not None and 0 <= days_until_expiration <= 30:
+        expiring_window = "30_days"
+    elif days_until_expiration is not None and 31 <= days_until_expiration <= 60:
+        expiring_window = "60_days"
+    elif days_until_expiration is not None and 61 <= days_until_expiration <= 90:
+        expiring_window = "90_days"
+    low_stock = bool(quantity is not None and threshold is not None and quantity <= threshold)
+    in_stock = bool(quantity is None or quantity > 0)
+    reorder_needed = low_stock
+    return {
+        **item,
+        "in_stock": in_stock,
+        "low_stock": low_stock,
+        "expired": expired,
+        "expiring_soon": expiring_soon,
+        "reorder_needed": reorder_needed,
+        "days_until_expiration": days_until_expiration,
+        "expiring_window": expiring_window,
+    }
+
+
+def inventory_status_summary(items: list[dict[str, Any]], today: date | None = None) -> dict[str, Any]:
+    """Summarize inventory operational status."""
+
+    enriched = [inventory_item_status(item, today=today) for item in items]
+    return {
+        "total_items": len(enriched),
+        "in_stock_count": sum(1 for item in enriched if item["in_stock"]),
+        "low_stock_count": sum(1 for item in enriched if item["low_stock"]),
+        "expired_count": sum(1 for item in enriched if item["expired"]),
+        "expiring_soon_count": sum(1 for item in enriched if item["expiring_soon"]),
+        "reorder_needed_count": sum(1 for item in enriched if item["reorder_needed"]),
+        "expiring_windows": {
+            "30_days": sum(1 for item in enriched if item["expiring_window"] == "30_days"),
+            "60_days": sum(1 for item in enriched if item["expiring_window"] == "60_days"),
+            "90_days": sum(1 for item in enriched if item["expiring_window"] == "90_days"),
+        },
+        "items": enriched,
+        "low_stock": [item for item in enriched if item["low_stock"]],
+        "reorder_needed": [item for item in enriched if item["reorder_needed"]],
+        "expired": [item for item in enriched if item["expired"]],
+        "expiring_soon": [item for item in enriched if item["expiring_soon"]],
+    }
+
+
+def purchase_summary(records: list[dict[str, Any]], recent_limit: int = 10) -> dict[str, Any]:
+    """Summarize purchasing spend by grant, vendor, and month."""
+
+    total_spend = sum(_purchase_total(record) for record in records)
+    by_grant = _group_spend(records, "grant_or_funding_source", "Unassigned")
+    by_vendor = _group_spend(records, "vendor", "Unknown vendor")
+    by_month: dict[str, dict[str, Any]] = {}
+    for record in records:
+        month = _purchase_month(record.get("purchase_date")) or "No date"
+        bucket = by_month.setdefault(month, {"month": month, "total_spend": 0.0, "purchase_count": 0})
+        bucket["total_spend"] += _purchase_total(record)
+        bucket["purchase_count"] += 1
+    recent = sorted(records, key=lambda record: str(record.get("purchase_date") or record.get("created_at") or ""), reverse=True)[:recent_limit]
+    return {
+        "total_spend": round(total_spend, 2),
+        "purchase_count": len(records),
+        "spend_by_grant": by_grant,
+        "spend_by_vendor": by_vendor,
+        "spend_by_month": sorted(by_month.values(), key=lambda item: str(item["month"]), reverse=True),
+        "recent_purchases": recent,
+    }
+
+
 def records_to_csv(records: list[dict[str, Any]], fields: list[str]) -> str:
     """Serialize records to CSV with stable headers."""
 
@@ -219,6 +299,56 @@ def records_to_csv(records: list[dict[str, Any]], fields: list[str]) -> str:
     for record in records:
         writer.writerow({field: record.get(field) for field in fields})
     return output.getvalue()
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_date(value: Any) -> date | None:
+    if not value:
+        return None
+    text = str(value).strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        return None
+
+
+def _purchase_total(record: dict[str, Any]) -> float:
+    return _float_or_none(record.get("cost")) or 0.0
+
+
+def _group_spend(records: list[dict[str, Any]], field: str, fallback: str) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for record in records:
+        key = str(record.get(field) or fallback)
+        bucket = grouped.setdefault(key, {"name": key, "total_spend": 0.0, "purchase_count": 0})
+        bucket["total_spend"] += _purchase_total(record)
+        bucket["purchase_count"] += 1
+    return sorted(
+        [
+            {**bucket, "total_spend": round(float(bucket["total_spend"]), 2)}
+            for bucket in grouped.values()
+        ],
+        key=lambda item: float(item["total_spend"]),
+        reverse=True,
+    )
+
+
+def _purchase_month(value: Any) -> str | None:
+    parsed = _parse_date(value)
+    return parsed.strftime("%Y-%m") if parsed else None
 
 
 def parse_csv_text(csv_text: str) -> list[dict[str, str]]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 from app import main
@@ -198,6 +199,67 @@ class InventoryPurchasingTests(unittest.TestCase):
         self.assertEqual(len(reagents["inventory_items"]), 1)
         self.assertIn("LOT-BRN3B", materials["text"])
         self.assertEqual(materials["warnings"], [])
+
+    def test_inventory_status_and_purchase_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                main.create_inventory_item(
+                    main.InventoryItemRequest(
+                        name="Low stock SAG",
+                        category="compound",
+                        quantity=1,
+                        reorder_threshold=2,
+                        expiration_date=(date.today() + timedelta(days=20)).isoformat(),
+                    )
+                )
+                main.create_inventory_item(
+                    main.InventoryItemRequest(
+                        name="Expired antibody",
+                        category="antibody",
+                        quantity=5,
+                        reorder_threshold=1,
+                        expiration_date=(date.today() - timedelta(days=1)).isoformat(),
+                    )
+                )
+                main.create_purchase(
+                    main.PurchaseRecordRequest(
+                        item_name="SAG",
+                        vendor="DemoChem",
+                        cost=100,
+                        quantity=2,
+                        grant_or_funding_source="Grant A",
+                        purchase_date="2026-07-08",
+                    )
+                )
+                main.create_purchase(
+                    main.PurchaseRecordRequest(
+                        item_name="BRN3B",
+                        vendor="DemoBio",
+                        cost=50,
+                        quantity=1,
+                        grant_or_funding_source="Grant B",
+                        purchase_date="2026-07-09",
+                    )
+                )
+                status = main.inventory_status(workspace_id=None)
+                reorder = main.inventory_reorder_needed(workspace_id=None)
+                expiring = main.inventory_expiring(days=30, workspace_id=None)
+                summary = main.purchases_summary(workspace_id=None)
+                by_grant = main.purchases_by_grant(workspace_id=None)
+            finally:
+                main.settings = original_settings
+
+        self.assertEqual(status["low_stock_count"], 1)
+        self.assertEqual(status["reorder_needed_count"], 1)
+        self.assertEqual(status["expired_count"], 1)
+        self.assertEqual(status["expiring_windows"]["30_days"], 1)
+        self.assertEqual(reorder["count"], 1)
+        self.assertEqual(expiring["count"], 2)
+        self.assertEqual(summary["total_spend"], 150.0)
+        self.assertEqual(summary["spend_by_vendor"][0]["name"], "DemoChem")
+        self.assertEqual(by_grant["grants"][0]["name"], "Grant A")
 
 
 if __name__ == "__main__":

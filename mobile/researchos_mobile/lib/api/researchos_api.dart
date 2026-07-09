@@ -121,6 +121,15 @@ class ResearchOsApi {
     return _postMap('/resources', payload);
   }
 
+  Future<Map<String, dynamic>> inventoryStatus() {
+    return _getMap('/inventory/status');
+  }
+
+  Future<List<Map<String, dynamic>>> inventory() async {
+    final json = await _getList('/inventory');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
   Future<List<Map<String, dynamic>>> searchKnowledgeGraph(String query) async {
     final json = await _getMap(
         '/knowledgegraph/search?q=${Uri.encodeQueryComponent(query)}');

@@ -10,6 +10,8 @@ const state = {
   protocols: [],
   inventory: [],
   purchases: [],
+  inventoryStatus: null,
+  purchaseSummary: null,
   purchaseImportTemplates: [],
   purchaseImportPreview: null,
   sessions: [],
@@ -1499,13 +1501,15 @@ function renderProtocols() {
 }
 
 function renderInventory() {
+  renderInventoryStatusCards();
   const target = $("#inventoryList");
   if (!target) return;
   const query = ($("#inventorySearchInput")?.value || "").trim().toLowerCase();
   const category = ($("#inventoryCategoryFilter")?.value || "").trim().toLowerCase();
   const vendor = ($("#inventoryVendorFilter")?.value || "").trim().toLowerCase();
   const location = ($("#inventoryLocationFilter")?.value || "").trim().toLowerCase();
-  const items = (state.inventory || []).filter((item) => {
+  const sourceItems = state.inventoryStatus?.items || state.inventory || [];
+  const items = sourceItems.filter((item) => {
     const haystack = [item.name, item.category, item.vendor, item.catalog_number, item.lot_number, item.rrid, item.storage_location].join(" ").toLowerCase();
     return (!query || haystack.includes(query))
       && (!category || String(item.category || "").toLowerCase().includes(category))
@@ -1517,8 +1521,29 @@ function renderInventory() {
     : `<div class="empty-state">No inventory items match this filter.</div>`;
 }
 
+function renderInventoryStatusCards() {
+  const target = $("#inventoryStatusCards");
+  if (!target) return;
+  const status = state.inventoryStatus || {};
+  const cards = [
+    ["Low stock", status.low_stock_count ?? 0, "Items at or below threshold"],
+    ["Expiring soon", status.expiring_soon_count ?? 0, "Within 90 days"],
+    ["Reorder needed", status.reorder_needed_count ?? 0, "Ready for purchasing review"],
+    ["Expired", status.expired_count ?? 0, "Do not use without review"],
+  ];
+  target.innerHTML = cards.map(([title, value, subtitle]) => `
+    <article class="provider-card">
+      <div class="provider-card-header">
+        <span>${escapeHtml(title)}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </div>
+      <p>${escapeHtml(subtitle)}</p>
+    </article>
+  `).join("");
+}
+
 function renderInventoryItem(item) {
-  const lowStock = item.quantity != null && item.reorder_threshold != null && Number(item.quantity) <= Number(item.reorder_threshold);
+  const lowStock = item.low_stock ?? (item.quantity != null && item.reorder_threshold != null && Number(item.quantity) <= Number(item.reorder_threshold));
   return `
     <article class="record-card">
       <h3>${escapeHtml(item.name)}</h3>
@@ -1528,6 +1553,8 @@ function renderInventoryItem(item) {
         <span class="tag">${escapeHtml(item.storage_location || "no location")}</span>
         <span class="tag">${escapeHtml(item.quantity ?? "no quantity")} ${escapeHtml(item.unit || "")}</span>
         ${lowStock ? `<span class="tag warning">reorder</span>` : ""}
+        ${item.expired ? `<span class="tag warning">expired</span>` : ""}
+        ${item.expiring_soon ? `<span class="tag">expiring soon</span>` : ""}
         ${item.expiration_date ? `<span class="tag">expires ${escapeHtml(item.expiration_date)}</span>` : ""}
         ${item.linked_resource_id ? `<a class="mini-chip" href="#/resources">${escapeHtml(item.linked_resource_id)}</a>` : ""}
       </div>
@@ -1539,6 +1566,7 @@ function renderInventoryItem(item) {
 }
 
 function renderPurchases() {
+  renderPurchaseSummaryCards();
   const target = $("#purchasesList");
   if (!target) return;
   renderPurchaseImportTemplates();
@@ -1627,6 +1655,32 @@ function renderPurchaseImportPreview() {
           </tbody>
         </table>
       </div>
+    </article>
+  `;
+}
+
+function renderPurchaseSummaryCards() {
+  const target = $("#purchaseSummaryCards");
+  if (!target) return;
+  const summary = state.purchaseSummary || {};
+  const topGrant = (summary.spend_by_grant || [])[0];
+  const topVendor = (summary.spend_by_vendor || [])[0];
+  target.innerHTML = `
+    <article class="provider-card">
+      <div class="provider-card-header"><span>Total spend</span><strong>$${escapeHtml(summary.total_spend ?? 0)}</strong></div>
+      <p>${escapeHtml(summary.purchase_count ?? 0)} purchase record(s)</p>
+    </article>
+    <article class="provider-card">
+      <div class="provider-card-header"><span>Top grant</span><strong>$${escapeHtml(topGrant?.total_spend ?? 0)}</strong></div>
+      <p>${escapeHtml(topGrant?.name || "No grant data")}</p>
+    </article>
+    <article class="provider-card">
+      <div class="provider-card-header"><span>Top vendor</span><strong>$${escapeHtml(topVendor?.total_spend ?? 0)}</strong></div>
+      <p>${escapeHtml(topVendor?.name || "No vendor data")}</p>
+    </article>
+    <article class="provider-card">
+      <div class="provider-card-header"><span>Recent purchases</span><strong>${escapeHtml((summary.recent_purchases || []).length)}</strong></div>
+      <p>${escapeHtml((summary.recent_purchases || [])[0]?.item_name || "No recent purchases")}</p>
     </article>
   `;
 }
@@ -4321,7 +4375,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, purchases, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4332,7 +4386,9 @@ async function refreshData() {
     requestJson("/workflows"),
     requestJson("/protocols"),
     requestJson("/inventory"),
+    requestJson("/inventory/status"),
     requestJson("/purchases"),
+    requestJson("/purchases/summary"),
     requestJson("/purchases/import-templates"),
     requestJson("/sessions"),
     requestJson("/entries"),
@@ -4354,7 +4410,9 @@ async function refreshData() {
   state.workflows = workflows;
   state.protocols = protocols;
   state.inventory = inventory;
+  state.inventoryStatus = inventoryStatus;
   state.purchases = purchases;
+  state.purchaseSummary = purchaseSummary;
   state.purchaseImportTemplates = purchaseImportTemplates;
   state.sessions = sessions;
   state.pendingEntries = pendingEntries;
