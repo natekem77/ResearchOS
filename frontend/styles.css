@@ -1032,6 +1032,19 @@ button {
   gap: 10px;
 }
 
+.compact-heading {
+  margin-top: 8px;
+}
+
+.preview-panel {
+  margin-top: 16px;
+}
+
+.warning-copy {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .sample-dictation-row {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

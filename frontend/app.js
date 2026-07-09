@@ -10,6 +10,8 @@ const state = {
   protocols: [],
   inventory: [],
   purchases: [],
+  purchaseImportTemplates: [],
+  purchaseImportPreview: null,
   sessions: [],
   selectedExperimentIds: new Set(),
   health: null,
@@ -1538,6 +1540,8 @@ function renderInventoryItem(item) {
 function renderPurchases() {
   const target = $("#purchasesList");
   if (!target) return;
+  renderPurchaseImportTemplates();
+  renderPurchaseImportPreview();
   const query = ($("#purchaseSearchInput")?.value || "").trim().toLowerCase();
   const vendor = ($("#purchaseVendorFilter")?.value || "").trim().toLowerCase();
   const grant = ($("#purchaseGrantFilter")?.value || "").trim().toLowerCase();
@@ -1552,6 +1556,78 @@ function renderPurchases() {
   target.innerHTML = purchases.length
     ? purchases.map(renderPurchaseRecord).join("")
     : `<div class="empty-state">No purchase records match this filter.</div>`;
+}
+
+const purchaseMappingInputs = {
+  item_name: "#mapItemName",
+  vendor: "#mapVendor",
+  catalog_number: "#mapCatalog",
+  purchase_date: "#mapPurchaseDate",
+  cost: "#mapCost",
+  quantity: "#mapQuantity",
+  grant_or_funding_source: "#mapGrant",
+  purchaser: "#mapPurchaser",
+  oracle_po_number: "#mapPo",
+  invoice_number: "#mapInvoice",
+  status: "#mapStatus",
+};
+
+function currentPurchaseMapping() {
+  const mapping = {};
+  Object.entries(purchaseMappingInputs).forEach(([field, selector]) => {
+    const value = $(selector)?.value.trim();
+    if (value) mapping[field] = value;
+  });
+  return mapping;
+}
+
+function applyPurchaseMappingToForm(mapping = {}) {
+  Object.entries(purchaseMappingInputs).forEach(([field, selector]) => {
+    const input = $(selector);
+    if (input) input.value = mapping[field] || "";
+  });
+}
+
+function renderPurchaseImportTemplates() {
+  const select = $("#purchaseTemplateSelect");
+  if (!select) return;
+  const selected = select.value;
+  select.innerHTML = `<option value="">Suggested mapping</option>${(state.purchaseImportTemplates || []).map((template) => `
+    <option value="${escapeHtml(template.template_id)}">${escapeHtml(template.name)}${template.is_default ? " (default)" : ""}</option>
+  `).join("")}`;
+  select.value = selected;
+}
+
+function renderPurchaseImportPreview() {
+  const target = $("#purchaseImportPreview");
+  if (!target) return;
+  const preview = state.purchaseImportPreview;
+  if (!preview) {
+    target.innerHTML = `<div class="empty-state">Paste CSV text and preview it to review detected columns before mapped import.</div>`;
+    return;
+  }
+  target.innerHTML = `
+    <article class="record-card">
+      <h3>Import preview</h3>
+      <p>${escapeHtml(preview.row_count || 0)} row(s) detected.</p>
+      <div class="meta">
+        ${(preview.detected_columns || []).map((column) => `<span class="tag">${escapeHtml(column)}</span>`).join("")}
+      </div>
+      ${(preview.warnings || []).length ? `<p class="warning-copy">${escapeHtml(preview.warnings.join(" "))}</p>` : ""}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>${(preview.detected_columns || []).slice(0, 8).map((column) => `<th>${escapeHtml(column)}</th>`).join("")}</tr>
+          </thead>
+          <tbody>
+            ${(preview.rows_preview || []).map((row) => `
+              <tr>${(preview.detected_columns || []).slice(0, 8).map((column) => `<td>${escapeHtml(row[column] || "")}</td>`).join("")}</tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  `;
 }
 
 function renderPurchaseRecord(record) {
@@ -1633,6 +1709,61 @@ async function importPurchaseCsv() {
   });
   $("#purchaseCsvText").value = "";
   $("#purchaseStatusMessage").textContent = `Imported ${payload.imported_count} purchase record(s) from CSV.`;
+  await refreshData();
+}
+
+async function previewMappedPurchaseCsv() {
+  const csvText = $("#purchaseMappedCsvText").value.trim();
+  if (!csvText) {
+    $("#purchaseStatusMessage").textContent = "Paste CSV text before previewing.";
+    return;
+  }
+  const preview = await requestJson("/purchases/import-preview", {
+    method: "POST",
+    body: JSON.stringify({ csv_text: csvText }),
+  });
+  state.purchaseImportPreview = preview;
+  applyPurchaseMappingToForm({ ...preview.suggested_mapping, ...currentPurchaseMapping() });
+  renderPurchaseImportPreview();
+  $("#purchaseStatusMessage").textContent = `Detected ${preview.row_count} row(s) and ${preview.detected_columns.length} column(s).`;
+}
+
+async function importMappedPurchaseCsv() {
+  const csvText = $("#purchaseMappedCsvText").value.trim();
+  const mapping = currentPurchaseMapping();
+  if (!csvText) {
+    $("#purchaseStatusMessage").textContent = "Paste CSV text before importing.";
+    return;
+  }
+  if (!mapping.item_name) {
+    $("#purchaseStatusMessage").textContent = "Map the item_name field before importing.";
+    return;
+  }
+  const payload = await requestJson("/purchases/import-mapped-csv", {
+    method: "POST",
+    body: JSON.stringify({ provider: "oracle_purchasing", csv_text: csvText, mapping }),
+  });
+  $("#purchaseStatusMessage").textContent = `Imported ${payload.imported_count} purchase record(s); skipped ${payload.skipped_count}.`;
+  await refreshData();
+}
+
+async function savePurchaseImportTemplate() {
+  const name = $("#purchaseTemplateName").value.trim();
+  const mapping = currentPurchaseMapping();
+  if (!name) {
+    $("#purchaseStatusMessage").textContent = "Enter a template name before saving.";
+    return;
+  }
+  if (!mapping.item_name) {
+    $("#purchaseStatusMessage").textContent = "Map at least item_name before saving a template.";
+    return;
+  }
+  const saved = await requestJson("/purchases/import-templates", {
+    method: "POST",
+    body: JSON.stringify({ name, provider: "oracle_purchasing", mapping }),
+  });
+  $("#purchaseTemplateName").value = "";
+  $("#purchaseStatusMessage").textContent = `Saved mapping template: ${saved.name}`;
   await refreshData();
 }
 
@@ -4152,7 +4283,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, purchases, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, purchases, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4164,6 +4295,7 @@ async function refreshData() {
     requestJson("/protocols"),
     requestJson("/inventory"),
     requestJson("/purchases"),
+    requestJson("/purchases/import-templates"),
     requestJson("/sessions"),
     requestJson("/entries"),
     requestJson("/api/compounds"),
@@ -4185,6 +4317,7 @@ async function refreshData() {
   state.protocols = protocols;
   state.inventory = inventory;
   state.purchases = purchases;
+  state.purchaseImportTemplates = purchaseImportTemplates;
   state.sessions = sessions;
   state.pendingEntries = pendingEntries;
   state.graphStats = graphStats;
@@ -4572,6 +4705,26 @@ $("#purchaseImportForm")?.addEventListener("submit", (event) => {
   importPurchaseCsv().catch((error) => {
     $("#purchaseStatusMessage").textContent = `CSV import failed: ${error.message}`;
   });
+});
+$("#purchasePreviewButton")?.addEventListener("click", () => {
+  previewMappedPurchaseCsv().catch((error) => {
+    $("#purchaseStatusMessage").textContent = `Import preview failed: ${error.message}`;
+  });
+});
+$("#purchaseMappedImportForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  importMappedPurchaseCsv().catch((error) => {
+    $("#purchaseStatusMessage").textContent = `Mapped CSV import failed: ${error.message}`;
+  });
+});
+$("#savePurchaseTemplateButton")?.addEventListener("click", () => {
+  savePurchaseImportTemplate().catch((error) => {
+    $("#purchaseStatusMessage").textContent = `Template save failed: ${error.message}`;
+  });
+});
+$("#purchaseTemplateSelect")?.addEventListener("change", (event) => {
+  const template = (state.purchaseImportTemplates || []).find((item) => item.template_id === event.target.value);
+  if (template) applyPurchaseMappingToForm(template.mapping || {});
 });
 $("#inventoryList")?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-inventory-citation]");

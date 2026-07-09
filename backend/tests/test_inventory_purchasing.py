@@ -80,6 +80,32 @@ class InventoryPurchasingTests(unittest.TestCase):
                         csv_text="PO Number,Supplier,Item,Amount,Grant,Buyer\nPO-86,DemoBio,Anti-SIX6,88.00,Vision Grant,Nathan\n"
                     )
                 )
+                preview = main.preview_purchases_import(
+                    main.PurchaseImportPreviewRequest(
+                        csv_text="Item Description,Supplier,Catalog #,Order Date,Total Cost,Qty,Project/Grant,Requester,PO Number,Invoice Number,Status\n"
+                        "Anti-BRN3B,DemoBio,AB-123,2026-07-08,99.5,2,Demo Grant,Nathan,PO-87,INV-1,received\n"
+                    )
+                )
+                mapped = main.import_purchases_mapped_csv(
+                    main.PurchaseMappedCsvImportRequest(
+                        csv_text="Description,Supplier,Part Number,Amount,Project,PO\nAnti-RAX,DemoBio,RAX-1,45.00,Vision Grant,PO-88\n",
+                        mapping={
+                            "item_name": "Description",
+                            "vendor": "Supplier",
+                            "catalog_number": "Part Number",
+                            "cost": "Amount",
+                            "grant_or_funding_source": "Project",
+                            "oracle_po_number": "PO",
+                        },
+                    )
+                )
+                template = main.create_purchase_import_template(
+                    main.PurchaseImportTemplateRequest(
+                        name="Demo Lab Template",
+                        mapping={"item_name": "Description", "vendor": "Supplier"},
+                    )
+                )
+                templates = main.purchase_import_templates(workspace_id=None)
                 detail = main.purchase_detail(created.purchase_id)
             finally:
                 main.settings = original_settings
@@ -87,6 +113,12 @@ class InventoryPurchasingTests(unittest.TestCase):
         self.assertEqual(len(listed), 1)
         self.assertIn("SAG", exported.body.decode("utf-8"))
         self.assertEqual(imported["imported_count"], 1)
+        self.assertEqual(preview["suggested_mapping"]["item_name"], "Item Description")
+        self.assertEqual(preview["suggested_mapping"]["oracle_po_number"], "PO Number")
+        self.assertEqual(mapped["imported_count"], 1)
+        self.assertEqual(mapped["records"][0]["oracle_po_number"], "PO-88")
+        self.assertTrue(any(item.template_id == "default:oracle_purchasing_export" for item in templates))
+        self.assertTrue(any(item.template_id == template.template_id for item in templates))
         self.assertEqual(detail.oracle_po_number, "PO-85")
 
     def test_inventory_api_and_export_methods_citation(self) -> None:

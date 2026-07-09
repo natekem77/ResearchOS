@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 
 from app.config import Settings, get_settings
@@ -304,7 +304,9 @@ class OvernightIntelligenceService:
 
 
 def _period_bounds(period: str) -> tuple[datetime, datetime, str]:
-    today = date.today()
+    # SQLite CURRENT_TIMESTAMP is UTC. Use UTC day bounds so freshly inserted
+    # records are not missed in local time zones west of UTC.
+    today = datetime.now(UTC).date()
     normalized = period.strip().lower().replace("-", "_")
     if normalized == "yesterday":
         target = today - timedelta(days=1)

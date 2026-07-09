@@ -582,6 +582,78 @@
                   <button type="submit" class="secondary-button">Import CSV</button>
                 </div>
               </form>
+              <form class="entry-draft-form" id="purchaseMappedImportForm">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <p class="eyebrow">Flexible import mapping</p>
+                    <h3>Preview Oracle or lab spreadsheet columns</h3>
+                  </div>
+                </div>
+                <label for="purchaseMappedCsvText">CSV text</label>
+                <textarea id="purchaseMappedCsvText" rows="5" placeholder="Item Description,Supplier,Catalog #,Order Date,Total Cost..."></textarea>
+                <label for="purchaseTemplateSelect">Mapping template</label>
+                <select id="purchaseTemplateSelect">
+                  <option value="">Suggested mapping</option>
+                </select>
+                <div class="entry-actions">
+                  <button type="button" class="secondary-button" id="purchasePreviewButton">Preview Import</button>
+                  <button type="submit">Import Mapped CSV</button>
+                </div>
+                <div class="form-grid">
+                  <div>
+                    <label for="mapItemName">Item name column</label>
+                    <input id="mapItemName" type="text" placeholder="Item Description" />
+                  </div>
+                  <div>
+                    <label for="mapVendor">Vendor column</label>
+                    <input id="mapVendor" type="text" placeholder="Supplier" />
+                  </div>
+                  <div>
+                    <label for="mapCatalog">Catalog number column</label>
+                    <input id="mapCatalog" type="text" placeholder="Catalog #" />
+                  </div>
+                  <div>
+                    <label for="mapPurchaseDate">Purchase date column</label>
+                    <input id="mapPurchaseDate" type="text" placeholder="Order Date" />
+                  </div>
+                  <div>
+                    <label for="mapCost">Cost column</label>
+                    <input id="mapCost" type="text" placeholder="Total Cost" />
+                  </div>
+                  <div>
+                    <label for="mapQuantity">Quantity column</label>
+                    <input id="mapQuantity" type="text" placeholder="Qty" />
+                  </div>
+                  <div>
+                    <label for="mapGrant">Grant/funding column</label>
+                    <input id="mapGrant" type="text" placeholder="Project/Grant" />
+                  </div>
+                  <div>
+                    <label for="mapPurchaser">Purchaser column</label>
+                    <input id="mapPurchaser" type="text" placeholder="Requester" />
+                  </div>
+                  <div>
+                    <label for="mapPo">Oracle PO column</label>
+                    <input id="mapPo" type="text" placeholder="PO Number" />
+                  </div>
+                  <div>
+                    <label for="mapInvoice">Invoice column</label>
+                    <input id="mapInvoice" type="text" placeholder="Invoice Number" />
+                  </div>
+                  <div>
+                    <label for="mapStatus">Status column</label>
+                    <input id="mapStatus" type="text" placeholder="Status" />
+                  </div>
+                  <div>
+                    <label for="purchaseTemplateName">Save template as</label>
+                    <input id="purchaseTemplateName" type="text" placeholder="Lab purchasing export" />
+                  </div>
+                </div>
+                <div class="entry-actions">
+                  <button type="button" class="secondary-button" id="savePurchaseTemplateButton">Save Mapping Template</button>
+                </div>
+              </form>
+              <div class="preview-panel" id="purchaseImportPreview"></div>
               <p class="demo-status" id="purchaseStatusMessage"></p>
               <div class="item-list" id="purchasesList"></div>
             </article>

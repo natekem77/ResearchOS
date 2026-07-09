@@ -2,7 +2,7 @@
 
 ResearchOS includes a local-first inventory and purchasing foundation for lab operations, reagent tracking, paper methods sections, grant tracking, and future Oracle purchasing integration.
 
-This milestone does not connect to Oracle directly. It supports manual entry and imported CSV reports.
+This milestone does not connect to Oracle directly. It supports manual entry, exported CSV reports, flexible import mappings, and saved mapping templates.
 
 ## Inventory
 
@@ -70,7 +70,34 @@ curl -X POST http://127.0.0.1:8001/purchases/import-csv \
   -d '{"csv_text":"PO Number,Supplier,Item,Amount,Grant\nPO-123,Demo Vendor,SAG,125.00,Vision Grant\n"}'
 ```
 
+Flexible imports are available when Oracle reports or lab-maintained spreadsheets use different column names:
+
+```bash
+curl -X POST http://127.0.0.1:8001/purchases/import-preview \
+  -H "Content-Type: application/json" \
+  -d '{"csv_text":"Item Description,Supplier,Catalog #,Order Date,Total Cost\nSAG,Demo Vendor,SAG-001,2026-07-08,125.00\n"}'
+```
+
+Then import with an explicit mapping:
+
+```bash
+curl -X POST http://127.0.0.1:8001/purchases/import-mapped-csv \
+  -H "Content-Type: application/json" \
+  -d '{
+    "csv_text":"Item Description,Supplier,Catalog #,Order Date,Total Cost\nSAG,Demo Vendor,SAG-001,2026-07-08,125.00\n",
+    "mapping":{
+      "item_name":"Item Description",
+      "vendor":"Supplier",
+      "catalog_number":"Catalog #",
+      "purchase_date":"Order Date",
+      "cost":"Total Cost"
+    }
+  }'
+```
+
 Excel import is a future extension. For now, export Oracle/department purchasing reports as CSV before importing.
+
+See [ORACLE_PURCHASING_IMPORT.md](ORACLE_PURCHASING_IMPORT.md) for mapping templates and troubleshooting.
 
 ## Methods Citation Helper
 

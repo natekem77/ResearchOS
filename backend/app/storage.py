@@ -416,6 +416,21 @@ class SQLiteStore:
                     ON purchase_records(purchase_date);
                 CREATE INDEX IF NOT EXISTS idx_purchase_oracle_po
                     ON purchase_records(oracle_po_number);
+
+                CREATE TABLE IF NOT EXISTS purchase_import_templates (
+                    template_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    provider TEXT,
+                    mapping TEXT NOT NULL,
+                    owner_user_id TEXT,
+                    created_by TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_purchase_import_templates_name
+                    ON purchase_import_templates(name);
                 """
             )
             self._ensure_permission_columns(connection)
@@ -423,7 +438,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "purchase_records"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "purchase_records", "purchase_import_templates"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -451,7 +466,7 @@ class SQLiteStore:
 
         if not workspace_id:
             return "", []
-        return "(workspace_id = ? OR workspace_id IS NULL)", [workspace_id]
+        return "(workspace_id = ? OR workspace_id IS NULL OR workspace_id = '')", [workspace_id]
 
     def upsert_document(
         self,
@@ -2329,6 +2344,117 @@ class SQLiteStore:
                 (purchase_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def save_purchase_import_template(
+        self,
+        name: str,
+        mapping: dict[str, str],
+        provider: str | None = "oracle_purchasing",
+        template_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a saved purchasing import mapping template."""
+
+        resolved_id = template_id or f"purchase_import_template:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM purchase_import_templates WHERE template_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO purchase_import_templates (
+                        template_id, name, provider, mapping,
+                        owner_user_id, created_by, workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        name,
+                        provider,
+                        json.dumps(mapping, sort_keys=True),
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE purchase_import_templates
+                    SET name = ?,
+                        provider = ?,
+                        mapping = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE template_id = ?
+                    """,
+                    (
+                        name,
+                        provider,
+                        json.dumps(mapping, sort_keys=True),
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                        resolved_id,
+                    ),
+                )
+        saved = self.get_purchase_import_template(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Purchase import template was not saved: {resolved_id}")
+        return saved
+
+    def list_purchase_import_templates(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Return saved purchasing import mapping templates."""
+
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        where = f"WHERE {workspace_clause}" if workspace_clause else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM purchase_import_templates
+                {where}
+                ORDER BY name ASC
+                """,
+                workspace_values,
+            ).fetchall()
+        templates = [dict(row) for row in rows]
+        for template in templates:
+            template["mapping"] = json.loads(template.get("mapping") or "{}")
+            template["is_default"] = False
+        return templates
+
+    def get_purchase_import_template(self, template_id: str) -> dict[str, Any] | None:
+        """Return one saved purchasing import mapping template."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM purchase_import_templates WHERE template_id = ?",
+                (template_id,),
+            ).fetchone()
+        if not row:
+            return None
+        template = dict(row)
+        template["mapping"] = json.loads(template.get("mapping") or "{}")
+        template["is_default"] = False
+        return template
+
+    def delete_purchase_import_template(self, template_id: str) -> bool:
+        """Delete one saved purchasing import mapping template."""
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM purchase_import_templates WHERE template_id = ?",
+                (template_id,),
+            )
+        return cursor.rowcount > 0
 
     def register_asset(
         self,

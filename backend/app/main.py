@@ -47,12 +47,15 @@ from app.graphpad_provider import (
 )
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.inventory import (
+    DEFAULT_PURCHASE_IMPORT_TEMPLATES,
     INVENTORY_CSV_FIELDS,
     ORACLE_PURCHASING_PROVIDER,
     PURCHASE_CSV_FIELDS,
+    apply_purchase_mapping,
     methods_citation,
     normalize_purchase_csv_row,
     parse_csv_text,
+    purchase_import_preview,
     records_to_csv,
 )
 from app.knowledge_graph_assistant import answer_with_knowledge_graph
@@ -967,6 +970,40 @@ class PurchaseCsvImportRequest(BaseModel):
 
     csv_text: str
     provider: str = "oracle_purchasing"
+
+
+class PurchaseMappedCsvImportRequest(BaseModel):
+    """CSV import payload with explicit field-to-column mapping."""
+
+    csv_text: str
+    mapping: dict[str, str]
+    provider: str = "oracle_purchasing"
+
+
+class PurchaseImportPreviewRequest(BaseModel):
+    """CSV preview payload before importing purchasing records."""
+
+    csv_text: str
+
+
+class PurchaseImportTemplateRequest(BaseModel):
+    """Saved purchasing import mapping template."""
+
+    name: str
+    mapping: dict[str, str]
+    provider: str = "oracle_purchasing"
+
+
+class PurchaseImportTemplateResponse(PurchaseImportTemplateRequest):
+    """Stored purchasing import mapping template."""
+
+    template_id: str
+    is_default: bool = False
+    owner_user_id: str | None = None
+    created_by: str | None = None
+    workspace_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class GraphPadFolderStatusResponse(BaseModel):
@@ -5295,6 +5332,81 @@ def import_purchases_csv(request: PurchaseCsvImportRequest) -> dict[str, object]
         "imported_count": len(imported),
         "records": imported,
     }
+
+
+@app.post("/purchases/import-preview", tags=["purchasing"])
+def preview_purchases_import(request: PurchaseImportPreviewRequest) -> dict[str, object]:
+    """Preview a purchasing CSV and suggest flexible field mappings."""
+
+    return purchase_import_preview(request.csv_text)
+
+
+@app.post("/purchases/import-mapped-csv", tags=["purchasing"])
+def import_purchases_mapped_csv(request: PurchaseMappedCsvImportRequest) -> dict[str, object]:
+    """Import purchasing CSV rows using an explicit ResearchOS field mapping."""
+
+    if request.provider != "oracle_purchasing":
+        raise HTTPException(status_code=400, detail="Only oracle_purchasing mapped CSV imports are scaffolded currently.")
+    if "item_name" not in request.mapping:
+        raise HTTPException(status_code=400, detail="Mapping must include item_name.")
+    imported = []
+    skipped_rows: list[dict[str, object]] = []
+    for index, row in enumerate(parse_csv_text(request.csv_text), start=1):
+        mapped = apply_purchase_mapping(row, request.mapping)
+        if not mapped.get("item_name"):
+            skipped_rows.append({"row": index, "reason": "Missing item_name after mapping."})
+            continue
+        imported.append(_save_purchase_request(PurchaseRecordRequest(**mapped)))
+    return {
+        "provider": ORACLE_PURCHASING_PROVIDER,
+        "mapping": request.mapping,
+        "imported_count": len(imported),
+        "skipped_count": len(skipped_rows),
+        "skipped_rows": skipped_rows,
+        "records": imported,
+    }
+
+
+@app.get("/purchases/import-templates", response_model=list[PurchaseImportTemplateResponse], tags=["purchasing"])
+def purchase_import_templates(workspace_id: str | None = Query(default=None)) -> list[PurchaseImportTemplateResponse]:
+    """Return default and locally saved purchasing import mapping templates."""
+
+    store = SQLiteStore(settings=settings)
+    templates = [PurchaseImportTemplateResponse(**template) for template in DEFAULT_PURCHASE_IMPORT_TEMPLATES]
+    templates.extend(
+        PurchaseImportTemplateResponse(**template)
+        for template in store.list_purchase_import_templates(workspace_id=_current_workspace_id(workspace_id))
+    )
+    return templates
+
+
+@app.post("/purchases/import-templates", response_model=PurchaseImportTemplateResponse, tags=["purchasing"])
+def create_purchase_import_template(request: PurchaseImportTemplateRequest) -> PurchaseImportTemplateResponse:
+    """Save a reusable purchasing import mapping template."""
+
+    user, workspace = _current_user_workspace_metadata()
+    store = SQLiteStore(settings=settings)
+    template = store.save_purchase_import_template(
+        name=request.name,
+        provider=request.provider,
+        mapping=request.mapping,
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    return PurchaseImportTemplateResponse(**template)
+
+
+@app.delete("/purchases/import-templates/{template_id}", tags=["purchasing"])
+def delete_purchase_import_template(template_id: str) -> dict[str, object]:
+    """Delete a saved purchasing import mapping template."""
+
+    if template_id.startswith("default:"):
+        raise HTTPException(status_code=400, detail="Default import templates cannot be deleted.")
+    store = SQLiteStore(settings=settings)
+    if not store.delete_purchase_import_template(template_id):
+        raise HTTPException(status_code=404, detail=f"Import template not found: {template_id}")
+    return {"deleted": True, "template_id": template_id}
 
 
 @app.get("/purchases/{purchase_id}", response_model=PurchaseRecordResponse, tags=["purchasing"])

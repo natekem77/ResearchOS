@@ -220,6 +220,10 @@ request GET "/purchases" >/dev/null
 request GET "/purchases/$SMOKE_PURCHASE_ID" >/dev/null
 request PUT "/purchases/$SMOKE_PURCHASE_ID" '{"item_name":"Smoke SAG Purchase","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","purchase_date":"2026-07-08","cost":130,"quantity":2,"grant_or_funding_source":"Smoke Grant","purchaser":"ResearchOS","oracle_po_number":"PO-SMOKE","invoice_number":"INV-SMOKE","status":"received","notes":"Updated smoke purchase."}' >/dev/null
 request POST "/purchases/import-csv" '{"csv_text":"PO Number,Supplier,Item,Amount,Grant,Buyer\nPO-SMOKE-CSV,ResearchOS,Smoke CSV Item,44.00,Smoke Grant,ResearchOS\n"}' >/dev/null
+request POST "/purchases/import-preview" '{"csv_text":"Item Description,Supplier,Catalog #,Order Date,Total Cost,Qty,Project/Grant,Requester,PO Number,Invoice Number,Status\nSmoke Mapped Item,ResearchOS,MAP-1,2026-07-08,55.00,1,Smoke Grant,ResearchOS,PO-SMOKE-MAP,INV-MAP,received\n"}' >/dev/null
+request POST "/purchases/import-mapped-csv" '{"csv_text":"Item Description,Supplier,Catalog #,Order Date,Total Cost,Qty,Project/Grant,Requester,PO Number,Invoice Number,Status\nSmoke Mapped Item,ResearchOS,MAP-1,2026-07-08,55.00,1,Smoke Grant,ResearchOS,PO-SMOKE-MAP,INV-MAP,received\n","mapping":{"item_name":"Item Description","vendor":"Supplier","catalog_number":"Catalog #","purchase_date":"Order Date","cost":"Total Cost","quantity":"Qty","grant_or_funding_source":"Project/Grant","purchaser":"Requester","oracle_po_number":"PO Number","invoice_number":"Invoice Number","status":"Status"}}' >/dev/null
+request GET "/purchases/import-templates" >/dev/null
+request POST "/purchases/import-templates" '{"name":"Smoke Oracle Mapping","mapping":{"item_name":"Item Description","vendor":"Supplier","oracle_po_number":"PO Number"},"provider":"oracle_purchasing"}' >/dev/null
 request GET "/purchases/export-csv" >/dev/null
 request GET "/papers" >/dev/null
 request GET "/papers?workspace_id=workspace:demo-lab" >/dev/null
