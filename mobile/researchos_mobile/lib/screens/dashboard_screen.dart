@@ -38,10 +38,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } catch (_) {
       activeSession = null;
     }
+    Map<String, dynamic> designDueToday = const {};
+    Map<String, dynamic> designUpcoming = const {};
+    try {
+      designDueToday = await widget.api.experimentDesignDueToday();
+      designUpcoming = await widget.api.experimentDesignUpcoming();
+    } catch (_) {
+      designDueToday = const {};
+      designUpcoming = const {};
+    }
     return _DashboardViewModel(
       cards: cards,
       experiments: experiments,
       activeSession: activeSession,
+      designDueToday: designDueToday,
+      designUpcoming: designUpcoming,
     );
   }
 
@@ -71,6 +82,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 subtitle: 'What needs attention in this workspace.',
               ),
               _TodayCard(model: model),
+              _DesignReminderCard(model: model),
               const ResearchOsSectionHeader(
                 title: 'Active session',
                 subtitle: 'Bench Mode stays focused on the current experiment.',
@@ -121,11 +133,50 @@ class _DashboardViewModel {
     this.cards = const [],
     this.experiments = const [],
     this.activeSession,
+    this.designDueToday = const {},
+    this.designUpcoming = const {},
   });
 
   final List<DashboardCard> cards;
   final List<ExperimentCard> experiments;
   final MobileSession? activeSession;
+  final Map<String, dynamic> designDueToday;
+  final Map<String, dynamic> designUpcoming;
+}
+
+class _DesignReminderCard extends StatelessWidget {
+  const _DesignReminderCard({required this.model});
+
+  final _DashboardViewModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    final due = (model.designDueToday['events'] as List? ?? const []);
+    final upcoming = (model.designUpcoming['events'] as List? ?? const []);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: ResearchOsSpacing.md),
+      child: ResearchOsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Experiment design reminders',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Text('${due.length} due today · ${upcoming.length} upcoming'),
+            for (final item in [...due, ...upcoming].take(3))
+              if (item is Map)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(item['event'] is Map
+                      ? item['event']['title']?.toString() ?? 'Design event'
+                      : 'Design event'),
+                  subtitle: Text('Due ${item['due_date'] ?? ''}'),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _WelcomeCard extends StatelessWidget {

@@ -12,6 +12,10 @@ const state = {
   purchases: [],
   purchaseRequests: [],
   receiving: [],
+  experimentDesigns: [],
+  designDueToday: null,
+  designUpcoming: null,
+  designImportPreview: null,
   inventoryStatus: null,
   purchaseSummary: null,
   purchaseImportTemplates: [],
@@ -78,6 +82,7 @@ const views = {
   chat: $("#chatView"),
   reasoning: $("#reasoningView"),
   planner: $("#plannerView"),
+  "design-planner": $("#designPlannerView"),
   extensions: $("#extensionsView"),
   settings: $("#settingsView"),
 };
@@ -332,6 +337,7 @@ function route() {
     chat: ["AI Chat", "Ask ResearchOS"],
     reasoning: ["Scientific Reasoning", "Evidence-Based Reasoning"],
     planner: ["Experiment Planner", "Plan Follow-up Experiment"],
+    "design-planner": ["Design Planner", "Multi-condition Experiment Design"],
     extensions: ["Extensions", "Extension SDK"],
     settings: ["Settings", "Workspace Settings"],
   };
@@ -418,14 +424,34 @@ function renderDailyDashboard() {
       <div class="intelligence-feed">
         ${items.length ? items.map(renderIntelligenceFeedItem).join("") : `<div class="empty-state">No Laboratory Intelligence items match this filter.</div>`}
       </div>
+      ${renderDashboardDesignReminders()}
     `;
     bindIntelligenceFeedControls();
     return;
   }
   target.innerHTML = (dashboard.sections || []).length
-    ? dashboard.sections.map(renderDailyDashboardCard).join("")
+    ? dashboard.sections.map(renderDailyDashboardCard).join("") + renderDashboardDesignReminders()
     : `<div class="empty-state">No dashboard sections available.</div>`;
   bindDailyDashboardReorder();
+}
+
+function renderDashboardDesignReminders() {
+  const due = state.designDueToday?.events || [];
+  const upcoming = state.designUpcoming?.events || [];
+  return `
+    <details class="daily-card" open>
+      <summary><span>Experiment design reminders</span><small>${escapeHtml(due.length)} due today / ${escapeHtml(upcoming.length)} upcoming</small></summary>
+      <div class="daily-card-items">
+        ${[...due, ...upcoming].slice(0, 6).map((item) => `
+          <a class="daily-card-item" href="#/design-planner">
+            <strong>${escapeHtml(item.event?.title || "Design event")}</strong>
+            <span>${escapeHtml(item.design?.title || "Experiment design")} · ${escapeHtml(item.event?.day || "")} · due ${escapeHtml(item.due_date || "")}</span>
+            <small>Planned design reminder</small>
+          </a>
+        `).join("") || `<div class="empty-state">No planned design reminders due soon.</div>`}
+      </div>
+    </details>
+  `;
 }
 
 function renderMorningBrief() {
@@ -1780,6 +1806,103 @@ function renderReceivingRecord(record) {
   `;
 }
 
+function renderDesignPlanner() {
+  renderDesignReminderCards();
+  renderDesignSelect();
+  renderDesignImportPreview();
+  const target = $("#designList");
+  if (!target) return;
+  const designs = state.experimentDesigns || [];
+  target.innerHTML = designs.length
+    ? designs.map(renderExperimentDesign).join("")
+    : `<div class="empty-state">No experiment designs yet. Create a design or import a CSV plan.</div>`;
+}
+
+function renderDesignReminderCards() {
+  const target = $("#designReminderCards");
+  if (!target) return;
+  target.innerHTML = `
+    <article class="provider-card">
+      <div class="provider-card-header"><span>Due today</span><strong>${escapeHtml(state.designDueToday?.count ?? 0)}</strong></div>
+      <p>${escapeHtml((state.designDueToday?.events || [])[0]?.event?.title || "No design reminders due today")}</p>
+    </article>
+    <article class="provider-card">
+      <div class="provider-card-header"><span>Upcoming</span><strong>${escapeHtml(state.designUpcoming?.count ?? 0)}</strong></div>
+      <p>Next 7 days</p>
+    </article>
+  `;
+}
+
+function renderDesignSelect() {
+  const select = $("#designSelect");
+  if (!select) return;
+  const selected = select.value;
+  select.innerHTML = (state.experimentDesigns || []).map((design) => `
+    <option value="${escapeHtml(design.design_id)}">${escapeHtml(design.title)}</option>
+  `).join("");
+  if (selected) select.value = selected;
+}
+
+function renderExperimentDesign(design) {
+  const timeline = groupDesignEvents(design);
+  return `
+    <article class="record-card">
+      <h3>${escapeHtml(design.title)}</h3>
+      <p>${escapeHtml([design.experiment_type, design.cell_line_or_model, (design.reporters || []).join("; ")].filter(Boolean).join(" · ") || "Generic experiment design")}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(design.status || "draft")}</span>
+        <span class="tag">${escapeHtml((design.conditions || []).length)} condition(s)</span>
+        <span class="tag">${escapeHtml((design.events || []).length)} event(s)</span>
+        ${design.linked_experiment_id ? `<span class="tag">${escapeHtml(design.linked_experiment_id)}</span>` : ""}
+      </div>
+      <p>${escapeHtml(design.description || "")}</p>
+      <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-csv">Export CSV</a>
+      <div class="item-list">
+        ${(design.conditions || []).map((condition) => `
+          <div class="item-link"><strong>${escapeHtml(condition.condition_name)}</strong><span>${escapeHtml([condition.treatment, condition.dose, condition.units, condition.start_day].filter(Boolean).join(" · "))}</span></div>
+        `).join("") || `<div class="empty-state">No conditions yet.</div>`}
+      </div>
+      <details>
+        <summary>Timeline</summary>
+        <div class="item-list">
+          ${timeline.map((day) => `
+            <div class="item-link"><strong>${escapeHtml(day.day)}</strong><span>${escapeHtml(day.events.map((event) => `${event.event_type}: ${event.title}`).join("; "))}</span></div>
+          `).join("") || `<div class="empty-state">No timeline events yet.</div>`}
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function groupDesignEvents(design) {
+  const grouped = {};
+  (design.events || []).forEach((event) => {
+    const day = event.day || "D0";
+    grouped[day] = grouped[day] || [];
+    grouped[day].push(event);
+  });
+  return Object.entries(grouped)
+    .map(([day, events]) => ({ day, events }))
+    .sort((a, b) => Number(String(a.day).match(/-?\d+/)?.[0] || 0) - Number(String(b.day).match(/-?\d+/)?.[0] || 0));
+}
+
+function renderDesignImportPreview() {
+  const target = $("#designImportPreview");
+  if (!target) return;
+  const preview = state.designImportPreview;
+  if (!preview) {
+    target.innerHTML = `<div class="empty-state">Paste CSV text and preview it before importing a design.</div>`;
+    return;
+  }
+  target.innerHTML = `
+    <article class="record-card">
+      <h3>Design import preview</h3>
+      <p>${escapeHtml(preview.row_count || 0)} row(s). Conditions: ${escapeHtml((preview.inferred_conditions || []).join(", "))}</p>
+      <div class="meta">${(preview.inferred_days || []).map((day) => `<span class="tag">${escapeHtml(day)}</span>`).join("")}</div>
+    </article>
+  `;
+}
+
 function numberOrNull(value) {
   if (value === null || value === undefined || String(value).trim() === "") return null;
   const parsed = Number(value);
@@ -1887,6 +2010,104 @@ async function intakeReceivingRecord(receivingId) {
   });
   $("#receivingStatus").textContent = `Inventory updated: ${result.inventory_item?.name || result.inventory_item?.item_id || "item"}`;
   await refreshData();
+}
+
+async function saveExperimentDesign() {
+  const payload = {
+    title: $("#designTitle").value.trim(),
+    experiment_type: $("#designType").value.trim() || null,
+    cell_line_or_model: $("#designModel").value.trim() || null,
+    reporters: $("#designReporters").value.split(/[;,]/).map((item) => item.trim()).filter(Boolean),
+    description: $("#designDescription").value.trim() || null,
+    status: $("#designStatusSelect").value || "draft",
+  };
+  const saved = await requestJson("/experiment-designs", { method: "POST", body: JSON.stringify(payload) });
+  $("#designForm").reset();
+  $("#designPlannerStatus").textContent = `Created design: ${saved.title}`;
+  await refreshData();
+}
+
+async function addDesignCondition() {
+  const designId = $("#designSelect").value;
+  if (!designId) {
+    $("#designPlannerStatus").textContent = "Create or select a design before adding conditions.";
+    return;
+  }
+  const payload = {
+    condition_name: $("#conditionName").value.trim(),
+    treatment: $("#conditionTreatment").value.trim() || null,
+    dose: $("#conditionDose").value.trim() || null,
+    units: $("#conditionUnits").value.trim() || null,
+    start_day: $("#conditionStart").value.trim() || null,
+    end_day: $("#conditionEnd").value.trim() || null,
+    notes: $("#conditionNotes").value.trim() || null,
+    replicate_count: numberOrNull($("#conditionReplicates").value),
+    sample_count: numberOrNull($("#conditionSamples").value),
+  };
+  await requestJson(`/experiment-designs/${encodeURIComponent(designId)}/conditions`, { method: "POST", body: JSON.stringify(payload) });
+  $("#designConditionForm").reset();
+  $("#designPlannerStatus").textContent = "Added condition.";
+  await refreshData();
+}
+
+async function addDesignEvent() {
+  const designId = $("#designSelect").value;
+  if (!designId) {
+    $("#designPlannerStatus").textContent = "Create or select a design before adding events.";
+    return;
+  }
+  const payload = {
+    day: $("#eventDay").value.trim(),
+    event_type: $("#eventType").value.trim() || "custom",
+    title: $("#eventTitle").value.trim(),
+    description: $("#eventDescription").value.trim() || null,
+    alert_enabled: $("#eventAlert").value === "true",
+  };
+  await requestJson(`/experiment-designs/${encodeURIComponent(designId)}/events`, { method: "POST", body: JSON.stringify(payload) });
+  $("#designEventForm").reset();
+  $("#designPlannerStatus").textContent = "Added timeline event.";
+  await refreshData();
+}
+
+async function previewDesignImport() {
+  const csvText = $("#designCsvText").value.trim();
+  if (!csvText) {
+    $("#designPlannerStatus").textContent = "Paste CSV text before previewing.";
+    return;
+  }
+  state.designImportPreview = await requestJson("/experiment-designs/import-preview", {
+    method: "POST",
+    body: JSON.stringify({ csv_text: csvText }),
+  });
+  renderDesignImportPreview();
+}
+
+async function importDesignCsv() {
+  const csvText = $("#designCsvText").value.trim();
+  if (!csvText) {
+    $("#designPlannerStatus").textContent = "Paste CSV text before importing.";
+    return;
+  }
+  const saved = await requestJson("/experiment-designs/import-csv", {
+    method: "POST",
+    body: JSON.stringify({ csv_text: csvText }),
+  });
+  $("#designCsvText").value = "";
+  $("#designPlannerStatus").textContent = `Imported design: ${saved.title}`;
+  await refreshData();
+}
+
+async function checkSelectedDesignBalance() {
+  const design = (state.experimentDesigns || []).find((item) => item.design_id === $("#designSelect").value);
+  if (!design) {
+    $("#designPlannerStatus").textContent = "Select a design to check.";
+    return;
+  }
+  const result = await requestJson("/experiment-designs/doe/check-balance", {
+    method: "POST",
+    body: JSON.stringify({ conditions: design.conditions || [] }),
+  });
+  $("#designPlannerStatus").textContent = result.warnings?.length ? result.warnings.join(" ") : "Design appears balanced by current checks.";
 }
 
 async function updatePurchaseRequestStatus(requestId, action) {
@@ -4590,7 +4811,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, designDueToday, designUpcoming, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4605,6 +4826,9 @@ async function refreshData() {
     requestJson("/purchases"),
     requestJson("/purchase-requests"),
     requestJson("/receiving"),
+    requestJson("/experiment-designs"),
+    requestJson("/experiment-designs/due-today"),
+    requestJson("/experiment-designs/upcoming?days=7"),
     requestJson("/purchases/summary"),
     requestJson("/purchases/import-templates"),
     requestJson("/sessions"),
@@ -4631,6 +4855,9 @@ async function refreshData() {
   state.purchases = purchases;
   state.purchaseRequests = purchaseRequests;
   state.receiving = receiving;
+  state.experimentDesigns = experimentDesigns;
+  state.designDueToday = designDueToday;
+  state.designUpcoming = designUpcoming;
   state.purchaseSummary = purchaseSummary;
   state.purchaseImportTemplates = purchaseImportTemplates;
   state.sessions = sessions;
@@ -4671,6 +4898,7 @@ function renderAll() {
   renderInventory();
   renderPurchases();
   renderReceiving();
+  renderDesignPlanner();
   renderWorkflows();
   renderSessions();
   renderExperimentsTable();
@@ -5027,6 +5255,40 @@ $("#receivingList")?.addEventListener("click", (event) => {
   if (!button) return;
   intakeReceivingRecord(button.dataset.receivingIntake).catch((error) => {
     $("#receivingStatus").textContent = `Inventory intake failed: ${error.message}`;
+  });
+});
+$("#designForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveExperimentDesign().catch((error) => {
+    $("#designPlannerStatus").textContent = `Design save failed: ${error.message}`;
+  });
+});
+$("#designConditionForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  addDesignCondition().catch((error) => {
+    $("#designPlannerStatus").textContent = `Condition save failed: ${error.message}`;
+  });
+});
+$("#designEventForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  addDesignEvent().catch((error) => {
+    $("#designPlannerStatus").textContent = `Event save failed: ${error.message}`;
+  });
+});
+$("#designImportPreviewButton")?.addEventListener("click", () => {
+  previewDesignImport().catch((error) => {
+    $("#designPlannerStatus").textContent = `Import preview failed: ${error.message}`;
+  });
+});
+$("#designImportForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  importDesignCsv().catch((error) => {
+    $("#designPlannerStatus").textContent = `Design import failed: ${error.message}`;
+  });
+});
+$("#checkDesignBalanceButton")?.addEventListener("click", () => {
+  checkSelectedDesignBalance().catch((error) => {
+    $("#designPlannerStatus").textContent = `Balance check failed: ${error.message}`;
   });
 });
 $("#purchaseRequestForm")?.addEventListener("submit", (event) => {

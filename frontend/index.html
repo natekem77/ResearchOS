@@ -49,6 +49,7 @@
           <a href="#/chat" data-nav="chat">AI Chat</a>
           <a href="#/reasoning" data-nav="reasoning">Scientific Reasoning</a>
           <a href="#/planner" data-nav="planner">Experiment Planner</a>
+          <a href="#/design-planner" data-nav="design-planner">Design Planner</a>
           <a href="#/extensions" data-nav="extensions">Extensions</a>
           <a href="#/settings" data-nav="settings">Settings</a>
         </nav>
@@ -1059,6 +1060,104 @@
               </div>
               <p class="demo-status" id="plannerStatus"></p>
               <div class="chat-output" id="plannerOutput"></div>
+            </article>
+          </section>
+
+          <section class="view" id="designPlannerView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Experiment Design Planner</p>
+                  <h2>Plan multi-condition experiments</h2>
+                </div>
+              </div>
+              <div class="provider-grid" id="designReminderCards"></div>
+              <form class="entry-draft-form" id="designForm">
+                <label for="designTitle">Design title</label>
+                <input id="designTitle" type="text" placeholder="D1 SAG + GRKi rescue" required />
+                <div class="form-grid">
+                  <div>
+                    <label for="designType">Experiment type</label>
+                    <input id="designType" type="text" placeholder="organoid, cell culture, sequencing..." />
+                  </div>
+                  <div>
+                    <label for="designModel">Cell line or model</label>
+                    <input id="designModel" type="text" placeholder="SIX6 reporter iPSC, RPE, mouse..." />
+                  </div>
+                  <div>
+                    <label for="designReporters">Reporters</label>
+                    <input id="designReporters" type="text" placeholder="SIX6; BRN3B" />
+                  </div>
+                  <div>
+                    <label for="designStatusSelect">Status</label>
+                    <select id="designStatusSelect">
+                      <option value="draft">Draft</option>
+                      <option value="active">Active</option>
+                    </select>
+                  </div>
+                </div>
+                <label for="designDescription">Description</label>
+                <textarea id="designDescription" rows="2"></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Create Design</button>
+                </div>
+              </form>
+              <form class="entry-draft-form" id="designConditionForm">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <p class="eyebrow">Condition editor</p>
+                    <h3>Add condition to selected design</h3>
+                  </div>
+                </div>
+                <label for="designSelect">Design</label>
+                <select id="designSelect"></select>
+                <div class="form-grid">
+                  <div><label for="conditionName">Condition</label><input id="conditionName" type="text" placeholder="DMSO control" required /></div>
+                  <div><label for="conditionTreatment">Treatment</label><input id="conditionTreatment" type="text" placeholder="SAG + GRKi" /></div>
+                  <div><label for="conditionDose">Dose</label><input id="conditionDose" type="text" placeholder="100" /></div>
+                  <div><label for="conditionUnits">Units</label><input id="conditionUnits" type="text" placeholder="nM" /></div>
+                  <div><label for="conditionStart">Start day</label><input id="conditionStart" type="text" placeholder="D1" /></div>
+                  <div><label for="conditionEnd">End day</label><input id="conditionEnd" type="text" placeholder="D9" /></div>
+                  <div><label for="conditionReplicates">Replicates</label><input id="conditionReplicates" type="number" /></div>
+                  <div><label for="conditionSamples">Samples</label><input id="conditionSamples" type="number" /></div>
+                </div>
+                <label for="conditionNotes">Notes</label>
+                <textarea id="conditionNotes" rows="2"></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Add Condition</button>
+                  <button type="button" class="secondary-button" id="checkDesignBalanceButton">Check Balance</button>
+                </div>
+              </form>
+              <form class="entry-draft-form" id="designEventForm">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <p class="eyebrow">Timeline editor</p>
+                    <h3>Add design event</h3>
+                  </div>
+                </div>
+                <div class="form-grid">
+                  <div><label for="eventDay">Day</label><input id="eventDay" type="text" placeholder="D32" required /></div>
+                  <div><label for="eventType">Event type</label><input id="eventType" type="text" placeholder="imaging" /></div>
+                  <div><label for="eventTitle">Title</label><input id="eventTitle" type="text" placeholder="BRN3B imaging" required /></div>
+                  <div><label for="eventAlert">Alert</label><select id="eventAlert"><option value="false">No alert</option><option value="true">Alert enabled</option></select></div>
+                </div>
+                <label for="eventDescription">Description</label>
+                <textarea id="eventDescription" rows="2"></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Add Event</button>
+                </div>
+              </form>
+              <form class="entry-draft-form" id="designImportForm">
+                <label for="designCsvText">Import design CSV</label>
+                <textarea id="designCsvText" rows="4" placeholder="condition,day,event_type,treatment,dose,units,replicate,alert_enabled"></textarea>
+                <div class="entry-actions">
+                  <button type="button" class="secondary-button" id="designImportPreviewButton">Preview Import</button>
+                  <button type="submit">Import Design CSV</button>
+                </div>
+              </form>
+              <p class="demo-status" id="designPlannerStatus"></p>
+              <div class="preview-panel" id="designImportPreview"></div>
+              <div class="item-list" id="designList"></div>
             </article>
           </section>
 

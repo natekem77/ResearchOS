@@ -74,6 +74,38 @@ request GET "/documents?workspace_id=workspace:demo-lab" >/dev/null
 EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/experiments?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/mobile/experiments" >/dev/null
+request GET "/experiment-designs" >/dev/null
+request GET "/experiment-designs/due-today" >/dev/null
+request GET "/experiment-designs/upcoming?days=7" >/dev/null
+request POST "/experiment-designs/doe/full-factorial" '{"factors":{"compound":["DMSO","SAG"],"dose":["low","high"]}}' >/dev/null
+request POST "/experiment-designs/doe/check-balance" '{"conditions":[{"condition_name":"DMSO control","replicate_count":3,"sample_count":3},{"condition_name":"SAG","replicate_count":2,"sample_count":3}]}' >/dev/null
+SMOKE_DESIGN_FILE="$(request POST "/experiment-designs" '{"title":"Smoke D1 SAG Design","experiment_type":"organoid","cell_line_or_model":"SIX6 reporter iPSC","reporters":["SIX6","BRN3B"],"status":"active"}')"
+SMOKE_DESIGN_ID="$(
+  python3 - "$SMOKE_DESIGN_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["design_id"])
+PY
+)"
+SMOKE_CONDITION_FILE="$(request POST "/experiment-designs/$SMOKE_DESIGN_ID/conditions" '{"condition_name":"DMSO control","treatment":"DMSO","start_day":"D1","replicate_count":3,"sample_count":6}')"
+SMOKE_CONDITION_ID="$(
+  python3 - "$SMOKE_CONDITION_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["condition_id"])
+PY
+)"
+request POST "/experiment-designs/$SMOKE_DESIGN_ID/events" "{\"condition_id\":\"$SMOKE_CONDITION_ID\",\"day\":\"D1\",\"event_type\":\"treatment\",\"title\":\"Start treatment\",\"alert_enabled\":true}" >/dev/null
+request GET "/experiment-designs/$SMOKE_DESIGN_ID" >/dev/null
+request GET "/experiment-designs/$SMOKE_DESIGN_ID/timeline" >/dev/null
+request GET "/experiment-designs/$SMOKE_DESIGN_ID/calendar" >/dev/null
+request GET "/experiment-designs/$SMOKE_DESIGN_ID/export-csv" >/dev/null
+request POST "/experiment-designs/import-preview" '{"csv_text":"condition,day,event_type,treatment,dose,units,replicate,alert_enabled\nSmoke BMP4,D9,treatment,BMP4,10,ng/mL,1,true\n"}' >/dev/null
+request POST "/experiment-designs/import-csv" '{"title":"Smoke Imported Design","csv_text":"condition,day,event_type,treatment,dose,units,replicate,alert_enabled\nSmoke BMP4,D9,treatment,BMP4,10,ng/mL,1,true\n"}' >/dev/null
 WIZARD_EXPERIMENT_ID="SMOKE-WIZARD-$(date +%s)"
 WIZARD_FILE="$(request POST "/mobile/experiments/create" "{\"title\":\"Smoke Wizard Experiment\",\"experiment_id\":\"$WIZARD_EXPERIMENT_ID\",\"project\":\"Smoke test\",\"researcher\":\"ResearchOS\",\"protocol_mode\":\"create_new\",\"protocol_title\":\"Smoke protocol\",\"cell_line\":\"Demo cells\",\"organoid_batch\":\"Demo batch\",\"compounds\":[\"SAG\"],\"concentrations\":[\"100 nM\"],\"timepoints\":[\"D1\"],\"replicates\":\"n=3\",\"controls\":[\"DMSO\"],\"readouts\":[\"microscopy\"],\"markers\":[\"SIX6\"],\"microscopy\":true,\"graphpad\":true,\"create_notebook_draft\":true,\"start_session\":false}")"
 WIZARD_INTERNAL_ID="$(

@@ -508,6 +508,71 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_receiving_received_date
                     ON receiving_records(received_date);
 
+                CREATE TABLE IF NOT EXISTS experiment_designs (
+                    design_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    experiment_type TEXT,
+                    cell_line_or_model TEXT,
+                    reporters_json TEXT NOT NULL DEFAULT '[]',
+                    description TEXT,
+                    created_by TEXT,
+                    linked_experiment_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    owner_user_id TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_experiment_designs_status
+                    ON experiment_designs(status);
+                CREATE INDEX IF NOT EXISTS idx_experiment_designs_linked_experiment
+                    ON experiment_designs(linked_experiment_id);
+
+                CREATE TABLE IF NOT EXISTS design_conditions (
+                    condition_id TEXT PRIMARY KEY,
+                    design_id TEXT NOT NULL,
+                    condition_name TEXT NOT NULL,
+                    treatment TEXT,
+                    dose TEXT,
+                    units TEXT,
+                    start_day TEXT,
+                    end_day TEXT,
+                    notes TEXT,
+                    replicate_count INTEGER,
+                    sample_count INTEGER,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(design_id) REFERENCES experiment_designs(design_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_design_conditions_design
+                    ON design_conditions(design_id);
+
+                CREATE TABLE IF NOT EXISTS design_events (
+                    event_id TEXT PRIMARY KEY,
+                    design_id TEXT NOT NULL,
+                    condition_id TEXT,
+                    day TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    required INTEGER NOT NULL DEFAULT 1,
+                    alert_enabled INTEGER NOT NULL DEFAULT 0,
+                    alert_offset_days INTEGER NOT NULL DEFAULT 0,
+                    completed INTEGER NOT NULL DEFAULT 0,
+                    completed_at TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(design_id) REFERENCES experiment_designs(design_id) ON DELETE CASCADE,
+                    FOREIGN KEY(condition_id) REFERENCES design_conditions(condition_id) ON DELETE SET NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_design_events_design
+                    ON design_events(design_id);
+                CREATE INDEX IF NOT EXISTS idx_design_events_day
+                    ON design_events(day);
+
                 CREATE TABLE IF NOT EXISTS purchase_import_templates (
                     template_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -2974,6 +3039,307 @@ class SQLiteStore:
                 (receiving_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def _design_from_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        """Convert an experiment design row into API-friendly data."""
+
+        record = dict(row)
+        record["reporters"] = json.loads(record.pop("reporters_json", "[]") or "[]")
+        return record
+
+    def _event_from_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        """Convert SQLite booleans in design events."""
+
+        record = dict(row)
+        for key in ["required", "alert_enabled", "completed"]:
+            record[key] = bool(record.get(key))
+        return record
+
+    def save_experiment_design(
+        self,
+        title: str,
+        experiment_type: str | None = None,
+        cell_line_or_model: str | None = None,
+        reporters: list[str] | None = None,
+        description: str | None = None,
+        created_by: str | None = None,
+        linked_experiment_id: str | None = None,
+        status: str = "draft",
+        design_id: str | None = None,
+        owner_user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one experiment design."""
+
+        resolved_id = design_id or f"design:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM experiment_designs WHERE design_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO experiment_designs (
+                        design_id, title, experiment_type, cell_line_or_model,
+                        reporters_json, description, created_by,
+                        linked_experiment_id, status, owner_user_id, workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        title,
+                        experiment_type,
+                        cell_line_or_model,
+                        json.dumps(reporters or []),
+                        description,
+                        created_by or owner_user_id,
+                        linked_experiment_id,
+                        status,
+                        owner_user_id,
+                        workspace_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE experiment_designs
+                    SET title = ?,
+                        experiment_type = ?,
+                        cell_line_or_model = ?,
+                        reporters_json = ?,
+                        description = ?,
+                        created_by = COALESCE(?, created_by),
+                        linked_experiment_id = ?,
+                        status = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE design_id = ?
+                    """,
+                    (
+                        title,
+                        experiment_type,
+                        cell_line_or_model,
+                        json.dumps(reporters or []),
+                        description,
+                        created_by or owner_user_id,
+                        linked_experiment_id,
+                        status,
+                        owner_user_id,
+                        workspace_id,
+                        resolved_id,
+                    ),
+                )
+        saved = self.get_experiment_design(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Experiment design was not saved: {resolved_id}")
+        return saved
+
+    def list_experiment_designs(self, status: str | None = None, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Return experiment designs."""
+
+        clauses: list[str] = []
+        values: list[Any] = []
+        if status:
+            clauses.append("LOWER(status) = ?")
+            values.append(status.lower())
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM experiment_designs {where} ORDER BY created_at DESC, title ASC",
+                values,
+            ).fetchall()
+        return [self._design_from_row(row) for row in rows]
+
+    def get_experiment_design(self, design_id: str) -> dict[str, Any] | None:
+        """Return one design with conditions and events."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM experiment_designs WHERE design_id = ?",
+                (design_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        design = self._design_from_row(row)
+        design["conditions"] = self.list_design_conditions(design_id)
+        design["events"] = self.list_design_events(design_id)
+        return design
+
+    def delete_experiment_design(self, design_id: str) -> bool:
+        """Delete a design and its condition/event children."""
+
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM experiment_designs WHERE design_id = ?", (design_id,))
+        return cursor.rowcount > 0
+
+    def save_design_condition(
+        self,
+        design_id: str,
+        condition_name: str,
+        treatment: str | None = None,
+        dose: str | None = None,
+        units: str | None = None,
+        start_day: str | None = None,
+        end_day: str | None = None,
+        notes: str | None = None,
+        replicate_count: int | None = None,
+        sample_count: int | None = None,
+        condition_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one design condition."""
+
+        resolved_id = condition_id or f"condition:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM design_conditions WHERE condition_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO design_conditions (
+                        condition_id, design_id, condition_name, treatment,
+                        dose, units, start_day, end_day, notes,
+                        replicate_count, sample_count
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (resolved_id, design_id, condition_name, treatment, dose, units, start_day, end_day, notes, replicate_count, sample_count),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE design_conditions
+                    SET condition_name = ?,
+                        treatment = ?,
+                        dose = ?,
+                        units = ?,
+                        start_day = ?,
+                        end_day = ?,
+                        notes = ?,
+                        replicate_count = ?,
+                        sample_count = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE condition_id = ?
+                    """,
+                    (condition_name, treatment, dose, units, start_day, end_day, notes, replicate_count, sample_count, resolved_id),
+                )
+        saved = self.get_design_condition(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Design condition was not saved: {resolved_id}")
+        return saved
+
+    def get_design_condition(self, condition_id: str) -> dict[str, Any] | None:
+        """Return one design condition."""
+
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM design_conditions WHERE condition_id = ?", (condition_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_design_conditions(self, design_id: str) -> list[dict[str, Any]]:
+        """Return conditions for one design."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM design_conditions WHERE design_id = ? ORDER BY condition_name ASC",
+                (design_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_design_event(
+        self,
+        design_id: str,
+        day: str,
+        event_type: str,
+        title: str,
+        condition_id: str | None = None,
+        description: str | None = None,
+        required: bool = True,
+        alert_enabled: bool = False,
+        alert_offset_days: int = 0,
+        completed: bool = False,
+        completed_at: str | None = None,
+        event_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one design event."""
+
+        resolved_id = event_id or f"design-event:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute("SELECT created_at FROM design_events WHERE event_id = ?", (resolved_id,)).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO design_events (
+                        event_id, design_id, condition_id, day, event_type,
+                        title, description, required, alert_enabled,
+                        alert_offset_days, completed, completed_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id, design_id, condition_id, day, event_type, title, description,
+                        int(required), int(alert_enabled), alert_offset_days, int(completed), completed_at,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE design_events
+                    SET condition_id = ?,
+                        day = ?,
+                        event_type = ?,
+                        title = ?,
+                        description = ?,
+                        required = ?,
+                        alert_enabled = ?,
+                        alert_offset_days = ?,
+                        completed = ?,
+                        completed_at = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE event_id = ?
+                    """,
+                    (
+                        condition_id, day, event_type, title, description,
+                        int(required), int(alert_enabled), alert_offset_days, int(completed), completed_at, resolved_id,
+                    ),
+                )
+        saved = self.get_design_event(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Design event was not saved: {resolved_id}")
+        return saved
+
+    def get_design_event(self, event_id: str) -> dict[str, Any] | None:
+        """Return one design event."""
+
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM design_events WHERE event_id = ?", (event_id,)).fetchone()
+        return self._event_from_row(row) if row else None
+
+    def list_design_events(self, design_id: str | None = None, alert_enabled: bool | None = None) -> list[dict[str, Any]]:
+        """Return design events."""
+
+        clauses: list[str] = []
+        values: list[Any] = []
+        if design_id:
+            clauses.append("design_id = ?")
+            values.append(design_id)
+        if alert_enabled is not None:
+            clauses.append("alert_enabled = ?")
+            values.append(int(alert_enabled))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM design_events {where} ORDER BY day ASC, event_type ASC, title ASC",
+                values,
+            ).fetchall()
+        return [self._event_from_row(row) for row in rows]
 
     def save_purchase_import_template(
         self,

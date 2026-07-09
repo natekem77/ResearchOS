@@ -23,6 +23,19 @@ from app.events.automation_engine import AutomationEngine
 from app.events.event_bus import get_event_bus
 from app.events.event_models import EventType, ResearchOSEvent
 from app.experiment_comparison import compare_experiments
+from app.experiment_design_planner import (
+    DESIGN_STATUSES,
+    EVENT_TYPES,
+    build_design_timeline,
+    check_design_balance,
+    copilot_design_checks,
+    design_calendar,
+    design_to_csv,
+    due_events,
+    full_factorial,
+    parse_design_csv,
+    preview_design_import,
+)
 from app.experiment_extraction import extract_experiment
 from app.experiment_lifecycle import (
     LIFECYCLE_STAGES,
@@ -1094,6 +1107,82 @@ class ReceivingInventoryIntakeRequest(BaseModel):
     """Convert a receiving record into inventory."""
 
     update_existing: bool = True
+
+
+class ExperimentDesignRequest(BaseModel):
+    """Create or update a provider-agnostic experiment design."""
+
+    title: str
+    experiment_type: str | None = None
+    cell_line_or_model: str | None = None
+    reporters: list[str] = Field(default_factory=list)
+    description: str | None = None
+    created_by: str | None = None
+    linked_experiment_id: str | None = None
+    status: str = "draft"
+
+
+class ExperimentDesignResponse(ExperimentDesignRequest):
+    """Stored experiment design with child records."""
+
+    design_id: str
+    conditions: list[dict[str, object]] = Field(default_factory=list)
+    events: list[dict[str, object]] = Field(default_factory=list)
+    owner_user_id: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class DesignConditionRequest(BaseModel):
+    """One planned experimental condition."""
+
+    condition_name: str
+    treatment: str | None = None
+    dose: str | None = None
+    units: str | None = None
+    start_day: str | None = None
+    end_day: str | None = None
+    notes: str | None = None
+    replicate_count: int | None = None
+    sample_count: int | None = None
+
+
+class DesignEventRequest(BaseModel):
+    """One event in a planned experiment timeline."""
+
+    condition_id: str | None = None
+    day: str
+    event_type: str = "custom"
+    title: str
+    description: str | None = None
+    required: bool = True
+    alert_enabled: bool = False
+    alert_offset_days: int = 0
+    completed: bool = False
+    completed_at: str | None = None
+
+
+class DesignImportRequest(BaseModel):
+    """CSV import payload for experiment designs."""
+
+    csv_text: str
+    title: str | None = None
+    experiment_type: str | None = None
+    cell_line_or_model: str | None = None
+    confirm_overwrite: bool = False
+
+
+class FullFactorialRequest(BaseModel):
+    """Simple full-factorial DoE request."""
+
+    factors: dict[str, list[str]]
+
+
+class BalanceCheckRequest(BaseModel):
+    """Check a proposed condition table for simple balance issues."""
+
+    conditions: list[DesignConditionRequest]
 
 
 class PurchaseCsvImportRequest(BaseModel):
@@ -4061,6 +4150,89 @@ def _intake_receiving_record(
     return {"receiving": updated_record, "inventory_item": inventory_item}
 
 
+def _save_experiment_design_request(
+    request: ExperimentDesignRequest,
+    design_id: str | None = None,
+) -> dict[str, object]:
+    """Persist an experiment design with validation."""
+
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Experiment design title is required.")
+    status = request.status.strip().lower()
+    if status not in DESIGN_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid experiment design status: {request.status}")
+    store = SQLiteStore(settings=settings)
+    if request.linked_experiment_id and store.find_experiment_by_reference(request.linked_experiment_id) is None:
+        raise HTTPException(status_code=404, detail=f"Linked experiment not found: {request.linked_experiment_id}")
+    user, workspace = _current_user_workspace_metadata()
+    return store.save_experiment_design(
+        design_id=design_id,
+        title=request.title.strip(),
+        experiment_type=request.experiment_type,
+        cell_line_or_model=request.cell_line_or_model,
+        reporters=request.reporters,
+        description=request.description,
+        created_by=request.created_by or str(user.get("display_name") or user.get("email") or ""),
+        linked_experiment_id=request.linked_experiment_id,
+        status=status,
+        owner_user_id=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+
+
+def _design_or_404(store: SQLiteStore, design_id: str) -> dict[str, object]:
+    """Return a design or raise a FastAPI 404."""
+
+    design = store.get_experiment_design(design_id)
+    if design is None:
+        raise HTTPException(status_code=404, detail=f"Experiment design not found: {design_id}")
+    return design
+
+
+def _save_design_condition(store: SQLiteStore, design_id: str, request: DesignConditionRequest) -> dict[str, object]:
+    """Persist one design condition."""
+
+    _design_or_404(store, design_id)
+    if not request.condition_name.strip():
+        raise HTTPException(status_code=400, detail="Condition name is required.")
+    return store.save_design_condition(
+        design_id=design_id,
+        condition_name=request.condition_name.strip(),
+        treatment=request.treatment,
+        dose=request.dose,
+        units=request.units,
+        start_day=request.start_day,
+        end_day=request.end_day,
+        notes=request.notes,
+        replicate_count=request.replicate_count,
+        sample_count=request.sample_count,
+    )
+
+
+def _save_design_event(store: SQLiteStore, design_id: str, request: DesignEventRequest) -> dict[str, object]:
+    """Persist one design event."""
+
+    _design_or_404(store, design_id)
+    event_type = request.event_type.strip().lower()
+    if event_type not in EVENT_TYPES:
+        event_type = "custom"
+    if request.condition_id and store.get_design_condition(request.condition_id) is None:
+        raise HTTPException(status_code=404, detail=f"Design condition not found: {request.condition_id}")
+    return store.save_design_event(
+        design_id=design_id,
+        condition_id=request.condition_id,
+        day=request.day,
+        event_type=event_type,
+        title=request.title,
+        description=request.description,
+        required=request.required,
+        alert_enabled=request.alert_enabled,
+        alert_offset_days=request.alert_offset_days,
+        completed=request.completed,
+        completed_at=request.completed_at,
+    )
+
+
 def _inventory_item_entry(
     store: SQLiteStore,
     item: dict[str, object],
@@ -4439,6 +4611,18 @@ def _mobile_experiment_workspace(experiment_id: str) -> dict[str, object]:
     )
     if workspace is None:
         raise HTTPException(status_code=404, detail=f"Experiment workspace not found: {experiment_id}")
+    linked_designs = [
+        design
+        for design in store.list_experiment_designs(workspace_id=str((experiment or {}).get("workspace_id") or "") or None)
+        if design.get("linked_experiment_id") in {experiment_id, str((experiment or {}).get("id") or ""), str((experiment or {}).get("experiment_id") or "")}
+    ]
+    design_sections = []
+    for design in linked_designs:
+        full_design = store.get_experiment_design(str(design["design_id"]))
+        if full_design:
+            design_sections.append({"design": full_design, "timeline": build_design_timeline(full_design)})
+    workspace["experiment_designs"] = design_sections
+    workspace.setdefault("sections", {})["experiment_designs"] = design_sections
     return workspace
 
 
@@ -6061,6 +6245,207 @@ def experiment_methods_materials(
         "resources": context["resources"],
         "warnings": [*context["warnings"], *result.get("warnings", [])],
     }
+
+
+@app.get("/experiment-designs", response_model=list[ExperimentDesignResponse], tags=["experiment-designs"])
+def experiment_designs(
+    status: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+) -> list[ExperimentDesignResponse]:
+    """List planned experiment designs."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        ExperimentDesignResponse(**store.get_experiment_design(str(design["design_id"])))
+        for design in store.list_experiment_designs(status=status, workspace_id=_current_workspace_id(workspace_id))
+    ]
+
+
+@app.post("/experiment-designs", response_model=ExperimentDesignResponse, tags=["experiment-designs"])
+def create_experiment_design(request: ExperimentDesignRequest) -> ExperimentDesignResponse:
+    """Create an experiment design plan."""
+
+    return ExperimentDesignResponse(**_save_experiment_design_request(request))
+
+
+@app.get("/experiment-designs/due-today", tags=["experiment-designs"])
+def experiment_designs_due_today(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return alert-enabled design events due today."""
+
+    store = SQLiteStore(settings=settings)
+    designs = [
+        store.get_experiment_design(str(design["design_id"]))
+        for design in store.list_experiment_designs(workspace_id=_current_workspace_id(workspace_id))
+    ]
+    return {"count": len(due_events([design for design in designs if design], days=0)), "events": due_events([design for design in designs if design], days=0)}
+
+
+@app.get("/experiment-designs/upcoming", tags=["experiment-designs"])
+def experiment_designs_upcoming(
+    days: int = Query(default=7, ge=1, le=365),
+    workspace_id: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Return alert-enabled design events due within a future window."""
+
+    store = SQLiteStore(settings=settings)
+    designs = [
+        store.get_experiment_design(str(design["design_id"]))
+        for design in store.list_experiment_designs(workspace_id=_current_workspace_id(workspace_id))
+    ]
+    events = due_events([design for design in designs if design], days=days)
+    return {"days": days, "count": len(events), "events": events}
+
+
+@app.post("/experiment-designs/doe/full-factorial", tags=["experiment-designs"])
+def experiment_design_full_factorial(request: FullFactorialRequest) -> dict[str, object]:
+    """Generate a simple full-factorial condition table."""
+
+    if not request.factors:
+        raise HTTPException(status_code=400, detail="At least one factor is required.")
+    if any(not levels for levels in request.factors.values()):
+        raise HTTPException(status_code=400, detail="Every factor must include at least one level.")
+    return full_factorial(request.factors)
+
+
+@app.post("/experiment-designs/doe/check-balance", tags=["experiment-designs"])
+def experiment_design_check_balance(request: BalanceCheckRequest) -> dict[str, object]:
+    """Run deterministic balance/control checks on planned conditions."""
+
+    return check_design_balance([condition.model_dump() for condition in request.conditions])
+
+
+@app.post("/experiment-designs/import-preview", tags=["experiment-designs"])
+def preview_experiment_design_import(request: DesignImportRequest) -> dict[str, object]:
+    """Preview a CSV design import."""
+
+    return preview_design_import(request.csv_text)
+
+
+@app.post("/experiment-designs/import-csv", response_model=ExperimentDesignResponse, tags=["experiment-designs"])
+def import_experiment_design_csv(request: DesignImportRequest) -> ExperimentDesignResponse:
+    """Import a design, conditions, and events from spreadsheet-style CSV."""
+
+    rows = parse_design_csv(request.csv_text)
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows detected in CSV text.")
+    title = request.title or rows[0].get("experiment_title") or rows[0].get("title") or "Imported experiment design"
+    design = create_experiment_design(
+        ExperimentDesignRequest(
+            title=title,
+            experiment_type=request.experiment_type or rows[0].get("experiment_type"),
+            cell_line_or_model=request.cell_line_or_model or rows[0].get("cell_line_or_model"),
+            reporters=[item.strip() for item in str(rows[0].get("reporters") or "").split(";") if item.strip()],
+            description="Imported from CSV design spreadsheet.",
+            status="draft",
+        )
+    )
+    store = SQLiteStore(settings=settings)
+    conditions_by_name: dict[str, dict[str, object]] = {}
+    for row in rows:
+        condition_name = row.get("condition") or row.get("condition_name") or row.get("Condition") or "Condition"
+        if condition_name not in conditions_by_name:
+            conditions_by_name[condition_name] = _save_design_condition(
+                store,
+                design.design_id,
+                DesignConditionRequest(
+                    condition_name=condition_name,
+                    treatment=row.get("treatment") or row.get("Treatment"),
+                    dose=row.get("dose") or row.get("Dose"),
+                    units=row.get("units") or row.get("Units"),
+                    start_day=row.get("day") or row.get("Day"),
+                    notes=row.get("notes") or row.get("Notes"),
+                    replicate_count=int(row.get("replicate") or row.get("replicate_count") or 1),
+                    sample_count=1,
+                ),
+            )
+        event_type = (row.get("event_type") or row.get("Event Type") or "custom").strip().lower()
+        _save_design_event(
+            store,
+            design.design_id,
+            DesignEventRequest(
+                condition_id=str(conditions_by_name[condition_name]["condition_id"]),
+                day=row.get("day") or row.get("Day") or "D0",
+                event_type=event_type,
+                title=row.get("title") or row.get("event_title") or event_type.replace("_", " ").title(),
+                description=row.get("description") or row.get("notes") or row.get("Notes"),
+                alert_enabled=str(row.get("alert_enabled") or "").lower() in {"true", "1", "yes"},
+            ),
+        )
+    return ExperimentDesignResponse(**_design_or_404(store, design.design_id))
+
+
+@app.get("/experiment-designs/{design_id}", response_model=ExperimentDesignResponse, tags=["experiment-designs"])
+def experiment_design_detail(design_id: str) -> ExperimentDesignResponse:
+    """Return one design with conditions and events."""
+
+    return ExperimentDesignResponse(**_design_or_404(SQLiteStore(settings=settings), design_id))
+
+
+@app.put("/experiment-designs/{design_id}", response_model=ExperimentDesignResponse, tags=["experiment-designs"])
+def update_experiment_design(design_id: str, request: ExperimentDesignRequest) -> ExperimentDesignResponse:
+    """Update one experiment design."""
+
+    store = SQLiteStore(settings=settings)
+    _design_or_404(store, design_id)
+    return ExperimentDesignResponse(**_save_experiment_design_request(request, design_id=design_id))
+
+
+@app.delete("/experiment-designs/{design_id}", tags=["experiment-designs"])
+def delete_experiment_design(design_id: str) -> dict[str, object]:
+    """Delete an experiment design."""
+
+    store = SQLiteStore(settings=settings)
+    if not store.delete_experiment_design(design_id):
+        raise HTTPException(status_code=404, detail=f"Experiment design not found: {design_id}")
+    return {"deleted": True, "design_id": design_id}
+
+
+@app.post("/experiment-designs/{design_id}/conditions", tags=["experiment-designs"])
+def add_design_condition(design_id: str, request: DesignConditionRequest) -> dict[str, object]:
+    """Add a condition to a design."""
+
+    return _save_design_condition(SQLiteStore(settings=settings), design_id, request)
+
+
+@app.post("/experiment-designs/{design_id}/events", tags=["experiment-designs"])
+def add_design_event(design_id: str, request: DesignEventRequest) -> dict[str, object]:
+    """Add a timeline event to a design."""
+
+    return _save_design_event(SQLiteStore(settings=settings), design_id, request)
+
+
+@app.get("/experiment-designs/{design_id}/timeline", tags=["experiment-designs"])
+def experiment_design_timeline(design_id: str) -> dict[str, object]:
+    """Return a day-by-day design timeline."""
+
+    return build_design_timeline(_design_or_404(SQLiteStore(settings=settings), design_id))
+
+
+@app.get("/experiment-designs/{design_id}/calendar", tags=["experiment-designs"])
+def experiment_design_calendar(design_id: str) -> dict[str, object]:
+    """Return a calendar-style design view."""
+
+    return design_calendar(_design_or_404(SQLiteStore(settings=settings), design_id))
+
+
+@app.get("/experiment-designs/{design_id}/export-csv", tags=["experiment-designs"])
+def export_experiment_design_csv(design_id: str) -> Response:
+    """Export a design as an Excel-friendly CSV."""
+
+    design = _design_or_404(SQLiteStore(settings=settings), design_id)
+    return Response(
+        content=design_to_csv(design),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="researchos_experiment_design.csv"'},
+    )
+
+
+@app.get("/experiment-designs/{design_id}/copilot", tags=["experiment-designs"])
+def experiment_design_copilot(design_id: str) -> dict[str, object]:
+    """Return deterministic design-quality checks for Research Copilot."""
+
+    design = _design_or_404(SQLiteStore(settings=settings), design_id)
+    return copilot_design_checks(design)
 
 
 @app.get("/purchase-requests", response_model=list[PurchaseRequestResponse], tags=["purchasing"])

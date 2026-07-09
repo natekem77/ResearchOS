@@ -97,6 +97,14 @@ class ResearchOsApi {
     return _postMap('/mobile/experiments/create', payload);
   }
 
+  Future<Map<String, dynamic>> experimentDesignDueToday() {
+    return _getMap('/experiment-designs/due-today');
+  }
+
+  Future<Map<String, dynamic>> experimentDesignUpcoming({int days = 7}) {
+    return _getMap('/experiment-designs/upcoming?days=$days');
+  }
+
   Future<List<Map<String, dynamic>>> protocols() async {
     final json = await _getList('/protocols');
     return json.whereType<Map<String, dynamic>>().toList();
