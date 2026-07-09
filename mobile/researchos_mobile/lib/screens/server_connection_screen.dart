@@ -5,7 +5,6 @@ import '../api/researchos_api.dart';
 import '../config/app_config.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
-import '../widgets/state_views.dart';
 
 class ServerConnectionScreen extends StatefulWidget {
   const ServerConnectionScreen({
@@ -25,6 +24,7 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
   final TextEditingController _controller =
       TextEditingController(text: const AppConfig().defaultServerUrl);
   bool _loading = false;
+  bool _showUrlField = false;
   String? _error;
   MobileStatus? _status;
   Map<String, dynamic>? _connectionInfo;
@@ -150,36 +150,39 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
                     label: const Text('Use Local Demo Server'),
                   ),
                   const SizedBox(height: ResearchOsSpacing.md),
-                  ExpansionTile(
-                    tilePadding: EdgeInsets.zero,
-                    childrenPadding: EdgeInsets.zero,
-                    title: const Text('Enter Server URL'),
-                    subtitle:
-                        const Text('LAN, Tailscale, HTTPS, or local demo'),
-                    children: [
-                      const SizedBox(height: ResearchOsSpacing.sm),
-                      TextField(
-                        controller: _controller,
-                        keyboardType: TextInputType.url,
-                        decoration: const InputDecoration(
-                          labelText: 'Server URL',
-                          hintText: 'http://127.0.0.1:8001',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: ResearchOsSpacing.md),
-                      FilledButton.icon(
-                        onPressed: _loading ? null : _connect,
-                        icon: _loading
-                            ? const SizedBox.square(
-                                dimension: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.link),
-                        label: const Text('Connect'),
-                      ),
-                    ],
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _showUrlField = !_showUrlField;
+                      });
+                    },
+                    icon: const Icon(Icons.edit_location_alt_outlined),
+                    label: Text(
+                      _showUrlField ? 'Hide Server URL' : 'Enter Server URL',
+                    ),
                   ),
+                  if (_showUrlField) ...[
+                    const SizedBox(height: ResearchOsSpacing.sm),
+                    TextField(
+                      controller: _controller,
+                      keyboardType: TextInputType.url,
+                      decoration: const InputDecoration(
+                        labelText: 'Server URL',
+                        hintText: 'http://127.0.0.1:8001',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: ResearchOsSpacing.md),
+                    FilledButton.icon(
+                      onPressed: _loading ? null : _connect,
+                      icon: _loading
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.link),
+                      label: const Text('Connect'),
+                    ),
+                  ],
                   const SizedBox(height: ResearchOsSpacing.sm),
                   OutlinedButton.icon(
                     onPressed: _loading ? null : _testConnection,

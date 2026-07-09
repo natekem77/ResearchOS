@@ -164,9 +164,8 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
                 await widget.api.confirmVoiceCommand(
                   voiceSessionId:
                       confirmedDraft['voice_session_id']?.toString(),
-                  commandType:
-                      confirmedDraft['command_type']?.toString() ??
-                          'custom_note',
+                  commandType: confirmedDraft['command_type']?.toString() ??
+                      'custom_note',
                   transcript: transcript.text.trim(),
                   parsedFields: parsed is Map<String, dynamic>
                       ? parsed
@@ -228,7 +227,9 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
                       decoration: BoxDecoration(
                         color: listening
                             ? Theme.of(context).colorScheme.primaryContainer
-                            : Theme.of(context).colorScheme.surfaceContainerHigh,
+                            : Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHigh,
                         borderRadius: BorderRadius.circular(24),
                         border: Border.all(
                             color: Theme.of(context).colorScheme.primary),
@@ -440,86 +441,6 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
     );
   }
 
-  Future<void> _openUseReagentSheet() async {
-    final state = await _future;
-    final experimentId = state.session?.experimentId;
-    if (experimentId == null || experimentId.isEmpty) {
-      _showSnack('Start a session with an experiment before using reagents.');
-      return;
-    }
-    if (!mounted) {
-      return;
-    }
-    final itemId = TextEditingController();
-    final amount = TextEditingController();
-    final units = TextEditingController();
-    final purpose = TextEditingController();
-    bool decrement = false;
-    final submitted = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, setSheetState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: ResearchOsSpacing.xl,
-                right: ResearchOsSpacing.xl,
-                top: ResearchOsSpacing.xl,
-                bottom: MediaQuery.of(context).viewInsets.bottom +
-                    ResearchOsSpacing.xl,
-              ),
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  Text('Use Reagent',
-                      style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: ResearchOsSpacing.md),
-                  _smallField(itemId, 'Inventory item ID'),
-                  const SizedBox(height: ResearchOsSpacing.sm),
-                  Row(
-                    children: [
-                      Expanded(child: _smallField(amount, 'Amount used')),
-                      const SizedBox(width: ResearchOsSpacing.sm),
-                      Expanded(child: _smallField(units, 'Units')),
-                    ],
-                  ),
-                  const SizedBox(height: ResearchOsSpacing.sm),
-                  _smallField(purpose, 'Purpose'),
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Decrement inventory quantity'),
-                    value: decrement,
-                    onChanged: (value) =>
-                        setSheetState(() => decrement = value ?? false),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.of(context).pop(true),
-                    child: const Text('Record reagent use'),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-    );
-    if (submitted != true || itemId.text.trim().isEmpty) {
-      return;
-    }
-    await _runBenchAction((sessionId) async {
-      await widget.api.recordInventoryUsage(
-        experimentId: experimentId,
-        inventoryItemId: itemId.text.trim(),
-        sessionId: sessionId,
-        amountUsed: amount.text,
-        units: units.text,
-        purpose: purpose.text,
-        decrementQuantity: decrement,
-      );
-    });
-  }
-
   Widget _smallField(TextEditingController controller, String label) {
     return TextField(
       controller: controller,
@@ -658,7 +579,8 @@ class _NoActiveSession extends StatelessWidget {
                   } catch (error) {
                     if (!context.mounted) return;
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Could not start session: $error')),
+                      SnackBar(
+                          content: Text('Could not start session: $error')),
                     );
                   }
                 },

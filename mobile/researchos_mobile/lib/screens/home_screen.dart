@@ -335,7 +335,7 @@ class _HeroCard extends StatelessWidget {
                   ],
                 ),
               ),
-              ScientificBadge(
+              const ScientificBadge(
                 label: 'Demo Mode',
                 icon: Icons.verified_outlined,
               ),
@@ -380,7 +380,7 @@ class _DemoFeatureGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cards = [
-      _DemoCardSpec(
+      const _DemoCardSpec(
         icon: Icons.wb_sunny_outlined,
         title: 'Morning Brief',
         subtitle: 'Start with what changed and what needs attention.',
@@ -932,16 +932,19 @@ class _HomeListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      leading: CircleAvatar(child: Icon(icon)),
-      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      subtitle: subtitle == null || subtitle!.isEmpty
-          ? null
-          : Text(subtitle!, maxLines: 2, overflow: TextOverflow.ellipsis),
-      trailing:
-          trailing ?? (onTap == null ? null : const Icon(Icons.chevron_right)),
-      onTap: onTap,
+    return Material(
+      color: Colors.transparent,
+      child: ListTile(
+        contentPadding: EdgeInsets.zero,
+        leading: CircleAvatar(child: Icon(icon)),
+        title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: subtitle == null || subtitle!.isEmpty
+            ? null
+            : Text(subtitle!, maxLines: 2, overflow: TextOverflow.ellipsis),
+        trailing: trailing ??
+            (onTap == null ? null : const Icon(Icons.chevron_right)),
+        onTap: onTap,
+      ),
     );
   }
 }

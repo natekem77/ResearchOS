@@ -171,21 +171,24 @@ class ResearchOsInfoCard extends StatelessWidget {
       onTap: onTap,
       semanticLabel: title,
       padding: EdgeInsets.zero,
-      child: ListTile(
-        minVerticalPadding: ResearchOsSpacing.md,
-        leading: icon == null
-            ? null
-            : CircleAvatar(
-                backgroundColor: colorScheme.primaryContainer,
-                foregroundColor: colorScheme.onPrimaryContainer,
-                child: Icon(icon),
-              ),
-        title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
-        subtitle: subtitle.isEmpty
-            ? null
-            : Text(subtitle, maxLines: 4, overflow: TextOverflow.ellipsis),
-        trailing: trailing ??
-            (onTap == null ? null : const Icon(Icons.chevron_right)),
+      child: Material(
+        color: Colors.transparent,
+        child: ListTile(
+          minVerticalPadding: ResearchOsSpacing.md,
+          leading: icon == null
+              ? null
+              : CircleAvatar(
+                  backgroundColor: colorScheme.primaryContainer,
+                  foregroundColor: colorScheme.onPrimaryContainer,
+                  child: Icon(icon),
+                ),
+          title: Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
+          subtitle: subtitle.isEmpty
+              ? null
+              : Text(subtitle, maxLines: 4, overflow: TextOverflow.ellipsis),
+          trailing: trailing ??
+              (onTap == null ? null : const Icon(Icons.chevron_right)),
+        ),
       ),
     );
   }
@@ -728,16 +731,19 @@ class _ResearchOsExpandableCardState extends State<ResearchOsExpandableCard> {
       padding: EdgeInsets.zero,
       child: Column(
         children: [
-          ListTile(
-            title: Text(widget.title,
-                style: Theme.of(context).textTheme.titleMedium),
-            subtitle: widget.subtitle == null ? null : Text(widget.subtitle!),
-            trailing: AnimatedRotation(
-              turns: _expanded ? 0.5 : 0,
-              duration: ResearchOsAnimation.fast,
-              child: const Icon(Icons.expand_more),
+          Material(
+            color: Colors.transparent,
+            child: ListTile(
+              title: Text(widget.title,
+                  style: Theme.of(context).textTheme.titleMedium),
+              subtitle: widget.subtitle == null ? null : Text(widget.subtitle!),
+              trailing: AnimatedRotation(
+                turns: _expanded ? 0.5 : 0,
+                duration: ResearchOsAnimation.fast,
+                child: const Icon(Icons.expand_more),
+              ),
+              onTap: () => setState(() => _expanded = !_expanded),
             ),
-            onTap: () => setState(() => _expanded = !_expanded),
           ),
           AnimatedCrossFade(
             firstChild: Padding(

@@ -9,7 +9,8 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('ResearchOS'), findsOneWidget);
-    expect(find.text('Server URL'), findsOneWidget);
+    expect(find.text('Use Local Demo Server'), findsOneWidget);
+    expect(find.text('Enter Server URL'), findsOneWidget);
     expect(find.text('Test Connection'), findsOneWidget);
   });
 }
