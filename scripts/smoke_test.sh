@@ -63,6 +63,7 @@ request GET "/extensions/builtin.graphpad" >/dev/null
 request POST "/extensions/builtin.graphpad/disable" "{}" >/dev/null
 request POST "/extensions/builtin.graphpad/enable" "{}" >/dev/null
 request GET "/mobile/status" >/dev/null
+request GET "/mobile/connection-info" >/dev/null
 request GET "/mobile/auth/me" >/dev/null
 request GET "/mobile/settings" >/dev/null
 request GET "/mobile/dashboard" >/dev/null

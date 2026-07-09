@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -5646,6 +5646,36 @@ def mobile_status() -> dict[str, object]:
         "data_classification": production["data_classification"],
         "server_time": datetime.now(timezone.utc).isoformat(),
         "warnings": list(production.get("warnings") or [])[:3],
+    }
+
+
+@app.get("/mobile/connection-info", tags=["mobile"])
+def mobile_connection_info(request: Request) -> dict[str, object]:
+    """Return mobile client connection guidance without exposing secrets."""
+
+    deployment = _deployment_status()
+    request_host = request.url.hostname or ""
+    request_port = request.url.port
+    public_base_url = str(deployment.get("public_base_url") or "").strip().rstrip("/")
+    request_base_url = f"{request.url.scheme}://{request_host}{f':{request_port}' if request_port else ''}"
+    recommended_mobile_url = public_base_url or request_base_url
+    warnings = list(deployment.get("warnings") or [])
+    if request_host in {"127.0.0.1", "localhost"}:
+        warnings.append("This request used localhost. A physical iPhone must use a LAN, HTTPS, or Tailscale URL instead.")
+    if not public_base_url:
+        warnings.append("Set PUBLIC_BASE_URL to the URL iPhones should use, such as http://192.168.1.25:8001 or a Tailscale HTTPS URL.")
+    return {
+        "server_name": settings.project_name,
+        "version": "ResearchOS v0.2 preview",
+        "public_base_url": public_base_url,
+        "current_host": request_host,
+        "current_port": request_port,
+        "configured_host": deployment.get("host"),
+        "configured_port": deployment.get("port"),
+        "request_base_url": request_base_url,
+        "recommended_mobile_url": recommended_mobile_url,
+        "localhost_only": bool(deployment.get("localhost_only")),
+        "warnings": warnings,
     }
 
 

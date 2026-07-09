@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api/researchos_api.dart';
+import 'config/app_config.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
 import 'screens/copilot_screen.dart';
@@ -30,6 +32,53 @@ class ResearchOsMobileApp extends StatefulWidget {
 class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
   ResearchOsApi? _api;
   int _selectedIndex = 0;
+  bool _loadingSavedServer = true;
+  String? _connectionError;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedServer();
+  }
+
+  Future<void> _loadSavedServer() async {
+    final preferences = await SharedPreferences.getInstance();
+    final savedUrl =
+        preferences.getString(AppConfig.serverUrlPreferenceKey)?.trim();
+    if (savedUrl == null || savedUrl.isEmpty) {
+      setState(() {
+        _loadingSavedServer = false;
+      });
+      return;
+    }
+    final api = ResearchOsApi(baseUrl: savedUrl);
+    try {
+      await api.status();
+      if (!mounted) return;
+      setState(() {
+        _api = api;
+        _loadingSavedServer = false;
+        _connectionError = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _loadingSavedServer = false;
+        _connectionError =
+            'Saved server URL is unreachable: $savedUrl. Choose a LAN, Tailscale, or simulator URL.';
+      });
+    }
+  }
+
+  Future<void> _connect(String serverUrl) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(
+        AppConfig.serverUrlPreferenceKey, serverUrl.trim());
+    setState(() {
+      _api = ResearchOsApi(baseUrl: serverUrl.trim());
+      _connectionError = null;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,13 +88,12 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
       theme: ResearchOsTheme.light(),
       darkTheme: ResearchOsTheme.dark(),
       themeMode: ThemeMode.system,
-      home: _api == null
+      home: _loadingSavedServer
+          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          : _api == null
           ? ServerConnectionScreen(
-              onConnected: (serverUrl) {
-                setState(() {
-                  _api = ResearchOsApi(baseUrl: serverUrl);
-                });
-              },
+              initialError: _connectionError,
+              onConnected: _connect,
             )
           : ResearchOsHome(
               api: _api!,

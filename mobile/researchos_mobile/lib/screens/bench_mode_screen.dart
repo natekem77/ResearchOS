@@ -143,14 +143,18 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
             }
 
             Future<void> confirmCommand() async {
-              final currentDraft = draft;
-              if (currentDraft == null) {
+              Map<String, dynamic>? confirmedDraft = draft;
+              if (confirmedDraft == null) {
                 await draftCommand();
-                if (draft == null) {
+                confirmedDraft = draft;
+                if (confirmedDraft == null) {
+                  setSheetState(() {
+                    status =
+                        'No command preview is available yet. Preview the transcript before saving.';
+                  });
                   return;
                 }
               }
-              final confirmedDraft = draft ?? currentDraft;
               final parsed = confirmedDraft['parsed_fields'];
               setSheetState(() {
                 busy = true;
@@ -164,8 +168,11 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
                       confirmedDraft['command_type']?.toString() ??
                           'custom_note',
                   transcript: transcript.text.trim(),
-                  parsedFields:
-                      parsed is Map<String, dynamic> ? parsed : const {},
+                  parsedFields: parsed is Map<String, dynamic>
+                      ? parsed
+                      : parsed is Map
+                          ? Map<String, dynamic>.from(parsed)
+                          : const {},
                   sessionId: session.sessionId,
                   experimentId: session.experimentId,
                 );
@@ -247,10 +254,24 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
                       labelText: 'Transcript preview',
                       border: OutlineInputBorder(),
                     ),
-                    onChanged: (_) => draft = null,
+                    onChanged: (_) {
+                      setSheetState(() {
+                        draft = null;
+                        status =
+                            'Transcript changed. Preview the command again before saving.';
+                      });
+                    },
                   ),
                   const SizedBox(height: ResearchOsSpacing.sm),
                   Text(status),
+                  if (draft == null) ...[
+                    const SizedBox(height: ResearchOsSpacing.md),
+                    const ResearchOsCard(
+                      child: Text(
+                        'No command preview yet. Use Preview command to review what will be saved.',
+                      ),
+                    ),
+                  ],
                   if (draft != null) ...[
                     const SizedBox(height: ResearchOsSpacing.md),
                     ResearchOsCard(

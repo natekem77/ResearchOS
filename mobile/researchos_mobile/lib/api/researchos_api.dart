@@ -26,6 +26,10 @@ class ResearchOsApi {
     return MobileStatus.fromJson(await _getMap('/mobile/status'));
   }
 
+  Future<Map<String, dynamic>> connectionInfo() {
+    return _getMap('/mobile/connection-info');
+  }
+
   Future<List<DashboardCard>> dashboardCards() async {
     final json = await _getMap('/mobile/dashboard');
     final cards = json['cards'];
