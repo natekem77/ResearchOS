@@ -180,6 +180,33 @@ ResearchOS does not invent catalog numbers, RRIDs, lot numbers, or concentration
 
 See [METHODS_REAGENT_BUILDER.md](METHODS_REAGENT_BUILDER.md) for details.
 
+## Inventory Usage Tracking
+
+ResearchOS can record where inventory items were used:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiments/NK_Expt_31/inventory-usage \
+  -H "Content-Type: application/json" \
+  -d '{
+    "inventory_item_id":"inventory:ITEM_ID",
+    "amount_used":0.5,
+    "units":"vial",
+    "purpose":"SAG treatment",
+    "decrement_quantity":false
+  }'
+```
+
+Usage history:
+
+```bash
+curl http://127.0.0.1:8001/inventory/inventory:ITEM_ID/usage
+curl http://127.0.0.1:8001/experiments/NK_Expt_31/inventory-usage
+```
+
+When usage is recorded, ResearchOS can optionally decrement inventory quantity, append a session timeline event if a `session_id` is supplied, and link the inventory item through its Resource record.
+
+See [INVENTORY_USAGE_TRACKING.md](INVENTORY_USAGE_TRACKING.md).
+
 ## Relationship to Resources
 
 Inventory items may link to first-class ResearchOS Resources. Resources represent reusable scientific materials across experiments, protocols, sessions, notebooks, statistics, microscopy, literature, and future manuscript drafting.

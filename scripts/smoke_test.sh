@@ -211,6 +211,9 @@ request GET "/inventory/reorder-needed" >/dev/null
 request GET "/inventory/expiring" >/dev/null
 request POST "/methods/reagents" "{\"inventory_item_ids\":[\"$SMOKE_INVENTORY_ID\"],\"style\":\"paper\"}" >/dev/null
 request GET "/experiments/$WIZARD_INTERNAL_ID/reagents" >/dev/null
+request POST "/experiments/$WIZARD_INTERNAL_ID/inventory-usage" "{\"inventory_item_id\":\"$SMOKE_INVENTORY_ID\",\"session_id\":\"$SESSION_ID\",\"amount_used\":0.5,\"units\":\"vial\",\"purpose\":\"Smoke reagent usage\",\"notes\":\"Smoke usage record.\",\"decrement_quantity\":false}" >/dev/null
+request GET "/inventory/$SMOKE_INVENTORY_ID/usage" >/dev/null
+request GET "/experiments/$WIZARD_INTERNAL_ID/inventory-usage" >/dev/null
 request GET "/experiments/$WIZARD_INTERNAL_ID/methods-materials" >/dev/null
 SMOKE_PURCHASE_FILE="$(request POST "/purchases" '{"item_name":"Smoke SAG Purchase","vendor":"ResearchOS","catalog_number":"SAG-SMOKE","purchase_date":"2026-07-08","cost":125.5,"quantity":1,"grant_or_funding_source":"Smoke Grant","purchaser":"ResearchOS","oracle_po_number":"PO-SMOKE","invoice_number":"INV-SMOKE","status":"ordered","notes":"Smoke purchase."}')"
 SMOKE_PURCHASE_ID="$(

@@ -387,6 +387,30 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_inventory_linked_resource
                     ON inventory_items(linked_resource_id);
 
+                CREATE TABLE IF NOT EXISTS inventory_usage (
+                    usage_id TEXT PRIMARY KEY,
+                    inventory_item_id TEXT NOT NULL,
+                    experiment_id TEXT NOT NULL,
+                    session_id TEXT,
+                    protocol_id TEXT,
+                    amount_used REAL,
+                    units TEXT,
+                    date_used TEXT,
+                    used_by TEXT,
+                    purpose TEXT,
+                    notes TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_inventory_usage_item
+                    ON inventory_usage(inventory_item_id);
+                CREATE INDEX IF NOT EXISTS idx_inventory_usage_experiment
+                    ON inventory_usage(experiment_id);
+                CREATE INDEX IF NOT EXISTS idx_inventory_usage_session
+                    ON inventory_usage(session_id);
+
                 CREATE TABLE IF NOT EXISTS purchase_records (
                     purchase_id TEXT PRIMARY KEY,
                     item_name TEXT NOT NULL,
@@ -438,7 +462,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "purchase_records", "purchase_import_templates"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_import_templates"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -2194,6 +2218,137 @@ class SQLiteStore:
         with self._connect() as connection:
             cursor = connection.execute("DELETE FROM inventory_items WHERE item_id = ?", (item_id,))
         return cursor.rowcount > 0
+
+    def record_inventory_usage(
+        self,
+        inventory_item_id: str,
+        experiment_id: str,
+        session_id: str | None = None,
+        protocol_id: str | None = None,
+        amount_used: float | None = None,
+        units: str | None = None,
+        date_used: str | None = None,
+        used_by: str | None = None,
+        purpose: str | None = None,
+        notes: str | None = None,
+        decrement_quantity: bool = False,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Record where an inventory item was used."""
+
+        usage_id = f"inventory-usage:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            item = connection.execute(
+                "SELECT quantity, workspace_id FROM inventory_items WHERE item_id = ?",
+                (inventory_item_id,),
+            ).fetchone()
+            if item is None:
+                raise ValueError(f"Inventory item not found: {inventory_item_id}")
+            resolved_workspace = workspace_id or item["workspace_id"]
+            connection.execute(
+                """
+                INSERT INTO inventory_usage (
+                    usage_id, inventory_item_id, experiment_id, session_id,
+                    protocol_id, amount_used, units, date_used, used_by,
+                    purpose, notes, workspace_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    usage_id,
+                    inventory_item_id,
+                    experiment_id,
+                    session_id,
+                    protocol_id,
+                    amount_used,
+                    units,
+                    date_used,
+                    used_by,
+                    purpose,
+                    notes,
+                    resolved_workspace,
+                ),
+            )
+            if decrement_quantity and amount_used is not None and item["quantity"] is not None:
+                new_quantity = max(0.0, float(item["quantity"]) - float(amount_used))
+                connection.execute(
+                    """
+                    UPDATE inventory_items
+                    SET quantity = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE item_id = ?
+                    """,
+                    (new_quantity, inventory_item_id),
+                )
+        saved = self.get_inventory_usage(usage_id)
+        if saved is None:
+            raise RuntimeError(f"Inventory usage was not saved: {usage_id}")
+        return saved
+
+    def get_inventory_usage(self, usage_id: str) -> dict[str, Any] | None:
+        """Return one inventory usage record."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT u.*, i.name AS inventory_item_name, i.vendor, i.catalog_number, i.lot_number, i.rrid
+                FROM inventory_usage u
+                LEFT JOIN inventory_items i ON i.item_id = u.inventory_item_id
+                WHERE u.usage_id = ?
+                """,
+                (usage_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_inventory_usage_for_item(
+        self,
+        inventory_item_id: str,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return usage history for one inventory item."""
+
+        clauses = ["u.inventory_item_id = ?"]
+        values: list[Any] = [inventory_item_id]
+        if workspace_id:
+            clauses.append("(u.workspace_id = ? OR u.workspace_id IS NULL OR u.workspace_id = '')")
+            values.append(workspace_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT u.*, i.name AS inventory_item_name, i.vendor, i.catalog_number, i.lot_number, i.rrid
+                FROM inventory_usage u
+                LEFT JOIN inventory_items i ON i.item_id = u.inventory_item_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(u.date_used, u.created_at) DESC
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_inventory_usage_for_experiment(
+        self,
+        experiment_id: str,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return inventory usage records for an experiment reference."""
+
+        clauses = ["u.experiment_id = ?"]
+        values: list[Any] = [experiment_id]
+        if workspace_id:
+            clauses.append("(u.workspace_id = ? OR u.workspace_id IS NULL OR u.workspace_id = '')")
+            values.append(workspace_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT u.*, i.name AS inventory_item_name, i.vendor, i.catalog_number, i.lot_number, i.rrid
+                FROM inventory_usage u
+                LEFT JOIN inventory_items i ON i.item_id = u.inventory_item_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY COALESCE(u.date_used, u.created_at) DESC
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def save_purchase_record(
         self,

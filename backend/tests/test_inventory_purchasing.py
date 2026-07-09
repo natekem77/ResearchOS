@@ -261,6 +261,58 @@ class InventoryPurchasingTests(unittest.TestCase):
         self.assertEqual(summary["spend_by_vendor"][0]["name"], "DemoChem")
         self.assertEqual(by_grant["grants"][0]["name"], "Grant A")
 
+    def test_inventory_usage_tracking_and_methods_prefer_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                store = SQLiteStore(settings=main.settings)
+                resource = store.save_resource(resource_type="compound", name="SAG", vendor="DemoChem", catalog_number="SAG-1")
+                item = main.create_inventory_item(
+                    main.InventoryItemRequest(
+                        name="SAG aliquot",
+                        category="compound",
+                        vendor="DemoChem",
+                        catalog_number="SAG-1",
+                        quantity=2,
+                        linked_resource_id=str(resource["resource_id"]),
+                    )
+                )
+                store.upsert_experiment(
+                    Experiment(
+                        id="experiment:usage",
+                        source_document_id="doc:usage",
+                        source_provider="markdown",
+                        title="SAG usage experiment",
+                        experiment_id="NK_USAGE",
+                        compounds=["SAG"],
+                    )
+                )
+                usage = main.record_experiment_inventory_usage(
+                    "NK_USAGE",
+                    main.InventoryUsageRequest(
+                        inventory_item_id=item.item_id,
+                        amount_used=0.5,
+                        units="vial",
+                        purpose="SAG treatment",
+                        decrement_quantity=True,
+                    ),
+                )
+                item_usage = main.inventory_item_usage(item.item_id, workspace_id=None)
+                experiment_usage = main.experiment_inventory_usage("experiment:usage", workspace_id=None)
+                materials = main.experiment_methods_materials("NK_USAGE")
+                updated_item = store.get_inventory_item(item.item_id)
+                resource_usages = store.resource_usages(str(resource["resource_id"]))
+            finally:
+                main.settings = original_settings
+
+        self.assertEqual(usage.inventory_item_name, "SAG aliquot")
+        self.assertEqual(len(item_usage), 1)
+        self.assertEqual(len(experiment_usage), 1)
+        self.assertIn("SAG aliquot", materials["text"])
+        self.assertEqual(updated_item["quantity"], 1.5)
+        self.assertTrue(any(record["usage_type"] == "inventory_used" for record in resource_usages))
+
 
 if __name__ == "__main__":
     unittest.main()

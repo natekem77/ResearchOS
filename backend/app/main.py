@@ -942,6 +942,38 @@ class InventoryItemResponse(InventoryItemRequest):
     updated_at: str
 
 
+class InventoryUsageRequest(BaseModel):
+    """Record inventory/reagent use in an experiment or session."""
+
+    inventory_item_id: str | None = None
+    experiment_id: str | None = None
+    session_id: str | None = None
+    protocol_id: str | None = None
+    amount_used: float | None = None
+    units: str | None = None
+    date_used: str | None = None
+    used_by: str | None = None
+    purpose: str | None = None
+    notes: str | None = None
+    decrement_quantity: bool = False
+
+
+class InventoryUsageResponse(InventoryUsageRequest):
+    """Stored inventory usage record."""
+
+    usage_id: str
+    inventory_item_id: str
+    experiment_id: str
+    inventory_item_name: str | None = None
+    vendor: str | None = None
+    catalog_number: str | None = None
+    lot_number: str | None = None
+    rrid: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
 class PurchaseRecordRequest(BaseModel):
     """Create or update a purchasing record."""
 
@@ -3791,10 +3823,18 @@ def _experiment_reagent_context(
             matching_resources.append(resource)
 
     resource_ids = {str(resource.get("resource_id")) for resource in matching_resources if resource.get("resource_id")}
+    usage_records = store.list_inventory_usage_for_experiment(str(experiment.get("id")), workspace_id=resolved_workspace)
+    if experiment.get("experiment_id"):
+        usage_records.extend(
+            store.list_inventory_usage_for_experiment(str(experiment.get("experiment_id")), workspace_id=resolved_workspace)
+        )
+    usage_item_ids = {str(usage.get("inventory_item_id")) for usage in usage_records if usage.get("inventory_item_id")}
     inventory = []
     for item in store.list_inventory_items(workspace_id=resolved_workspace):
         item_names = {str(item.get("name") or "").strip().lower(), str(item.get("category") or "").strip().lower()}
-        if item.get("linked_resource_id") and str(item.get("linked_resource_id")) in resource_ids:
+        if str(item.get("item_id")) in usage_item_ids:
+            inventory.append(item)
+        elif item.get("linked_resource_id") and str(item.get("linked_resource_id")) in resource_ids:
             inventory.append(item)
         elif item_names.intersection(entity_names):
             inventory.append(item)
@@ -3821,10 +3861,74 @@ def _experiment_reagent_context(
     return {
         "experiment": experiment,
         "inventory_items": unique_inventory,
+        "inventory_usage": usage_records,
         "resources": matching_resources,
         "missing_inventory_resources": missing_inventory_resources,
         "warnings": warnings,
     }
+
+
+def _record_inventory_usage(
+    store: SQLiteStore,
+    item_id: str,
+    experiment_reference: str,
+    request: InventoryUsageRequest,
+) -> dict[str, object]:
+    """Persist inventory usage and update linked local context."""
+
+    item = store.get_inventory_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    experiment = store.find_experiment_by_reference(experiment_reference)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_reference}")
+    user, workspace = _current_user_workspace_metadata()
+    used_by = request.used_by or str(user.get("display_name") or user.get("email") or user.get("user_id") or "")
+    usage = store.record_inventory_usage(
+        inventory_item_id=item_id,
+        experiment_id=str(experiment.get("id")),
+        session_id=request.session_id,
+        protocol_id=request.protocol_id,
+        amount_used=request.amount_used,
+        units=request.units,
+        date_used=request.date_used,
+        used_by=used_by,
+        purpose=request.purpose,
+        notes=request.notes,
+        decrement_quantity=request.decrement_quantity,
+        workspace_id=str(workspace.get("workspace_id") or experiment.get("workspace_id") or item.get("workspace_id") or ""),
+    )
+    if item.get("linked_resource_id"):
+        store.record_resource_usage(
+            resource_id=str(item["linked_resource_id"]),
+            object_type="experiment",
+            object_id=str(experiment.get("id")),
+            usage_type="inventory_used",
+            source="inventory_usage",
+            metadata={
+                "inventory_item_id": item_id,
+                "usage_id": usage.get("usage_id"),
+                "amount_used": request.amount_used,
+                "units": request.units,
+                "purpose": request.purpose,
+            },
+            workspace_id=str(workspace.get("workspace_id") or experiment.get("workspace_id") or item.get("workspace_id") or ""),
+        )
+    if request.session_id:
+        store.append_session_event(
+            session_id=request.session_id,
+            event_type="reagent_used",
+            title=f"Used {item.get('name') or item_id}",
+            content=request.notes or request.purpose,
+            metadata={
+                "inventory_item_id": item_id,
+                "usage_id": usage.get("usage_id"),
+                "experiment_id": experiment.get("id"),
+                "amount_used": request.amount_used,
+                "units": request.units,
+            },
+        )
+    return usage
 
 
 def _mobile_dashboard_card(
@@ -4800,6 +4904,30 @@ def _experiment_timeline(
             }
         )
 
+    usage_records = store.list_inventory_usage_for_experiment(str(experiment.get("id")))
+    if experiment.get("experiment_id"):
+        usage_records.extend(store.list_inventory_usage_for_experiment(str(experiment.get("experiment_id"))))
+    seen_usage: set[str] = set()
+    for usage in usage_records:
+        usage_id = str(usage.get("usage_id"))
+        if usage_id in seen_usage:
+            continue
+        seen_usage.add(usage_id)
+        amount = usage.get("amount_used")
+        units = usage.get("units")
+        amount_text = f"{amount} {units}".strip() if amount is not None else "amount not recorded"
+        events.append(
+            {
+                "timestamp": _timeline_timestamp(usage.get("date_used"), usage.get("created_at")),
+                "event_type": "reagent_used",
+                "title": f"Reagent used: {usage.get('inventory_item_name') or usage.get('inventory_item_id')}",
+                "description": f"{amount_text}. Purpose: {usage.get('purpose') or 'not specified'}.",
+                "source": "inventory_usage",
+                "linked_asset_ids": [],
+                "linked_document_ids": [],
+            }
+        )
+
     for asset in store.list_assets_for_experiment(experiment):
         metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
         assert isinstance(metadata, dict)
@@ -5366,6 +5494,30 @@ def inventory_expiring(
     }
 
 
+@app.get("/inventory/{item_id}/usage", response_model=list[InventoryUsageResponse], tags=["inventory"])
+def inventory_item_usage(item_id: str, workspace_id: str | None = Query(default=None)) -> list[InventoryUsageResponse]:
+    """Return usage history for one inventory item."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_inventory_item(item_id) is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    return [
+        InventoryUsageResponse(**usage)
+        for usage in store.list_inventory_usage_for_item(item_id, workspace_id=_current_workspace_id(workspace_id))
+    ]
+
+
+@app.post("/inventory/{item_id}/usage", response_model=InventoryUsageResponse, tags=["inventory"])
+def record_inventory_item_usage(item_id: str, request: InventoryUsageRequest) -> InventoryUsageResponse:
+    """Record use of one inventory item in an experiment."""
+
+    if not request.experiment_id:
+        raise HTTPException(status_code=400, detail="experiment_id is required when recording item usage.")
+    store = SQLiteStore(settings=settings)
+    usage = _record_inventory_usage(store, item_id, request.experiment_id, request)
+    return InventoryUsageResponse(**usage)
+
+
 @app.get("/inventory/{item_id}", response_model=InventoryItemResponse, tags=["inventory"])
 def inventory_item_detail(item_id: str) -> InventoryItemResponse:
     """Return one inventory item."""
@@ -5456,10 +5608,48 @@ def experiment_reagents(
     return {
         "experiment": context["experiment"],
         "inventory_items": context["inventory_items"],
+        "inventory_usage": context["inventory_usage"],
         "resources": context["resources"],
         "methods_entries": entries,
         "warnings": [*context["warnings"], *[warning for entry in entries for warning in entry.get("warnings", [])]],
     }
+
+
+@app.get("/experiments/{experiment_id}/inventory-usage", response_model=list[InventoryUsageResponse], tags=["experiments", "inventory"])
+def experiment_inventory_usage(
+    experiment_id: str,
+    workspace_id: str | None = Query(default=None),
+) -> list[InventoryUsageResponse]:
+    """Return inventory usage records for one experiment."""
+
+    store = SQLiteStore(settings=settings)
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    resolved_workspace = _current_workspace_id(workspace_id or str(experiment.get("workspace_id") or "") or None)
+    records = store.list_inventory_usage_for_experiment(str(experiment.get("id")), workspace_id=resolved_workspace)
+    if experiment.get("experiment_id"):
+        records.extend(store.list_inventory_usage_for_experiment(str(experiment.get("experiment_id")), workspace_id=resolved_workspace))
+    seen: set[str] = set()
+    unique = []
+    for record in records:
+        usage_id = str(record.get("usage_id"))
+        if usage_id in seen:
+            continue
+        seen.add(usage_id)
+        unique.append(record)
+    return [InventoryUsageResponse(**usage) for usage in unique]
+
+
+@app.post("/experiments/{experiment_id}/inventory-usage", response_model=InventoryUsageResponse, tags=["experiments", "inventory"])
+def record_experiment_inventory_usage(experiment_id: str, request: InventoryUsageRequest) -> InventoryUsageResponse:
+    """Record an inventory item used by one experiment."""
+
+    if not request.inventory_item_id:
+        raise HTTPException(status_code=400, detail="inventory_item_id is required.")
+    store = SQLiteStore(settings=settings)
+    usage = _record_inventory_usage(store, request.inventory_item_id, experiment_id, request)
+    return InventoryUsageResponse(**usage)
 
 
 @app.get("/experiments/{experiment_id}/methods-materials", tags=["experiments", "methods"])
@@ -5489,6 +5679,7 @@ def experiment_methods_materials(
         "style": result["style"],
         "text": result["text"],
         "entries": result["entries"],
+        "inventory_usage": context["inventory_usage"],
         "resources": context["resources"],
         "warnings": [*context["warnings"], *result.get("warnings", [])],
     }

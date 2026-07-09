@@ -130,6 +130,33 @@ class ResearchOsApi {
     return json.whereType<Map<String, dynamic>>().toList();
   }
 
+  Future<Map<String, dynamic>> recordInventoryUsage({
+    required String experimentId,
+    required String inventoryItemId,
+    String? sessionId,
+    String? amountUsed,
+    String? units,
+    String? purpose,
+    String? notes,
+    bool decrementQuantity = false,
+  }) {
+    return _postMap(
+      '/experiments/${Uri.encodeComponent(experimentId)}/inventory-usage',
+      {
+        'inventory_item_id': inventoryItemId,
+        if (sessionId != null && sessionId.trim().isNotEmpty)
+          'session_id': sessionId.trim(),
+        if (amountUsed != null && amountUsed.trim().isNotEmpty)
+          'amount_used': double.tryParse(amountUsed.trim()),
+        if (units != null && units.trim().isNotEmpty) 'units': units.trim(),
+        if (purpose != null && purpose.trim().isNotEmpty)
+          'purpose': purpose.trim(),
+        if (notes != null && notes.trim().isNotEmpty) 'notes': notes.trim(),
+        'decrement_quantity': decrementQuantity,
+      },
+    );
+  }
+
   Future<List<Map<String, dynamic>>> searchKnowledgeGraph(String query) async {
     final json = await _getMap(
         '/knowledgegraph/search?q=${Uri.encodeQueryComponent(query)}');

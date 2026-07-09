@@ -1560,7 +1560,9 @@ function renderInventoryItem(item) {
       </div>
       <button type="button" class="secondary-button methods-citation-button" data-inventory-citation="${escapeHtml(item.item_id)}">Methods citation</button>
       <button type="button" class="secondary-button" data-inventory-copy-citation="${escapeHtml(item.item_id)}">Copy Methods Citation</button>
+      <button type="button" class="secondary-button" data-inventory-usage="${escapeHtml(item.item_id)}">Usage History</button>
       <p class="card-copy" id="citation-${escapeHtml(item.item_id)}"></p>
+      <div class="item-list" id="usage-${escapeHtml(item.item_id)}"></div>
     </article>
   `;
 }
@@ -1833,6 +1835,21 @@ async function copyMethodsCitation(itemId) {
   await navigator.clipboard?.writeText(citation.methods_citation);
   const target = $(`#citation-${CSS.escape(itemId)}`);
   if (target) target.textContent = `Copied: ${citation.methods_citation}`;
+}
+
+async function showInventoryUsage(itemId) {
+  const usage = await requestJson(`/inventory/${encodeURIComponent(itemId)}/usage`);
+  const target = $(`#usage-${CSS.escape(itemId)}`);
+  if (!target) return;
+  target.innerHTML = usage.length
+    ? usage.map((record) => `
+      <article class="timeline-item">
+        <div class="timeline-item-header">${timelineBadge("reagent_used")}<strong>${escapeHtml(record.purpose || "Inventory used")}</strong></div>
+        <span>${escapeHtml(record.date_used || record.created_at)} · ${escapeHtml(record.amount_used ?? "amount not recorded")} ${escapeHtml(record.units || "")}</span>
+        <p>${escapeHtml(record.notes || record.experiment_id || "")}</p>
+      </article>
+    `).join("")
+    : `<div class="empty-state">No usage history recorded for this item.</div>`;
 }
 
 async function generateExperimentMethodsText(experimentId) {
@@ -2905,6 +2922,7 @@ async function renderExperimentWorkspace(experimentId) {
       ${tagSection("Markers", workspace.markers || [], "markers")}
       ${tagSection("Genes", workspace.genes || [], "genes")}
       ${renderMethodsMaterialsSection(experiment.id || experimentId, methodsMaterials)}
+      ${workspaceSection("Reagents Used", methodsMaterials.inventory_usage || [], renderInventoryUsageRecord)}
       ${workspaceSection("Scientific Memory", workspace.scientific_memory?.most_similar_experiments || [], renderMemorySimilarity)}
       ${workspaceSection("Timeline", workspace.timeline?.events || [], renderWorkspaceTimelineEvent)}
       ${workspaceSection("Microscopy / Images", workspace.microscopy || [], renderImageAssetCard)}
@@ -2981,6 +2999,16 @@ function renderMethodsMaterialsSection(experimentId, payload) {
       ${warnings.length ? `<div class="empty-state">${warnings.map((warning) => escapeHtml(warning)).join("<br>")}</div>` : ""}
       ${entries.length ? `<div class="meta">${entries.map((entry) => `<span class="tag">${escapeHtml(entry.name || entry.item_id)}</span>`).join("")}</div>` : ""}
     </section>
+  `;
+}
+
+function renderInventoryUsageRecord(record) {
+  return `
+    <article class="timeline-item">
+      <div class="timeline-item-header">${timelineBadge("reagent_used")}<strong>${escapeHtml(record.inventory_item_name || record.inventory_item_id)}</strong></div>
+      <span>${escapeHtml(record.date_used || record.created_at)} · ${escapeHtml(record.amount_used ?? "amount not recorded")} ${escapeHtml(record.units || "")}</span>
+      <p>${escapeHtml(record.purpose || record.notes || "Inventory usage recorded.")}</p>
+    </article>
   `;
 }
 
@@ -4834,6 +4862,13 @@ $("#inventoryList")?.addEventListener("click", (event) => {
   if (!button) return;
   copyMethodsCitation(button.dataset.inventoryCopyCitation).catch((error) => {
     $("#inventoryStatus").textContent = `Copy failed: ${error.message}`;
+  });
+});
+$("#inventoryList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-inventory-usage]");
+  if (!button) return;
+  showInventoryUsage(button.dataset.inventoryUsage).catch((error) => {
+    $("#inventoryStatus").textContent = `Usage history failed: ${error.message}`;
   });
 });
 $("#experimentDetail")?.addEventListener("click", (event) => {
