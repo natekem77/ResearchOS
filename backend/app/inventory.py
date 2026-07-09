@@ -49,6 +49,30 @@ PURCHASE_CSV_FIELDS = [
     "notes",
 ]
 
+PURCHASE_REQUEST_CSV_FIELDS = [
+    "request_id",
+    "item_name",
+    "vendor",
+    "catalog_number",
+    "quantity_requested",
+    "estimated_cost",
+    "grant_or_funding_source",
+    "requested_by",
+    "request_date",
+    "status",
+    "notes",
+    "linked_inventory_item_id",
+]
+
+PURCHASE_REQUEST_STATUSES = {
+    "draft",
+    "submitted",
+    "approved",
+    "ordered",
+    "received",
+    "cancelled",
+}
+
 ORACLE_PURCHASING_PROVIDER = {
     "provider": "oracle_purchasing",
     "status": "csv_import_only",

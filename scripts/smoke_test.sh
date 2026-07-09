@@ -212,6 +212,23 @@ request GET "/inventory/export-csv" >/dev/null
 request GET "/inventory/status" >/dev/null
 request GET "/inventory/reorder-needed" >/dev/null
 request GET "/inventory/expiring" >/dev/null
+SMOKE_PURCHASE_REQUEST_FILE="$(request POST "/inventory/$SMOKE_INVENTORY_ID/request-reorder" "")"
+SMOKE_PURCHASE_REQUEST_ID="$(
+  python3 - "$SMOKE_PURCHASE_REQUEST_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["request_id"])
+PY
+)"
+request GET "/purchase-requests" >/dev/null
+request GET "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID" >/dev/null
+request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/submit" "" >/dev/null
+request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/approve" "" >/dev/null
+request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/mark-ordered" "" >/dev/null
+request POST "/purchase-requests/$SMOKE_PURCHASE_REQUEST_ID/mark-received" '{"update_inventory_quantity":false}' >/dev/null
+request GET "/purchase-requests/export-csv" >/dev/null
 request POST "/methods/reagents" "{\"inventory_item_ids\":[\"$SMOKE_INVENTORY_ID\"],\"style\":\"paper\"}" >/dev/null
 request GET "/experiments/$WIZARD_INTERNAL_ID/reagents" >/dev/null
 request POST "/experiments/$WIZARD_INTERNAL_ID/inventory-usage" "{\"inventory_item_id\":\"$SMOKE_INVENTORY_ID\",\"session_id\":\"$SESSION_ID\",\"amount_used\":0.5,\"units\":\"vial\",\"purpose\":\"Smoke reagent usage\",\"notes\":\"Smoke usage record.\",\"decrement_quantity\":false}" >/dev/null

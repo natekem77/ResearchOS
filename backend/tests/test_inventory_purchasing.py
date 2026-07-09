@@ -353,6 +353,56 @@ class InventoryPurchasingTests(unittest.TestCase):
         self.assertIn("Box A / A1", label["storage_detail"])
         self.assertEqual(len(listed), 1)
 
+    def test_purchase_request_workflow_and_inventory_reorder(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_settings = main.settings
+            main.settings = self._settings(tmpdir)
+            try:
+                item = main.create_inventory_item(
+                    main.InventoryItemRequest(
+                        name="Low stock BMP4",
+                        category="growth factor",
+                        vendor="DemoBio",
+                        catalog_number="BMP4-1",
+                        quantity=1,
+                        reorder_threshold=2,
+                        price=88.0,
+                    )
+                )
+                reorder = main.request_inventory_reorder(item.item_id)
+                submitted = main.submit_purchase_request(reorder.request_id)
+                approved = main.approve_purchase_request(reorder.request_id)
+                ordered = main.mark_purchase_request_ordered(reorder.request_id)
+                received = main.mark_purchase_request_received(
+                    reorder.request_id,
+                    main.PurchaseRequestReceiveRequest(update_inventory_quantity=True),
+                )
+                created = main.create_purchase_request(
+                    main.PurchaseRequestRequest(
+                        item_name="New reagent",
+                        vendor="DemoChem",
+                        quantity_requested=3,
+                        estimated_cost=45,
+                        status="submitted",
+                    )
+                )
+                listed = main.purchase_requests(status=None, query=None, linked_inventory_item_id=None, workspace_id=None)
+                detail = main.purchase_request_detail(created.request_id)
+                exported = main.export_purchase_requests_csv(workspace_id=None)
+                updated_item = SQLiteStore(settings=main.settings).get_inventory_item(item.item_id)
+            finally:
+                main.settings = original_settings
+
+        self.assertEqual(reorder.linked_inventory_item_id, item.item_id)
+        self.assertEqual(submitted.status, "submitted")
+        self.assertEqual(approved.status, "approved")
+        self.assertEqual(ordered.status, "ordered")
+        self.assertEqual(received.status, "received")
+        self.assertEqual(updated_item["quantity"], 3.0)
+        self.assertEqual(detail.item_name, "New reagent")
+        self.assertEqual(len(listed), 2)
+        self.assertIn("Low stock BMP4", exported.body.decode("utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

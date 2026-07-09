@@ -10,6 +10,7 @@ const state = {
   protocols: [],
   inventory: [],
   purchases: [],
+  purchaseRequests: [],
   inventoryStatus: null,
   purchaseSummary: null,
   purchaseImportTemplates: [],
@@ -1566,6 +1567,7 @@ function renderInventoryItem(item) {
       <button type="button" class="secondary-button" data-inventory-usage="${escapeHtml(item.item_id)}">Usage History</button>
       <button type="button" class="secondary-button" data-inventory-assign-code="${escapeHtml(item.item_id)}">Assign Barcode/QR</button>
       <button type="button" class="secondary-button" data-inventory-label="${escapeHtml(item.item_id)}">Printable Label</button>
+      <button type="button" class="secondary-button" data-inventory-request-reorder="${escapeHtml(item.item_id)}">Request Reorder</button>
       <p class="card-copy" id="citation-${escapeHtml(item.item_id)}"></p>
       <div class="item-list" id="label-${escapeHtml(item.item_id)}"></div>
       <div class="item-list" id="usage-${escapeHtml(item.item_id)}"></div>
@@ -1575,6 +1577,7 @@ function renderInventoryItem(item) {
 
 function renderPurchases() {
   renderPurchaseSummaryCards();
+  renderPurchaseRequests();
   const target = $("#purchasesList");
   if (!target) return;
   renderPurchaseImportTemplates();
@@ -1593,6 +1596,15 @@ function renderPurchases() {
   target.innerHTML = purchases.length
     ? purchases.map(renderPurchaseRecord).join("")
     : `<div class="empty-state">No purchase records match this filter.</div>`;
+}
+
+function renderPurchaseRequests() {
+  const target = $("#purchaseRequestsList");
+  if (!target) return;
+  const requests = state.purchaseRequests || [];
+  target.innerHTML = requests.length
+    ? requests.map(renderPurchaseRequest).join("")
+    : `<div class="empty-state">No purchase requests yet. Create one from the form or use Request Reorder on an inventory item.</div>`;
 }
 
 const purchaseMappingInputs = {
@@ -1710,6 +1722,30 @@ function renderPurchaseRecord(record) {
   `;
 }
 
+function renderPurchaseRequest(record) {
+  const status = record.status || "draft";
+  return `
+    <article class="record-card">
+      <h3>${escapeHtml(record.item_name)}</h3>
+      <p>${escapeHtml([record.vendor, record.catalog_number, record.grant_or_funding_source].filter(Boolean).join(" · ") || "New reagent or reorder request.")}</p>
+      <div class="meta">
+        <span class="tag">${escapeHtml(status)}</span>
+        <span class="tag">${escapeHtml(formatDate(record.request_date))}</span>
+        <span class="tag">${escapeHtml(record.quantity_requested ?? "no quantity")} requested</span>
+        <span class="tag">$${escapeHtml(record.estimated_cost ?? "0")}</span>
+        ${record.linked_inventory_item_id ? `<span class="tag">${escapeHtml(record.linked_inventory_item_id)}</span>` : ""}
+      </div>
+      <p>${escapeHtml(record.notes || "")}</p>
+      <div class="entry-actions compact-actions">
+        ${status === "draft" ? `<button type="button" class="secondary-button" data-purchase-request-action="submit" data-purchase-request-id="${escapeHtml(record.request_id)}">Submit</button>` : ""}
+        ${status === "submitted" ? `<button type="button" class="secondary-button" data-purchase-request-action="approve" data-purchase-request-id="${escapeHtml(record.request_id)}">Approve</button>` : ""}
+        ${["submitted", "approved"].includes(status) ? `<button type="button" class="secondary-button" data-purchase-request-action="mark-ordered" data-purchase-request-id="${escapeHtml(record.request_id)}">Mark Ordered</button>` : ""}
+        ${status === "ordered" ? `<button type="button" class="secondary-button" data-purchase-request-action="mark-received" data-purchase-request-id="${escapeHtml(record.request_id)}">Mark Received</button>` : ""}
+      </div>
+    </article>
+  `;
+}
+
 function numberOrNull(value) {
   if (value === null || value === undefined || String(value).trim() === "") return null;
   const parsed = Number(value);
@@ -1764,6 +1800,41 @@ async function savePurchaseRecord() {
   const saved = await requestJson("/purchases", { method: "POST", body: JSON.stringify(payload) });
   $("#purchaseForm").reset();
   $("#purchaseStatusMessage").textContent = `Saved purchase record: ${saved.item_name}`;
+  await refreshData();
+}
+
+async function savePurchaseRequest() {
+  const payload = {
+    item_name: $("#purchaseRequestItemName").value.trim(),
+    vendor: $("#purchaseRequestVendor").value.trim() || null,
+    catalog_number: $("#purchaseRequestCatalog").value.trim() || null,
+    quantity_requested: numberOrNull($("#purchaseRequestQuantity").value),
+    estimated_cost: numberOrNull($("#purchaseRequestCost").value),
+    grant_or_funding_source: $("#purchaseRequestGrant").value.trim() || null,
+    requested_by: $("#purchaseRequestBy").value.trim() || null,
+    status: $("#purchaseRequestStatus").value || "draft",
+    notes: $("#purchaseRequestNotes").value.trim() || null,
+    linked_inventory_item_id: $("#purchaseRequestInventoryItem").value.trim() || null,
+  };
+  const saved = await requestJson("/purchase-requests", { method: "POST", body: JSON.stringify(payload) });
+  $("#purchaseRequestForm").reset();
+  $("#purchaseStatusMessage").textContent = `Saved purchase request: ${saved.item_name}`;
+  await refreshData();
+}
+
+async function updatePurchaseRequestStatus(requestId, action) {
+  const body = action === "mark-received" ? JSON.stringify({ update_inventory_quantity: true }) : undefined;
+  const saved = await requestJson(`/purchase-requests/${encodeURIComponent(requestId)}/${action}`, {
+    method: "POST",
+    ...(body ? { body } : {}),
+  });
+  $("#purchaseStatusMessage").textContent = `Purchase request ${saved.item_name} is now ${saved.status}.`;
+  await refreshData();
+}
+
+async function requestInventoryReorder(itemId) {
+  const saved = await requestJson(`/inventory/${encodeURIComponent(itemId)}/request-reorder`, { method: "POST" });
+  $("#inventoryStatus").textContent = `Created purchase request for ${saved.item_name}.`;
   await refreshData();
 }
 
@@ -4452,7 +4523,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4465,6 +4536,7 @@ async function refreshData() {
     requestJson("/inventory"),
     requestJson("/inventory/status"),
     requestJson("/purchases"),
+    requestJson("/purchase-requests"),
     requestJson("/purchases/summary"),
     requestJson("/purchases/import-templates"),
     requestJson("/sessions"),
@@ -4489,6 +4561,7 @@ async function refreshData() {
   state.inventory = inventory;
   state.inventoryStatus = inventoryStatus;
   state.purchases = purchases;
+  state.purchaseRequests = purchaseRequests;
   state.purchaseSummary = purchaseSummary;
   state.purchaseImportTemplates = purchaseImportTemplates;
   state.sessions = sessions;
@@ -4873,6 +4946,19 @@ $("#purchaseForm")?.addEventListener("submit", (event) => {
     $("#purchaseStatusMessage").textContent = `Purchase save failed: ${error.message}`;
   });
 });
+$("#purchaseRequestForm")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  savePurchaseRequest().catch((error) => {
+    $("#purchaseStatusMessage").textContent = `Purchase request save failed: ${error.message}`;
+  });
+});
+$("#purchaseRequestsList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-purchase-request-action]");
+  if (!button) return;
+  updatePurchaseRequestStatus(button.dataset.purchaseRequestId, button.dataset.purchaseRequestAction).catch((error) => {
+    $("#purchaseStatusMessage").textContent = `Purchase request update failed: ${error.message}`;
+  });
+});
 $("#purchaseImportForm")?.addEventListener("submit", (event) => {
   event.preventDefault();
   importPurchaseCsv().catch((error) => {
@@ -4932,6 +5018,13 @@ $("#inventoryList")?.addEventListener("click", (event) => {
   if (!button) return;
   showInventoryLabel(button.dataset.inventoryLabel).catch((error) => {
     $("#inventoryStatus").textContent = `Label preview failed: ${error.message}`;
+  });
+});
+$("#inventoryList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-inventory-request-reorder]");
+  if (!button) return;
+  requestInventoryReorder(button.dataset.inventoryRequestReorder).catch((error) => {
+    $("#inventoryStatus").textContent = `Reorder request failed: ${error.message}`;
   });
 });
 $("#experimentDetail")?.addEventListener("click", (event) => {

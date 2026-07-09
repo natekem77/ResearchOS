@@ -134,6 +134,18 @@ class ResearchOsApi {
     return _getMap('/inventory/lookup?code=${Uri.encodeQueryComponent(code)}');
   }
 
+  Future<List<Map<String, dynamic>>> purchaseRequests() async {
+    final json = await _getList('/purchase-requests');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> requestInventoryReorder(String itemId) {
+    return _postMap(
+      '/inventory/${Uri.encodeComponent(itemId)}/request-reorder',
+      {},
+    );
+  }
+
   Future<Map<String, dynamic>> recordInventoryUsage({
     required String experimentId,
     required String inventoryItemId,

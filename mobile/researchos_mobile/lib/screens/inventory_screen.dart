@@ -17,17 +17,24 @@ class _InventoryScreenState extends State<InventoryScreen> {
   final _lookupCode = TextEditingController();
   Map<String, dynamic>? _lookupResult;
   String? _lookupMessage;
+  String? _actionMessage;
 
   @override
   void initState() {
     super.initState();
-    _future = widget.api.inventoryStatus();
+    _future = _load();
   }
 
   void _reload() {
     setState(() {
-      _future = widget.api.inventoryStatus();
+      _future = _load();
     });
+  }
+
+  Future<Map<String, dynamic>> _load() async {
+    final status = await widget.api.inventoryStatus();
+    final requests = await widget.api.purchaseRequests();
+    return {...status, 'purchase_requests': requests};
   }
 
   @override
@@ -59,6 +66,28 @@ class _InventoryScreenState extends State<InventoryScreen> {
     }
   }
 
+  Future<void> _requestReorder(Map<String, dynamic> item) async {
+    final itemId = item['item_id']?.toString();
+    if (itemId == null || itemId.isEmpty) {
+      setState(() {
+        _actionMessage = 'Inventory item has no item_id.';
+      });
+      return;
+    }
+    try {
+      final result = await widget.api.requestInventoryReorder(itemId);
+      setState(() {
+        _actionMessage =
+            'Created purchase request for ${result['item_name'] ?? item['name']}.';
+      });
+      _reload();
+    } catch (error) {
+      setState(() {
+        _actionMessage = 'Could not create purchase request: $error';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<Map<String, dynamic>>(
@@ -75,6 +104,9 @@ class _InventoryScreenState extends State<InventoryScreen> {
         }
         final status = snapshot.data ?? const {};
         final items = (status['items'] as List? ?? const [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        final requests = (status['purchase_requests'] as List? ?? const [])
             .whereType<Map<String, dynamic>>()
             .toList();
         return RefreshIndicator(
@@ -153,6 +185,40 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   ),
                 ],
               ),
+              if (_actionMessage != null) ...[
+                const SizedBox(height: ResearchOsSpacing.sm),
+                Text(_actionMessage!),
+              ],
+              const SizedBox(height: ResearchOsSpacing.md),
+              ResearchOsCard(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Purchase requests',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: ResearchOsSpacing.sm),
+                    if (requests.isEmpty)
+                      const Text('No purchase requests yet.')
+                    else
+                      for (final request in requests.take(5))
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(request['item_name']?.toString() ??
+                              'Purchase request'),
+                          subtitle: Text([
+                            request['status'],
+                            request['vendor'],
+                            request['grant_or_funding_source'],
+                          ]
+                              .where((value) =>
+                                  value != null && '$value'.isNotEmpty)
+                              .join(' · ')),
+                          trailing:
+                              Text('\$${request['estimated_cost'] ?? '0'}'),
+                        ),
+                  ],
+                ),
+              ),
               const SizedBox(height: ResearchOsSpacing.lg),
               if (items.isEmpty)
                 const ResearchOsEmptyState(
@@ -160,7 +226,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
                   message: 'Inventory records will appear here after import.',
                 )
               else
-                for (final item in items.take(30)) _InventoryTile(item: item),
+                for (final item in items.take(30))
+                  _InventoryTile(
+                    item: item,
+                    onRequestReorder: () => _requestReorder(item),
+                  ),
             ],
           ),
         );
@@ -200,9 +270,10 @@ class _MetricCard extends StatelessWidget {
 }
 
 class _InventoryTile extends StatelessWidget {
-  const _InventoryTile({required this.item});
+  const _InventoryTile({required this.item, this.onRequestReorder});
 
   final Map<String, dynamic> item;
+  final VoidCallback? onRequestReorder;
 
   @override
   Widget build(BuildContext context) {
@@ -246,6 +317,17 @@ class _InventoryTile extends StatelessWidget {
                 for (final flag in flags) Chip(label: Text(flag)),
               ],
             ),
+            if (item['reorder_needed'] == true && onRequestReorder != null) ...[
+              const SizedBox(height: ResearchOsSpacing.sm),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.icon(
+                  onPressed: onRequestReorder,
+                  icon: const Icon(Icons.add_shopping_cart),
+                  label: const Text('Request reorder'),
+                ),
+              ),
+            ],
           ],
         ),
       ),

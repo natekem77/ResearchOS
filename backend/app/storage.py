@@ -448,6 +448,33 @@ class SQLiteStore:
                 CREATE INDEX IF NOT EXISTS idx_purchase_oracle_po
                     ON purchase_records(oracle_po_number);
 
+                CREATE TABLE IF NOT EXISTS purchase_requests (
+                    request_id TEXT PRIMARY KEY,
+                    item_name TEXT NOT NULL,
+                    vendor TEXT,
+                    catalog_number TEXT,
+                    quantity_requested REAL,
+                    estimated_cost REAL,
+                    grant_or_funding_source TEXT,
+                    requested_by TEXT,
+                    request_date TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    notes TEXT,
+                    linked_inventory_item_id TEXT,
+                    owner_user_id TEXT,
+                    created_by TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_purchase_requests_status
+                    ON purchase_requests(status);
+                CREATE INDEX IF NOT EXISTS idx_purchase_requests_item
+                    ON purchase_requests(item_name);
+                CREATE INDEX IF NOT EXISTS idx_purchase_requests_inventory_item
+                    ON purchase_requests(linked_inventory_item_id);
+
                 CREATE TABLE IF NOT EXISTS purchase_import_templates (
                     template_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -469,7 +496,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_import_templates"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "purchase_import_templates"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -2568,6 +2595,182 @@ class SQLiteStore:
                 (purchase_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def save_purchase_request(
+        self,
+        item_name: str,
+        vendor: str | None = None,
+        catalog_number: str | None = None,
+        quantity_requested: float | None = None,
+        estimated_cost: float | None = None,
+        grant_or_funding_source: str | None = None,
+        requested_by: str | None = None,
+        request_date: str | None = None,
+        status: str | None = "draft",
+        notes: str | None = None,
+        linked_inventory_item_id: str | None = None,
+        request_id: str | None = None,
+        owner_user_id: str | None = None,
+        created_by: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a lab purchase request."""
+
+        resolved_id = request_id or f"purchase-request:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM purchase_requests WHERE request_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO purchase_requests (
+                        request_id, item_name, vendor, catalog_number,
+                        quantity_requested, estimated_cost, grant_or_funding_source,
+                        requested_by, request_date, status, notes,
+                        linked_inventory_item_id, owner_user_id, created_by,
+                        workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        resolved_id,
+                        item_name,
+                        vendor,
+                        catalog_number,
+                        quantity_requested,
+                        estimated_cost,
+                        grant_or_funding_source,
+                        requested_by,
+                        request_date,
+                        status or "draft",
+                        notes,
+                        linked_inventory_item_id,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE purchase_requests
+                    SET item_name = ?,
+                        vendor = ?,
+                        catalog_number = ?,
+                        quantity_requested = ?,
+                        estimated_cost = ?,
+                        grant_or_funding_source = ?,
+                        requested_by = ?,
+                        request_date = ?,
+                        status = ?,
+                        notes = ?,
+                        linked_inventory_item_id = ?,
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        created_by = COALESCE(?, created_by),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE request_id = ?
+                    """,
+                    (
+                        item_name,
+                        vendor,
+                        catalog_number,
+                        quantity_requested,
+                        estimated_cost,
+                        grant_or_funding_source,
+                        requested_by,
+                        request_date,
+                        status or "draft",
+                        notes,
+                        linked_inventory_item_id,
+                        owner_user_id,
+                        created_by or owner_user_id,
+                        workspace_id,
+                        resolved_id,
+                    ),
+                )
+        saved = self.get_purchase_request(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Purchase request was not saved: {resolved_id}")
+        return saved
+
+    def list_purchase_requests(
+        self,
+        status: str | None = None,
+        query: str | None = None,
+        linked_inventory_item_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return lab purchase requests with optional filters."""
+
+        clauses: list[str] = []
+        values: list[Any] = []
+        if status:
+            clauses.append("LOWER(status) = ?")
+            values.append(status.lower())
+        if linked_inventory_item_id:
+            clauses.append("linked_inventory_item_id = ?")
+            values.append(linked_inventory_item_id)
+        if query:
+            needle = f"%{query.lower()}%"
+            clauses.append(
+                "(LOWER(item_name) LIKE ? OR LOWER(vendor) LIKE ? OR LOWER(catalog_number) LIKE ? OR LOWER(grant_or_funding_source) LIKE ? OR LOWER(requested_by) LIKE ?)"
+            )
+            values.extend([needle] * 5)
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        if workspace_clause:
+            clauses.append(workspace_clause)
+            values.extend(workspace_values)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM purchase_requests
+                {where}
+                ORDER BY COALESCE(request_date, created_at) DESC, item_name ASC
+                """,
+                values,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_purchase_request(self, request_id: str) -> dict[str, Any] | None:
+        """Return one lab purchase request."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM purchase_requests WHERE request_id = ?",
+                (request_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_inventory_quantity(
+        self,
+        item_id: str,
+        quantity_delta: float,
+    ) -> dict[str, Any] | None:
+        """Adjust inventory quantity by a positive or negative delta."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT quantity FROM inventory_items WHERE item_id = ?",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            current = float(row["quantity"] or 0)
+            connection.execute(
+                """
+                UPDATE inventory_items
+                SET quantity = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE item_id = ?
+                """,
+                (current + float(quantity_delta), item_id),
+            )
+        return self.get_inventory_item(item_id)
 
     def save_purchase_import_template(
         self,

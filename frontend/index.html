@@ -568,7 +568,63 @@
                 <input id="purchaseStatusFilter" type="text" placeholder="Status" />
               </div>
               <div class="provider-grid" id="purchaseSummaryCards"></div>
+              <form class="entry-draft-form" id="purchaseRequestForm">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <p class="eyebrow">Request workflow</p>
+                    <h3>Create purchase request</h3>
+                  </div>
+                  <a class="secondary-link-button" href="/purchase-requests/export-csv">Export Requests CSV</a>
+                </div>
+                <label for="purchaseRequestItemName">Item name</label>
+                <input id="purchaseRequestItemName" type="text" placeholder="SAG, antibody, media..." required />
+                <div class="form-grid">
+                  <div>
+                    <label for="purchaseRequestVendor">Vendor</label>
+                    <input id="purchaseRequestVendor" type="text" />
+                  </div>
+                  <div>
+                    <label for="purchaseRequestCatalog">Catalog number</label>
+                    <input id="purchaseRequestCatalog" type="text" />
+                  </div>
+                  <div>
+                    <label for="purchaseRequestQuantity">Quantity requested</label>
+                    <input id="purchaseRequestQuantity" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="purchaseRequestCost">Estimated cost</label>
+                    <input id="purchaseRequestCost" type="number" step="any" />
+                  </div>
+                  <div>
+                    <label for="purchaseRequestStatus">Status</label>
+                    <select id="purchaseRequestStatus">
+                      <option value="draft">Draft</option>
+                      <option value="submitted">Submitted</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="purchaseRequestInventoryItem">Linked inventory item</label>
+                    <input id="purchaseRequestInventoryItem" type="text" placeholder="inventory:..." />
+                  </div>
+                </div>
+                <label for="purchaseRequestGrant">Grant or funding source</label>
+                <input id="purchaseRequestGrant" type="text" />
+                <label for="purchaseRequestBy">Requested by</label>
+                <input id="purchaseRequestBy" type="text" />
+                <label for="purchaseRequestNotes">Notes</label>
+                <textarea id="purchaseRequestNotes" rows="2"></textarea>
+                <div class="entry-actions">
+                  <button type="submit">Save Purchase Request</button>
+                </div>
+              </form>
+              <div class="item-list" id="purchaseRequestsList"></div>
               <form class="entry-draft-form" id="purchaseForm">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <p class="eyebrow">Completed records</p>
+                    <h3>Manual / Oracle purchase record</h3>
+                  </div>
+                </div>
                 <label for="purchaseItemName">Item name</label>
                 <input id="purchaseItemName" type="text" placeholder="SAG" required />
                 <label for="purchaseVendor">Vendor</label>

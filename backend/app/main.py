@@ -51,6 +51,8 @@ from app.inventory import (
     INVENTORY_CSV_FIELDS,
     ORACLE_PURCHASING_PROVIDER,
     PURCHASE_CSV_FIELDS,
+    PURCHASE_REQUEST_CSV_FIELDS,
+    PURCHASE_REQUEST_STATUSES,
     apply_purchase_mapping,
     build_reagent_methods_text,
     inventory_item_status,
@@ -1020,6 +1022,39 @@ class PurchaseRecordResponse(PurchaseRecordRequest):
     workspace_id: str | None = None
     created_at: str
     updated_at: str
+
+
+class PurchaseRequestRequest(BaseModel):
+    """Create or update a lab purchase request before Oracle ordering."""
+
+    item_name: str
+    vendor: str | None = None
+    catalog_number: str | None = None
+    quantity_requested: float | None = None
+    estimated_cost: float | None = None
+    grant_or_funding_source: str | None = None
+    requested_by: str | None = None
+    request_date: str | None = None
+    status: str = "draft"
+    notes: str | None = None
+    linked_inventory_item_id: str | None = None
+
+
+class PurchaseRequestResponse(PurchaseRequestRequest):
+    """Stored lab purchase request."""
+
+    request_id: str
+    owner_user_id: str | None = None
+    created_by: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class PurchaseRequestReceiveRequest(BaseModel):
+    """Mark a request received and optionally add the quantity to inventory."""
+
+    update_inventory_quantity: bool = False
 
 
 class PurchaseCsvImportRequest(BaseModel):
@@ -3770,7 +3805,7 @@ def _save_inventory_request(request: InventoryItemRequest, item_id: str | None =
 
 
 def _save_purchase_request(request: PurchaseRecordRequest, purchase_id: str | None = None) -> dict[str, object]:
-    """Persist a purchase request."""
+    """Persist a completed/manual purchase record."""
 
     if not request.item_name.strip():
         raise HTTPException(status_code=400, detail="Purchase item name is required.")
@@ -3794,6 +3829,63 @@ def _save_purchase_request(request: PurchaseRecordRequest, purchase_id: str | No
         created_by=str(user.get("user_id") or ""),
         workspace_id=str(workspace.get("workspace_id") or ""),
     )
+
+
+def _save_purchase_request_workflow(
+    request: PurchaseRequestRequest,
+    request_id: str | None = None,
+) -> dict[str, object]:
+    """Persist a pre-Oracle purchase request workflow record."""
+
+    if not request.item_name.strip():
+        raise HTTPException(status_code=400, detail="Purchase request item name is required.")
+    status = (request.status or "draft").strip().lower()
+    if status not in PURCHASE_REQUEST_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid purchase request status: {request.status}")
+    store = SQLiteStore(settings=settings)
+    if request.linked_inventory_item_id and store.get_inventory_item(request.linked_inventory_item_id) is None:
+        raise HTTPException(status_code=404, detail=f"Linked inventory item not found: {request.linked_inventory_item_id}")
+    user, workspace = _current_user_workspace_metadata()
+    return store.save_purchase_request(
+        request_id=request_id,
+        item_name=request.item_name.strip(),
+        vendor=request.vendor,
+        catalog_number=request.catalog_number,
+        quantity_requested=request.quantity_requested,
+        estimated_cost=request.estimated_cost,
+        grant_or_funding_source=request.grant_or_funding_source,
+        requested_by=request.requested_by or str(user.get("display_name") or user.get("email") or ""),
+        request_date=request.request_date or datetime.now(timezone.utc).date().isoformat(),
+        status=status,
+        notes=request.notes,
+        linked_inventory_item_id=request.linked_inventory_item_id,
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+
+
+def _purchase_request_with_status(request_id: str, status: str) -> dict[str, object]:
+    """Move a purchase request to one status."""
+
+    store = SQLiteStore(settings=settings)
+    record = store.get_purchase_request(request_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Purchase request not found: {request_id}")
+    payload = PurchaseRequestRequest(
+        item_name=str(record.get("item_name") or ""),
+        vendor=record.get("vendor"),
+        catalog_number=record.get("catalog_number"),
+        quantity_requested=record.get("quantity_requested"),
+        estimated_cost=record.get("estimated_cost"),
+        grant_or_funding_source=record.get("grant_or_funding_source"),
+        requested_by=record.get("requested_by"),
+        request_date=record.get("request_date"),
+        status=status,
+        notes=record.get("notes"),
+        linked_inventory_item_id=record.get("linked_inventory_item_id"),
+    )
+    return _save_purchase_request_workflow(payload, request_id=request_id)
 
 
 def _inventory_item_entry(
@@ -5495,6 +5587,28 @@ def inventory_reorder_needed(workspace_id: str | None = Query(default=None)) -> 
     }
 
 
+@app.post("/inventory/{item_id}/request-reorder", response_model=PurchaseRequestResponse, tags=["inventory", "purchasing"])
+def request_inventory_reorder(item_id: str) -> PurchaseRequestResponse:
+    """Create a draft purchase request from one inventory item."""
+
+    store = SQLiteStore(settings=settings)
+    item = store.get_inventory_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Inventory item not found: {item_id}")
+    quantity = item.get("reorder_threshold") or 1
+    request = PurchaseRequestRequest(
+        item_name=str(item.get("name") or ""),
+        vendor=item.get("vendor"),
+        catalog_number=item.get("catalog_number"),
+        quantity_requested=float(quantity) if quantity is not None else None,
+        estimated_cost=item.get("price"),
+        status="draft",
+        notes=f"Reorder requested from inventory item {item_id}. Current quantity: {item.get('quantity')}.",
+        linked_inventory_item_id=item_id,
+    )
+    return PurchaseRequestResponse(**_save_purchase_request_workflow(request))
+
+
 @app.get("/inventory/expiring", tags=["inventory"])
 def inventory_expiring(
     days: int = Query(default=90, ge=1, le=365),
@@ -5774,6 +5888,108 @@ def experiment_methods_materials(
         "resources": context["resources"],
         "warnings": [*context["warnings"], *result.get("warnings", [])],
     }
+
+
+@app.get("/purchase-requests", response_model=list[PurchaseRequestResponse], tags=["purchasing"])
+def purchase_requests(
+    status: str | None = Query(default=None),
+    query: str | None = Query(default=None),
+    linked_inventory_item_id: str | None = Query(default=None),
+    workspace_id: str | None = Query(default=None),
+) -> list[PurchaseRequestResponse]:
+    """List lab purchase requests before Oracle/manual purchasing."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        PurchaseRequestResponse(**record)
+        for record in store.list_purchase_requests(
+            status=status,
+            query=query,
+            linked_inventory_item_id=linked_inventory_item_id,
+            workspace_id=_current_workspace_id(workspace_id),
+        )
+    ]
+
+
+@app.post("/purchase-requests", response_model=PurchaseRequestResponse, tags=["purchasing"])
+def create_purchase_request(request: PurchaseRequestRequest) -> PurchaseRequestResponse:
+    """Create a draft or submitted lab purchase request."""
+
+    return PurchaseRequestResponse(**_save_purchase_request_workflow(request))
+
+
+@app.get("/purchase-requests/export-csv", tags=["purchasing"])
+def export_purchase_requests_csv(workspace_id: str | None = Query(default=None)) -> Response:
+    """Export purchase requests for boss/admin review."""
+
+    store = SQLiteStore(settings=settings)
+    csv_text = records_to_csv(
+        store.list_purchase_requests(workspace_id=_current_workspace_id(workspace_id)),
+        PURCHASE_REQUEST_CSV_FIELDS,
+    )
+    return Response(
+        content=csv_text,
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="researchos_purchase_requests.csv"'},
+    )
+
+
+@app.get("/purchase-requests/{request_id}", response_model=PurchaseRequestResponse, tags=["purchasing"])
+def purchase_request_detail(request_id: str) -> PurchaseRequestResponse:
+    """Return one lab purchase request."""
+
+    store = SQLiteStore(settings=settings)
+    record = store.get_purchase_request(request_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Purchase request not found: {request_id}")
+    return PurchaseRequestResponse(**record)
+
+
+@app.put("/purchase-requests/{request_id}", response_model=PurchaseRequestResponse, tags=["purchasing"])
+def update_purchase_request(request_id: str, request: PurchaseRequestRequest) -> PurchaseRequestResponse:
+    """Update one lab purchase request."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_purchase_request(request_id) is None:
+        raise HTTPException(status_code=404, detail=f"Purchase request not found: {request_id}")
+    return PurchaseRequestResponse(**_save_purchase_request_workflow(request, request_id=request_id))
+
+
+@app.post("/purchase-requests/{request_id}/submit", response_model=PurchaseRequestResponse, tags=["purchasing"])
+def submit_purchase_request(request_id: str) -> PurchaseRequestResponse:
+    """Submit a purchase request for boss/admin review."""
+
+    return PurchaseRequestResponse(**_purchase_request_with_status(request_id, "submitted"))
+
+
+@app.post("/purchase-requests/{request_id}/approve", response_model=PurchaseRequestResponse, tags=["purchasing"])
+def approve_purchase_request(request_id: str) -> PurchaseRequestResponse:
+    """Approve a purchase request for manual Oracle ordering."""
+
+    return PurchaseRequestResponse(**_purchase_request_with_status(request_id, "approved"))
+
+
+@app.post("/purchase-requests/{request_id}/mark-ordered", response_model=PurchaseRequestResponse, tags=["purchasing"])
+def mark_purchase_request_ordered(request_id: str) -> PurchaseRequestResponse:
+    """Mark a purchase request as ordered in Oracle/manual purchasing."""
+
+    return PurchaseRequestResponse(**_purchase_request_with_status(request_id, "ordered"))
+
+
+@app.post("/purchase-requests/{request_id}/mark-received", response_model=PurchaseRequestResponse, tags=["purchasing"])
+def mark_purchase_request_received(
+    request_id: str,
+    request: PurchaseRequestReceiveRequest | None = None,
+) -> PurchaseRequestResponse:
+    """Mark a request received and optionally increase linked inventory quantity."""
+
+    store = SQLiteStore(settings=settings)
+    updated = _purchase_request_with_status(request_id, "received")
+    if request and request.update_inventory_quantity and updated.get("linked_inventory_item_id"):
+        quantity = updated.get("quantity_requested")
+        if quantity is not None:
+            store.update_inventory_quantity(str(updated["linked_inventory_item_id"]), float(quantity))
+    return PurchaseRequestResponse(**updated)
 
 
 @app.get("/purchases", response_model=list[PurchaseRecordResponse], tags=["purchasing"])

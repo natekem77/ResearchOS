@@ -77,6 +77,24 @@ See [INVENTORY_LABELS_AND_BARCODES.md](INVENTORY_LABELS_AND_BARCODES.md).
 
 ## Purchasing
 
+Purchase requests are the lab-facing workflow before Oracle ordering:
+
+```bash
+curl -X POST http://127.0.0.1:8001/purchase-requests \
+  -H "Content-Type: application/json" \
+  -d '{"item_name":"BMP4","quantity_requested":2,"status":"draft"}'
+
+curl http://127.0.0.1:8001/purchase-requests/export-csv
+```
+
+Low-stock inventory items can create reorder requests:
+
+```bash
+curl -X POST http://127.0.0.1:8001/inventory/{item_id}/request-reorder
+```
+
+See [PURCHASE_REQUESTS.md](PURCHASE_REQUESTS.md).
+
 Purchase records track:
 
 - item name
