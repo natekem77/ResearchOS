@@ -629,6 +629,26 @@ class SQLiteStore:
 
                 CREATE INDEX IF NOT EXISTS idx_experiment_design_templates_name
                     ON experiment_design_templates(name);
+
+                CREATE TABLE IF NOT EXISTS plate_layouts (
+                    layout_id TEXT PRIMARY KEY,
+                    design_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    format TEXT NOT NULL,
+                    rows INTEGER NOT NULL,
+                    columns INTEGER NOT NULL,
+                    wells_json TEXT NOT NULL DEFAULT '[]',
+                    warnings_json TEXT NOT NULL DEFAULT '[]',
+                    created_by TEXT,
+                    owner_user_id TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(design_id) REFERENCES experiment_designs(design_id) ON DELETE CASCADE
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_plate_layouts_design
+                    ON plate_layouts(design_id);
                 """
             )
             self._ensure_permission_columns(connection)
@@ -636,7 +656,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "receiving_records", "purchase_import_templates", "design_import_templates", "experiment_design_templates"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "receiving_records", "purchase_import_templates", "design_import_templates", "experiment_design_templates", "plate_layouts"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -3129,6 +3149,110 @@ class SQLiteStore:
         record["tags"] = json.loads(record.pop("tags_json", "[]") or "[]")
         record["is_builtin"] = False
         return record
+
+    def _plate_layout_from_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        """Convert a plate layout row into API-friendly data."""
+
+        record = dict(row)
+        record["wells"] = json.loads(record.pop("wells_json", "[]") or "[]")
+        record["warnings"] = json.loads(record.pop("warnings_json", "[]") or "[]")
+        return record
+
+    def save_plate_layout(
+        self,
+        design_id: str,
+        title: str,
+        format: str,
+        rows: int,
+        columns: int,
+        wells: list[dict[str, Any]],
+        warnings: list[str] | None = None,
+        layout_id: str | None = None,
+        created_by: str | None = None,
+        owner_user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one plate/sample layout."""
+
+        resolved_id = layout_id or f"plate_layout:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM plate_layouts WHERE layout_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            payload = (
+                design_id,
+                title,
+                format,
+                rows,
+                columns,
+                json.dumps(wells or []),
+                json.dumps(warnings or []),
+                created_by or owner_user_id,
+                owner_user_id,
+                workspace_id,
+            )
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO plate_layouts (
+                        layout_id, design_id, title, format, rows, columns,
+                        wells_json, warnings_json, created_by, owner_user_id,
+                        workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (resolved_id, *payload),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE plate_layouts
+                    SET design_id = ?,
+                        title = ?,
+                        format = ?,
+                        rows = ?,
+                        columns = ?,
+                        wells_json = ?,
+                        warnings_json = ?,
+                        created_by = COALESCE(?, created_by),
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE layout_id = ?
+                    """,
+                    (*payload, resolved_id),
+                )
+        saved = self.get_plate_layout(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Plate layout was not saved: {resolved_id}")
+        return saved
+
+    def list_plate_layouts(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Return plate/sample layouts."""
+
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        where = f"WHERE {workspace_clause}" if workspace_clause else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM plate_layouts {where} ORDER BY created_at DESC, title ASC",
+                workspace_values,
+            ).fetchall()
+        return [self._plate_layout_from_row(row) for row in rows]
+
+    def get_plate_layout(self, layout_id: str) -> dict[str, Any] | None:
+        """Return one plate/sample layout."""
+
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM plate_layouts WHERE layout_id = ?", (layout_id,)).fetchone()
+        return self._plate_layout_from_row(row) if row else None
+
+    def delete_plate_layout(self, layout_id: str) -> bool:
+        """Delete one plate/sample layout."""
+
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM plate_layouts WHERE layout_id = ?", (layout_id,))
+        return cursor.rowcount > 0
 
     def save_experiment_design_template(
         self,

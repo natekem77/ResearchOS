@@ -97,6 +97,7 @@ from app.microscopy_provider import microscopy_assets, microscopy_status, scan_m
 from app.onenote_provider import list_notebooks, list_pages, list_sections, sync_onenote_pages
 from app.overnight_intelligence import OvernightIntelligenceService
 from app.permissions import permission_summary
+from app.plate_layout_planner import generate_plate_layout, plate_layout_to_csv
 from app.protocol_intelligence import ProtocolService
 from app.quantification_workspace import QuantificationWorkspaceService
 from app.retinal_ontology import build_retinal_ontology
@@ -1252,6 +1253,66 @@ class SaveDesignAsTemplateRequest(BaseModel):
     """Optional payload for saving a concrete design as a template."""
 
     name: str | None = None
+
+
+class WellAssignmentRequest(BaseModel):
+    """One well/tube/sample assignment in a layout."""
+
+    well_id: str | None = None
+    row: str | None = None
+    column: int | None = None
+    position: str | None = None
+    condition: str | None = None
+    replicate: int | None = None
+    sample_id: str | None = None
+    treatment: str | None = None
+    dose: str | None = None
+    units: str | None = None
+    day: str | None = None
+    notes: str | None = None
+
+
+class PlateLayoutRequest(BaseModel):
+    """Create or update a plate/rack/sample layout."""
+
+    design_id: str
+    title: str
+    format: str = "96-well"
+    rows: int
+    columns: int
+    wells: list[WellAssignmentRequest] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    created_by: str | None = None
+
+
+class PlateLayoutResponse(BaseModel):
+    """Stored plate/rack/sample layout."""
+
+    layout_id: str
+    design_id: str
+    title: str
+    format: str
+    rows: int
+    columns: int
+    wells: list[dict[str, object]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    created_by: str | None = None
+    owner_user_id: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class GeneratePlateLayoutRequest(BaseModel):
+    """Generate a layout from an experiment design."""
+
+    title: str | None = None
+    format: str = "96-well"
+    rows: int | None = None
+    columns: int | None = None
+    randomized: bool = False
+    grouped_by_condition: bool = True
+    balanced: bool = False
 
 
 class FullFactorialRequest(BaseModel):
@@ -4420,6 +4481,31 @@ def _create_design_from_template(template: dict[str, object], request: TemplateC
     return ExperimentDesignResponse(**_design_or_404(store, design.design_id))
 
 
+def _save_plate_layout_request(
+    store: SQLiteStore,
+    request: PlateLayoutRequest,
+    layout_id: str | None = None,
+) -> dict[str, object]:
+    """Persist a plate/sample layout with design validation."""
+
+    design = _design_or_404(store, request.design_id)
+    user, workspace = _current_user_workspace_metadata()
+    wells = [well.model_dump() for well in request.wells]
+    return store.save_plate_layout(
+        layout_id=layout_id,
+        design_id=str(design.get("design_id")),
+        title=request.title,
+        format=request.format,
+        rows=request.rows,
+        columns=request.columns,
+        wells=wells,
+        warnings=request.warnings,
+        created_by=request.created_by or str(user.get("display_name") or user.get("email") or ""),
+        owner_user_id=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+
+
 def _designs_for_reminders(workspace_id: str | None = None) -> list[dict[str, object]]:
     """Return fully-loaded designs for reminder endpoints."""
 
@@ -6577,6 +6663,107 @@ def create_design_from_experiment_design_template(
 
     template = _experiment_design_template_or_404(SQLiteStore(settings=settings), template_id)
     return _create_design_from_template(template, request or TemplateCreateDesignRequest())
+
+
+@app.get("/plate-layouts", response_model=list[PlateLayoutResponse], tags=["plate-layouts"])
+def plate_layouts(workspace_id: str | None = Query(default=None)) -> list[PlateLayoutResponse]:
+    """List saved plate/rack/sample layouts."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        PlateLayoutResponse(**layout)
+        for layout in store.list_plate_layouts(workspace_id=_current_workspace_id(workspace_id))
+    ]
+
+
+@app.post("/plate-layouts", response_model=PlateLayoutResponse, tags=["plate-layouts"])
+def create_plate_layout(request: PlateLayoutRequest) -> PlateLayoutResponse:
+    """Create a plate/rack/sample layout manually."""
+
+    store = SQLiteStore(settings=settings)
+    return PlateLayoutResponse(**_save_plate_layout_request(store, request))
+
+
+@app.get("/plate-layouts/{layout_id}", response_model=PlateLayoutResponse, tags=["plate-layouts"])
+def plate_layout_detail(layout_id: str) -> PlateLayoutResponse:
+    """Return one plate/rack/sample layout."""
+
+    store = SQLiteStore(settings=settings)
+    layout = store.get_plate_layout(layout_id)
+    if layout is None:
+        raise HTTPException(status_code=404, detail=f"Plate layout not found: {layout_id}")
+    return PlateLayoutResponse(**layout)
+
+
+@app.put("/plate-layouts/{layout_id}", response_model=PlateLayoutResponse, tags=["plate-layouts"])
+def update_plate_layout(layout_id: str, request: PlateLayoutRequest) -> PlateLayoutResponse:
+    """Update one plate/rack/sample layout."""
+
+    store = SQLiteStore(settings=settings)
+    if store.get_plate_layout(layout_id) is None:
+        raise HTTPException(status_code=404, detail=f"Plate layout not found: {layout_id}")
+    return PlateLayoutResponse(**_save_plate_layout_request(store, request, layout_id=layout_id))
+
+
+@app.delete("/plate-layouts/{layout_id}", tags=["plate-layouts"])
+def delete_plate_layout(layout_id: str) -> dict[str, object]:
+    """Delete one plate/rack/sample layout."""
+
+    store = SQLiteStore(settings=settings)
+    if not store.delete_plate_layout(layout_id):
+        raise HTTPException(status_code=404, detail=f"Plate layout not found: {layout_id}")
+    return {"deleted": True, "layout_id": layout_id}
+
+
+@app.post("/experiment-designs/{design_id}/generate-plate-layout", response_model=PlateLayoutResponse, tags=["plate-layouts", "experiment-designs"])
+def generate_experiment_design_plate_layout(
+    design_id: str,
+    request: GeneratePlateLayoutRequest | None = Body(default=None),
+) -> PlateLayoutResponse:
+    """Generate a practical plate/rack/sample layout from a design."""
+
+    store = SQLiteStore(settings=settings)
+    design = _design_or_404(store, design_id)
+    payload = request or GeneratePlateLayoutRequest()
+    generated = generate_plate_layout(
+        design,
+        format_name=payload.format,
+        rows=payload.rows,
+        columns=payload.columns,
+        randomized=payload.randomized,
+        grouped_by_condition=payload.grouped_by_condition,
+        balanced=payload.balanced,
+        title=payload.title,
+    )
+    user, workspace = _current_user_workspace_metadata()
+    layout = store.save_plate_layout(
+        design_id=design_id,
+        title=str(generated["title"]),
+        format=str(generated["format"]),
+        rows=int(generated["rows"]),
+        columns=int(generated["columns"]),
+        wells=generated["wells"],
+        warnings=generated["warnings"],
+        created_by=str(user.get("display_name") or user.get("email") or ""),
+        owner_user_id=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    return PlateLayoutResponse(**layout)
+
+
+@app.get("/plate-layouts/{layout_id}/export-csv", tags=["plate-layouts"])
+def export_plate_layout_csv(layout_id: str) -> Response:
+    """Export one plate/rack/sample layout as CSV."""
+
+    store = SQLiteStore(settings=settings)
+    layout = store.get_plate_layout(layout_id)
+    if layout is None:
+        raise HTTPException(status_code=404, detail=f"Plate layout not found: {layout_id}")
+    return Response(
+        content=plate_layout_to_csv(layout),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="researchos_plate_layout.csv"'},
+    )
 
 
 @app.get("/experiment-designs", response_model=list[ExperimentDesignResponse], tags=["experiment-designs"])

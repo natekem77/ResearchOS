@@ -231,6 +231,20 @@ curl -X POST http://127.0.0.1:8001/experiment-designs/{design_id}/save-template 
 
 See [EXPERIMENT_DESIGN_TEMPLATES.md](EXPERIMENT_DESIGN_TEMPLATES.md) for the full template workflow.
 
+## Plate and Sample Layouts
+
+Experiment designs can generate practical plate, well, tube rack, or custom sample layouts.
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiment-designs/{design_id}/generate-plate-layout \
+  -H "Content-Type: application/json" \
+  -d '{"format":"96-well","balanced":true,"grouped_by_condition":true}'
+
+curl http://127.0.0.1:8001/plate-layouts/{layout_id}/export-csv
+```
+
+See [PLATE_LAYOUT_PLANNER.md](PLATE_LAYOUT_PLANNER.md) for 96-well and 24-well examples.
+
 ## Design of Experiments Foundation
 
 Current helpers are intentionally basic:

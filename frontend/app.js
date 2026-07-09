@@ -14,6 +14,7 @@ const state = {
   receiving: [],
   experimentDesigns: [],
   experimentDesignTemplates: [],
+  plateLayouts: [],
   designDueToday: null,
   designUpcoming: null,
   designImportPreview: null,
@@ -85,6 +86,7 @@ const views = {
   planner: $("#plannerView"),
   "design-planner": $("#designPlannerView"),
   "design-templates": $("#designTemplatesView"),
+  "plate-layouts": $("#plateLayoutsView"),
   extensions: $("#extensionsView"),
   settings: $("#settingsView"),
 };
@@ -1875,6 +1877,7 @@ function renderExperimentDesign(design) {
         <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-csv">Export CSV</a>
         <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-ics">Export Calendar</a>
         <button type="button" class="secondary-button" data-save-design-template="${escapeHtml(design.design_id)}">Save as Template</button>
+        <button type="button" class="secondary-button" data-generate-plate-layout="${escapeHtml(design.design_id)}">Generate Plate Layout</button>
       </div>
       <p class="muted-note">${design.start_date ? "Calendar export creates an importable .ics file; it does not sync live." : "Calendar export requires a start date so relative days can become real dates."}</p>
       <div class="item-list">
@@ -1890,6 +1893,56 @@ function renderExperimentDesign(design) {
           `).join("") || `<div class="empty-state">No timeline events yet.</div>`}
         </div>
       </details>
+    </article>
+  `;
+}
+
+function conditionColor(condition) {
+  if (!condition) return "#f4f6f8";
+  let hash = 0;
+  String(condition).split("").forEach((char) => {
+    hash = (hash * 31 + char.charCodeAt(0)) % 360;
+  });
+  return `hsl(${hash} 68% 88%)`;
+}
+
+function renderPlateLayouts() {
+  const target = $("#plateLayoutList");
+  if (!target) return;
+  const layouts = state.plateLayouts || [];
+  target.innerHTML = layouts.length
+    ? layouts.map(renderPlateLayoutCard).join("")
+    : `<div class="empty-state">No plate layouts yet. Generate one from an experiment design.</div>`;
+}
+
+function renderPlateLayoutCard(layout) {
+  const wells = layout.wells || [];
+  return `
+    <article class="record-card">
+      <div class="panel-heading compact-heading">
+        <div>
+          <p class="eyebrow">${escapeHtml(layout.format)} · ${escapeHtml(layout.rows)} x ${escapeHtml(layout.columns)}</p>
+          <h3>${escapeHtml(layout.title)}</h3>
+        </div>
+        <div class="entry-actions compact-actions">
+          <a class="secondary-link-button" href="/plate-layouts/${encodeURIComponent(layout.layout_id)}/export-csv">Export CSV</a>
+          <button type="button" class="secondary-button" onclick="window.print()">Print</button>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="tag">${escapeHtml(layout.design_id)}</span>
+        <span class="tag">${escapeHtml(wells.filter((well) => well.condition).length)} assigned</span>
+      </div>
+      ${(layout.warnings || []).map((warning) => `<p class="warning-text">${escapeHtml(warning)}</p>`).join("")}
+      <div class="plate-grid" style="display:grid;grid-template-columns:repeat(${Number(layout.columns) || 1}, minmax(54px, 1fr));gap:6px;">
+        ${wells.map((well) => `
+          <button type="button" class="plate-well" data-edit-well="${escapeHtml(layout.layout_id)}" data-position="${escapeHtml(well.position)}" style="min-height:54px;border:1px solid #d9e2e7;border-radius:8px;background:${escapeHtml(conditionColor(well.condition))};padding:6px;text-align:left;font-size:12px;">
+            <strong>${escapeHtml(well.position)}</strong><br />
+            <span>${escapeHtml(well.condition || "Empty")}</span><br />
+            <small>${escapeHtml([well.sample_id, well.treatment].filter(Boolean).join(" · "))}</small>
+          </button>
+        `).join("")}
+      </div>
     </article>
   `;
 }
@@ -2238,6 +2291,48 @@ async function saveCurrentDesignAsTemplate(designId) {
 async function deleteDesignTemplate(templateId) {
   if (!window.confirm("Delete this saved design template?")) return;
   await requestJson(`/experiment-design-templates/${encodeURIComponent(templateId)}`, { method: "DELETE" });
+  await refreshData();
+}
+
+async function generatePlateLayout(designId) {
+  const format = window.prompt("Plate format: 6-well, 12-well, 24-well, 48-well, 96-well, 384-well, tube_rack, custom", "96-well");
+  if (format === null) return;
+  const randomized = window.confirm("Randomize assignments?");
+  const saved = await requestJson(`/experiment-designs/${encodeURIComponent(designId)}/generate-plate-layout`, {
+    method: "POST",
+    body: JSON.stringify({ format: format.trim() || "96-well", randomized, grouped_by_condition: !randomized, balanced: !randomized }),
+  });
+  $("#designPlannerStatus").textContent = `Generated plate layout: ${saved.title}`;
+  await refreshData();
+  window.location.hash = "#/plate-layouts";
+}
+
+async function editPlateWell(layoutId, position) {
+  const layout = (state.plateLayouts || []).find((item) => item.layout_id === layoutId);
+  if (!layout) return;
+  const well = (layout.wells || []).find((item) => item.position === position);
+  if (!well) return;
+  const condition = window.prompt(`Condition for ${position}`, well.condition || "");
+  if (condition === null) return;
+  const sampleId = window.prompt(`Sample ID for ${position}`, well.sample_id || "");
+  if (sampleId === null) return;
+  const treatment = window.prompt(`Treatment for ${position}`, well.treatment || "");
+  if (treatment === null) return;
+  const updatedWells = (layout.wells || []).map((item) => item.position === position
+    ? { ...item, condition: condition || null, sample_id: sampleId || null, treatment: treatment || null }
+    : item);
+  await requestJson(`/plate-layouts/${encodeURIComponent(layoutId)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      design_id: layout.design_id,
+      title: layout.title,
+      format: layout.format,
+      rows: layout.rows,
+      columns: layout.columns,
+      wells: updatedWells,
+      warnings: layout.warnings || [],
+    }),
+  });
   await refreshData();
 }
 
@@ -4961,7 +5056,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, experimentDesignTemplates, designDueToday, designUpcoming, designImportTemplates, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, experimentDesignTemplates, plateLayouts, designDueToday, designUpcoming, designImportTemplates, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4978,6 +5073,7 @@ async function refreshData() {
     requestJson("/receiving"),
     requestJson("/experiment-designs"),
     requestJson("/experiment-design-templates"),
+    requestJson("/plate-layouts"),
     requestJson("/experiment-designs/reminders/due-today"),
     requestJson("/experiment-designs/reminders/upcoming?days=7"),
     requestJson("/experiment-designs/import-templates"),
@@ -5009,6 +5105,7 @@ async function refreshData() {
   state.receiving = receiving;
   state.experimentDesigns = experimentDesigns;
   state.experimentDesignTemplates = experimentDesignTemplates;
+  state.plateLayouts = plateLayouts;
   state.designDueToday = designDueToday;
   state.designUpcoming = designUpcoming;
   state.designImportTemplates = designImportTemplates;
@@ -5053,6 +5150,7 @@ function renderAll() {
   renderPurchases();
   renderReceiving();
   renderDesignPlanner();
+  renderPlateLayouts();
   renderWorkflows();
   renderSessions();
   renderExperimentsTable();
@@ -5460,10 +5558,24 @@ $("#designImportForm")?.addEventListener("submit", (event) => {
   });
 });
 $("#designList")?.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-save-design-template]");
+  const saveTemplate = event.target.closest("[data-save-design-template]");
+  const generateLayout = event.target.closest("[data-generate-plate-layout]");
+  if (saveTemplate) {
+    saveCurrentDesignAsTemplate(saveTemplate.dataset.saveDesignTemplate).catch((error) => {
+      $("#designPlannerStatus").textContent = `Save template failed: ${error.message}`;
+    });
+  }
+  if (generateLayout) {
+    generatePlateLayout(generateLayout.dataset.generatePlateLayout).catch((error) => {
+      $("#designPlannerStatus").textContent = `Generate layout failed: ${error.message}`;
+    });
+  }
+});
+$("#plateLayoutList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-edit-well]");
   if (!button) return;
-  saveCurrentDesignAsTemplate(button.dataset.saveDesignTemplate).catch((error) => {
-    $("#designPlannerStatus").textContent = `Save template failed: ${error.message}`;
+  editPlateWell(button.dataset.editWell, button.dataset.position).catch((error) => {
+    alert(`Plate layout edit failed: ${error.message}`);
   });
 });
 $("#designTemplateList")?.addEventListener("click", (event) => {

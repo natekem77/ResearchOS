@@ -52,6 +52,25 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                     ),
                 )
                 activated = main.activate_experiment_design(design.design_id)
+                layout = main.generate_experiment_design_plate_layout(
+                    design.design_id,
+                    main.GeneratePlateLayoutRequest(format="24-well", balanced=True),
+                )
+                layout_detail = main.plate_layout_detail(layout.layout_id)
+                updated_layout = main.update_plate_layout(
+                    layout.layout_id,
+                    main.PlateLayoutRequest(
+                        design_id=layout.design_id,
+                        title="Updated D1 SAG layout",
+                        format=layout.format,
+                        rows=layout.rows,
+                        columns=layout.columns,
+                        wells=[main.WellAssignmentRequest(**well) for well in layout.wells],
+                        warnings=layout.warnings,
+                    ),
+                )
+                layout_csv = main.export_plate_layout_csv(layout.layout_id)
+                listed_layouts = main.plate_layouts(workspace_id=None)
                 timeline = main.experiment_design_timeline(design.design_id)
                 calendar = main.experiment_design_calendar(design.design_id)
                 reminders = main.experiment_design_reminders(include_drafts=False, workspace_id=None)
@@ -152,6 +171,7 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                         title="Imported BMP4 design",
                     )
                 )
+                deleted_layout = main.delete_plate_layout(layout.layout_id)
                 factorial = main.experiment_design_full_factorial(
                     main.FullFactorialRequest(factors={"compound": ["SAG", "BMP4"], "dose": ["low", "high"]})
                 )
@@ -169,6 +189,14 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
         self.assertEqual(design.status, "active")
         self.assertEqual(activated.status, "active")
         self.assertEqual(event["event_type"], "treatment")
+        self.assertEqual(layout.format, "24-well")
+        self.assertEqual(layout.rows, 4)
+        self.assertEqual(layout.columns, 6)
+        self.assertGreaterEqual(len([well for well in layout.wells if well.get("condition")]), 1)
+        self.assertEqual(layout_detail.layout_id, layout.layout_id)
+        self.assertEqual(updated_layout.title, "Updated D1 SAG layout")
+        self.assertIn("position,condition", layout_csv.body.decode("utf-8"))
+        self.assertTrue(any(item.layout_id == layout.layout_id for item in listed_layouts))
         self.assertEqual(reminders["count"], 1)
         self.assertIn("reminders", reminder_due)
         self.assertGreaterEqual(reminder_upcoming["count"], 1)
@@ -204,6 +232,7 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
         self.assertEqual(saved_from_design.name, "Saved from current design")
         self.assertTrue(deleted_design_template["deleted"])
         self.assertEqual(imported.title, "Imported BMP4 design")
+        self.assertTrue(deleted_layout["deleted"])
         self.assertEqual(factorial["condition_count"], 4)
         self.assertFalse(balance["balanced_replicates"])
 

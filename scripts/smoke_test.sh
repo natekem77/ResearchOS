@@ -75,6 +75,7 @@ EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/experiments?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/mobile/experiments" >/dev/null
 request GET "/experiment-designs" >/dev/null
+request GET "/plate-layouts" >/dev/null
 request GET "/experiment-design-templates" >/dev/null
 request GET "/experiment-design-templates/builtin:retinal_organoid_d1_d9_treatment" >/dev/null
 request POST "/experiment-design-templates/builtin:retinal_organoid_d1_d9_treatment/create-design" '{"title":"Smoke Template Design","start_date":"2026-07-08","cell_line_or_model":"SIX6 reporter iPSC","reporters":["SIX6","BRN3B"],"status":"draft"}' >/dev/null
@@ -130,6 +131,19 @@ PY
 )"
 request POST "/experiment-designs/$SMOKE_DESIGN_ID/activate" "{}" >/dev/null
 request POST "/experiment-designs/$SMOKE_DESIGN_ID/save-template" '{"name":"Smoke saved from design"}' >/dev/null
+SMOKE_LAYOUT_FILE="$(request POST "/experiment-designs/$SMOKE_DESIGN_ID/generate-plate-layout" '{"title":"Smoke 24-well layout","format":"24-well","balanced":true,"grouped_by_condition":true}')"
+SMOKE_LAYOUT_ID="$(
+  python3 - "$SMOKE_LAYOUT_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["layout_id"])
+PY
+)"
+request GET "/plate-layouts/$SMOKE_LAYOUT_ID" >/dev/null
+request PUT "/plate-layouts/$SMOKE_LAYOUT_ID" '{"design_id":"'"$SMOKE_DESIGN_ID"'","title":"Smoke 24-well layout updated","format":"24-well","rows":4,"columns":6,"wells":[],"warnings":[]}' >/dev/null
+request GET "/plate-layouts/$SMOKE_LAYOUT_ID/export-csv" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/timeline" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/calendar" >/dev/null
@@ -143,6 +157,7 @@ request GET "/experiment-designs/import-templates" >/dev/null
 request POST "/experiment-designs/import-templates" '{"name":"Smoke Design Mapping","mapping":{"title":"Experiment","condition_name":"Condition","day":"Day","event_type":"Event","treatment":"Treatment","replicate":"Replicate","alert_enabled":"Reminder"},"provider":"experiment_designs"}' >/dev/null
 request POST "/experiment-designs/import-mapped-csv" '{"csv_text":"Experiment,Condition,Day,Event,Treatment,Replicate,Reminder\nSmoke mapped design,DMSO,D1,treatment,DMSO,1,true\nSmoke mapped design,SAG,D9,imaging,SAG,2,true\n","mapping":{"title":"Experiment","condition_name":"Condition","day":"Day","event_type":"Event","treatment":"Treatment","replicate":"Replicate","alert_enabled":"Reminder"}}' >/dev/null
 request POST "/experiment-designs/import-csv" '{"title":"Smoke Imported Design","csv_text":"condition,day,event_type,treatment,dose,units,replicate,alert_enabled\nSmoke BMP4,D9,treatment,BMP4,10,ng/mL,1,true\n"}' >/dev/null
+request DELETE "/plate-layouts/$SMOKE_LAYOUT_ID" >/dev/null
 request DELETE "/experiment-design-templates/$SMOKE_TEMPLATE_ID" >/dev/null
 WIZARD_EXPERIMENT_ID="SMOKE-WIZARD-$(date +%s)"
 WIZARD_FILE="$(request POST "/mobile/experiments/create" "{\"title\":\"Smoke Wizard Experiment\",\"experiment_id\":\"$WIZARD_EXPERIMENT_ID\",\"project\":\"Smoke test\",\"researcher\":\"ResearchOS\",\"protocol_mode\":\"create_new\",\"protocol_title\":\"Smoke protocol\",\"cell_line\":\"Demo cells\",\"organoid_batch\":\"Demo batch\",\"compounds\":[\"SAG\"],\"concentrations\":[\"100 nM\"],\"timepoints\":[\"D1\"],\"replicates\":\"n=3\",\"controls\":[\"DMSO\"],\"readouts\":[\"microscopy\"],\"markers\":[\"SIX6\"],\"microscopy\":true,\"graphpad\":true,\"create_notebook_draft\":true,\"start_session\":false}")"
