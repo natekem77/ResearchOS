@@ -433,13 +433,27 @@ class _DemoFeatureGrid extends StatelessWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isWide = constraints.maxWidth >= ResearchOsBreakpoints.tablet;
+        if (!isWide) {
+          return Column(
+            children: [
+              for (final card in cards) ...[
+                _DemoFeatureCard(
+                  spec: card,
+                  onTap: () => onNavigate(card.destination),
+                ),
+                if (card != cards.last)
+                  const SizedBox(height: ResearchOsSpacing.md),
+              ],
+            ],
+          );
+        }
         return GridView.count(
-          crossAxisCount: isWide ? 3 : 1,
+          crossAxisCount: 3,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           mainAxisSpacing: ResearchOsSpacing.md,
           crossAxisSpacing: ResearchOsSpacing.md,
-          childAspectRatio: isWide ? 1.35 : 3.1,
+          childAspectRatio: 1.35,
           children: [
             for (final card in cards)
               _DemoFeatureCard(
