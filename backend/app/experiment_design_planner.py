@@ -85,6 +85,93 @@ DEFAULT_DESIGN_IMPORT_TEMPLATES = [
     }
 ]
 
+BUILTIN_EXPERIMENT_DESIGN_TEMPLATES = [
+    {
+        "template_id": "builtin:retinal_organoid_d1_d9_treatment",
+        "name": "Retinal organoid D1 vs D9 treatment",
+        "description": "Compare early and later treatment windows in retinal organoid differentiation.",
+        "experiment_type": "retinal organoid",
+        "default_cell_line_or_model": "iPSC retinal organoid",
+        "default_reporters": ["SIX6", "BRN3B"],
+        "default_conditions": [
+            {"condition_name": "DMSO control", "treatment": "DMSO", "start_day": "D1", "end_day": "D9", "replicate_count": 3, "sample_count": 6},
+            {"condition_name": "D1 treatment", "treatment": "Treatment A", "start_day": "D1", "end_day": "D9", "replicate_count": 3, "sample_count": 6},
+            {"condition_name": "D9 treatment", "treatment": "Treatment A", "start_day": "D9", "end_day": "D32", "replicate_count": 3, "sample_count": 6},
+        ],
+        "default_events": [
+            {"condition_name": "D1 treatment", "day": "D1", "event_type": "treatment", "title": "Begin D1 treatment", "reminder_enabled": True},
+            {"condition_name": "D9 treatment", "day": "D9", "event_type": "treatment", "title": "Begin D9 treatment", "reminder_enabled": True},
+            {"day": "D32", "event_type": "imaging", "title": "Image retinal markers", "reminder_enabled": True},
+            {"day": "D32", "event_type": "analysis", "title": "Quantify marker expression", "reminder_enabled": True},
+        ],
+        "default_reminders": [{"day": "D1"}, {"day": "D9"}, {"day": "D32"}],
+        "tags": ["retinal organoid", "treatment", "timecourse"],
+        "is_builtin": True,
+    },
+    {
+        "template_id": "builtin:immunostaining_d32_imaging",
+        "name": "Immunostaining and D32 imaging",
+        "description": "Fix, stain, image, and quantify marker expression around D32.",
+        "experiment_type": "immunostaining",
+        "default_cell_line_or_model": None,
+        "default_reporters": ["SIX6", "BRN3B", "DAPI"],
+        "default_conditions": [
+            {"condition_name": "Staining batch", "treatment": "primary/secondary antibodies", "start_day": "D32", "replicate_count": 1, "sample_count": 6},
+        ],
+        "default_events": [
+            {"day": "D32", "event_type": "fixation", "title": "Fix samples", "reminder_enabled": True},
+            {"day": "D33", "event_type": "staining", "title": "Primary antibody incubation", "reminder_enabled": True},
+            {"day": "D34", "event_type": "staining", "title": "Secondary antibody incubation", "reminder_enabled": True},
+            {"day": "D35", "event_type": "imaging", "title": "Confocal imaging", "reminder_enabled": True},
+            {"day": "D36", "event_type": "analysis", "title": "Quantify staining", "reminder_enabled": True},
+        ],
+        "default_reminders": [{"day": "D32"}, {"day": "D33"}, {"day": "D35"}],
+        "tags": ["immunostaining", "imaging"],
+        "is_builtin": True,
+    },
+    {
+        "template_id": "builtin:cell_culture_treatment_timecourse",
+        "name": "Generic cell culture treatment timecourse",
+        "description": "Vehicle versus treatment timecourse for generic cell culture studies.",
+        "experiment_type": "cell culture",
+        "default_cell_line_or_model": "cell line",
+        "default_reporters": [],
+        "default_conditions": [
+            {"condition_name": "Vehicle", "treatment": "vehicle", "start_day": "D0", "replicate_count": 3, "sample_count": 3},
+            {"condition_name": "Treatment", "treatment": "compound", "start_day": "D0", "replicate_count": 3, "sample_count": 3},
+        ],
+        "default_events": [
+            {"day": "D0", "event_type": "treatment", "title": "Apply treatment", "reminder_enabled": True},
+            {"day": "D1", "event_type": "collection", "title": "24-hour collection", "reminder_enabled": True},
+            {"day": "D3", "event_type": "collection", "title": "72-hour collection", "reminder_enabled": True},
+            {"day": "D4", "event_type": "analysis", "title": "Analyze readouts", "reminder_enabled": True},
+        ],
+        "default_reminders": [{"day": "D0"}, {"day": "D1"}, {"day": "D3"}],
+        "tags": ["cell culture", "timecourse"],
+        "is_builtin": True,
+    },
+    {
+        "template_id": "builtin:sample_collection_timecourse",
+        "name": "Sample collection timecourse",
+        "description": "Repeated sample collection schedule for downstream assays.",
+        "experiment_type": "collection",
+        "default_cell_line_or_model": None,
+        "default_reporters": [],
+        "default_conditions": [
+            {"condition_name": "Collection cohort", "treatment": None, "start_day": "D0", "replicate_count": 3, "sample_count": 9},
+        ],
+        "default_events": [
+            {"day": "D0", "event_type": "collection", "title": "Baseline collection", "reminder_enabled": True},
+            {"day": "D7", "event_type": "collection", "title": "D7 collection", "reminder_enabled": True},
+            {"day": "D14", "event_type": "collection", "title": "D14 collection", "reminder_enabled": True},
+            {"day": "D14", "event_type": "analysis", "title": "Prepare collection manifest", "reminder_enabled": True},
+        ],
+        "default_reminders": [{"day": "D0"}, {"day": "D7"}, {"day": "D14"}],
+        "tags": ["collection", "timecourse"],
+        "is_builtin": True,
+    },
+]
+
 
 def parse_design_day(value: Any) -> int:
     """Return a numeric day from labels such as D0, Day32, or 9."""

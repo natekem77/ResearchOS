@@ -608,6 +608,27 @@ class SQLiteStore:
 
                 CREATE INDEX IF NOT EXISTS idx_design_import_templates_name
                     ON design_import_templates(name);
+
+                CREATE TABLE IF NOT EXISTS experiment_design_templates (
+                    template_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    experiment_type TEXT,
+                    default_cell_line_or_model TEXT,
+                    default_reporters_json TEXT NOT NULL DEFAULT '[]',
+                    default_conditions_json TEXT NOT NULL DEFAULT '[]',
+                    default_events_json TEXT NOT NULL DEFAULT '[]',
+                    default_reminders_json TEXT NOT NULL DEFAULT '[]',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    created_by TEXT,
+                    owner_user_id TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_experiment_design_templates_name
+                    ON experiment_design_templates(name);
                 """
             )
             self._ensure_permission_columns(connection)
@@ -615,7 +636,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "receiving_records", "purchase_import_templates", "design_import_templates"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "receiving_records", "purchase_import_templates", "design_import_templates", "experiment_design_templates"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -3096,6 +3117,128 @@ class SQLiteStore:
         record["reminder_enabled"] = bool(record.get("reminder_enabled") or record.get("alert_enabled"))
         record["reminder_offset_days"] = record.get("reminder_offset_days") if record.get("reminder_offset_days") is not None else record.get("alert_offset_days")
         return record
+
+    def _design_template_from_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        """Convert an experiment design template row into API-friendly data."""
+
+        record = dict(row)
+        record["default_reporters"] = json.loads(record.pop("default_reporters_json", "[]") or "[]")
+        record["default_conditions"] = json.loads(record.pop("default_conditions_json", "[]") or "[]")
+        record["default_events"] = json.loads(record.pop("default_events_json", "[]") or "[]")
+        record["default_reminders"] = json.loads(record.pop("default_reminders_json", "[]") or "[]")
+        record["tags"] = json.loads(record.pop("tags_json", "[]") or "[]")
+        record["is_builtin"] = False
+        return record
+
+    def save_experiment_design_template(
+        self,
+        name: str,
+        description: str | None = None,
+        experiment_type: str | None = None,
+        default_cell_line_or_model: str | None = None,
+        default_reporters: list[str] | None = None,
+        default_conditions: list[dict[str, Any]] | None = None,
+        default_events: list[dict[str, Any]] | None = None,
+        default_reminders: list[dict[str, Any]] | None = None,
+        tags: list[str] | None = None,
+        created_by: str | None = None,
+        template_id: str | None = None,
+        owner_user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one reusable experiment design template."""
+
+        resolved_id = template_id or f"design_template:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM experiment_design_templates WHERE template_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            payload = (
+                name,
+                description,
+                experiment_type,
+                default_cell_line_or_model,
+                json.dumps(default_reporters or []),
+                json.dumps(default_conditions or []),
+                json.dumps(default_events or []),
+                json.dumps(default_reminders or []),
+                json.dumps(tags or []),
+                created_by or owner_user_id,
+                owner_user_id,
+                workspace_id,
+            )
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO experiment_design_templates (
+                        template_id, name, description, experiment_type,
+                        default_cell_line_or_model, default_reporters_json,
+                        default_conditions_json, default_events_json,
+                        default_reminders_json, tags_json, created_by,
+                        owner_user_id, workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (resolved_id, *payload),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE experiment_design_templates
+                    SET name = ?,
+                        description = ?,
+                        experiment_type = ?,
+                        default_cell_line_or_model = ?,
+                        default_reporters_json = ?,
+                        default_conditions_json = ?,
+                        default_events_json = ?,
+                        default_reminders_json = ?,
+                        tags_json = ?,
+                        created_by = COALESCE(?, created_by),
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE template_id = ?
+                    """,
+                    (*payload, resolved_id),
+                )
+        saved = self.get_experiment_design_template(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Experiment design template was not saved: {resolved_id}")
+        return saved
+
+    def list_experiment_design_templates(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Return saved experiment design templates."""
+
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        where = f"WHERE {workspace_clause}" if workspace_clause else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM experiment_design_templates {where} ORDER BY name ASC",
+                workspace_values,
+            ).fetchall()
+        return [self._design_template_from_row(row) for row in rows]
+
+    def get_experiment_design_template(self, template_id: str) -> dict[str, Any] | None:
+        """Return one saved experiment design template."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM experiment_design_templates WHERE template_id = ?",
+                (template_id,),
+            ).fetchone()
+        return self._design_template_from_row(row) if row else None
+
+    def delete_experiment_design_template(self, template_id: str) -> bool:
+        """Delete one saved experiment design template."""
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM experiment_design_templates WHERE template_id = ?",
+                (template_id,),
+            )
+        return cursor.rowcount > 0
 
     def save_experiment_design(
         self,

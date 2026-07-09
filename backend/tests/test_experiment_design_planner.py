@@ -104,6 +104,47 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                     )
                 )
                 deleted_template = main.delete_experiment_design_import_template(saved_template.template_id)
+                design_templates = main.experiment_design_templates(workspace_id=None)
+                builtin_template = main.experiment_design_template_detail("builtin:retinal_organoid_d1_d9_treatment")
+                from_builtin = main.create_design_from_experiment_design_template(
+                    "builtin:retinal_organoid_d1_d9_treatment",
+                    main.TemplateCreateDesignRequest(
+                        title="Template-derived retinal organoid design",
+                        start_date="2026-07-08",
+                        cell_line_or_model="SIX6 reporter iPSC",
+                        reporters=["SIX6", "BRN3B"],
+                    ),
+                )
+                saved_design_template = main.create_experiment_design_template(
+                    main.ExperimentDesignTemplateRequest(
+                        name="Saved treatment template",
+                        description="Reusable treatment template",
+                        experiment_type="cell culture",
+                        default_conditions=[{"condition_name": "Vehicle", "treatment": "DMSO", "start_day": "D0"}],
+                        default_events=[{"day": "D0", "event_type": "treatment", "title": "Treat cells", "reminder_enabled": True}],
+                        tags=["test"],
+                    )
+                )
+                updated_design_template = main.update_experiment_design_template(
+                    saved_design_template.template_id,
+                    main.ExperimentDesignTemplateRequest(
+                        name="Updated treatment template",
+                        description="Reusable treatment template",
+                        experiment_type="cell culture",
+                        default_conditions=[{"condition_name": "Vehicle", "treatment": "DMSO", "start_day": "D0"}],
+                        default_events=[{"day": "D0", "event_type": "treatment", "title": "Treat cells", "reminder_enabled": True}],
+                        tags=["test", "updated"],
+                    ),
+                )
+                from_saved = main.create_design_from_experiment_design_template(
+                    saved_design_template.template_id,
+                    main.TemplateCreateDesignRequest(title="Template-derived saved design", start_date="2026-07-08"),
+                )
+                saved_from_design = main.save_experiment_design_as_template(
+                    design.design_id,
+                    main.SaveDesignAsTemplateRequest(name="Saved from current design"),
+                )
+                deleted_design_template = main.delete_experiment_design_template(saved_design_template.template_id)
                 imported = main.import_experiment_design_csv(
                     main.DesignImportRequest(
                         csv_text="condition,day,event_type,treatment,dose,units,replicate,alert_enabled\n"
@@ -152,6 +193,16 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
         self.assertTrue(any(template.template_id.startswith("default:") for template in templates))
         self.assertTrue(saved_template.template_id.startswith("design_import_template:"))
         self.assertTrue(deleted_template["deleted"])
+        self.assertTrue(any(template.template_id.startswith("builtin:") for template in design_templates))
+        self.assertEqual(builtin_template.name, "Retinal organoid D1 vs D9 treatment")
+        self.assertEqual(from_builtin.title, "Template-derived retinal organoid design")
+        self.assertGreaterEqual(len(from_builtin.conditions), 1)
+        self.assertGreaterEqual(len(from_builtin.events), 1)
+        self.assertTrue(saved_design_template.template_id.startswith("design_template:"))
+        self.assertEqual(updated_design_template.name, "Updated treatment template")
+        self.assertEqual(from_saved.title, "Template-derived saved design")
+        self.assertEqual(saved_from_design.name, "Saved from current design")
+        self.assertTrue(deleted_design_template["deleted"])
         self.assertEqual(imported.title, "Imported BMP4 design")
         self.assertEqual(factorial["condition_count"], 4)
         self.assertFalse(balance["balanced_replicates"])

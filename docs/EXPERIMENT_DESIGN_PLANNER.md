@@ -207,6 +207,30 @@ This creates a one-time calendar file. It does not create live Google Calendar, 
 
 See [CALENDAR_EXPORT.md](CALENDAR_EXPORT.md) for import instructions.
 
+## Design Templates
+
+Reusable design templates can store common condition/event/reminder patterns for repeated workflows.
+
+```bash
+curl http://127.0.0.1:8001/experiment-design-templates
+curl http://127.0.0.1:8001/experiment-design-templates/builtin:retinal_organoid_d1_d9_treatment
+curl -X POST http://127.0.0.1:8001/experiment-design-templates/builtin:retinal_organoid_d1_d9_treatment/create-design \
+  -H "Content-Type: application/json" \
+  -d '{"title":"My D1/D9 treatment comparison","start_date":"2026-07-08","cell_line_or_model":"SIX6 reporter iPSC","reporters":["SIX6","BRN3B"]}'
+```
+
+The built-in demo templates include retinal organoid D1/D9 treatment, immunostaining/D32 imaging, generic cell culture treatment timecourse, and sample collection timecourse.
+
+Existing designs can also be saved as templates:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiment-designs/{design_id}/save-template \
+  -H "Content-Type: application/json" \
+  -d '{"name":"My reusable staining workflow"}'
+```
+
+See [EXPERIMENT_DESIGN_TEMPLATES.md](EXPERIMENT_DESIGN_TEMPLATES.md) for the full template workflow.
+
 ## Design of Experiments Foundation
 
 Current helpers are intentionally basic:

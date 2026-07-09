@@ -24,6 +24,7 @@ from app.events.event_bus import get_event_bus
 from app.events.event_models import EventType, ResearchOSEvent
 from app.experiment_comparison import compare_experiments
 from app.experiment_design_planner import (
+    BUILTIN_EXPERIMENT_DESIGN_TEMPLATES,
     DESIGN_STATUSES,
     DEFAULT_DESIGN_IMPORT_TEMPLATES,
     EVENT_TYPES,
@@ -1209,6 +1210,48 @@ class DesignImportTemplateResponse(DesignImportTemplateRequest):
     workspace_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class ExperimentDesignTemplateRequest(BaseModel):
+    """Reusable experiment design template."""
+
+    name: str
+    description: str | None = None
+    experiment_type: str | None = None
+    default_cell_line_or_model: str | None = None
+    default_reporters: list[str] = Field(default_factory=list)
+    default_conditions: list[dict[str, object]] = Field(default_factory=list)
+    default_events: list[dict[str, object]] = Field(default_factory=list)
+    default_reminders: list[dict[str, object]] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    created_by: str | None = None
+
+
+class ExperimentDesignTemplateResponse(ExperimentDesignTemplateRequest):
+    """Stored experiment design template."""
+
+    template_id: str
+    is_builtin: bool = False
+    owner_user_id: str | None = None
+    workspace_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class TemplateCreateDesignRequest(BaseModel):
+    """Overrides when creating a concrete design from a template."""
+
+    title: str | None = None
+    start_date: str | None = None
+    cell_line_or_model: str | None = None
+    reporters: list[str] | None = None
+    status: str = "draft"
+
+
+class SaveDesignAsTemplateRequest(BaseModel):
+    """Optional payload for saving a concrete design as a template."""
+
+    name: str | None = None
 
 
 class FullFactorialRequest(BaseModel):
@@ -4277,6 +4320,106 @@ def _save_design_event(store: SQLiteStore, design_id: str, request: DesignEventR
     )
 
 
+def _builtin_design_templates() -> list[dict[str, object]]:
+    """Return built-in reusable experiment design templates."""
+
+    return [dict(template) for template in BUILTIN_EXPERIMENT_DESIGN_TEMPLATES]
+
+
+def _experiment_design_template_or_404(store: SQLiteStore, template_id: str) -> dict[str, object]:
+    """Return a built-in or saved design template."""
+
+    for template in _builtin_design_templates():
+        if template.get("template_id") == template_id:
+            return template
+    template = store.get_experiment_design_template(template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail=f"Experiment design template not found: {template_id}")
+    return template
+
+
+def _save_current_design_as_template(store: SQLiteStore, design: dict[str, object], name: str | None = None) -> dict[str, object]:
+    """Convert a concrete design into a reusable template."""
+
+    user, workspace = _current_user_workspace_metadata()
+    return store.save_experiment_design_template(
+        name=name or f"{design.get('title') or 'Experiment design'} template",
+        description=str(design.get("description") or ""),
+        experiment_type=design.get("experiment_type") if isinstance(design.get("experiment_type"), str) else None,
+        default_cell_line_or_model=design.get("cell_line_or_model") if isinstance(design.get("cell_line_or_model"), str) else None,
+        default_reporters=design.get("reporters") if isinstance(design.get("reporters"), list) else [],
+        default_conditions=design.get("conditions") if isinstance(design.get("conditions"), list) else [],
+        default_events=design.get("events") if isinstance(design.get("events"), list) else [],
+        default_reminders=[
+            event for event in design.get("events", [])
+            if isinstance(event, dict) and (event.get("reminder_enabled") or event.get("alert_enabled"))
+        ] if isinstance(design.get("events"), list) else [],
+        tags=["saved design"],
+        created_by=str(user.get("display_name") or user.get("email") or ""),
+        owner_user_id=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+
+
+def _create_design_from_template(template: dict[str, object], request: TemplateCreateDesignRequest) -> ExperimentDesignResponse:
+    """Create a concrete experiment design by copying a reusable template."""
+
+    design = create_experiment_design(
+        ExperimentDesignRequest(
+            title=request.title or str(template.get("name") or "Experiment design"),
+            experiment_type=template.get("experiment_type") if isinstance(template.get("experiment_type"), str) else None,
+            cell_line_or_model=request.cell_line_or_model
+            or (template.get("default_cell_line_or_model") if isinstance(template.get("default_cell_line_or_model"), str) else None),
+            reporters=request.reporters if request.reporters is not None else list(template.get("default_reporters") or []),
+            description=template.get("description") if isinstance(template.get("description"), str) else None,
+            start_date=request.start_date,
+            status=request.status,
+        )
+    )
+    store = SQLiteStore(settings=settings)
+    condition_by_name: dict[str, dict[str, object]] = {}
+    for condition in template.get("default_conditions") or []:
+        if not isinstance(condition, dict):
+            continue
+        saved_condition = _save_design_condition(
+            store,
+            design.design_id,
+            DesignConditionRequest(
+                condition_name=str(condition.get("condition_name") or condition.get("name") or "Condition"),
+                treatment=condition.get("treatment") if isinstance(condition.get("treatment"), str) else None,
+                dose=condition.get("dose") if isinstance(condition.get("dose"), str) else None,
+                units=condition.get("units") if isinstance(condition.get("units"), str) else None,
+                start_day=condition.get("start_day") if isinstance(condition.get("start_day"), str) else None,
+                end_day=condition.get("end_day") if isinstance(condition.get("end_day"), str) else None,
+                notes=condition.get("notes") if isinstance(condition.get("notes"), str) else None,
+                replicate_count=condition.get("replicate_count") if isinstance(condition.get("replicate_count"), int) else None,
+                sample_count=condition.get("sample_count") if isinstance(condition.get("sample_count"), int) else None,
+            ),
+        )
+        condition_by_name[str(saved_condition.get("condition_name"))] = saved_condition
+    first_condition = next(iter(condition_by_name.values()), None)
+    for event in template.get("default_events") or []:
+        if not isinstance(event, dict):
+            continue
+        condition = condition_by_name.get(str(event.get("condition_name") or "")) or first_condition
+        _save_design_event(
+            store,
+            design.design_id,
+            DesignEventRequest(
+                condition_id=str(condition.get("condition_id")) if condition else None,
+                day=str(event.get("day") or "D0"),
+                event_type=str(event.get("event_type") or "custom"),
+                title=str(event.get("title") or "Template event"),
+                description=event.get("description") if isinstance(event.get("description"), str) else None,
+                required=bool(event.get("required", True)),
+                alert_enabled=bool(event.get("alert_enabled") or event.get("reminder_enabled")),
+                reminder_enabled=bool(event.get("reminder_enabled") or event.get("alert_enabled")),
+                reminder_offset_days=int(event.get("reminder_offset_days") or event.get("alert_offset_days") or 0),
+            ),
+        )
+    return ExperimentDesignResponse(**_design_or_404(store, design.design_id))
+
+
 def _designs_for_reminders(workspace_id: str | None = None) -> list[dict[str, object]]:
     """Return fully-loaded designs for reminder endpoints."""
 
@@ -6340,6 +6483,102 @@ def experiment_methods_materials(
     }
 
 
+@app.get("/experiment-design-templates", response_model=list[ExperimentDesignTemplateResponse], tags=["experiment-design-templates"])
+def experiment_design_templates(workspace_id: str | None = Query(default=None)) -> list[ExperimentDesignTemplateResponse]:
+    """Return built-in and saved experiment design templates."""
+
+    store = SQLiteStore(settings=settings)
+    templates = [ExperimentDesignTemplateResponse(**template) for template in _builtin_design_templates()]
+    templates.extend(
+        ExperimentDesignTemplateResponse(**template)
+        for template in store.list_experiment_design_templates(workspace_id=_current_workspace_id(workspace_id))
+    )
+    return templates
+
+
+@app.post("/experiment-design-templates", response_model=ExperimentDesignTemplateResponse, tags=["experiment-design-templates"])
+def create_experiment_design_template(request: ExperimentDesignTemplateRequest) -> ExperimentDesignTemplateResponse:
+    """Create a reusable experiment design template."""
+
+    if not request.name.strip():
+        raise HTTPException(status_code=400, detail="Template name is required.")
+    user, workspace = _current_user_workspace_metadata()
+    store = SQLiteStore(settings=settings)
+    template = store.save_experiment_design_template(
+        name=request.name.strip(),
+        description=request.description,
+        experiment_type=request.experiment_type,
+        default_cell_line_or_model=request.default_cell_line_or_model,
+        default_reporters=request.default_reporters,
+        default_conditions=request.default_conditions,
+        default_events=request.default_events,
+        default_reminders=request.default_reminders,
+        tags=request.tags,
+        created_by=request.created_by or str(user.get("display_name") or user.get("email") or ""),
+        owner_user_id=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    return ExperimentDesignTemplateResponse(**template)
+
+
+@app.get("/experiment-design-templates/{template_id}", response_model=ExperimentDesignTemplateResponse, tags=["experiment-design-templates"])
+def experiment_design_template_detail(template_id: str) -> ExperimentDesignTemplateResponse:
+    """Return one reusable experiment design template."""
+
+    return ExperimentDesignTemplateResponse(**_experiment_design_template_or_404(SQLiteStore(settings=settings), template_id))
+
+
+@app.put("/experiment-design-templates/{template_id}", response_model=ExperimentDesignTemplateResponse, tags=["experiment-design-templates"])
+def update_experiment_design_template(template_id: str, request: ExperimentDesignTemplateRequest) -> ExperimentDesignTemplateResponse:
+    """Update a saved experiment design template."""
+
+    if template_id.startswith("builtin:"):
+        raise HTTPException(status_code=400, detail="Built-in design templates cannot be edited directly.")
+    store = SQLiteStore(settings=settings)
+    if store.get_experiment_design_template(template_id) is None:
+        raise HTTPException(status_code=404, detail=f"Experiment design template not found: {template_id}")
+    user, workspace = _current_user_workspace_metadata()
+    template = store.save_experiment_design_template(
+        template_id=template_id,
+        name=request.name.strip(),
+        description=request.description,
+        experiment_type=request.experiment_type,
+        default_cell_line_or_model=request.default_cell_line_or_model,
+        default_reporters=request.default_reporters,
+        default_conditions=request.default_conditions,
+        default_events=request.default_events,
+        default_reminders=request.default_reminders,
+        tags=request.tags,
+        created_by=request.created_by or str(user.get("display_name") or user.get("email") or ""),
+        owner_user_id=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    return ExperimentDesignTemplateResponse(**template)
+
+
+@app.delete("/experiment-design-templates/{template_id}", tags=["experiment-design-templates"])
+def delete_experiment_design_template(template_id: str) -> dict[str, object]:
+    """Delete a saved experiment design template."""
+
+    if template_id.startswith("builtin:"):
+        raise HTTPException(status_code=400, detail="Built-in design templates cannot be deleted.")
+    store = SQLiteStore(settings=settings)
+    if not store.delete_experiment_design_template(template_id):
+        raise HTTPException(status_code=404, detail=f"Experiment design template not found: {template_id}")
+    return {"deleted": True, "template_id": template_id}
+
+
+@app.post("/experiment-design-templates/{template_id}/create-design", response_model=ExperimentDesignResponse, tags=["experiment-design-templates"])
+def create_design_from_experiment_design_template(
+    template_id: str,
+    request: TemplateCreateDesignRequest | None = Body(default=None),
+) -> ExperimentDesignResponse:
+    """Create a concrete experiment design from a reusable template."""
+
+    template = _experiment_design_template_or_404(SQLiteStore(settings=settings), template_id)
+    return _create_design_from_template(template, request or TemplateCreateDesignRequest())
+
+
 @app.get("/experiment-designs", response_model=list[ExperimentDesignResponse], tags=["experiment-designs"])
 def experiment_designs(
     status: str | None = Query(default=None),
@@ -6672,6 +6911,16 @@ def delete_experiment_design(design_id: str) -> dict[str, object]:
     if not store.delete_experiment_design(design_id):
         raise HTTPException(status_code=404, detail=f"Experiment design not found: {design_id}")
     return {"deleted": True, "design_id": design_id}
+
+
+@app.post("/experiment-designs/{design_id}/save-template", response_model=ExperimentDesignTemplateResponse, tags=["experiment-designs", "experiment-design-templates"])
+def save_experiment_design_as_template(design_id: str, request: SaveDesignAsTemplateRequest | None = Body(default=None)) -> ExperimentDesignTemplateResponse:
+    """Save an existing concrete design as a reusable template."""
+
+    store = SQLiteStore(settings=settings)
+    design = _design_or_404(store, design_id)
+    template = _save_current_design_as_template(store, design, name=request.name if request else None)
+    return ExperimentDesignTemplateResponse(**template)
 
 
 @app.post("/experiment-designs/{design_id}/conditions", tags=["experiment-designs"])

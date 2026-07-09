@@ -13,6 +13,7 @@ const state = {
   purchaseRequests: [],
   receiving: [],
   experimentDesigns: [],
+  experimentDesignTemplates: [],
   designDueToday: null,
   designUpcoming: null,
   designImportPreview: null,
@@ -83,6 +84,7 @@ const views = {
   reasoning: $("#reasoningView"),
   planner: $("#plannerView"),
   "design-planner": $("#designPlannerView"),
+  "design-templates": $("#designTemplatesView"),
   extensions: $("#extensionsView"),
   settings: $("#settingsView"),
 };
@@ -1815,6 +1817,7 @@ function renderDesignPlanner() {
   renderDesignReminderCards();
   renderDesignSelect();
   renderDesignImportPreview();
+  renderDesignTemplates();
   const target = $("#designList");
   if (!target) return;
   const designs = state.experimentDesigns || [];
@@ -1871,6 +1874,7 @@ function renderExperimentDesign(design) {
       <div class="entry-actions compact-actions">
         <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-csv">Export CSV</a>
         <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-ics">Export Calendar</a>
+        <button type="button" class="secondary-button" data-save-design-template="${escapeHtml(design.design_id)}">Save as Template</button>
       </div>
       <p class="muted-note">${design.start_date ? "Calendar export creates an importable .ics file; it does not sync live." : "Calendar export requires a start date so relative days can become real dates."}</p>
       <div class="item-list">
@@ -1888,6 +1892,44 @@ function renderExperimentDesign(design) {
       </details>
     </article>
   `;
+}
+
+function renderDesignTemplates() {
+  const target = $("#designTemplateList");
+  if (!target) return;
+  const templates = state.experimentDesignTemplates || [];
+  target.innerHTML = templates.length
+    ? templates.map((template) => `
+      <article class="record-card">
+        <div class="panel-heading compact-heading">
+          <div>
+            <p class="eyebrow">${escapeHtml(template.is_builtin ? "Built-in" : "Saved template")}</p>
+            <h3>${escapeHtml(template.name)}</h3>
+          </div>
+          <button type="button" data-create-design-template="${escapeHtml(template.template_id)}">Create from Template</button>
+        </div>
+        <p>${escapeHtml(template.description || "Reusable experiment design template.")}</p>
+        <div class="meta">
+          ${template.experiment_type ? `<span class="tag">${escapeHtml(template.experiment_type)}</span>` : ""}
+          ${(template.tags || []).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}
+          <span class="tag">${escapeHtml((template.default_conditions || []).length)} condition(s)</span>
+          <span class="tag">${escapeHtml((template.default_events || []).length)} event(s)</span>
+        </div>
+        <details>
+          <summary>Template preview</summary>
+          <div class="item-list">
+            ${(template.default_conditions || []).map((condition) => `
+              <div class="item-link"><strong>${escapeHtml(condition.condition_name || condition.name || "Condition")}</strong><span>${escapeHtml([condition.treatment, condition.start_day, condition.end_day].filter(Boolean).join(" · "))}</span></div>
+            `).join("") || `<div class="empty-state">No default conditions.</div>`}
+            ${(template.default_events || []).map((event) => `
+              <div class="item-link"><strong>${escapeHtml(event.day || "D0")} ${escapeHtml(event.title || "Event")}</strong><span>${escapeHtml(event.event_type || "custom")}</span></div>
+            `).join("") || `<div class="empty-state">No default events.</div>`}
+          </div>
+        </details>
+        ${template.is_builtin ? "" : `<button type="button" class="secondary-button" data-delete-design-template="${escapeHtml(template.template_id)}">Delete Template</button>`}
+      </article>
+    `).join("")
+    : `<div class="empty-state">No experiment design templates available.</div>`;
 }
 
 function groupDesignEvents(design) {
@@ -2164,6 +2206,38 @@ async function saveDesignImportTemplate() {
     body: JSON.stringify({ name, mapping, provider: "experiment_designs" }),
   });
   $("#designPlannerStatus").textContent = `Saved design import template: ${name}`;
+  await refreshData();
+}
+
+async function createDesignFromTemplate(templateId) {
+  const template = (state.experimentDesignTemplates || []).find((item) => item.template_id === templateId);
+  const title = window.prompt("New design title", template ? `${template.name} design` : "New experiment design");
+  if (title === null) return;
+  const startDate = window.prompt("Start date (YYYY-MM-DD, optional)", "");
+  const saved = await requestJson(`/experiment-design-templates/${encodeURIComponent(templateId)}/create-design`, {
+    method: "POST",
+    body: JSON.stringify({ title: title.trim() || null, start_date: startDate.trim() || null, status: "draft" }),
+  });
+  $("#designPlannerStatus") && ($("#designPlannerStatus").textContent = `Created design from template: ${saved.title}`);
+  await refreshData();
+  window.location.hash = "#/design-planner";
+}
+
+async function saveCurrentDesignAsTemplate(designId) {
+  const design = (state.experimentDesigns || []).find((item) => item.design_id === designId);
+  const name = window.prompt("Template name", design ? `${design.title} template` : "Experiment design template");
+  if (name === null) return;
+  await requestJson(`/experiment-designs/${encodeURIComponent(designId)}/save-template`, {
+    method: "POST",
+    body: JSON.stringify({ name: name.trim() || null }),
+  });
+  $("#designPlannerStatus").textContent = `Saved template: ${name || "Experiment design template"}`;
+  await refreshData();
+}
+
+async function deleteDesignTemplate(templateId) {
+  if (!window.confirm("Delete this saved design template?")) return;
+  await requestJson(`/experiment-design-templates/${encodeURIComponent(templateId)}`, { method: "DELETE" });
   await refreshData();
 }
 
@@ -4887,7 +4961,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, designDueToday, designUpcoming, designImportTemplates, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, experimentDesignTemplates, designDueToday, designUpcoming, designImportTemplates, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4903,6 +4977,7 @@ async function refreshData() {
     requestJson("/purchase-requests"),
     requestJson("/receiving"),
     requestJson("/experiment-designs"),
+    requestJson("/experiment-design-templates"),
     requestJson("/experiment-designs/reminders/due-today"),
     requestJson("/experiment-designs/reminders/upcoming?days=7"),
     requestJson("/experiment-designs/import-templates"),
@@ -4933,6 +5008,7 @@ async function refreshData() {
   state.purchaseRequests = purchaseRequests;
   state.receiving = receiving;
   state.experimentDesigns = experimentDesigns;
+  state.experimentDesignTemplates = experimentDesignTemplates;
   state.designDueToday = designDueToday;
   state.designUpcoming = designUpcoming;
   state.designImportTemplates = designImportTemplates;
@@ -5382,6 +5458,27 @@ $("#designImportForm")?.addEventListener("submit", (event) => {
   importDesignCsv().catch((error) => {
     $("#designPlannerStatus").textContent = `Design import failed: ${error.message}`;
   });
+});
+$("#designList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-save-design-template]");
+  if (!button) return;
+  saveCurrentDesignAsTemplate(button.dataset.saveDesignTemplate).catch((error) => {
+    $("#designPlannerStatus").textContent = `Save template failed: ${error.message}`;
+  });
+});
+$("#designTemplateList")?.addEventListener("click", (event) => {
+  const createButton = event.target.closest("[data-create-design-template]");
+  const deleteButton = event.target.closest("[data-delete-design-template]");
+  if (createButton) {
+    createDesignFromTemplate(createButton.dataset.createDesignTemplate).catch((error) => {
+      alert(`Create from template failed: ${error.message}`);
+    });
+  }
+  if (deleteButton) {
+    deleteDesignTemplate(deleteButton.dataset.deleteDesignTemplate).catch((error) => {
+      alert(`Delete template failed: ${error.message}`);
+    });
+  }
 });
 $("#checkDesignBalanceButton")?.addEventListener("click", () => {
   checkSelectedDesignBalance().catch((error) => {
