@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${RESEARCHOS_DEV_PORT:-8001}"
-HOST="${RESEARCHOS_DEV_HOST:-127.0.0.1}"
+PORT="${PORT:-${RESEARCHOS_DEV_PORT:-8001}}"
+HOST="${HOST:-${RESEARCHOS_DEV_HOST:-127.0.0.1}}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PID_FILE="$ROOT_DIR/.researchos-dev.pid"
 

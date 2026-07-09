@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${RESEARCHOS_DEV_PORT:-8001}"
-HOST="${RESEARCHOS_DEV_HOST:-127.0.0.1}"
-HEALTH_URL="http://$HOST:$PORT/health"
+PORT="${PORT:-${RESEARCHOS_DEV_PORT:-8001}}"
+HOST="${HOST:-${RESEARCHOS_DEV_HOST:-127.0.0.1}}"
+HEALTH_HOST="$HOST"
+if [ "$HOST" = "0.0.0.0" ] || [ "$HOST" = "::" ]; then
+  HEALTH_HOST="127.0.0.1"
+fi
+HEALTH_URL="http://$HEALTH_HOST:$PORT/health"
 
 find_port_pids() {
   local pids=""

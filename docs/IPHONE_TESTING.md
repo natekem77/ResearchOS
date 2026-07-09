@@ -85,7 +85,7 @@ HOST=0.0.0.0 PORT=8001 PUBLIC_BASE_URL=http://<mac-lan-ip>:8001 ./scripts/run_se
 Or for dev scripts:
 
 ```bash
-RESEARCHOS_DEV_HOST=0.0.0.0 RESEARCHOS_DEV_PORT=8001 PUBLIC_BASE_URL=http://<mac-lan-ip>:8001 ./scripts/demo.sh
+HOST=0.0.0.0 PORT=8001 PUBLIC_BASE_URL=http://<mac-lan-ip>:8001 ./scripts/demo.sh
 ```
 
 Find the Mac LAN IP:

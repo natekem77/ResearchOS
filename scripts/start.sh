@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${RESEARCHOS_DEV_PORT:-8001}"
-HOST="${RESEARCHOS_DEV_HOST:-127.0.0.1}"
+PORT="${PORT:-${RESEARCHOS_DEV_PORT:-8001}}"
+HOST="${HOST:-${RESEARCHOS_DEV_HOST:-127.0.0.1}}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="$ROOT_DIR/backend"
 PID_FILE="$ROOT_DIR/.researchos-dev.pid"
@@ -37,6 +37,9 @@ fi
 
 cd "$BACKEND_DIR"
 source .venv/bin/activate
+
+export RESEARCHOS_API_HOST="$HOST"
+export RESEARCHOS_API_PORT="$PORT"
 
 nohup python -m uvicorn app.main:app --host "$HOST" --port "$PORT" > "$LOG_FILE" 2>&1 &
 PID="$!"

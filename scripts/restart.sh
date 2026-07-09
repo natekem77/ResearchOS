@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PORT="${RESEARCHOS_DEV_PORT:-8001}"
-HOST="${RESEARCHOS_DEV_HOST:-127.0.0.1}"
+PORT="${PORT:-${RESEARCHOS_DEV_PORT:-8001}}"
+HOST="${HOST:-${RESEARCHOS_DEV_HOST:-127.0.0.1}}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_FILE="$ROOT_DIR/.researchos-dev.log"
-HEALTH_URL="http://$HOST:$PORT/health"
+HEALTH_HOST="$HOST"
+if [ "$HOST" = "0.0.0.0" ] || [ "$HOST" = "::" ]; then
+  HEALTH_HOST="127.0.0.1"
+fi
+HEALTH_URL="http://$HEALTH_HOST:$PORT/health"
 
 "$ROOT_DIR/scripts/stop.sh"
 "$ROOT_DIR/scripts/start.sh"
