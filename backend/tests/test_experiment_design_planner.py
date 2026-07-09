@@ -57,11 +57,16 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                 reminders = main.experiment_design_reminders(include_drafts=False, workspace_id=None)
                 reminder_due = main.experiment_design_reminders_due_today(workspace_id=None)
                 reminder_upcoming = main.experiment_design_reminders_upcoming(days=7, workspace_id=None)
+                exported_ics = main.export_experiment_design_ics(design.design_id)
+                exported_reminders_ics = main.export_experiment_design_reminders_ics(workspace_id=None, include_drafts=False)
                 completed = main.complete_experiment_design_reminder(str(event["event_id"]))
                 dismissed = main.dismiss_experiment_design_reminder(str(event["event_id"]))
                 due = main.experiment_designs_due_today(workspace_id=None)
                 upcoming = main.experiment_designs_upcoming(days=7, workspace_id=None)
                 exported = main.export_experiment_design_csv(design.design_id)
+                undated = main.create_experiment_design(main.ExperimentDesignRequest(title="Undated design"))
+                with self.assertRaises(main.HTTPException) as missing_start_date:
+                    main.export_experiment_design_ics(undated.design_id)
                 preview = main.preview_experiment_design_import(
                     main.DesignImportRequest(
                         csv_text="condition,day,event_type,treatment,dose,units,replicate,alert_enabled\n"
@@ -102,6 +107,11 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
         self.assertGreaterEqual(due["count"], 0)
         self.assertEqual(upcoming["count"], 0)
         self.assertIn("DMSO control", exported.body.decode("utf-8"))
+        self.assertIn("BEGIN:VCALENDAR", exported_ics.body.decode("utf-8"))
+        self.assertIn("D1 SAG rescue", exported_ics.body.decode("utf-8"))
+        self.assertIn("BEGIN:VEVENT", exported_reminders_ics.body.decode("utf-8"))
+        self.assertEqual(missing_start_date.exception.status_code, 400)
+        self.assertIn("start_date", missing_start_date.exception.detail)
         self.assertEqual(preview["inferred_conditions"], ["BMP4 pulse"])
         self.assertEqual(imported.title, "Imported BMP4 design")
         self.assertEqual(factorial["condition_count"], 4)

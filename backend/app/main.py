@@ -32,10 +32,12 @@ from app.experiment_design_planner import (
     copilot_design_checks,
     design_calendar,
     design_to_csv,
+    design_to_ics,
     due_events,
     full_factorial,
     parse_design_csv,
     preview_design_import,
+    reminders_to_ics,
 )
 from app.experiment_extraction import extract_experiment
 from app.experiment_lifecycle import (
@@ -6379,6 +6381,25 @@ def experiment_design_reminders_upcoming(
     return {"days": days, "count": len(events), "reminders": events}
 
 
+@app.get("/experiment-designs/reminders/export-ics", tags=["experiment-designs"])
+def export_experiment_design_reminders_ics(
+    workspace_id: str | None = Query(default=None),
+    include_drafts: bool = Query(default=False),
+) -> Response:
+    """Export dated experiment design reminders as an importable calendar file."""
+
+    reminders = all_reminders(_designs_for_reminders(workspace_id), include_drafts=include_drafts)
+    try:
+        calendar_text = reminders_to_ics(reminders, require_all_dates=False)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Response(
+        content=calendar_text,
+        media_type="text/calendar",
+        headers={"Content-Disposition": 'attachment; filename="researchos_experiment_design_reminders.ics"'},
+    )
+
+
 @app.post("/experiment-designs/reminders/{event_id}/complete", tags=["experiment-designs"])
 def complete_experiment_design_reminder(event_id: str) -> dict[str, object]:
     """Complete a design reminder."""
@@ -6558,6 +6579,23 @@ def export_experiment_design_csv(design_id: str) -> Response:
         content=design_to_csv(design),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="researchos_experiment_design.csv"'},
+    )
+
+
+@app.get("/experiment-designs/{design_id}/export-ics", tags=["experiment-designs"])
+def export_experiment_design_ics(design_id: str) -> Response:
+    """Export one design's dated reminders as an importable calendar file."""
+
+    design = _design_or_404(SQLiteStore(settings=settings), design_id)
+    try:
+        calendar_text = design_to_ics(design)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(design.get("title") or design_id)).strip("_") or "experiment_design"
+    return Response(
+        content=calendar_text,
+        media_type="text/calendar",
+        headers={"Content-Disposition": f'attachment; filename="{filename}.ics"'},
     )
 
 

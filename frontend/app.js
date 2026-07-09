@@ -1837,6 +1837,11 @@ function renderDesignReminderCards() {
       <div class="provider-card-header"><span>Upcoming</span><strong>${escapeHtml(state.designUpcoming?.count ?? 0)}</strong></div>
       <p>Next 7 days</p>
     </article>
+    <article class="provider-card">
+      <div class="provider-card-header"><span>Calendar export</span><strong>.ics</strong></div>
+      <p>Download reminders for Outlook, Google Calendar, or Apple Calendar. This is a file export, not live sync.</p>
+      <a class="secondary-link-button" href="/experiment-designs/reminders/export-ics">Export All Reminders</a>
+    </article>
   `;
 }
 
@@ -1863,7 +1868,11 @@ function renderExperimentDesign(design) {
         ${design.linked_experiment_id ? `<span class="tag">${escapeHtml(design.linked_experiment_id)}</span>` : ""}
       </div>
       <p>${escapeHtml(design.description || "")}</p>
-      <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-csv">Export CSV</a>
+      <div class="entry-actions compact-actions">
+        <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-csv">Export CSV</a>
+        <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(design.design_id)}/export-ics">Export Calendar</a>
+      </div>
+      <p class="muted-note">${design.start_date ? "Calendar export creates an importable .ics file; it does not sync live." : "Calendar export requires a start date so relative days can become real dates."}</p>
       <div class="item-list">
         ${(design.conditions || []).map((condition) => `
           <div class="item-link"><strong>${escapeHtml(condition.condition_name)}</strong><span>${escapeHtml([condition.treatment, condition.dose, condition.units, condition.start_day].filter(Boolean).join(" · "))}</span></div>

@@ -6,8 +6,9 @@ import csv
 import io
 import itertools
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 
 
 EVENT_TYPES = {
@@ -153,6 +154,141 @@ def design_to_csv(design: dict[str, Any]) -> str:
                     }
                 )
     return output.getvalue()
+
+
+def _ics_escape(value: Any) -> str:
+    """Escape text for RFC 5545 calendar fields."""
+
+    text = str(value or "")
+    return text.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _ics_fold(line: str) -> list[str]:
+    """Fold long ICS lines using the continuation format calendars expect."""
+
+    if len(line) <= 75:
+        return [line]
+    folded = [line[:75]]
+    remaining = line[75:]
+    while remaining:
+        folded.append(f" {remaining[:74]}")
+        remaining = remaining[74:]
+    return folded
+
+
+def _ics_date(value: date) -> str:
+    """Format a date as an all-day ICS date."""
+
+    return value.strftime("%Y%m%d")
+
+
+def _ics_timestamp() -> str:
+    """Return a UTC timestamp for DTSTAMP."""
+
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _calendar_event_description(design: dict[str, Any], event: dict[str, Any], condition: dict[str, Any] | None) -> str:
+    """Create a traceable description for a calendar reminder."""
+
+    parts = [
+        str(event.get("description") or "").strip(),
+        f"Design ID: {design.get('design_id')}",
+        f"Linked experiment: {design.get('linked_experiment_id') or 'not linked'}",
+        f"Day: {day_label(event.get('day'))}",
+        f"Event type: {event.get('event_type') or 'custom'}",
+        f"Status: {event.get('reminder_status') or 'pending'}",
+    ]
+    if condition:
+        parts.extend(
+            [
+                f"Condition: {condition.get('condition_name')}",
+                f"Treatment: {' '.join(str(value or '') for value in [condition.get('treatment'), condition.get('dose'), condition.get('units')]).strip() or 'not specified'}",
+            ]
+        )
+    return "\n".join(part for part in parts if part)
+
+
+def design_to_ics(design: dict[str, Any]) -> str:
+    """Export one design's dated reminder events as an ICS calendar."""
+
+    if not design.get("start_date"):
+        raise ValueError("Calendar export requires a design start_date so relative design days can become real calendar dates.")
+
+    reminders = all_reminders([design], include_drafts=True)
+    return reminders_to_ics(
+        reminders,
+        calendar_name=f"ResearchOS - {design.get('title') or 'Experiment Design'}",
+        filename_hint=str(design.get("design_id") or "experiment_design"),
+    )
+
+
+def reminders_to_ics(
+    reminders: list[dict[str, Any]],
+    calendar_name: str = "ResearchOS Experiment Design Reminders",
+    filename_hint: str = "experiment_design_reminders",
+    require_all_dates: bool = True,
+) -> str:
+    """Export dated reminder payloads as an ICS calendar file."""
+
+    missing = sorted(
+        {
+            str(reminder.get("design_id") or "unknown design")
+            for reminder in reminders
+            if not reminder.get("due_date")
+        }
+    )
+    if missing and require_all_dates:
+        raise ValueError(
+            "Calendar export requires start_date on every exported design. "
+            f"Missing calendar dates for: {', '.join(missing)}."
+        )
+    dated_reminders = [reminder for reminder in reminders if reminder.get("due_date")]
+    if not dated_reminders:
+        missing_text = f" Missing calendar dates for: {', '.join(missing)}." if missing else ""
+        raise ValueError(f"Calendar export requires at least one reminder with a real calendar date.{missing_text}")
+
+    timestamp = _ics_timestamp()
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//ResearchOS//Experiment Design Calendar//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        f"X-WR-CALNAME:{_ics_escape(calendar_name)}",
+        f"X-RESEARCHOS-FILE:{_ics_escape(filename_hint)}",
+    ]
+    for reminder in dated_reminders:
+        design = reminder.get("design") or {}
+        event = reminder.get("event") or {}
+        condition = reminder.get("condition") or {}
+        due = date.fromisoformat(str(reminder["due_date"]))
+        end = due + timedelta(days=1)
+        condition_name = reminder.get("condition_name") or condition.get("condition_name")
+        title_parts = [
+            design.get("title") or reminder.get("design_title") or "Experiment design",
+            condition_name,
+            event.get("event_type") or reminder.get("event_type") or "event",
+            day_label(event.get("day") or reminder.get("day")),
+        ]
+        summary = " - ".join(str(part) for part in title_parts if part)
+        description = _calendar_event_description(design, event, condition)
+        uid = f"{event.get('event_id') or uuid4()}@researchos.local"
+        event_lines = [
+            "BEGIN:VEVENT",
+            f"UID:{_ics_escape(uid)}",
+            f"DTSTAMP:{timestamp}",
+            f"DTSTART;VALUE=DATE:{_ics_date(due)}",
+            f"DTEND;VALUE=DATE:{_ics_date(end)}",
+            f"SUMMARY:{_ics_escape(summary)}",
+            f"DESCRIPTION:{_ics_escape(description)}",
+            f"CATEGORIES:{_ics_escape(event.get('event_type') or reminder.get('event_type') or 'experiment_design')}",
+            f"STATUS:{'CANCELLED' if reminder.get('reminder_status') == 'dismissed' else 'CONFIRMED'}",
+            "END:VEVENT",
+        ]
+        lines.extend(line for event_line in event_lines for line in _ics_fold(event_line))
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
 
 
 def parse_design_csv(csv_text: str) -> list[dict[str, str]]:

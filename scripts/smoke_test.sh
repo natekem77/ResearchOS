@@ -117,6 +117,8 @@ request GET "/experiment-designs/$SMOKE_DESIGN_ID" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/timeline" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/calendar" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/export-csv" >/dev/null
+request GET "/experiment-designs/$SMOKE_DESIGN_ID/export-ics" >/dev/null
+request GET "/experiment-designs/reminders/export-ics" >/dev/null
 request POST "/experiment-designs/reminders/$SMOKE_DESIGN_EVENT_ID/complete" "{}" >/dev/null
 request POST "/experiment-designs/reminders/$SMOKE_DESIGN_EVENT_ID/dismiss" "{}" >/dev/null
 request POST "/experiment-designs/import-preview" '{"csv_text":"condition,day,event_type,treatment,dose,units,replicate,alert_enabled\nSmoke BMP4,D9,treatment,BMP4,10,ng/mL,1,true\n"}' >/dev/null

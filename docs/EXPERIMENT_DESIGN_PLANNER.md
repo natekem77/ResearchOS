@@ -160,6 +160,21 @@ Example reminder events:
 
 Push notifications and Google/Outlook calendar sync are intentionally not implemented yet.
 
+## Calendar Export
+
+ResearchOS can export dated design reminders as `.ics` calendar files for Outlook, Google Calendar, and Apple Calendar.
+
+```bash
+curl http://127.0.0.1:8001/experiment-designs/{design_id}/export-ics
+curl http://127.0.0.1:8001/experiment-designs/reminders/export-ics
+```
+
+Calendar export requires `start_date` on each exported design. If a single design has no `start_date`, ResearchOS returns a clear error because relative labels such as `D1` or `D32` cannot be placed on a real calendar. The all-reminders export includes dated reminders and skips undated relative reminders.
+
+This creates a one-time calendar file. It does not create live Google Calendar, Outlook, Apple Calendar, or push-notification sync.
+
+See [CALENDAR_EXPORT.md](CALENDAR_EXPORT.md) for import instructions.
+
 ## Design of Experiments Foundation
 
 Current helpers are intentionally basic:
@@ -178,8 +193,8 @@ Future DoE work can add randomization, blocking, power calculations, blinded sam
 
 ## Future Roadmap
 
-- calendar export
 - push/mobile reminders
+- live Google/Outlook/Apple Calendar sync
 - session-event completion from Bench Mode
 - linked experiment creation
 - plate maps and sample labels
