@@ -106,10 +106,19 @@ curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/media-change \
 curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/voice-note \
   -H "Content-Type: application/json" \
   -d '{"transcript":"Placeholder transcript.","placeholder":true}'
+curl -X POST http://127.0.0.1:8001/voice/draft \
+  -H "Content-Type: application/json" \
+  -d '{"transcript":"Observation SIX6 reporter looks brighter after SAG.","session_id":"{session_id}","experiment_id":"NK_Expt_31"}'
+curl -X POST http://127.0.0.1:8001/voice/confirm \
+  -H "Content-Type: application/json" \
+  -d '{"command_type":"observation","transcript":"Observation SIX6 reporter looks brighter after SAG.","parsed_fields":{"note":"Observation SIX6 reporter looks brighter after SAG."},"session_id":"{session_id}","experiment_id":"NK_Expt_31"}'
 curl -X POST http://127.0.0.1:8001/mobile/sessions/{session_id}/attach-placeholder \
   -H "Content-Type: application/json" \
   -d '{"attachment_type":"image","title":"Image placeholder","notes":"Camera capture pending."}'
 ```
+
+`/voice/draft` is review-only and does not write records. `/voice/confirm`
+is the save step used by the Flutter Voice Assistant after transcript review.
 
 Generic note and end-session endpoints:
 

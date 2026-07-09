@@ -13,6 +13,7 @@ import 'screens/resources_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/server_connection_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/whiteboard_screen.dart';
 import 'widgets/app_scaffold.dart';
 
 void main() {
@@ -76,6 +77,7 @@ class ResearchOsHome extends StatelessWidget {
     final screens = [
       MorningBriefScreen(api: api),
       IntelligenceFeedScreen(api: api),
+      WhiteboardScreen(api: api),
       BenchModeScreen(api: api),
       NewExperimentWizardScreen(api: api),
       ExperimentsScreen(api: api),
@@ -88,6 +90,7 @@ class ResearchOsHome extends StatelessWidget {
     final titles = [
       'Morning Brief',
       'Intelligence',
+      'Whiteboard',
       'Bench Mode',
       'New Experiment',
       'Experiments',

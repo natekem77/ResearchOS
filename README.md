@@ -125,6 +125,7 @@ when the Flutter app runs on the same machine as the backend.
 See [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md),
 [docs/MOBILE_API.md](docs/MOBILE_API.md),
 [docs/BENCH_MODE.md](docs/BENCH_MODE.md), and
+[docs/VOICE_ASSISTANT.md](docs/VOICE_ASSISTANT.md), and
 [docs/NEW_EXPERIMENT_WIZARD.md](docs/NEW_EXPERIMENT_WIZARD.md). The reusable Flutter design system is
 documented in [docs/DESIGN_SYSTEM.md](docs/DESIGN_SYSTEM.md) and
 [docs/MOBILE_DESIGN_SYSTEM.md](docs/MOBILE_DESIGN_SYSTEM.md).
@@ -180,6 +181,7 @@ Release notes:
 - [docs/EXTENSION_SDK.md](docs/EXTENSION_SDK.md)
 - [docs/UNIVERSAL_SEARCH.md](docs/UNIVERSAL_SEARCH.md)
 - [docs/DAILY_DASHBOARD.md](docs/DAILY_DASHBOARD.md)
+- [docs/LAB_WHITEBOARD.md](docs/LAB_WHITEBOARD.md)
 - [docs/LAB_INTELLIGENCE.md](docs/LAB_INTELLIGENCE.md)
 - [docs/OVERNIGHT_INTELLIGENCE.md](docs/OVERNIGHT_INTELLIGENCE.md)
 - [docs/MOBILE_PWA.md](docs/MOBILE_PWA.md)
@@ -188,6 +190,7 @@ Release notes:
 - [docs/MOBILE_API.md](docs/MOBILE_API.md)
 - [docs/FLUTTER_APP.md](docs/FLUTTER_APP.md)
 - [docs/BENCH_MODE.md](docs/BENCH_MODE.md)
+- [docs/VOICE_ASSISTANT.md](docs/VOICE_ASSISTANT.md)
 - [docs/NEW_EXPERIMENT_WIZARD.md](docs/NEW_EXPERIMENT_WIZARD.md)
 - [docs/RESEARCH_RESOURCES.md](docs/RESEARCH_RESOURCES.md)
 - [docs/INVENTORY_AND_PURCHASING.md](docs/INVENTORY_AND_PURCHASING.md)

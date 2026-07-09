@@ -24,7 +24,7 @@ class ResearchOsScaffold extends StatelessWidget {
         actions: [
           IconButton(
             tooltip: 'Search',
-            onPressed: () => onDestinationSelected(7),
+            onPressed: () => onDestinationSelected(8),
             icon: const Icon(Icons.manage_search_outlined),
           ),
         ],
@@ -61,6 +61,10 @@ class ResearchOsScaffold extends StatelessWidget {
               icon: Icon(Icons.bolt_outlined),
               selectedIcon: Icon(Icons.bolt),
               label: 'Intel'),
+          NavigationDestination(
+              icon: Icon(Icons.tv_outlined),
+              selectedIcon: Icon(Icons.tv),
+              label: 'Board'),
           NavigationDestination(
               icon: Icon(Icons.home_outlined),
               selectedIcon: Icon(Icons.home),

@@ -25,6 +25,7 @@
 
         <nav class="side-nav" aria-label="Primary navigation">
           <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+          <a href="#/whiteboard" data-nav="whiteboard">Whiteboard</a>
           <a href="#/new-experiment" data-nav="new-experiment">New Experiment</a>
           <a href="#/sessions" data-nav="sessions">Sessions</a>
           <a href="#/saved-drafts" data-nav="saved-drafts">Saved Drafts</a>
@@ -49,6 +50,7 @@
           <a href="#/chat" data-nav="chat">AI Chat</a>
           <a href="#/reasoning" data-nav="reasoning">Scientific Reasoning</a>
           <a href="#/planner" data-nav="planner">Experiment Planner</a>
+          <a href="#/visual-builder" data-nav="visual-builder">Visual Builder</a>
           <a href="#/design-planner" data-nav="design-planner">Design Planner</a>
           <a href="#/design-templates" data-nav="design-templates">Design Templates</a>
           <a href="#/plate-layouts" data-nav="plate-layouts">Plate Layouts</a>
@@ -85,6 +87,22 @@
             <span><strong>Markdown demo</strong> Active</span>
             <span><strong>OneNote</strong> Pending login/approval</span>
             <span><strong>AI</strong> Optional / not configured</span>
+          </section>
+
+          <section class="view" id="whiteboardView">
+            <section class="whiteboard-shell" aria-live="polite">
+              <div class="whiteboard-header">
+                <div>
+                  <p class="eyebrow">Laboratory Whiteboard</p>
+                  <h2>Shared lab situational awareness</h2>
+                  <p id="whiteboardGenerated">Loading whiteboard...</p>
+                </div>
+                <div class="whiteboard-controls" id="whiteboardRotationControls"></div>
+              </div>
+              <section class="whiteboard-metrics" id="whiteboardMetrics"></section>
+              <section class="whiteboard-rotation" id="whiteboardRotation"></section>
+              <section class="whiteboard-grid" id="whiteboardSections"></section>
+            </section>
           </section>
 
           <section class="view active" id="dashboardView">
@@ -1202,6 +1220,42 @@
             </article>
           </section>
 
+          <section class="view" id="visualBuilderView">
+            <article class="panel">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Visual Experiment Builder</p>
+                  <h2>Build designs from branches</h2>
+                </div>
+              </div>
+              <p class="muted-note">Create branching conditions with nodes and connections, then generate a normal Experiment Design, timeline, reminders, and optional plate layout.</p>
+              <div class="entry-actions compact-actions">
+                <button type="button" id="visualBuilderSeedButton">Load Example</button>
+                <button type="button" class="secondary-button" id="visualBuilderAddBranchButton">Duplicate Branch</button>
+                <button type="button" class="secondary-button" id="visualBuilderUndoButton">Undo</button>
+                <button type="button" class="secondary-button" id="visualBuilderRedoButton">Redo</button>
+                <button type="button" class="secondary-button" id="visualBuilderSaveButton">Save Canvas</button>
+                <button type="button" id="visualBuilderGenerateButton">Generate Design</button>
+              </div>
+              <div class="form-grid">
+                <div><label for="visualBuilderTitle">Title</label><input id="visualBuilderTitle" type="text" placeholder="D1 SAG branch design" /></div>
+                <div><label for="visualBuilderStartDate">Start date</label><input id="visualBuilderStartDate" type="date" /></div>
+                <div><label for="visualBuilderPlateFormat">Plate format</label><input id="visualBuilderPlateFormat" type="text" value="96-well" /></div>
+              </div>
+              <div class="builder-shell" style="display:grid;grid-template-columns:minmax(0,1fr) 220px;gap:12px;">
+                <div id="visualBuilderCanvas" class="visual-builder-canvas" style="min-height:420px;overflow:auto;border:1px solid #d9e2e7;border-radius:12px;background:#f8fafb;position:relative;padding:18px;"></div>
+                <aside class="provider-card">
+                  <div class="provider-card-header"><span>Mini-map</span><strong id="visualBuilderNodeCount">0</strong></div>
+                  <div id="visualBuilderMiniMap" style="min-height:120px;border:1px solid #d9e2e7;border-radius:8px;background:#fff;"></div>
+                  <p class="muted-note">Drag support is scaffolded in the saved coordinates; tap nodes to rename or delete.</p>
+                </aside>
+              </div>
+              <p class="demo-status" id="visualBuilderStatus"></p>
+              <div class="preview-panel" id="visualBuilderPreview"></div>
+              <div class="item-list" id="visualBuilderList"></div>
+            </article>
+          </section>
+
           <section class="view" id="settingsView">
             <article class="panel">
               <div class="panel-heading">
@@ -1334,6 +1388,7 @@
 
     <nav class="mobile-bottom-nav" aria-label="Mobile primary navigation">
       <a href="#/dashboard" data-nav="dashboard">Dashboard</a>
+      <a href="#/whiteboard" data-nav="whiteboard">Whiteboard</a>
       <a href="#/experiments" data-nav="experiments">Experiments</a>
       <a href="#/workflows" data-nav="workflows">Workflows</a>
       <a href="#/new-experiment" data-nav="new-experiment">New Entry</a>

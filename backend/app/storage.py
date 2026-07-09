@@ -649,6 +649,25 @@ class SQLiteStore:
 
                 CREATE INDEX IF NOT EXISTS idx_plate_layouts_design
                     ON plate_layouts(design_id);
+
+                CREATE TABLE IF NOT EXISTS visual_experiment_builders (
+                    builder_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    nodes_json TEXT NOT NULL DEFAULT '[]',
+                    connections_json TEXT NOT NULL DEFAULT '[]',
+                    generated_design_id TEXT,
+                    generated_plate_layout_id TEXT,
+                    warnings_json TEXT NOT NULL DEFAULT '[]',
+                    created_by TEXT,
+                    owner_user_id TEXT,
+                    workspace_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_visual_builders_title
+                    ON visual_experiment_builders(title);
                 """
             )
             self._ensure_permission_columns(connection)
@@ -656,7 +675,7 @@ class SQLiteStore:
     def _ensure_permission_columns(self, connection: sqlite3.Connection) -> None:
         """Add nullable owner columns to existing local databases."""
 
-        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "receiving_records", "purchase_import_templates", "design_import_templates", "experiment_design_templates", "plate_layouts"]:
+        for table in ["experiments", "pending_entries", "assets", "experiment_sessions", "workflow_states", "resources", "inventory_items", "inventory_usage", "purchase_records", "purchase_requests", "receiving_records", "purchase_import_templates", "design_import_templates", "experiment_design_templates", "plate_layouts", "visual_experiment_builders"]:
             existing = {
                 str(row["name"])
                 for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
@@ -3157,6 +3176,112 @@ class SQLiteStore:
         record["wells"] = json.loads(record.pop("wells_json", "[]") or "[]")
         record["warnings"] = json.loads(record.pop("warnings_json", "[]") or "[]")
         return record
+
+    def _visual_builder_from_row(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        """Convert a visual builder row into API-friendly data."""
+
+        record = dict(row)
+        record["nodes"] = json.loads(record.pop("nodes_json", "[]") or "[]")
+        record["connections"] = json.loads(record.pop("connections_json", "[]") or "[]")
+        record["warnings"] = json.loads(record.pop("warnings_json", "[]") or "[]")
+        return record
+
+    def save_visual_experiment_builder(
+        self,
+        title: str,
+        description: str | None = None,
+        nodes: list[dict[str, Any]] | None = None,
+        connections: list[dict[str, Any]] | None = None,
+        generated_design_id: str | None = None,
+        generated_plate_layout_id: str | None = None,
+        warnings: list[str] | None = None,
+        builder_id: str | None = None,
+        created_by: str | None = None,
+        owner_user_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update one visual experiment builder canvas."""
+
+        resolved_id = builder_id or f"visual_builder:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT created_at FROM visual_experiment_builders WHERE builder_id = ?",
+                (resolved_id,),
+            ).fetchone()
+            payload = (
+                title,
+                description,
+                json.dumps(nodes or []),
+                json.dumps(connections or []),
+                generated_design_id,
+                generated_plate_layout_id,
+                json.dumps(warnings or []),
+                created_by or owner_user_id,
+                owner_user_id,
+                workspace_id,
+            )
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO visual_experiment_builders (
+                        builder_id, title, description, nodes_json,
+                        connections_json, generated_design_id,
+                        generated_plate_layout_id, warnings_json,
+                        created_by, owner_user_id, workspace_id
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (resolved_id, *payload),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE visual_experiment_builders
+                    SET title = ?,
+                        description = ?,
+                        nodes_json = ?,
+                        connections_json = ?,
+                        generated_design_id = ?,
+                        generated_plate_layout_id = ?,
+                        warnings_json = ?,
+                        created_by = COALESCE(?, created_by),
+                        owner_user_id = COALESCE(?, owner_user_id),
+                        workspace_id = COALESCE(?, workspace_id),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE builder_id = ?
+                    """,
+                    (*payload, resolved_id),
+                )
+        saved = self.get_visual_experiment_builder(resolved_id)
+        if saved is None:
+            raise RuntimeError(f"Visual experiment builder was not saved: {resolved_id}")
+        return saved
+
+    def list_visual_experiment_builders(self, workspace_id: str | None = None) -> list[dict[str, Any]]:
+        """Return visual experiment builder canvases."""
+
+        workspace_clause, workspace_values = self._workspace_clause(workspace_id)
+        where = f"WHERE {workspace_clause}" if workspace_clause else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM visual_experiment_builders {where} ORDER BY updated_at DESC, title ASC",
+                workspace_values,
+            ).fetchall()
+        return [self._visual_builder_from_row(row) for row in rows]
+
+    def get_visual_experiment_builder(self, builder_id: str) -> dict[str, Any] | None:
+        """Return one visual experiment builder canvas."""
+
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM visual_experiment_builders WHERE builder_id = ?", (builder_id,)).fetchone()
+        return self._visual_builder_from_row(row) if row else None
+
+    def delete_visual_experiment_builder(self, builder_id: str) -> bool:
+        """Delete one visual experiment builder canvas."""
+
+        with self._connect() as connection:
+            cursor = connection.execute("DELETE FROM visual_experiment_builders WHERE builder_id = ?", (builder_id,))
+        return cursor.rowcount > 0
 
     def save_plate_layout(
         self,

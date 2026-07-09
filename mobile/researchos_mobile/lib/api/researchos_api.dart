@@ -50,6 +50,10 @@ class ResearchOsApi {
         '/mobile/intelligence/morning?period=${Uri.encodeQueryComponent(period)}');
   }
 
+  Future<Map<String, dynamic>> whiteboard() {
+    return _getMap('/whiteboard');
+  }
+
   Future<Map<String, dynamic>> dismissIntelligenceItem(String itemId) {
     return _postMap(
       '/mobile/intelligence/feed/${Uri.encodeComponent(itemId)}/dismiss',
@@ -314,6 +318,48 @@ class ResearchOsApi {
         if (transcript != null && transcript.trim().isNotEmpty)
           'transcript': transcript.trim(),
         'placeholder': placeholder,
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> draftVoiceCommand({
+    required String transcript,
+    String? sessionId,
+    String? experimentId,
+  }) {
+    return _postMap(
+      '/voice/draft',
+      {
+        'transcript': transcript,
+        if (sessionId != null && sessionId.trim().isNotEmpty)
+          'session_id': sessionId.trim(),
+        if (experimentId != null && experimentId.trim().isNotEmpty)
+          'experiment_id': experimentId.trim(),
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> confirmVoiceCommand({
+    required String commandType,
+    required String transcript,
+    required Map<String, dynamic> parsedFields,
+    String? voiceSessionId,
+    String? sessionId,
+    String? experimentId,
+  }) {
+    return _postMap(
+      '/voice/confirm',
+      {
+        'command_type': commandType,
+        'transcript': transcript,
+        'parsed_fields': parsedFields,
+        'create_notebook_draft': true,
+        if (voiceSessionId != null && voiceSessionId.trim().isNotEmpty)
+          'voice_session_id': voiceSessionId.trim(),
+        if (sessionId != null && sessionId.trim().isNotEmpty)
+          'session_id': sessionId.trim(),
+        if (experimentId != null && experimentId.trim().isNotEmpty)
+          'experiment_id': experimentId.trim(),
       },
     );
   }

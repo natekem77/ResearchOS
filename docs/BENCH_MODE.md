@@ -92,9 +92,12 @@ The prototype does not yet access the device microphone, camera, file picker, ba
 
 Current behavior:
 
-- Voice Note immediately calls `POST /mobile/sessions/{session_id}/voice-note`.
-- If speech recognition is unavailable, it appends a placeholder transcript to the active session.
-- This validates the interaction flow without requiring device speech APIs.
+- Voice Note opens the Voice Assistant review sheet.
+- The microphone control is a placeholder for future speech capture.
+- Users can hold the microphone, type, or paste transcript text.
+- `POST /voice/draft` parses the transcript without saving anything.
+- `POST /voice/confirm` saves only after the scientist confirms.
+- Confirmation appends a session timeline event, creates a pending notebook draft, and adds a workflow note when the session is linked to a known experiment.
 
 Future behavior:
 
@@ -102,9 +105,10 @@ Future behavior:
 2. Start speech capture immediately.
 3. Transcribe locally or through a reviewed speech provider.
 4. Show transcript for quick review.
-5. Append transcript to the session timeline.
-6. Optionally generate a structured notebook draft.
-7. Later, after approval, write reviewed entries to OneNote.
+5. Preview the parsed command and suggested corrections.
+6. Confirm to append transcript to the session timeline.
+7. Optionally generate a structured notebook draft.
+8. Later, after approval, write reviewed entries to OneNote.
 
 Voice capture must never silently write final notebook content. The scientist reviews before saving or exporting.
 

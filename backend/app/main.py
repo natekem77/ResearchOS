@@ -117,6 +117,8 @@ from app.storage import SQLiteStore
 from app.universal_search import UniversalSearchService
 from app.users import auth_mode, current_user, normalize_role, user_with_permissions
 from app.vector_index import ChromaVectorIndex
+from app.visual_experiment_builder import compile_visual_builder
+from app.voice_assistant import draft_voice_command, session_event_from_voice_command, supported_speech_providers, voice_markdown_entry
 from app.workflow_engine import WorkflowEngine, experiment_workflow_id
 
 settings = get_settings()
@@ -675,6 +677,8 @@ SessionEventType = Literal[
     "observation",
     "treatment",
     "media_change",
+    "collection",
+    "imaging",
     "image_imported",
     "file_imported",
     "graphpad_imported",
@@ -749,6 +753,41 @@ class MobileAttachPlaceholderRequest(BaseModel):
     attachment_type: Literal["image", "file", "graphpad", "sequencing", "other"] = "file"
     title: str | None = None
     notes: str | None = None
+
+
+class VoiceDraftRequest(BaseModel):
+    """Review-only voice command draft request.
+
+    This request must not modify storage. It exists so users can review the
+    transcript and parsed command before anything is committed.
+    """
+
+    transcript: str | None = None
+    audio_reference: str | None = None
+    session_id: str | None = None
+    experiment_id: str | None = None
+
+
+class VoiceConfirmRequest(BaseModel):
+    """Confirmed voice command that may be committed to ResearchOS."""
+
+    voice_session_id: str | None = None
+    command_type: Literal[
+        "start_experiment",
+        "start_session",
+        "end_session",
+        "observation",
+        "treatment",
+        "media_change",
+        "collection",
+        "imaging",
+        "custom_note",
+    ]
+    transcript: str
+    parsed_fields: dict[str, object] = Field(default_factory=dict)
+    session_id: str | None = None
+    experiment_id: str | None = None
+    create_notebook_draft: bool = True
 
 
 class WizardTreatmentRequest(BaseModel):
@@ -1313,6 +1352,68 @@ class GeneratePlateLayoutRequest(BaseModel):
     randomized: bool = False
     grouped_by_condition: bool = True
     balanced: bool = False
+
+
+class VisualNodeRequest(BaseModel):
+    """One visual experiment builder node."""
+
+    node_id: str
+    type: str
+    label: str
+    properties: dict[str, object] = Field(default_factory=dict)
+    x: float = 0
+    y: float = 0
+
+
+class VisualConnectionRequest(BaseModel):
+    """One visual experiment builder connection."""
+
+    source: str
+    target: str
+    relationship: str = "connects"
+
+
+class VisualExperimentBuilderRequest(BaseModel):
+    """Saved visual experiment builder canvas."""
+
+    title: str
+    description: str | None = None
+    nodes: list[VisualNodeRequest] = Field(default_factory=list)
+    connections: list[VisualConnectionRequest] = Field(default_factory=list)
+    generated_design_id: str | None = None
+    generated_plate_layout_id: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    created_by: str | None = None
+
+
+class VisualExperimentBuilderResponse(BaseModel):
+    """Stored visual experiment builder canvas."""
+
+    builder_id: str
+    title: str
+    description: str | None = None
+    nodes: list[dict[str, object]] = Field(default_factory=list)
+    connections: list[dict[str, object]] = Field(default_factory=list)
+    generated_design_id: str | None = None
+    generated_plate_layout_id: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    created_by: str | None = None
+    owner_user_id: str | None = None
+    workspace_id: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class VisualBuilderGenerateRequest(BaseModel):
+    """Options for compiling a visual builder into ResearchOS artifacts."""
+
+    title: str | None = None
+    start_date: str | None = None
+    status: str = "draft"
+    generate_plate_layout: bool = False
+    plate_format: str = "96-well"
+    randomized_layout: bool = False
+    balanced_layout: bool = True
 
 
 class FullFactorialRequest(BaseModel):
@@ -2635,6 +2736,282 @@ def daily_dashboard(use_ai: bool = Query(True)) -> dict[str, object]:
     return dashboard
 
 
+@app.get("/whiteboard", tags=["whiteboard"])
+def laboratory_whiteboard(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return a TV-friendly situational awareness summary for the laboratory."""
+
+    store = SQLiteStore(settings=settings)
+    workspace_id = workspace_id if isinstance(workspace_id, str) else None
+    resolved_workspace_id = _current_workspace_id(workspace_id)
+    workspace = current_workspace(settings, store)
+    experiments = store.list_experiments(workspace_id=resolved_workspace_id)
+    sessions_list = store.list_sessions(workspace_id=resolved_workspace_id)
+    active_sessions = [session for session in sessions_list if session.get("status") == "active"]
+    designs = _designs_for_reminders(resolved_workspace_id)
+    due_today = due_events(designs, days=0)
+    upcoming = due_events(designs, days=7)
+    inventory_summary = inventory_status_summary(store.list_inventory_items(workspace_id=resolved_workspace_id))
+    purchase_requests = store.list_purchase_requests(workspace_id=resolved_workspace_id)
+    papers = _whiteboard_recent_literature(store, resolved_workspace_id)
+    feed = lab_intelligence_service.build_feed(limit=12, workspace_id=resolved_workspace_id)
+    morning = overnight_intelligence_service.morning_brief(period="today", limit=8, workspace_id=resolved_workspace_id)
+    timeline_events = _whiteboard_recent_timeline(store, experiments)
+
+    treatment_events = _filter_design_events(upcoming, {"treatment", "media_change"})
+    imaging_events = _filter_design_events(upcoming, {"imaging", "fixation", "staining"})
+    collection_events = _filter_design_events(upcoming, {"collection", "sequencing"})
+    active_experiments = [_whiteboard_experiment_card(store, experiment, active_sessions) for experiment in experiments[:10]]
+
+    sections = [
+        _whiteboard_section("active_experiments", "Active Experiments", active_experiments, "science"),
+        _whiteboard_section("todays_tasks", "Today's Tasks", [_whiteboard_reminder_card(item) for item in due_today[:12]], "task"),
+        _whiteboard_section("todays_imaging", "Today's Imaging", [_whiteboard_reminder_card(item) for item in imaging_events[:8]], "image"),
+        _whiteboard_section("todays_collections", "Today's Collections", [_whiteboard_reminder_card(item) for item in collection_events[:8]], "collection"),
+        _whiteboard_section("todays_treatments", "Today's Treatments", [_whiteboard_reminder_card(item) for item in treatment_events[:8]], "treatment"),
+        _whiteboard_section("inventory_alerts", "Inventory Alerts", _whiteboard_inventory_cards(inventory_summary), "inventory"),
+        _whiteboard_section("purchase_requests", "Purchase Requests", [_whiteboard_purchase_request_card(item) for item in purchase_requests[:8]], "purchase"),
+        _whiteboard_section("recent_literature", "Recent Literature", [_whiteboard_literature_card(item) for item in papers[:6]], "literature"),
+        _whiteboard_section("research_copilot", "Research Copilot", _whiteboard_copilot_cards(experiments, inventory_summary, due_today), "copilot"),
+        _whiteboard_section("laboratory_intelligence", "Laboratory Intelligence", [_whiteboard_intelligence_card(item) for item in list(feed.get("items") or [])[:8] if isinstance(item, dict)], "intelligence"),
+    ]
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "workspace": workspace,
+        "display": {
+            "layout": "whiteboard",
+            "refresh_seconds": 60,
+            "rotation_seconds": 20,
+            "high_contrast": True,
+            "dark_mode_ready": True,
+            "tv_friendly": True,
+        },
+        "metrics": {
+            "active_experiments": len(active_experiments),
+            "active_sessions": len(active_sessions),
+            "due_today": len(due_today),
+            "upcoming": len(upcoming),
+            "inventory_alerts": len(_whiteboard_inventory_cards(inventory_summary)),
+            "purchase_requests": len(purchase_requests),
+            "recent_literature": len(papers),
+            "intelligence_items": feed.get("total_items", 0),
+        },
+        "sections": sections,
+        "rotation": [
+            {"id": "dashboard", "title": "Dashboard", "sections": ["active_experiments", "todays_tasks", "laboratory_intelligence"]},
+            {"id": "timeline", "title": "Timeline", "events": timeline_events[:12]},
+            {"id": "experiment_status", "title": "Experiment Status", "sections": ["active_experiments", "todays_imaging", "todays_treatments"]},
+            {"id": "inventory", "title": "Inventory", "sections": ["inventory_alerts", "purchase_requests"]},
+            {"id": "morning_brief", "title": "Morning Brief", "summary": morning.get("summary"), "items": _whiteboard_morning_items(morning)},
+        ],
+        "empty_state": "No active lab activity is available yet. Load demo data, start sessions, or activate experiment designs.",
+    }
+
+
+def _whiteboard_section(section_id: str, title: str, cards: list[dict[str, object]], icon: str) -> dict[str, object]:
+    """Return a consistent display section for the laboratory whiteboard."""
+
+    return {
+        "id": section_id,
+        "title": title,
+        "icon": icon,
+        "count": len(cards),
+        "cards": cards,
+        "empty_message": f"No {title.lower()} right now.",
+    }
+
+
+def _whiteboard_card(
+    title: object,
+    subtitle: object = "",
+    *,
+    status: object = "",
+    priority: str = "normal",
+    route: str | None = None,
+    metadata: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Return one display-ready whiteboard card."""
+
+    return {
+        "title": str(title or "Untitled"),
+        "subtitle": str(subtitle or ""),
+        "status": str(status or ""),
+        "priority": priority,
+        "route": route,
+        "metadata": metadata or {},
+    }
+
+
+def _whiteboard_experiment_card(
+    store: SQLiteStore,
+    experiment: dict[str, object],
+    active_sessions: list[dict[str, object]],
+) -> dict[str, object]:
+    """Summarize one experiment for display."""
+
+    workflow = WorkflowEngine(store).workflow_for_experiment(experiment)
+    experiment_refs = _experiment_reference_aliases(experiment)
+    has_active_session = any(str(session.get("experiment_id") or "") in experiment_refs for session in active_sessions)
+    compounds = ", ".join(list(experiment.get("compounds") or [])[:3]) if isinstance(experiment.get("compounds"), list) else ""
+    markers = ", ".join(list(experiment.get("markers") or [])[:3]) if isinstance(experiment.get("markers"), list) else ""
+    return _whiteboard_card(
+        experiment.get("experiment_id") or experiment.get("title") or experiment.get("id"),
+        " / ".join(part for part in [compounds, markers] if part) or experiment.get("title") or "",
+        status="Active session" if has_active_session else str(workflow.get("current_stage") or "Planning"),
+        priority="high" if has_active_session else "normal",
+        route=f"#/experiments/{experiment.get('id')}/workspace",
+        metadata={"experiment_id": experiment.get("id"), "workflow_stage": workflow.get("current_stage")},
+    )
+
+
+def _whiteboard_reminder_card(event: dict[str, object]) -> dict[str, object]:
+    """Summarize an experiment design reminder."""
+
+    return _whiteboard_card(
+        event.get("title") or event.get("event_type") or "Design event",
+        " / ".join(str(part) for part in [event.get("design_title"), event.get("condition_name"), event.get("day")] if part),
+        status=event.get("reminder_status") or event.get("status") or event.get("due_date") or "scheduled",
+        priority="high" if event.get("reminder_status") in {"due", "overdue"} else "normal",
+        route=f"#/design-planner",
+        metadata={key: value for key, value in event.items() if key in {"design_id", "event_id", "event_type", "due_date", "day"}},
+    )
+
+
+def _filter_design_events(events: list[dict[str, object]], event_types: set[str]) -> list[dict[str, object]]:
+    """Return reminders whose event type belongs on a specific whiteboard panel."""
+
+    return [event for event in events if str(event.get("event_type") or "").lower() in event_types]
+
+
+def _whiteboard_inventory_cards(summary: dict[str, object]) -> list[dict[str, object]]:
+    """Return top inventory alerts."""
+
+    cards: list[dict[str, object]] = []
+    for key, label, priority in [
+        ("reorder_needed", "Reorder needed", "high"),
+        ("expired", "Expired", "critical"),
+        ("expiring_soon", "Expiring soon", "high"),
+        ("low_stock", "Low stock", "high"),
+    ]:
+        for item in list(summary.get(key) or [])[:4]:
+            if isinstance(item, dict):
+                cards.append(
+                    _whiteboard_card(
+                        item.get("name") or item.get("item_id"),
+                        " / ".join(str(part) for part in [item.get("vendor"), item.get("storage_location")] if part),
+                        status=label,
+                        priority=priority,
+                        route="#/inventory",
+                        metadata={"item_id": item.get("item_id"), "quantity": item.get("quantity")},
+                    )
+                )
+    return cards[:10]
+
+
+def _whiteboard_purchase_request_card(request: dict[str, object]) -> dict[str, object]:
+    """Summarize one purchase request."""
+
+    return _whiteboard_card(
+        request.get("item_name") or request.get("request_id"),
+        " / ".join(str(part) for part in [request.get("vendor"), request.get("grant_or_funding_source")] if part),
+        status=request.get("status") or "draft",
+        priority="high" if request.get("status") in {"submitted", "approved"} else "normal",
+        route="#/purchases",
+        metadata={"request_id": request.get("request_id"), "estimated_cost": request.get("estimated_cost")},
+    )
+
+
+def _whiteboard_literature_card(paper: dict[str, object]) -> dict[str, object]:
+    """Summarize one recent paper/literature record."""
+
+    return _whiteboard_card(
+        paper.get("title") or paper.get("document_id") or "Literature",
+        " / ".join(str(part) for part in [paper.get("year"), paper.get("journal")] if part),
+        status="Literature",
+        priority="normal",
+        route="#/literature",
+        metadata={"paper_id": paper.get("paper_id") or paper.get("id"), "doi": paper.get("doi")},
+    )
+
+
+def _whiteboard_recent_literature(store: SQLiteStore, workspace_id: str | None) -> list[dict[str, object]]:
+    """Return recent literature summaries from provider-agnostic documents."""
+
+    papers: list[dict[str, object]] = []
+    for document in store.list_documents(workspace_id=workspace_id):
+        if document.get("provider") != "literature":
+            continue
+        detail = store.get_document(str(document["id"]))
+        if detail is not None:
+            papers.append(_paper_summary(detail))
+    return papers[:12]
+
+
+def _whiteboard_intelligence_card(item: dict[str, object]) -> dict[str, object]:
+    """Summarize one Laboratory Intelligence feed item."""
+
+    return _whiteboard_card(
+        item.get("title") or item.get("item_type") or "Intelligence",
+        item.get("summary") or "",
+        status=item.get("priority") or item.get("item_type") or "",
+        priority=str(item.get("priority") or "normal").lower(),
+        route=item.get("route") if isinstance(item.get("route"), str) else "#/dashboard",
+        metadata={"item_id": item.get("item_id"), "item_type": item.get("item_type")},
+    )
+
+
+def _whiteboard_copilot_cards(
+    experiments: list[dict[str, object]],
+    inventory_summary: dict[str, object],
+    due_today: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Create deterministic Copilot cards from actual records only."""
+
+    cards = [
+        _whiteboard_card("Experiments indexed", f"{len(experiments)} experiments available for review.", status="Observed", priority="normal"),
+    ]
+    if due_today:
+        cards.append(_whiteboard_card("Tasks due today", f"{len(due_today)} design reminders need attention.", status="Suggested action", priority="high"))
+    reorder_count = int(inventory_summary.get("reorder_needed_count") or 0)
+    if reorder_count:
+        cards.append(_whiteboard_card("Inventory needs ordering", f"{reorder_count} inventory items are at or below reorder threshold.", status="Suggested action", priority="high"))
+    return cards[:6]
+
+
+def _whiteboard_recent_timeline(store: SQLiteStore, experiments: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Return recent timeline cards across experiments."""
+
+    events: list[dict[str, object]] = []
+    for experiment in experiments[:8]:
+        timeline = _experiment_timeline(store, experiment)
+        for event in list(timeline.get("events") or [])[-5:]:
+            if isinstance(event, dict):
+                events.append(
+                    _whiteboard_card(
+                        event.get("title") or event.get("event_type"),
+                        event.get("description") or "",
+                        status=event.get("timestamp") or "",
+                        priority="normal",
+                        route=f"#/experiments/{experiment.get('id')}/workspace",
+                        metadata={"event_type": event.get("event_type"), "experiment_id": experiment.get("id")},
+                    )
+                )
+    return events[-20:]
+
+
+def _whiteboard_morning_items(morning: dict[str, object]) -> list[dict[str, object]]:
+    """Flatten morning brief sections into display cards."""
+
+    cards: list[dict[str, object]] = []
+    for key in ["new_experiments", "updated_experiments", "missing_analyses", "new_literature", "knowledge_graph_changes", "resource_alerts", "research_copilot_insights", "suggested_priorities"]:
+        for item in list(morning.get(key) or [])[:4]:
+            if isinstance(item, dict):
+                cards.append(_whiteboard_card(item.get("title") or key.replace("_", " ").title(), item.get("summary") or item.get("description") or "", status=key.replace("_", " ").title()))
+            else:
+                cards.append(_whiteboard_card(key.replace("_", " ").title(), item, status="Morning Brief"))
+    return cards[:12]
+
+
 @app.get("/intelligence/feed", tags=["intelligence"])
 def laboratory_intelligence_feed(
     item_type: str | None = Query(default=None),
@@ -3661,6 +4038,171 @@ def append_session_event(session_id: str, request: SessionEventAppendRequest) ->
     return SessionEventResponse(**event)
 
 
+@app.get("/voice/speech-providers", tags=["voice"])
+def voice_speech_providers() -> dict[str, object]:
+    """Return current and planned speech providers for the voice assistant."""
+
+    return {
+        "active_provider": "placeholder",
+        "cloud_speech_required": False,
+        "providers": supported_speech_providers(),
+        "confirmation_required": True,
+    }
+
+
+@app.post("/voice/draft", tags=["voice"])
+def voice_draft(request: VoiceDraftRequest) -> dict[str, object]:
+    """Parse a transcript into a reviewable command without saving anything."""
+
+    transcript = request.transcript.strip() if request.transcript else ""
+    audio_reference = request.audio_reference.strip() if request.audio_reference else None
+    if not transcript and not audio_reference:
+        raise HTTPException(status_code=400, detail="Voice draft requires a transcript or audio reference placeholder.")
+    return draft_voice_command(
+        transcript=transcript,
+        audio_reference=audio_reference,
+        session_id=request.session_id,
+        experiment_id=request.experiment_id,
+    )
+
+
+@app.post("/voice/confirm", tags=["voice"])
+def voice_confirm(request: VoiceConfirmRequest) -> dict[str, object]:
+    """Commit a confirmed voice command to session, timeline, draft, and workflow records."""
+
+    transcript = request.transcript.strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="Confirmed voice transcript must not be empty.")
+
+    store = SQLiteStore(settings=settings)
+    session_id = request.session_id.strip() if request.session_id else None
+    experiment_id = request.experiment_id.strip() if request.experiment_id else None
+    parsed_fields = dict(request.parsed_fields)
+    if not experiment_id and isinstance(parsed_fields.get("experiment_id"), str):
+        experiment_id = str(parsed_fields["experiment_id"]).strip() or None
+
+    session_payload: dict[str, object] | None = None
+    ended_session_payload: dict[str, object] | None = None
+    event_payload: dict[str, object] | None = None
+    draft_payload: dict[str, object] | None = None
+    workflow_payload: dict[str, object] | None = None
+
+    if request.command_type in {"start_session", "start_experiment"} and not session_id:
+        session = start_session(SessionStartRequest(experiment_id=experiment_id, notes=transcript)).model_dump()
+        session_id = str(session["session_id"])
+        session_payload = session
+    elif request.command_type == "end_session":
+        session_id = session_id or _active_session_id(store)
+        if session_id is None:
+            raise HTTPException(status_code=400, detail="No active session is available to end.")
+        ended_session_payload = end_session(session_id, SessionEndRequest(notes=transcript)).model_dump()
+    else:
+        session_id = session_id or _active_session_id(store)
+        if session_id is None:
+            raise HTTPException(status_code=400, detail="No active session is available. Start a session before confirming voice notes.")
+
+    if session_id is not None:
+        event_request = session_event_from_voice_command(request.command_type, transcript, parsed_fields)
+        event = append_session_event(
+            session_id,
+            SessionEventAppendRequest(
+                event_type=event_request["event_type"],  # type: ignore[arg-type]
+                title=str(event_request["title"]),
+                content=str(event_request["content"]),
+                metadata=dict(event_request["metadata"]),
+            ),
+        )
+        event_payload = event.model_dump()
+        session_record = store.get_session(session_id)
+        if not experiment_id and session_record is not None:
+            experiment_id = str(session_record.get("experiment_id") or "") or None
+
+    if request.create_notebook_draft:
+        user = _current_user_payload()
+        workspace = user.get("current_workspace") if isinstance(user.get("current_workspace"), dict) else {}
+        title = f"Voice {request.command_type.replace('_', ' ').title()}"
+        draft = store.save_pending_entry(
+            title=title,
+            experiment_id=experiment_id,
+            template="voice_assistant",
+            structured={
+                "voice_session_id": request.voice_session_id,
+                "command_type": request.command_type,
+                "transcript": transcript,
+                "parsed_fields": parsed_fields,
+                "requires_confirmation_before_commit": True,
+            },
+            markdown=voice_markdown_entry(request.command_type, transcript, parsed_fields),
+            status="draft",
+            owner_user_id=str(user.get("user_id")),
+            created_by=str(user.get("user_id")),
+            workspace_id=str(workspace.get("workspace_id") or ""),
+        )
+        draft_payload = draft
+        _publish_event(
+            EventType.DRAFT_CREATED,
+            "voice_assistant",
+            {"entry_id": draft.get("id"), "session_id": session_id, "experiment_id": experiment_id},
+        )
+
+    workflow_payload = _add_voice_workflow_note(store, experiment_id, request.command_type, transcript, session_id)
+
+    return {
+        "committed": True,
+        "requires_confirmation": False,
+        "voice_session_id": request.voice_session_id,
+        "command_type": request.command_type,
+        "session_id": session_id,
+        "session": session_payload,
+        "ended_session": ended_session_payload,
+        "session_event": event_payload,
+        "timeline_updated": event_payload is not None,
+        "notebook_draft": draft_payload,
+        "workflow_update": workflow_payload,
+        "message": "Confirmed voice command saved. The original transcript was preserved unchanged.",
+    }
+
+
+def _active_session_id(store: SQLiteStore) -> str | None:
+    """Return the current workspace's active session ID, if one exists."""
+
+    active = next((session for session in store.list_sessions(workspace_id=_current_workspace_id()) if session.get("status") == "active"), None)
+    return str(active["session_id"]) if active else None
+
+
+def _add_voice_workflow_note(
+    store: SQLiteStore,
+    experiment_reference: str | None,
+    command_type: str,
+    transcript: str,
+    session_id: str | None,
+) -> dict[str, object]:
+    """Attach confirmed voice context to the experiment workflow when possible."""
+
+    if not experiment_reference:
+        return {"updated": False, "message": "No experiment reference was available for workflow update."}
+    experiment = store.find_experiment_by_reference(experiment_reference)
+    if experiment is None:
+        return {"updated": False, "message": f"No extracted experiment matched {experiment_reference}; workflow note was not created."}
+    workflow = WorkflowEngine(store).workflow_for_experiment(experiment)
+    updated = WorkflowEngine(store).add_note(
+        str(workflow["workflow_id"]),
+        f"Voice {command_type.replace('_', ' ')}: {transcript}",
+        actor="VoiceAssistant",
+        metadata={"session_id": session_id, "command_type": command_type, "source": "voice_assistant"},
+    )
+    _publish_event(
+        EventType.WORKFLOW_NOTE_ADDED,
+        "voice_assistant",
+        {"workflow_id": updated.get("workflow_id"), "experiment_id": experiment.get("id"), "session_id": session_id},
+    )
+    return {
+        "updated": True,
+        "workflow_id": updated.get("workflow_id"),
+        "current_stage": updated.get("current_stage"),
+    }
+
+
 @app.get("/entries", response_model=list[PendingEntrySummaryResponse], tags=["entries"])
 def pending_entries(workspace_id: str | None = Query(default=None)) -> list[PendingEntrySummaryResponse]:
     """List locally saved pending notebook-entry drafts."""
@@ -4504,6 +5046,149 @@ def _save_plate_layout_request(
         owner_user_id=str(user.get("user_id") or ""),
         workspace_id=str(workspace.get("workspace_id") or ""),
     )
+
+
+def _save_visual_builder_request(
+    store: SQLiteStore,
+    request: VisualExperimentBuilderRequest,
+    builder_id: str | None = None,
+) -> dict[str, object]:
+    """Persist a visual experiment builder canvas."""
+
+    if not request.title.strip():
+        raise HTTPException(status_code=400, detail="Visual builder title is required.")
+    user, workspace = _current_user_workspace_metadata()
+    nodes = [node.model_dump() for node in request.nodes]
+    connections = [connection.model_dump() for connection in request.connections]
+    return store.save_visual_experiment_builder(
+        builder_id=builder_id,
+        title=request.title.strip(),
+        description=request.description,
+        nodes=nodes,
+        connections=connections,
+        generated_design_id=request.generated_design_id,
+        generated_plate_layout_id=request.generated_plate_layout_id,
+        warnings=request.warnings,
+        created_by=request.created_by or str(user.get("display_name") or user.get("email") or ""),
+        owner_user_id=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+
+
+def _visual_builder_or_404(store: SQLiteStore, builder_id: str) -> dict[str, object]:
+    """Return a visual builder or raise 404."""
+
+    builder = store.get_visual_experiment_builder(builder_id)
+    if builder is None:
+        raise HTTPException(status_code=404, detail=f"Visual experiment builder not found: {builder_id}")
+    return builder
+
+
+def _generate_from_visual_builder(
+    store: SQLiteStore,
+    builder: dict[str, object],
+    request: VisualBuilderGenerateRequest,
+) -> dict[str, object]:
+    """Compile a visual builder into a concrete design and optional plate layout."""
+
+    compiled = compile_visual_builder(
+        builder.get("nodes") if isinstance(builder.get("nodes"), list) else [],
+        builder.get("connections") if isinstance(builder.get("connections"), list) else [],
+    )
+    design = create_experiment_design(
+        ExperimentDesignRequest(
+            title=request.title or str(compiled.get("title") or builder.get("title") or "Visual experiment design"),
+            experiment_type=compiled.get("experiment_type") if isinstance(compiled.get("experiment_type"), str) else "visual_builder",
+            cell_line_or_model=compiled.get("cell_line_or_model") if isinstance(compiled.get("cell_line_or_model"), str) else None,
+            reporters=compiled.get("reporters") if isinstance(compiled.get("reporters"), list) else [],
+            description=f"Generated from visual builder {builder.get('builder_id')}.",
+            start_date=request.start_date,
+            status=request.status,
+        )
+    )
+    condition_by_name: dict[str, dict[str, object]] = {}
+    for condition in compiled.get("conditions", []):
+        if not isinstance(condition, dict):
+            continue
+        saved_condition = _save_design_condition(
+            store,
+            design.design_id,
+            DesignConditionRequest(
+                condition_name=str(condition.get("condition_name") or "Condition"),
+                treatment=condition.get("treatment") if isinstance(condition.get("treatment"), str) else None,
+                dose=condition.get("dose") if isinstance(condition.get("dose"), str) else None,
+                units=condition.get("units") if isinstance(condition.get("units"), str) else None,
+                start_day=condition.get("start_day") if isinstance(condition.get("start_day"), str) else None,
+                end_day=condition.get("end_day") if isinstance(condition.get("end_day"), str) else None,
+                notes=condition.get("notes") if isinstance(condition.get("notes"), str) else None,
+                replicate_count=condition.get("replicate_count") if isinstance(condition.get("replicate_count"), int) else 1,
+                sample_count=condition.get("sample_count") if isinstance(condition.get("sample_count"), int) else 1,
+            ),
+        )
+        condition_by_name[str(saved_condition.get("condition_name"))] = saved_condition
+    first_condition = next(iter(condition_by_name.values()), None)
+    for event in compiled.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        condition = condition_by_name.get(str(event.get("condition_name") or "")) or first_condition
+        _save_design_event(
+            store,
+            design.design_id,
+            DesignEventRequest(
+                condition_id=str(condition.get("condition_id")) if condition else None,
+                day=str(event.get("day") or "D0"),
+                event_type=str(event.get("event_type") or "custom"),
+                title=str(event.get("title") or "Visual event"),
+                description=event.get("description") if isinstance(event.get("description"), str) else None,
+                required=bool(event.get("required", True)),
+                alert_enabled=bool(event.get("alert_enabled") or event.get("reminder_enabled")),
+                reminder_enabled=bool(event.get("reminder_enabled") or event.get("alert_enabled")),
+            ),
+        )
+    full_design = _design_or_404(store, design.design_id)
+    plate_layout = None
+    if request.generate_plate_layout:
+        generated_layout = generate_plate_layout(
+            full_design,
+            format_name=request.plate_format,
+            randomized=request.randomized_layout,
+            balanced=request.balanced_layout,
+            grouped_by_condition=not request.randomized_layout,
+            title=f"{full_design.get('title')} layout",
+        )
+        user, workspace = _current_user_workspace_metadata()
+        plate_layout = store.save_plate_layout(
+            design_id=design.design_id,
+            title=str(generated_layout["title"]),
+            format=str(generated_layout["format"]),
+            rows=int(generated_layout["rows"]),
+            columns=int(generated_layout["columns"]),
+            wells=generated_layout["wells"],
+            warnings=generated_layout["warnings"],
+            created_by=str(user.get("display_name") or user.get("email") or ""),
+            owner_user_id=str(user.get("user_id") or ""),
+            workspace_id=str(workspace.get("workspace_id") or ""),
+        )
+    updated_builder = store.save_visual_experiment_builder(
+        builder_id=str(builder.get("builder_id")),
+        title=str(builder.get("title") or ""),
+        description=builder.get("description") if isinstance(builder.get("description"), str) else None,
+        nodes=builder.get("nodes") if isinstance(builder.get("nodes"), list) else [],
+        connections=builder.get("connections") if isinstance(builder.get("connections"), list) else [],
+        generated_design_id=design.design_id,
+        generated_plate_layout_id=str(plate_layout.get("layout_id")) if plate_layout else None,
+        warnings=compiled.get("warnings") if isinstance(compiled.get("warnings"), list) else [],
+        created_by=builder.get("created_by") if isinstance(builder.get("created_by"), str) else None,
+        owner_user_id=builder.get("owner_user_id") if isinstance(builder.get("owner_user_id"), str) else None,
+        workspace_id=builder.get("workspace_id") if isinstance(builder.get("workspace_id"), str) else None,
+    )
+    return {
+        "builder": updated_builder,
+        "compiled": compiled,
+        "design": _design_or_404(store, design.design_id),
+        "plate_layout": plate_layout,
+        "timeline": build_design_timeline(_design_or_404(store, design.design_id)),
+    }
 
 
 def _designs_for_reminders(workspace_id: str | None = None) -> list[dict[str, object]]:
@@ -5665,6 +6350,25 @@ def _experiment_timeline(
             }
         )
 
+    for session in store.list_sessions():
+        session_experiment_id = str(session.get("experiment_id") or "")
+        if session_experiment_id not in experiment_references:
+            continue
+        for session_event in store.session_timeline(str(session["session_id"])):
+            events.append(
+                {
+                    "timestamp": _timeline_timestamp(session_event.get("created_at")),
+                    "event_type": str(session_event.get("event_type") or "session_event"),
+                    "title": str(session_event.get("title") or "Session event"),
+                    "description": str(session_event.get("content") or "Session event recorded in ResearchOS."),
+                    "source": "experiment_session",
+                    "linked_asset_ids": [str(session_event.get("asset_id"))] if session_event.get("asset_id") else [],
+                    "linked_document_ids": [],
+                    "session_id": str(session["session_id"]),
+                    "session_event_id": str(session_event.get("event_id") or ""),
+                }
+            )
+
     for lifecycle_event in store.experiment_lifecycle_history(str(experiment["id"])):
         from_stage = lifecycle_event.get("from_stage")
         to_stage = lifecycle_event.get("to_stage")
@@ -6764,6 +7468,75 @@ def export_plate_layout_csv(layout_id: str) -> Response:
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="researchos_plate_layout.csv"'},
     )
+
+
+@app.get("/visual-experiment-builders", response_model=list[VisualExperimentBuilderResponse], tags=["visual-builder"])
+def visual_experiment_builders(workspace_id: str | None = Query(default=None)) -> list[VisualExperimentBuilderResponse]:
+    """List saved visual experiment builder canvases."""
+
+    store = SQLiteStore(settings=settings)
+    return [
+        VisualExperimentBuilderResponse(**builder)
+        for builder in store.list_visual_experiment_builders(workspace_id=_current_workspace_id(workspace_id))
+    ]
+
+
+@app.post("/visual-experiment-builders", response_model=VisualExperimentBuilderResponse, tags=["visual-builder"])
+def create_visual_experiment_builder(request: VisualExperimentBuilderRequest) -> VisualExperimentBuilderResponse:
+    """Create a visual experiment builder canvas."""
+
+    store = SQLiteStore(settings=settings)
+    return VisualExperimentBuilderResponse(**_save_visual_builder_request(store, request))
+
+
+@app.get("/visual-experiment-builders/{builder_id}", response_model=VisualExperimentBuilderResponse, tags=["visual-builder"])
+def visual_experiment_builder_detail(builder_id: str) -> VisualExperimentBuilderResponse:
+    """Return one visual experiment builder canvas."""
+
+    return VisualExperimentBuilderResponse(**_visual_builder_or_404(SQLiteStore(settings=settings), builder_id))
+
+
+@app.put("/visual-experiment-builders/{builder_id}", response_model=VisualExperimentBuilderResponse, tags=["visual-builder"])
+def update_visual_experiment_builder(builder_id: str, request: VisualExperimentBuilderRequest) -> VisualExperimentBuilderResponse:
+    """Update one visual experiment builder canvas."""
+
+    store = SQLiteStore(settings=settings)
+    _visual_builder_or_404(store, builder_id)
+    return VisualExperimentBuilderResponse(**_save_visual_builder_request(store, request, builder_id=builder_id))
+
+
+@app.delete("/visual-experiment-builders/{builder_id}", tags=["visual-builder"])
+def delete_visual_experiment_builder(builder_id: str) -> dict[str, object]:
+    """Delete one visual experiment builder canvas."""
+
+    store = SQLiteStore(settings=settings)
+    if not store.delete_visual_experiment_builder(builder_id):
+        raise HTTPException(status_code=404, detail=f"Visual experiment builder not found: {builder_id}")
+    return {"deleted": True, "builder_id": builder_id}
+
+
+@app.post("/visual-experiment-builders/{builder_id}/compile", tags=["visual-builder"])
+def compile_visual_experiment_builder(builder_id: str) -> dict[str, object]:
+    """Compile a visual builder into design-compatible payloads without saving a design."""
+
+    builder = _visual_builder_or_404(SQLiteStore(settings=settings), builder_id)
+    compiled = compile_visual_builder(
+        builder.get("nodes") if isinstance(builder.get("nodes"), list) else [],
+        builder.get("connections") if isinstance(builder.get("connections"), list) else [],
+    )
+    return {"builder_id": builder_id, "compiled": compiled}
+
+
+@app.post("/visual-experiment-builders/{builder_id}/generate-design", tags=["visual-builder"])
+def generate_design_from_visual_experiment_builder(
+    builder_id: str,
+    request: VisualBuilderGenerateRequest | None = Body(default=None),
+) -> dict[str, object]:
+    """Generate ExperimentDesign, timeline, reminders, and optional plate layout from a visual builder."""
+
+    store = SQLiteStore(settings=settings)
+    builder = _visual_builder_or_404(store, builder_id)
+    return _generate_from_visual_builder(store, builder, request or VisualBuilderGenerateRequest())
 
 
 @app.get("/experiment-designs", response_model=list[ExperimentDesignResponse], tags=["experiment-designs"])

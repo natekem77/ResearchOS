@@ -172,6 +172,41 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                     )
                 )
                 deleted_layout = main.delete_plate_layout(layout.layout_id)
+                visual_builder = main.create_visual_experiment_builder(
+                    main.VisualExperimentBuilderRequest(
+                        title="Visual D1 SAG design",
+                        nodes=[
+                            main.VisualNodeRequest(node_id="experiment", type="experiment", label="Visual D1 SAG design", properties={"experiment_type": "retinal organoid"}),
+                            main.VisualNodeRequest(node_id="cell", type="cell_line", label="SIX6 reporter iPSC"),
+                            main.VisualNodeRequest(node_id="control", type="treatment", label="DMSO control", properties={"replicate_count": 3, "start_day": "D1"}),
+                            main.VisualNodeRequest(node_id="sag", type="compound", label="SAG", properties={"dose": "100", "units": "nM", "replicate_count": 3, "start_day": "D1"}),
+                            main.VisualNodeRequest(node_id="d32", type="timepoint", label="D32"),
+                            main.VisualNodeRequest(node_id="image", type="imaging", label="Image SIX6/BRN3B"),
+                        ],
+                        connections=[
+                            main.VisualConnectionRequest(source="experiment", target="cell"),
+                            main.VisualConnectionRequest(source="experiment", target="control", relationship="branch"),
+                            main.VisualConnectionRequest(source="experiment", target="sag", relationship="branch"),
+                            main.VisualConnectionRequest(source="sag", target="d32", relationship="sequential"),
+                            main.VisualConnectionRequest(source="d32", target="image", relationship="sequential"),
+                        ],
+                    )
+                )
+                visual_compile = main.compile_visual_experiment_builder(visual_builder.builder_id)
+                visual_generated = main.generate_design_from_visual_experiment_builder(
+                    visual_builder.builder_id,
+                    main.VisualBuilderGenerateRequest(title="Generated visual SAG design", start_date="2026-07-08", generate_plate_layout=True, plate_format="24-well"),
+                )
+                visual_updated = main.update_visual_experiment_builder(
+                    visual_builder.builder_id,
+                    main.VisualExperimentBuilderRequest(
+                        title="Visual D1 SAG design updated",
+                        nodes=[main.VisualNodeRequest(**node) for node in visual_builder.nodes],
+                        connections=[main.VisualConnectionRequest(**connection) for connection in visual_builder.connections],
+                    ),
+                )
+                visual_list = main.visual_experiment_builders(workspace_id=None)
+                visual_deleted = main.delete_visual_experiment_builder(visual_builder.builder_id)
                 factorial = main.experiment_design_full_factorial(
                     main.FullFactorialRequest(factors={"compound": ["SAG", "BMP4"], "dose": ["low", "high"]})
                 )
@@ -233,6 +268,13 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
         self.assertTrue(deleted_design_template["deleted"])
         self.assertEqual(imported.title, "Imported BMP4 design")
         self.assertTrue(deleted_layout["deleted"])
+        self.assertEqual(visual_compile["compiled"]["title"], "Visual D1 SAG design")
+        self.assertEqual(visual_generated["design"]["title"], "Generated visual SAG design")
+        self.assertIsNotNone(visual_generated["plate_layout"])
+        self.assertGreaterEqual(visual_generated["timeline"]["event_count"], 1)
+        self.assertEqual(visual_updated.title, "Visual D1 SAG design updated")
+        self.assertTrue(any(item.builder_id == visual_builder.builder_id for item in visual_list))
+        self.assertTrue(visual_deleted["deleted"])
         self.assertEqual(factorial["condition_count"], 4)
         self.assertFalse(balance["balanced_replicates"])
 

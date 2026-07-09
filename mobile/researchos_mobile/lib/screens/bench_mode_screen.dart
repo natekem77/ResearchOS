@@ -89,13 +89,209 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
   }
 
   Future<void> _quickVoiceNote() async {
-    await _runBenchAction(
-      (sessionId) => widget.api.recordVoiceNote(
-        sessionId: sessionId,
-        transcript:
-            'Voice capture placeholder. Speech-to-text will be added in a future milestone.',
-      ),
+    final state = await _future;
+    final session = state.session;
+    if (session == null) {
+      _showSnack('No active session.');
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+    final transcript = TextEditingController();
+    Map<String, dynamic>? draft;
+    var listening = false;
+    var busy = false;
+    var status = 'Hold the microphone to speak, or type/paste notes.';
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            Future<void> draftCommand() async {
+              final text = transcript.text.trim();
+              if (text.isEmpty) {
+                setSheetState(() {
+                  status = 'Transcript is required before preview.';
+                });
+                return;
+              }
+              setSheetState(() {
+                busy = true;
+                status = 'Preparing command preview...';
+              });
+              try {
+                final result = await widget.api.draftVoiceCommand(
+                  transcript: text,
+                  sessionId: session.sessionId,
+                  experimentId: session.experimentId,
+                );
+                setSheetState(() {
+                  draft = result;
+                  status = 'Review the parsed command before saving.';
+                });
+              } catch (error) {
+                setSheetState(() {
+                  status = 'Draft failed: $error';
+                });
+              } finally {
+                setSheetState(() {
+                  busy = false;
+                });
+              }
+            }
+
+            Future<void> confirmCommand() async {
+              final currentDraft = draft;
+              if (currentDraft == null) {
+                await draftCommand();
+                if (draft == null) {
+                  return;
+                }
+              }
+              final confirmedDraft = draft ?? currentDraft;
+              final parsed = confirmedDraft['parsed_fields'];
+              setSheetState(() {
+                busy = true;
+                status = 'Saving confirmed voice entry...';
+              });
+              try {
+                await widget.api.confirmVoiceCommand(
+                  voiceSessionId:
+                      confirmedDraft['voice_session_id']?.toString(),
+                  commandType:
+                      confirmedDraft['command_type']?.toString() ??
+                          'custom_note',
+                  transcript: transcript.text.trim(),
+                  parsedFields:
+                      parsed is Map<String, dynamic> ? parsed : const {},
+                  sessionId: session.sessionId,
+                  experimentId: session.experimentId,
+                );
+                if (context.mounted) {
+                  Navigator.of(context).pop(true);
+                }
+              } catch (error) {
+                setSheetState(() {
+                  status = 'Save failed: $error';
+                  busy = false;
+                });
+              }
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                left: ResearchOsSpacing.xl,
+                right: ResearchOsSpacing.xl,
+                top: ResearchOsSpacing.xl,
+                bottom: MediaQuery.of(context).viewInsets.bottom +
+                    ResearchOsSpacing.xl,
+              ),
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  Text('Voice Assistant',
+                      style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  const Text(
+                      'Voice notes are saved only after you review and confirm the transcript. Speech-to-text is a local placeholder for now.'),
+                  const SizedBox(height: ResearchOsSpacing.lg),
+                  GestureDetector(
+                    onLongPressStart: (_) {
+                      setSheetState(() {
+                        listening = true;
+                        status = 'Listening...';
+                      });
+                    },
+                    onLongPressEnd: (_) {
+                      setSheetState(() {
+                        listening = false;
+                        status =
+                            'Stopped. Review or edit the transcript before saving.';
+                        if (transcript.text.trim().isEmpty) {
+                          transcript.text =
+                              'Observation: voice placeholder transcript. Replace with dictated experiment details before confirming.';
+                        }
+                      });
+                    },
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      height: 104,
+                      decoration: BoxDecoration(
+                        color: listening
+                            ? Theme.of(context).colorScheme.primaryContainer
+                            : Theme.of(context).colorScheme.surfaceContainerHigh,
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(
+                            color: Theme.of(context).colorScheme.primary),
+                      ),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.mic,
+                              size: 36,
+                              color: Theme.of(context).colorScheme.primary),
+                          const SizedBox(height: ResearchOsSpacing.xs),
+                          Text(listening ? 'Listening...' : 'Hold to speak'),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: transcript,
+                    minLines: 4,
+                    maxLines: 8,
+                    decoration: const InputDecoration(
+                      labelText: 'Transcript preview',
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (_) => draft = null,
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  Text(status),
+                  if (draft != null) ...[
+                    const SizedBox(height: ResearchOsSpacing.md),
+                    ResearchOsCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Parsed command',
+                              style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: ResearchOsSpacing.xs),
+                          Text(draft!['command_type']?.toString() ??
+                              'custom_note'),
+                          const SizedBox(height: ResearchOsSpacing.xs),
+                          Text(draft!['message']?.toString() ??
+                              'Review before confirming.'),
+                        ],
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  FilledButton.icon(
+                    onPressed: busy ? null : draftCommand,
+                    icon: const Icon(Icons.preview_outlined),
+                    label: const Text('Preview command'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  FilledButton.icon(
+                    onPressed: busy ? null : confirmCommand,
+                    icon: const Icon(Icons.check_circle_outline),
+                    label: const Text('Confirm and save'),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
+    if (confirmed == true) {
+      _showSnack('Confirmed voice entry saved.');
+      _reload();
+    }
   }
 
   Future<void> _finishSession() async {

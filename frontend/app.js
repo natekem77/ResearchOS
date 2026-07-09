@@ -15,6 +15,10 @@ const state = {
   experimentDesigns: [],
   experimentDesignTemplates: [],
   plateLayouts: [],
+  visualBuilders: [],
+  visualBuilderDraft: null,
+  visualBuilderUndo: [],
+  visualBuilderRedo: [],
   designDueToday: null,
   designUpcoming: null,
   designImportPreview: null,
@@ -31,6 +35,8 @@ const state = {
   currentWorkspace: null,
   authReadiness: null,
   dailyDashboard: null,
+  whiteboard: null,
+  whiteboardRotationIndex: 0,
   intelligenceFilter: null,
   providerStatus: null,
   agentStatus: null,
@@ -57,6 +63,7 @@ const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 
 const views = {
   dashboard: $("#dashboardView"),
+  whiteboard: $("#whiteboardView"),
   "new-experiment": $("#newExperimentView"),
   sessions: $("#sessionsView"),
   "saved-drafts": $("#savedDraftsView"),
@@ -84,6 +91,7 @@ const views = {
   chat: $("#chatView"),
   reasoning: $("#reasoningView"),
   planner: $("#plannerView"),
+  "visual-builder": $("#visualBuilderView"),
   "design-planner": $("#designPlannerView"),
   "design-templates": $("#designTemplatesView"),
   "plate-layouts": $("#plateLayoutsView"),
@@ -321,6 +329,7 @@ function route() {
 
   const titles = {
     dashboard: ["Dashboard", "ResearchOS Dashboard"],
+    whiteboard: ["Whiteboard", "Laboratory situational awareness"],
     "new-experiment": ["New Experiment", "Dictation Draft"],
     sessions: ["Sessions", "Experiment Sessions"],
     "saved-drafts": ["Saved Drafts", "Pending Notebook Entries"],
@@ -615,6 +624,112 @@ function renderDailyDashboardItem(item) {
   return item.href
     ? `<a class="daily-card-item" href="${escapeHtml(item.href)}">${content}</a>`
     : `<article class="daily-card-item">${content}</article>`;
+}
+
+function renderWhiteboard() {
+  const board = state.whiteboard;
+  const metricsTarget = $("#whiteboardMetrics");
+  const sectionsTarget = $("#whiteboardSections");
+  const rotationTarget = $("#whiteboardRotation");
+  const controlsTarget = $("#whiteboardRotationControls");
+  const generatedTarget = $("#whiteboardGenerated");
+  if (!metricsTarget || !sectionsTarget || !rotationTarget || !controlsTarget) return;
+  if (!board) {
+    generatedTarget.textContent = "Whiteboard is loading local ResearchOS state.";
+    metricsTarget.innerHTML = "";
+    rotationTarget.innerHTML = `<div class="empty-state">Whiteboard unavailable.</div>`;
+    sectionsTarget.innerHTML = "";
+    return;
+  }
+
+  generatedTarget.textContent = `Updated ${formatDisplayTime(board.generated_at)} · auto-refresh every ${board.display?.refresh_seconds || 60}s`;
+  const metrics = board.metrics || {};
+  metricsTarget.innerHTML = Object.entries(metrics)
+    .map(([label, value]) => `
+      <article class="whiteboard-metric">
+        <span>${escapeHtml(label.replaceAll("_", " "))}</span>
+        <strong>${escapeHtml(value)}</strong>
+      </article>
+    `)
+    .join("");
+
+  const rotation = board.rotation || [];
+  const activeIndex = Math.min(state.whiteboardRotationIndex, Math.max(rotation.length - 1, 0));
+  const activePanel = rotation[activeIndex] || rotation[0] || {};
+  controlsTarget.innerHTML = rotation
+    .map((panel, index) => `<button type="button" class="secondary-button ${index === activeIndex ? "active" : ""}" data-whiteboard-rotation="${index}">${escapeHtml(panel.title || panel.id)}</button>`)
+    .join("");
+  rotationTarget.innerHTML = renderWhiteboardRotationPanel(activePanel, board);
+  sectionsTarget.innerHTML = (board.sections || []).map(renderWhiteboardSection).join("") || `<div class="empty-state">${escapeHtml(board.empty_state || "No whiteboard data yet.")}</div>`;
+
+  $$("[data-whiteboard-rotation]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.whiteboardRotationIndex = Number(button.dataset.whiteboardRotation || 0);
+      renderWhiteboard();
+    });
+  });
+}
+
+function renderWhiteboardRotationPanel(panel, board) {
+  if (panel.events) {
+    return `
+      <article class="whiteboard-panel featured">
+        <div class="panel-heading"><h2>${escapeHtml(panel.title || "Timeline")}</h2><span class="status-pill ok">Live</span></div>
+        <div class="whiteboard-card-grid">${(panel.events || []).map(renderWhiteboardCard).join("") || `<div class="empty-state">No recent timeline events.</div>`}</div>
+      </article>
+    `;
+  }
+  if (panel.items) {
+    return `
+      <article class="whiteboard-panel featured">
+        <div class="panel-heading"><h2>${escapeHtml(panel.title || "Morning Brief")}</h2><span class="status-pill ok">Observed</span></div>
+        <p>${escapeHtml(panel.summary || "")}</p>
+        <div class="whiteboard-card-grid">${(panel.items || []).map(renderWhiteboardCard).join("") || `<div class="empty-state">No morning brief items.</div>`}</div>
+      </article>
+    `;
+  }
+  const sections = (panel.sections || [])
+    .map((sectionId) => (board.sections || []).find((section) => section.id === sectionId))
+    .filter(Boolean);
+  return `
+    <article class="whiteboard-panel featured">
+      <div class="panel-heading"><h2>${escapeHtml(panel.title || "Whiteboard")}</h2><span class="status-pill ok">Rotating</span></div>
+      <div class="whiteboard-feature-grid">${sections.map(renderWhiteboardSection).join("")}</div>
+    </article>
+  `;
+}
+
+function renderWhiteboardSection(section) {
+  const cards = section.cards || [];
+  return `
+    <article class="whiteboard-panel">
+      <div class="whiteboard-panel-title">
+        <h3>${escapeHtml(section.title)}</h3>
+        <span>${escapeHtml(section.count || cards.length)}</span>
+      </div>
+      <div class="whiteboard-card-grid">
+        ${cards.length ? cards.map(renderWhiteboardCard).join("") : `<div class="empty-state">${escapeHtml(section.empty_message || "No items.")}</div>`}
+      </div>
+    </article>
+  `;
+}
+
+function renderWhiteboardCard(card) {
+  const body = `
+    <strong>${escapeHtml(card.title || "Whiteboard item")}</strong>
+    <span>${escapeHtml(card.subtitle || "")}</span>
+    <small class="status-pill ${priorityClass(card.priority)}">${escapeHtml(card.status || card.priority || "observed")}</small>
+  `;
+  return card.route
+    ? `<a class="whiteboard-card priority-${escapeHtml(card.priority || "normal")}" href="${escapeHtml(card.route)}">${body}</a>`
+    : `<article class="whiteboard-card priority-${escapeHtml(card.priority || "normal")}">${body}</article>`;
+}
+
+function formatDisplayTime(value) {
+  if (!value) return "recently";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function bindDailyDashboardReorder() {
@@ -1945,6 +2060,138 @@ function renderPlateLayoutCard(layout) {
       </div>
     </article>
   `;
+}
+
+function seedVisualBuilderDraft() {
+  state.visualBuilderDraft = {
+    title: "D1 SAG branch design",
+    description: "Visual builder demo canvas.",
+    nodes: [
+      { node_id: "experiment", type: "experiment", label: "D1 SAG retinal organoid design", properties: { experiment_type: "retinal organoid" }, x: 40, y: 40 },
+      { node_id: "cell_line", type: "cell_line", label: "SIX6 reporter iPSC", properties: {}, x: 40, y: 150 },
+      { node_id: "reporter_six6", type: "reporter", label: "SIX6", properties: {}, x: 40, y: 260 },
+      { node_id: "dmso", type: "treatment", label: "DMSO control", properties: { replicate_count: 3, sample_count: 6, start_day: "D1" }, x: 310, y: 80 },
+      { node_id: "sag", type: "compound", label: "SAG", properties: { dose: "100", units: "nM", replicate_count: 3, sample_count: 6, start_day: "D1" }, x: 310, y: 200 },
+      { node_id: "d32", type: "timepoint", label: "D32", properties: {}, x: 560, y: 130 },
+      { node_id: "imaging", type: "imaging", label: "Image SIX6/BRN3B", properties: { reminder_enabled: true }, x: 790, y: 130 },
+      { node_id: "analysis", type: "analysis", label: "Quantify marker expression", properties: { reminder_enabled: true }, x: 1020, y: 130 },
+    ],
+    connections: [
+      { source: "experiment", target: "cell_line", relationship: "uses" },
+      { source: "experiment", target: "reporter_six6", relationship: "reports" },
+      { source: "experiment", target: "dmso", relationship: "branch" },
+      { source: "experiment", target: "sag", relationship: "branch" },
+      { source: "dmso", target: "d32", relationship: "sequential" },
+      { source: "sag", target: "d32", relationship: "sequential" },
+      { source: "d32", target: "imaging", relationship: "sequential" },
+      { source: "imaging", target: "analysis", relationship: "sequential" },
+    ],
+  };
+  $("#visualBuilderTitle") && ($("#visualBuilderTitle").value = state.visualBuilderDraft.title);
+}
+
+function visualBuilderDraft() {
+  if (!state.visualBuilderDraft) seedVisualBuilderDraft();
+  return state.visualBuilderDraft;
+}
+
+function snapshotVisualBuilder() {
+  state.visualBuilderUndo.push(JSON.stringify(visualBuilderDraft()));
+  state.visualBuilderRedo = [];
+}
+
+function renderVisualBuilder() {
+  const canvas = $("#visualBuilderCanvas");
+  const list = $("#visualBuilderList");
+  if (!canvas) return;
+  const draft = visualBuilderDraft();
+  $("#visualBuilderTitle") && ($("#visualBuilderTitle").value ||= draft.title || "");
+  $("#visualBuilderNodeCount") && ($("#visualBuilderNodeCount").textContent = `${draft.nodes.length} nodes`);
+  canvas.innerHTML = `
+    <div style="min-width:1180px;min-height:360px;position:relative;">
+      ${(draft.connections || []).map((connection) => {
+        const source = draft.nodes.find((node) => node.node_id === connection.source) || {};
+        const target = draft.nodes.find((node) => node.node_id === connection.target) || {};
+        return `<div style="position:absolute;left:${Math.min(source.x || 0, target.x || 0) + 120}px;top:${Math.min(source.y || 0, target.y || 0) + 44}px;width:${Math.abs((target.x || 0) - (source.x || 0)) || 80}px;border-top:2px solid #9fb6c3;"></div>`;
+      }).join("")}
+      ${(draft.nodes || []).map((node) => `
+        <button type="button" class="provider-card visual-node" data-visual-node="${escapeHtml(node.node_id)}" style="position:absolute;left:${Number(node.x) || 0}px;top:${Number(node.y) || 0}px;width:190px;text-align:left;">
+          <div class="provider-card-header"><span>${escapeHtml(node.type)}</span><strong>${escapeHtml(node.node_id)}</strong></div>
+          <p>${escapeHtml(node.label)}</p>
+        </button>
+      `).join("")}
+    </div>
+  `;
+  $("#visualBuilderMiniMap") && ($("#visualBuilderMiniMap").innerHTML = (draft.nodes || []).map((node) => `<span class="tag">${escapeHtml(node.label)}</span>`).join(" "));
+  if (list) {
+    list.innerHTML = (state.visualBuilders || []).map((builder) => `
+      <button type="button" class="item-link" data-load-visual-builder="${escapeHtml(builder.builder_id)}">
+        <strong>${escapeHtml(builder.title)}</strong><span>${escapeHtml(builder.generated_design_id || "canvas saved")}</span>
+      </button>
+    `).join("") || `<div class="empty-state">No saved visual builders yet.</div>`;
+  }
+}
+
+function visualBuilderPayload() {
+  const draft = visualBuilderDraft();
+  return {
+    title: $("#visualBuilderTitle")?.value.trim() || draft.title || "Visual experiment design",
+    description: draft.description || null,
+    nodes: draft.nodes || [],
+    connections: draft.connections || [],
+  };
+}
+
+async function saveVisualBuilder() {
+  const saved = await requestJson("/visual-experiment-builders", {
+    method: "POST",
+    body: JSON.stringify(visualBuilderPayload()),
+  });
+  $("#visualBuilderStatus").textContent = `Saved visual builder: ${saved.title}`;
+  await refreshData();
+}
+
+async function generateVisualBuilderDesign() {
+  let builder = state.visualBuilders?.[0];
+  if (!builder || builder.title !== ($("#visualBuilderTitle")?.value.trim() || visualBuilderDraft().title)) {
+    builder = await requestJson("/visual-experiment-builders", {
+      method: "POST",
+      body: JSON.stringify(visualBuilderPayload()),
+    });
+  }
+  const result = await requestJson(`/visual-experiment-builders/${encodeURIComponent(builder.builder_id)}/generate-design`, {
+    method: "POST",
+    body: JSON.stringify({
+      title: $("#visualBuilderTitle")?.value.trim() || null,
+      start_date: $("#visualBuilderStartDate")?.value || null,
+      generate_plate_layout: true,
+      plate_format: $("#visualBuilderPlateFormat")?.value.trim() || "96-well",
+    }),
+  });
+  $("#visualBuilderStatus").textContent = `Generated design: ${result.design?.title || "visual design"}`;
+  $("#visualBuilderPreview").innerHTML = `
+    <article class="record-card">
+      <h3>${escapeHtml(result.design?.title || "Generated design")}</h3>
+      <p>${escapeHtml((result.compiled?.warnings || []).join(" ") || "No builder warnings.")}</p>
+      <div class="entry-actions compact-actions">
+        <a class="secondary-link-button" href="#/design-planner">Open Designs</a>
+        ${result.plate_layout ? `<a class="secondary-link-button" href="#/plate-layouts">Open Plate Layout</a>` : ""}
+        <a class="secondary-link-button" href="/experiment-designs/${encodeURIComponent(result.design.design_id)}/export-csv">Export CSV</a>
+      </div>
+    </article>
+  `;
+  await refreshData();
+}
+
+function duplicateVisualBranch() {
+  snapshotVisualBuilder();
+  const draft = visualBuilderDraft();
+  const source = draft.nodes.find((node) => ["treatment", "compound"].includes(node.type));
+  if (!source) return;
+  const clone = { ...source, node_id: `${source.node_id}_copy_${Date.now()}`, label: `${source.label} copy`, y: Number(source.y || 0) + 110 };
+  draft.nodes.push(clone);
+  draft.connections.push({ source: "experiment", target: clone.node_id, relationship: "branch" });
+  renderVisualBuilder();
 }
 
 function renderDesignTemplates() {
@@ -5056,7 +5303,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, experimentDesignTemplates, plateLayouts, designDueToday, designUpcoming, designImportTemplates, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, experimentDesignTemplates, plateLayouts, visualBuilders, designDueToday, designUpcoming, designImportTemplates, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard, whiteboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -5074,6 +5321,7 @@ async function refreshData() {
     requestJson("/experiment-designs"),
     requestJson("/experiment-design-templates"),
     requestJson("/plate-layouts"),
+    requestJson("/visual-experiment-builders"),
     requestJson("/experiment-designs/reminders/due-today"),
     requestJson("/experiment-designs/reminders/upcoming?days=7"),
     requestJson("/experiment-designs/import-templates"),
@@ -5088,6 +5336,7 @@ async function refreshData() {
     requestJson("/graph/stats"),
     requestJson("/entry-templates"),
     requestJson("/api/dashboard/daily?use_ai=false"),
+    requestJson("/whiteboard"),
   ]);
   state.documents = documents;
   state.papers = papers;
@@ -5106,6 +5355,7 @@ async function refreshData() {
   state.experimentDesigns = experimentDesigns;
   state.experimentDesignTemplates = experimentDesignTemplates;
   state.plateLayouts = plateLayouts;
+  state.visualBuilders = visualBuilders;
   state.designDueToday = designDueToday;
   state.designUpcoming = designUpcoming;
   state.designImportTemplates = designImportTemplates;
@@ -5116,6 +5366,7 @@ async function refreshData() {
   state.graphStats = graphStats;
   state.entryTemplates = entryTemplates;
   state.dailyDashboard = dailyDashboard;
+  state.whiteboard = whiteboard;
   state.ontology = {
     compounds,
     markers,
@@ -5128,6 +5379,7 @@ async function refreshData() {
 
 function renderAll() {
   setStatus();
+  renderWhiteboard();
   renderMorningBrief();
   renderDailyDashboard();
   renderCurrentSessionCard();
@@ -5151,6 +5403,7 @@ function renderAll() {
   renderReceiving();
   renderDesignPlanner();
   renderPlateLayouts();
+  renderVisualBuilder();
   renderWorkflows();
   renderSessions();
   renderExperimentsTable();
@@ -5578,6 +5831,69 @@ $("#plateLayoutList")?.addEventListener("click", (event) => {
     alert(`Plate layout edit failed: ${error.message}`);
   });
 });
+$("#visualBuilderSeedButton")?.addEventListener("click", () => {
+  snapshotVisualBuilder();
+  seedVisualBuilderDraft();
+  renderVisualBuilder();
+});
+$("#visualBuilderAddBranchButton")?.addEventListener("click", duplicateVisualBranch);
+$("#visualBuilderSaveButton")?.addEventListener("click", () => {
+  saveVisualBuilder().catch((error) => {
+    $("#visualBuilderStatus").textContent = `Save failed: ${error.message}`;
+  });
+});
+$("#visualBuilderGenerateButton")?.addEventListener("click", () => {
+  generateVisualBuilderDesign().catch((error) => {
+    $("#visualBuilderStatus").textContent = `Generate failed: ${error.message}`;
+  });
+});
+$("#visualBuilderUndoButton")?.addEventListener("click", () => {
+  if (!state.visualBuilderUndo.length) return;
+  state.visualBuilderRedo.push(JSON.stringify(visualBuilderDraft()));
+  state.visualBuilderDraft = JSON.parse(state.visualBuilderUndo.pop());
+  renderVisualBuilder();
+});
+$("#visualBuilderRedoButton")?.addEventListener("click", () => {
+  if (!state.visualBuilderRedo.length) return;
+  state.visualBuilderUndo.push(JSON.stringify(visualBuilderDraft()));
+  state.visualBuilderDraft = JSON.parse(state.visualBuilderRedo.pop());
+  renderVisualBuilder();
+});
+$("#visualBuilderCanvas")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-visual-node]");
+  if (!button) return;
+  const draft = visualBuilderDraft();
+  const node = draft.nodes.find((item) => item.node_id === button.dataset.visualNode);
+  if (!node) return;
+  const action = window.prompt(`Edit ${node.label}: rename, delete, or duplicate`, "rename");
+  if (action === null) return;
+  snapshotVisualBuilder();
+  if (action === "delete") {
+    draft.nodes = draft.nodes.filter((item) => item.node_id !== node.node_id);
+    draft.connections = draft.connections.filter((item) => item.source !== node.node_id && item.target !== node.node_id);
+  } else if (action === "duplicate") {
+    const clone = { ...node, node_id: `${node.node_id}_copy_${Date.now()}`, label: `${node.label} copy`, x: Number(node.x || 0) + 40, y: Number(node.y || 0) + 70 };
+    draft.nodes.push(clone);
+  } else {
+    const label = window.prompt("Node label", node.label);
+    if (label !== null) node.label = label;
+  }
+  renderVisualBuilder();
+});
+$("#visualBuilderList")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-load-visual-builder]");
+  if (!button) return;
+  const builder = (state.visualBuilders || []).find((item) => item.builder_id === button.dataset.loadVisualBuilder);
+  if (!builder) return;
+  snapshotVisualBuilder();
+  state.visualBuilderDraft = {
+    title: builder.title,
+    description: builder.description,
+    nodes: builder.nodes || [],
+    connections: builder.connections || [],
+  };
+  renderVisualBuilder();
+});
 $("#designTemplateList")?.addEventListener("click", (event) => {
   const createButton = event.target.closest("[data-create-design-template]");
   const deleteButton = event.target.closest("[data-delete-design-template]");
@@ -5759,6 +6075,19 @@ window.setInterval(() => {
   renderSessionTimer();
   renderCurrentSessionCard();
 }, 30000);
+window.setInterval(async () => {
+  if (!window.location.hash.startsWith("#/whiteboard")) return;
+  try {
+    state.whiteboard = await requestJson("/whiteboard");
+    const rotation = state.whiteboard?.rotation || [];
+    if (rotation.length) {
+      state.whiteboardRotationIndex = (state.whiteboardRotationIndex + 1) % rotation.length;
+    }
+    renderWhiteboard();
+  } catch {
+    // Keep the last rendered whiteboard visible if a refresh fails.
+  }
+}, 60000);
 
 async function boot() {
   await loadStatus();

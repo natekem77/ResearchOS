@@ -67,6 +67,7 @@ request GET "/mobile/auth/me" >/dev/null
 request GET "/mobile/settings" >/dev/null
 request GET "/mobile/dashboard" >/dev/null
 request GET "/api/dashboard/daily?use_ai=false" >/dev/null
+request GET "/whiteboard" >/dev/null
 request GET "/demo/status" >/dev/null
 request POST "/demo/reset" "{}" >/dev/null
 request GET "/documents" >/dev/null
@@ -76,6 +77,7 @@ request GET "/experiments?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/mobile/experiments" >/dev/null
 request GET "/experiment-designs" >/dev/null
 request GET "/plate-layouts" >/dev/null
+request GET "/visual-experiment-builders" >/dev/null
 request GET "/experiment-design-templates" >/dev/null
 request GET "/experiment-design-templates/builtin:retinal_organoid_d1_d9_treatment" >/dev/null
 request POST "/experiment-design-templates/builtin:retinal_organoid_d1_d9_treatment/create-design" '{"title":"Smoke Template Design","start_date":"2026-07-08","cell_line_or_model":"SIX6 reporter iPSC","reporters":["SIX6","BRN3B"],"status":"draft"}' >/dev/null
@@ -158,6 +160,31 @@ request POST "/experiment-designs/import-templates" '{"name":"Smoke Design Mappi
 request POST "/experiment-designs/import-mapped-csv" '{"csv_text":"Experiment,Condition,Day,Event,Treatment,Replicate,Reminder\nSmoke mapped design,DMSO,D1,treatment,DMSO,1,true\nSmoke mapped design,SAG,D9,imaging,SAG,2,true\n","mapping":{"title":"Experiment","condition_name":"Condition","day":"Day","event_type":"Event","treatment":"Treatment","replicate":"Replicate","alert_enabled":"Reminder"}}' >/dev/null
 request POST "/experiment-designs/import-csv" '{"title":"Smoke Imported Design","csv_text":"condition,day,event_type,treatment,dose,units,replicate,alert_enabled\nSmoke BMP4,D9,treatment,BMP4,10,ng/mL,1,true\n"}' >/dev/null
 request DELETE "/plate-layouts/$SMOKE_LAYOUT_ID" >/dev/null
+SMOKE_VISUAL_FILE="$(request POST "/visual-experiment-builders" '{"title":"Smoke Visual Builder","nodes":[{"node_id":"experiment","type":"experiment","label":"Smoke Visual Builder","properties":{"experiment_type":"organoid"}},{"node_id":"control","type":"treatment","label":"DMSO control","properties":{"replicate_count":3,"start_day":"D1"}},{"node_id":"sag","type":"compound","label":"SAG","properties":{"dose":"100","units":"nM","replicate_count":3,"start_day":"D1"}},{"node_id":"d32","type":"timepoint","label":"D32"},{"node_id":"image","type":"imaging","label":"Image SIX6"}],"connections":[{"source":"experiment","target":"control","relationship":"branch"},{"source":"experiment","target":"sag","relationship":"branch"},{"source":"sag","target":"d32","relationship":"sequential"},{"source":"d32","target":"image","relationship":"sequential"}]}')"
+SMOKE_VISUAL_ID="$(
+  python3 - "$SMOKE_VISUAL_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["builder_id"])
+PY
+)"
+request GET "/visual-experiment-builders/$SMOKE_VISUAL_ID" >/dev/null
+request PUT "/visual-experiment-builders/$SMOKE_VISUAL_ID" '{"title":"Smoke Visual Builder Updated","nodes":[{"node_id":"experiment","type":"experiment","label":"Smoke Visual Builder","properties":{"experiment_type":"organoid"}},{"node_id":"control","type":"treatment","label":"DMSO control","properties":{"replicate_count":3,"start_day":"D1"}},{"node_id":"sag","type":"compound","label":"SAG","properties":{"dose":"100","units":"nM","replicate_count":3,"start_day":"D1"}},{"node_id":"d32","type":"timepoint","label":"D32"},{"node_id":"image","type":"imaging","label":"Image SIX6"}],"connections":[{"source":"experiment","target":"control","relationship":"branch"},{"source":"experiment","target":"sag","relationship":"branch"},{"source":"sag","target":"d32","relationship":"sequential"},{"source":"d32","target":"image","relationship":"sequential"}]}' >/dev/null
+request POST "/visual-experiment-builders/$SMOKE_VISUAL_ID/compile" "{}" >/dev/null
+SMOKE_VISUAL_GENERATED_FILE="$(request POST "/visual-experiment-builders/$SMOKE_VISUAL_ID/generate-design" '{"title":"Smoke Visual Generated Design","start_date":"2026-07-08","generate_plate_layout":true,"plate_format":"24-well"}')"
+SMOKE_VISUAL_DESIGN_ID="$(
+  python3 - "$SMOKE_VISUAL_GENERATED_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["design"]["design_id"])
+PY
+)"
+request GET "/experiment-designs/$SMOKE_VISUAL_DESIGN_ID/timeline" >/dev/null
+request DELETE "/visual-experiment-builders/$SMOKE_VISUAL_ID" >/dev/null
 request DELETE "/experiment-design-templates/$SMOKE_TEMPLATE_ID" >/dev/null
 WIZARD_EXPERIMENT_ID="SMOKE-WIZARD-$(date +%s)"
 WIZARD_FILE="$(request POST "/mobile/experiments/create" "{\"title\":\"Smoke Wizard Experiment\",\"experiment_id\":\"$WIZARD_EXPERIMENT_ID\",\"project\":\"Smoke test\",\"researcher\":\"ResearchOS\",\"protocol_mode\":\"create_new\",\"protocol_title\":\"Smoke protocol\",\"cell_line\":\"Demo cells\",\"organoid_batch\":\"Demo batch\",\"compounds\":[\"SAG\"],\"concentrations\":[\"100 nM\"],\"timepoints\":[\"D1\"],\"replicates\":\"n=3\",\"controls\":[\"DMSO\"],\"readouts\":[\"microscopy\"],\"markers\":[\"SIX6\"],\"microscopy\":true,\"graphpad\":true,\"create_notebook_draft\":true,\"start_session\":false}")"
@@ -207,6 +234,9 @@ request POST "/mobile/sessions/$MOBILE_SESSION_ID/observation" '{"text":"Bench M
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/treatment" '{"compound":"SAG","dose":"100","units":"nM","time":"D32","notes":"Bench Mode treatment smoke test."}' >/dev/null
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/media-change" '{"media_type":"retinal differentiation medium","notes":"Bench Mode media change smoke test."}' >/dev/null
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/voice-note" '{"transcript":"Bench Mode voice placeholder smoke test.","placeholder":true}' >/dev/null
+request GET "/voice/speech-providers" >/dev/null
+request POST "/voice/draft" "{\"transcript\":\"Observation smoke test voice transcript for SAG.\",\"session_id\":\"$MOBILE_SESSION_ID\",\"experiment_id\":\"SMOKE_MOBILE_SESSION\"}" >/dev/null
+request POST "/voice/confirm" "{\"voice_session_id\":\"voice-session:smoke\",\"command_type\":\"observation\",\"transcript\":\"Observation smoke test voice transcript for SAG.\",\"parsed_fields\":{\"note\":\"Observation smoke test voice transcript for SAG.\"},\"session_id\":\"$MOBILE_SESSION_ID\",\"experiment_id\":\"SMOKE_MOBILE_SESSION\",\"create_notebook_draft\":true}" >/dev/null
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/attach-placeholder" '{"attachment_type":"image","title":"Bench Mode image placeholder","notes":"Camera capture not implemented yet."}' >/dev/null
 request POST "/mobile/sessions/$MOBILE_SESSION_ID/end" '{"notes":"Mobile smoke session ended."}' >/dev/null
 request GET "/providers/graphpad/status" >/dev/null
