@@ -11,8 +11,6 @@ pubspec.lock
 
 # Platform folders are generated locally with `flutter create .`.
 android/
-ios/
 linux/
-macos/
 web/
 windows/

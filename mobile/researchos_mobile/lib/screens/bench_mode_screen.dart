@@ -542,7 +542,11 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
         }
         final state = snapshot.data ?? const _BenchState();
         if (state.session == null) {
-          return _NoActiveSession(onRetry: _reload);
+          return _NoActiveSession(
+            api: widget.api,
+            onStarted: _reload,
+            onRetry: _reload,
+          );
         }
         return RefreshIndicator(
           onRefresh: () async => _reload(),
@@ -569,36 +573,15 @@ class _BenchModeScreenState extends State<BenchModeScreen> {
                           .recordObservation(sessionId: sessionId, text: text),
                     ),
                   ),
-                  _BenchAction(Icons.water_drop_outlined, 'Media Change',
-                      _openMediaChangeSheet),
                   _BenchAction(Icons.medication_outlined, 'Treatment',
                       _openTreatmentSheet),
-                  _BenchAction(Icons.inventory_2_outlined, 'Use Reagent',
-                      _openUseReagentSheet),
+                  _BenchAction(Icons.water_drop_outlined, 'Media Change',
+                      _openMediaChangeSheet),
                   _BenchAction(
                       Icons.photo_camera_outlined,
                       'Capture Image',
                       () => _placeholder('image', 'Image capture placeholder',
                           'Camera/gallery import will be added later.')),
-                  _BenchAction(
-                      Icons.attach_file,
-                      'Attach File',
-                      () => _placeholder('file', 'File attachment placeholder',
-                          'Native file import will be added later.')),
-                  _BenchAction(
-                      Icons.bar_chart,
-                      'Add GraphPad',
-                      () => _placeholder(
-                          'graphpad',
-                          'GraphPad import placeholder',
-                          'Upload/scan workflow will be added later.')),
-                  _BenchAction(
-                      Icons.biotech_outlined,
-                      'Add Sequencing',
-                      () => _placeholder(
-                          'sequencing',
-                          'Sequencing attachment placeholder',
-                          'Provider integration will be added later.')),
                   _BenchAction(Icons.check_circle_outline, 'Finish Session',
                       _finishSession,
                       destructive: true),
@@ -632,8 +615,14 @@ class _BenchState {
 }
 
 class _NoActiveSession extends StatelessWidget {
-  const _NoActiveSession({required this.onRetry});
+  const _NoActiveSession({
+    required this.api,
+    required this.onStarted,
+    required this.onRetry,
+  });
 
+  final ResearchOsApi api;
+  final VoidCallback onStarted;
   final VoidCallback onRetry;
 
   @override
@@ -641,19 +630,49 @@ class _NoActiveSession extends StatelessWidget {
     return ListView(
       padding: ResearchOsSpacing.screen,
       children: [
-        Icon(Icons.science_outlined,
-            size: 56, color: Theme.of(context).colorScheme.primary),
-        const SizedBox(height: ResearchOsSpacing.lg),
-        Text('No active bench session',
-            style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        const Text(
-            'Bench Mode becomes the mobile home screen while an experiment session is active. Controls use large touch targets for one-handed use.'),
-        const SizedBox(height: ResearchOsSpacing.lg),
-        FilledButton.icon(
-          onPressed: onRetry,
-          icon: const Icon(Icons.refresh),
-          label: const Text('Check again'),
+        ResearchOsCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              CircleAvatar(
+                radius: 30,
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                child: const Icon(Icons.science_outlined, size: 32),
+              ),
+              const SizedBox(height: ResearchOsSpacing.lg),
+              Text('Bench Mode',
+                  style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              const Text(
+                'Capture observations, treatments, media changes, images, and voice notes while standing at the bench.',
+              ),
+              const SizedBox(height: ResearchOsSpacing.lg),
+              FilledButton.icon(
+                onPressed: () async {
+                  try {
+                    await api.startSession(
+                      notes: 'Demo bench session started from iPhone.',
+                    );
+                    onStarted();
+                  } catch (error) {
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Could not start session: $error')),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.play_circle_outline),
+                label: const Text('Start Demo Session'),
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              OutlinedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Check for Active Session'),
+              ),
+            ],
+          ),
         ),
       ],
     );

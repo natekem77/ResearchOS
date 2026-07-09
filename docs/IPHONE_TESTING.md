@@ -54,7 +54,7 @@ Start the backend:
 
 ```bash
 cd /path/to/labnote-ai
-./scripts/demo.sh
+RESEARCHOS_OPEN_BROWSER=0 ./scripts/demo.sh
 ```
 
 Run the app:
@@ -65,6 +65,18 @@ flutter run -d "iPhone 15"
 ```
 
 For iOS Simulator, `http://127.0.0.1:8001` usually works because the simulator runs on the Mac and can reach the Mac loopback interface.
+
+First-run demo flow:
+
+1. The app first tries the saved server URL.
+2. If no server is saved, it tries `http://127.0.0.1:8001`.
+3. If the backend is running, ResearchOS skips onboarding and opens Home.
+4. If not, the onboarding screen appears.
+5. Tap `Use Local Demo Server`.
+6. Tap `Test Connection` if you want to show the check explicitly.
+7. Tap `Connect`.
+
+Expected first successful screen: Home Command Center.
 
 ## Physical iPhone Testing
 
@@ -107,6 +119,33 @@ Expected:
 ```
 
 Then enter the same base URL in the app Server Connection screen.
+
+First-run physical iPhone flow:
+
+1. Start the backend with `HOST=0.0.0.0` and `PUBLIC_BASE_URL`.
+2. Confirm `/health` works in iPhone Safari.
+3. Launch ResearchOS.
+4. Expand `Enter Server URL`.
+5. Enter the LAN, Tailscale, or HTTPS base URL.
+6. Tap `Test Connection`.
+7. Tap `Connect`.
+
+Do not use `http://127.0.0.1:8001` on a physical iPhone unless the backend is running on the iPhone itself.
+
+## Five-Minute iPhone Demo Flow
+
+1. Connect to the backend and land on Home.
+2. Point out the `Demo Mode` badge.
+3. Show the Home cards: Morning Brief, Bench Mode, Experiment Designs, Active Experiments, Inventory, Whiteboard, Search.
+4. Open Bench Mode.
+5. If needed, tap `Start Demo Session`.
+6. Add an Observation.
+7. Return Home and open Search.
+8. Search for `SAG`.
+9. Open Experiments.
+10. Open Inventory and show low-stock, expiring-soon, recent purchases, and purchase request cards.
+
+Use `docs/DEMO_SCRIPT.md` as the spoken script.
 
 ## Trusted Developer Profile
 

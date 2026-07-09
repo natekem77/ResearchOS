@@ -1,130 +1,105 @@
-# ResearchOS 5-Minute Demo Script
+# ResearchOS 5-Minute Boss Demo Script
 
-## Opening
+## 0:00-0:30 — Opening
 
-ResearchOS is an AI-powered research operating system for scientific labs. The
-goal is not to replace the official lab notebook. The goal is to make the
-knowledge already inside lab notes searchable, structured, and useful.
+ResearchOS is a mobile-first laboratory command center. It brings experiments, notebook context, timelines, inventory, designs, analyses, and Research Copilot into one place.
 
-## Problem
+The official notebook still stays official. ResearchOS is the layer that helps the lab find, structure, and act on the information already being created.
 
-Scientific notes are often hard to reuse. Important details are spread across
-protocol notes, experiment pages, staining results, images, and follow-up
-comments. A researcher may remember that an experiment happened, but not which
-batch, marker, treatment, or result contained the key detail.
+## 0:30-1:15 — iPhone First Run
 
-## Why OneNote Stays Official
+Show the ResearchOS onboarding screen.
 
-Many labs already use Microsoft OneNote as the official notebook. ResearchOS is
-designed to respect that. OneNote can remain the source of record, with its
-existing access controls and lab habits.
+Say:
 
-ResearchOS adds a read-only intelligence layer on top. It can ingest notes,
-search across them, extract structured experiment records, and later connect to
-OneNote through Microsoft Graph after tenant approval.
+The phone connects to a ResearchOS backend running on a Mac, lab workstation, or future lab server. In the iPhone Simulator, localhost connects to the Mac backend. On a real iPhone, we use a LAN, Tailscale, or HTTPS URL.
 
-## What ResearchOS Adds
+Tap:
 
-ResearchOS adds:
+1. `Use Local Demo Server` for Simulator, or enter the LAN/Tailscale URL for a physical iPhone.
+2. `Test Connection`.
+3. `Connect`.
 
-- Local document ingestion for development and demos.
-- Search across lab notes.
-- Local paper/literature ingestion.
-- Automatic experiment extraction.
-- Structured fields like date, cell line, compounds, markers, time points, and
-  conclusions.
-- Lab-versus-literature comparison using local evidence first.
-- A provider-agnostic foundation for OneNote, Markdown, Obsidian, Notion, and
-  future lab systems.
-- A configurable AI chat layer for OpenAI-compatible providers and local models.
+Expected result: Home opens.
 
-## Demo Flow
+## 1:15-2:00 — Home Command Center
 
-1. Open `http://127.0.0.1:8001`.
-2. Point out backend status at the top.
-3. Click **Load demo notes**.
-4. Show the three sample lab notes in the Documents panel.
-5. Show the extracted experiment records in the Experiments panel.
-6. Select the SAG experiment and SIX6/BRN3B staining result, then click
-   **Compare selected**.
-7. Open the Literature panel and click **Ingest papers**.
-8. Search for `SAG BRN3B staining`.
-9. Explain that search works locally even without cloud AI.
-10. Ask the assistant: `Compare SAG experiment and SIX6/BRN3B staining result`.
-11. Ask: `Compare our SAG experiments with the literature.`
-12. Click **Compare with literature**.
-13. Show that ResearchOS separates lab matches, literature matches,
-    similarities, protocol differences, limitations, and source snippets.
+Show the Home screen.
 
-## Demo Search
+Say:
 
-Search query:
+This is the daily starting point. A scientist can immediately see Morning Brief, Bench Mode, experiment designs, active experiments, inventory, whiteboard, and global search.
 
-```text
-SAG BRN3B staining
-```
+Tap through the cards briefly:
 
-Talk track:
+- Morning Brief: what changed and what needs attention.
+- Bench Mode: one-handed capture at the bench.
+- Experiment Designs: treatment timelines and reminders.
+- Inventory: reagents, purchase requests, and alerts.
+- Search: the fastest path to any experiment or entity.
 
-ResearchOS finds the staining result and the SAG experiment because the notes
-mention shared markers, treatment context, and readouts. This is the first step
-toward asking questions across an entire lab notebook.
+## 2:00-3:00 — Bench Mode
 
-## Demo Experiment Extraction
+Open Bench Mode.
 
-Click **Extract experiments** or use the already extracted records after loading
-demo notes.
+If no active session exists, tap `Start Demo Session`.
 
-Talk track:
+Say:
 
-The system converts unstructured notebook-style text into structured experiment
-records. It extracts fields like date, researcher, organoid batch, treatment,
-concentration, time points, markers, notes, and conclusions. This is regex-first
-today, with an interface for future LLM extraction.
+Bench Mode is designed for one-handed use while standing at the bench. It has large actions for voice notes, observations, treatments, media changes, images, and finishing the session.
 
-## Demo Experiment Comparison
+Tap:
 
-In the Experiments panel, select two experiment rows and click **Compare
-selected**.
+1. `Observation`
+2. Enter a short note such as `Organoids look healthy before D32 imaging.`
+3. Save it.
 
-Talk track:
+Say:
 
-ResearchOS compares structured fields side-by-side: compounds, treatments,
-concentrations, time points, markers, imaging methods, notes, and conclusions.
-The local fallback interpretation works without an AI key, and an AI provider
-can optionally rewrite the comparison narrative.
+The goal is fast documentation without breaking the scientist's flow.
 
-## Demo Lab-Literature Comparison
+## 3:00-3:45 — Search and Experiments
 
-First ingest the sample literature notes from the Literature panel.
+Open Search.
 
-Suggested questions:
+Search:
 
 ```text
-Compare our SAG experiments with the literature.
-What does the literature say about BMP4 timing?
-Do our SIX6/BRN3B results match published expectations?
+SAG
 ```
 
-Talk track:
+Say:
 
-ResearchOS compares internal experiment records against local papers and paper
-notes. It keeps lab evidence separate from literature evidence, then reports
-overlap, differences, protocol or treatment differences, limitations, and source
-snippets. This works locally without an AI key, and a configured AI provider can
-turn the same evidence into a cleaner written synthesis.
+ResearchOS searches across experiments, notebook-derived records, knowledge graph entities, images, statistics, literature, and assets. The scientist should not have to remember where a detail was written.
 
-## Future UCSD OneNote Integration
+Open Experiments.
 
-Today the demo uses local Markdown notes so development is not blocked by
-Microsoft tenant approval.
+Say:
 
-The existing Microsoft Graph auth and OneNote metadata code remains in the
-backend. Once UCSD tenant approval is available, OneNote will plug in as another
-notebook provider and feed the same ResearchDocument, search, experiment
-extraction, and chat pipeline.
+Each experiment becomes a connected workspace over time: notebook entries, timelines, images, GraphPad, spreadsheets, statistics, literature, and copilot summaries.
+
+## 3:45-4:30 — Inventory and Experiment Design
+
+Open Inventory from Home.
+
+Say:
+
+ResearchOS also handles practical lab operations: low-stock alerts, expiring reagents, purchase requests, receiving, usage tracking, and methods-ready reagent details.
+
+Return Home and point to Experiment Designs.
+
+Say:
+
+The design planner turns treatment schedules like D1/D9 SAG into reminders, timelines, and eventually plate layouts. That helps avoid missed treatment and imaging days.
+
+## 4:30-5:00 — OneNote and Future Integration
+
+Say:
+
+Today the demo uses local sample data so development is not blocked by Microsoft tenant approval. The OneNote integration is designed as read-only first. OneNote remains the official notebook, and ResearchOS becomes the intelligence and workflow layer around it.
+
+Future approval from UCSD IT will let ResearchOS sync OneNote pages through Microsoft Graph. Write-back stays disabled until separate create/write permissions are approved.
 
 ## Closing
 
-ResearchOS keeps the official notebook intact while adding a searchable,
-structured, AI-ready layer for research workflows.
+ResearchOS is not just a database. It is a mobile laboratory companion: a scientist can plan an experiment, run it at the bench, capture notes, connect data, track inventory, and ask evidence-backed questions from the same system.

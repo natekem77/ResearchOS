@@ -84,63 +84,145 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('ResearchOS')),
       body: SafeArea(
         child: ListView(
           padding: ResearchOsSpacing.screen,
           children: [
-            Text('Connect to ResearchOS',
-                style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: ResearchOsSpacing.sm),
-            const Text(
-                'Use the local demo URL on desktop. Phones need a reachable lab-server, HTTPS, Tailscale, or emulator URL instead of localhost.'),
-            const SizedBox(height: ResearchOsSpacing.xl),
-            TextField(
-              controller: _controller,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(
-                labelText: 'Server URL',
-                hintText: 'http://127.0.0.1:8001',
-                border: OutlineInputBorder(),
+            const SizedBox(height: ResearchOsSpacing.lg),
+            Center(
+              child: Column(
+                children: [
+                  CircleAvatar(
+                    radius: 38,
+                    backgroundColor: colorScheme.primary,
+                    foregroundColor: colorScheme.onPrimary,
+                    child: const Icon(Icons.biotech_outlined, size: 40),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.lg),
+                  Text(
+                    'ResearchOS',
+                    style: Theme.of(context).textTheme.headlineMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  const Text(
+                    "Your lab's experiments, notes, inventory, timelines, and analyses in one place.",
+                    textAlign: TextAlign.center,
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: ResearchOsSpacing.lg),
-            FilledButton.icon(
-              onPressed: _loading ? null : _connect,
-              icon: _loading
-                  ? const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.link),
-              label: const Text('Connect'),
+            const SizedBox(height: ResearchOsSpacing.xl),
+            ResearchOsCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const CircleAvatar(
+                        child: Icon(Icons.dns_outlined),
+                      ),
+                      const SizedBox(width: ResearchOsSpacing.md),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Server connection',
+                                style: Theme.of(context).textTheme.titleMedium),
+                            const Text('Connect this app to ResearchOS.'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.lg),
+                  FilledButton.icon(
+                    onPressed: _loading
+                        ? null
+                        : () {
+                            _controller.text =
+                                const AppConfig().defaultServerUrl;
+                            _connect();
+                          },
+                    icon: const Icon(Icons.play_circle_outline),
+                    label: const Text('Use Local Demo Server'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  ExpansionTile(
+                    tilePadding: EdgeInsets.zero,
+                    childrenPadding: EdgeInsets.zero,
+                    title: const Text('Enter Server URL'),
+                    subtitle:
+                        const Text('LAN, Tailscale, HTTPS, or local demo'),
+                    children: [
+                      const SizedBox(height: ResearchOsSpacing.sm),
+                      TextField(
+                        controller: _controller,
+                        keyboardType: TextInputType.url,
+                        decoration: const InputDecoration(
+                          labelText: 'Server URL',
+                          hintText: 'http://127.0.0.1:8001',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: ResearchOsSpacing.md),
+                      FilledButton.icon(
+                        onPressed: _loading ? null : _connect,
+                        icon: _loading
+                            ? const SizedBox.square(
+                                dimension: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.link),
+                        label: const Text('Connect'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  OutlinedButton.icon(
+                    onPressed: _loading ? null : _testConnection,
+                    icon: const Icon(Icons.network_check_outlined),
+                    label: const Text('Test Connection'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            const ResearchOsInfoCard(
+              title: 'iOS Simulator',
+              subtitle:
+                  'http://127.0.0.1:8001 connects to the backend running on your Mac.',
+              icon: Icons.phone_iphone_outlined,
             ),
             const SizedBox(height: ResearchOsSpacing.sm),
-            OutlinedButton.icon(
-              onPressed: _loading ? null : _testConnection,
-              icon: const Icon(Icons.network_check_outlined),
-              label: const Text('Test Connection'),
+            const ResearchOsInfoCard(
+              title: 'Physical iPhone',
+              subtitle:
+                  'Use a LAN, Tailscale, or HTTPS server URL. The phone cannot use your laptop localhost.',
+              icon: Icons.wifi_tethering_outlined,
             ),
             if (_error != null) ...[
               const SizedBox(height: ResearchOsSpacing.lg),
-              ErrorView(message: _error!, onRetry: _connect),
+              ResearchOsErrorState(message: _error!, onRetry: _connect),
             ],
             if (_status != null) ...[
               const SizedBox(height: ResearchOsSpacing.lg),
-              InfoCard(
+              ResearchOsInfoCard(
                 title: _status!.project,
                 subtitle: '${_status!.status} · ${_status!.appVersion}',
-                leading: const Icon(Icons.check_circle),
+                icon: Icons.check_circle,
               ),
             ],
             if (_connectionInfo != null) ...[
               const SizedBox(height: ResearchOsSpacing.md),
-              InfoCard(
+              ResearchOsInfoCard(
                 title: 'Recommended mobile URL',
                 subtitle:
                     _connectionInfo!['recommended_mobile_url']?.toString() ??
                         _controller.text.trim(),
-                leading: const Icon(Icons.phone_iphone_outlined),
+                icon: Icons.phone_iphone_outlined,
               ),
               for (final warning in _warnings(_connectionInfo))
                 Padding(

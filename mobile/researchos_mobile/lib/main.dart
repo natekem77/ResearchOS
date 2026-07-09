@@ -6,7 +6,9 @@ import 'config/app_config.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
 import 'screens/copilot_screen.dart';
+import 'screens/dashboard_screen.dart';
 import 'screens/experiments_screen.dart';
+import 'screens/home_screen.dart';
 import 'screens/intelligence_feed_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/morning_brief_screen.dart';
@@ -45,15 +47,13 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
     final preferences = await SharedPreferences.getInstance();
     final savedUrl =
         preferences.getString(AppConfig.serverUrlPreferenceKey)?.trim();
-    if (savedUrl == null || savedUrl.isEmpty) {
-      setState(() {
-        _loadingSavedServer = false;
-      });
-      return;
-    }
-    final api = ResearchOsApi(baseUrl: savedUrl);
+    final candidate = savedUrl == null || savedUrl.isEmpty
+        ? const AppConfig().defaultServerUrl
+        : savedUrl;
+    final api = ResearchOsApi(baseUrl: candidate);
     try {
       await api.status();
+      await preferences.setString(AppConfig.serverUrlPreferenceKey, candidate);
       if (!mounted) return;
       setState(() {
         _api = api;
@@ -65,7 +65,7 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
       setState(() {
         _loadingSavedServer = false;
         _connectionError =
-            'Saved server URL is unreachable: $savedUrl. Choose a LAN, Tailscale, or simulator URL.';
+            'Could not reach $candidate. Start the backend, or use a LAN, Tailscale, or HTTPS URL for physical iPhone testing.';
       });
     }
   }
@@ -89,21 +89,56 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
       darkTheme: ResearchOsTheme.dark(),
       themeMode: ThemeMode.system,
       home: _loadingSavedServer
-          ? const Scaffold(body: Center(child: CircularProgressIndicator()))
+          ? const _StartupLoadingScreen()
           : _api == null
-          ? ServerConnectionScreen(
-              initialError: _connectionError,
-              onConnected: _connect,
-            )
-          : ResearchOsHome(
-              api: _api!,
-              selectedIndex: _selectedIndex,
-              onDestinationSelected: (index) {
-                setState(() {
-                  _selectedIndex = index;
-                });
-              },
+              ? ServerConnectionScreen(
+                  initialError: _connectionError,
+                  onConnected: _connect,
+                )
+              : ResearchOsHome(
+                  api: _api!,
+                  selectedIndex: _selectedIndex,
+                  onDestinationSelected: (index) {
+                    setState(() {
+                      _selectedIndex = index;
+                    });
+                  },
+                ),
+    );
+  }
+}
+
+class _StartupLoadingScreen extends StatelessWidget {
+  const _StartupLoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: ResearchOsSpacing.screen,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircleAvatar(
+                  radius: 32,
+                  backgroundColor: Theme.of(context).colorScheme.primary,
+                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                  child: const Icon(Icons.biotech_outlined, size: 34),
+                ),
+                const SizedBox(height: ResearchOsSpacing.lg),
+                Text('ResearchOS',
+                    style: Theme.of(context).textTheme.headlineSmall),
+                const SizedBox(height: ResearchOsSpacing.sm),
+                const Text('Connecting to your lab workspace...'),
+                const SizedBox(height: ResearchOsSpacing.lg),
+                const CircularProgressIndicator(),
+              ],
             ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -123,9 +158,8 @@ class ResearchOsHome extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final screens = [
-      MorningBriefScreen(api: api),
-      IntelligenceFeedScreen(api: api),
-      WhiteboardScreen(api: api),
+      HomeScreen(api: api, onNavigate: onDestinationSelected),
+      DashboardScreen(api: api),
       BenchModeScreen(api: api),
       NewExperimentWizardScreen(api: api),
       ExperimentsScreen(api: api),
@@ -134,11 +168,13 @@ class ResearchOsHome extends StatelessWidget {
       SearchScreen(api: api),
       CopilotScreen(api: api),
       SettingsScreen(api: api),
+      MorningBriefScreen(api: api),
+      IntelligenceFeedScreen(api: api),
+      WhiteboardScreen(api: api),
     ];
     final titles = [
-      'Morning Brief',
-      'Intelligence',
-      'Whiteboard',
+      'Home',
+      'Dashboard',
       'Bench Mode',
       'New Experiment',
       'Experiments',
@@ -146,7 +182,10 @@ class ResearchOsHome extends StatelessWidget {
       'Inventory',
       'Search',
       'Copilot',
-      'Settings'
+      'Settings',
+      'Morning Brief',
+      'Intelligence',
+      'Whiteboard',
     ];
     return ResearchOsScaffold(
       title: titles[selectedIndex],

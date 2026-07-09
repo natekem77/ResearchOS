@@ -191,6 +191,16 @@ class _InventoryScreenState extends State<InventoryScreen> {
                     value: status['reorder_needed_count'],
                     icon: Icons.shopping_cart_outlined,
                   ),
+                  _MetricCard(
+                    title: 'Purchase requests',
+                    value: requests.length,
+                    icon: Icons.receipt_long_outlined,
+                  ),
+                  _MetricCard(
+                    title: 'Recent purchases',
+                    value: receiving.length,
+                    icon: Icons.local_shipping_outlined,
+                  ),
                 ],
               ),
               if (_actionMessage != null) ...[

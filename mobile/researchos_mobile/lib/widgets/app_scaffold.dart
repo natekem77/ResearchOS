@@ -18,13 +18,16 @@ class ResearchOsScaffold extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final selectedNavIndex = _primaryDestinations.indexWhere(
+      (destination) => destination.screenIndex == currentIndex,
+    );
     return Scaffold(
       appBar: AppBar(
         title: Text(title),
         actions: [
           IconButton(
             tooltip: 'Search',
-            onPressed: () => onDestinationSelected(8),
+            onPressed: () => onDestinationSelected(7),
             icon: const Icon(Icons.manage_search_outlined),
           ),
         ],
@@ -50,52 +53,66 @@ class ResearchOsScaffold extends StatelessWidget {
         ),
       ),
       bottomNavigationBar: NavigationBar(
-        selectedIndex: currentIndex,
-        onDestinationSelected: onDestinationSelected,
-        destinations: const [
-          NavigationDestination(
-              icon: Icon(Icons.wb_sunny_outlined),
-              selectedIcon: Icon(Icons.wb_sunny),
-              label: 'Brief'),
-          NavigationDestination(
-              icon: Icon(Icons.bolt_outlined),
-              selectedIcon: Icon(Icons.bolt),
-              label: 'Intel'),
-          NavigationDestination(
-              icon: Icon(Icons.tv_outlined),
-              selectedIcon: Icon(Icons.tv),
-              label: 'Board'),
-          NavigationDestination(
-              icon: Icon(Icons.home_outlined),
-              selectedIcon: Icon(Icons.home),
-              label: 'Bench'),
-          NavigationDestination(
-              icon: Icon(Icons.add_circle_outline),
-              selectedIcon: Icon(Icons.add_circle),
-              label: 'New'),
-          NavigationDestination(
-              icon: Icon(Icons.science_outlined),
-              selectedIcon: Icon(Icons.science),
-              label: 'Experiments'),
-          NavigationDestination(
-              icon: Icon(Icons.inventory_2_outlined),
-              selectedIcon: Icon(Icons.inventory_2),
-              label: 'Resources'),
-          NavigationDestination(
-              icon: Icon(Icons.inventory_outlined),
-              selectedIcon: Icon(Icons.inventory),
-              label: 'Inventory'),
-          NavigationDestination(icon: Icon(Icons.search), label: 'Search'),
-          NavigationDestination(
-              icon: Icon(Icons.auto_awesome_outlined),
-              selectedIcon: Icon(Icons.auto_awesome),
-              label: 'Copilot'),
-          NavigationDestination(
-              icon: Icon(Icons.settings_outlined),
-              selectedIcon: Icon(Icons.settings),
-              label: 'Settings'),
-        ],
+        selectedIndex: selectedNavIndex < 0 ? 0 : selectedNavIndex,
+        onDestinationSelected: (index) =>
+            onDestinationSelected(_primaryDestinations[index].screenIndex),
+        destinations: _primaryDestinations
+            .map(
+              (destination) => NavigationDestination(
+                icon: Icon(destination.icon),
+                selectedIcon: Icon(destination.selectedIcon),
+                label: destination.label,
+              ),
+            )
+            .toList(),
       ),
     );
   }
 }
+
+class _PrimaryDestination {
+  const _PrimaryDestination({
+    required this.screenIndex,
+    required this.icon,
+    required this.selectedIcon,
+    required this.label,
+  });
+
+  final int screenIndex;
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+}
+
+const _primaryDestinations = [
+  _PrimaryDestination(
+    screenIndex: 0,
+    icon: Icons.space_dashboard_outlined,
+    selectedIcon: Icons.space_dashboard,
+    label: 'Home',
+  ),
+  _PrimaryDestination(
+    screenIndex: 4,
+    icon: Icons.science_outlined,
+    selectedIcon: Icons.science,
+    label: 'Experiments',
+  ),
+  _PrimaryDestination(
+    screenIndex: 2,
+    icon: Icons.home_outlined,
+    selectedIcon: Icons.home,
+    label: 'Bench',
+  ),
+  _PrimaryDestination(
+    screenIndex: 7,
+    icon: Icons.search,
+    selectedIcon: Icons.manage_search,
+    label: 'Search',
+  ),
+  _PrimaryDestination(
+    screenIndex: 9,
+    icon: Icons.settings_outlined,
+    selectedIcon: Icons.settings,
+    label: 'Settings',
+  ),
+];
