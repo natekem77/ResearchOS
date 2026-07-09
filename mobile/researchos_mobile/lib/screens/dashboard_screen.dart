@@ -82,7 +82,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 subtitle: 'What needs attention in this workspace.',
               ),
               _TodayCard(model: model),
-              _DesignReminderCard(model: model),
+              _DesignReminderCard(
+                model: model,
+                api: widget.api,
+                onChanged: _reload,
+              ),
               const ResearchOsSectionHeader(
                 title: 'Active session',
                 subtitle: 'Bench Mode stays focused on the current experiment.',
@@ -145,14 +149,24 @@ class _DashboardViewModel {
 }
 
 class _DesignReminderCard extends StatelessWidget {
-  const _DesignReminderCard({required this.model});
+  const _DesignReminderCard({
+    required this.model,
+    required this.api,
+    required this.onChanged,
+  });
 
   final _DashboardViewModel model;
+  final ResearchOsApi api;
+  final VoidCallback onChanged;
 
   @override
   Widget build(BuildContext context) {
-    final due = (model.designDueToday['events'] as List? ?? const []);
-    final upcoming = (model.designUpcoming['events'] as List? ?? const []);
+    final due = (model.designDueToday['reminders'] as List? ??
+        model.designDueToday['events'] as List? ??
+        const []);
+    final upcoming = (model.designUpcoming['reminders'] as List? ??
+        model.designUpcoming['events'] as List? ??
+        const []);
     return Padding(
       padding: const EdgeInsets.only(bottom: ResearchOsSpacing.md),
       child: ResearchOsCard(
@@ -167,10 +181,37 @@ class _DesignReminderCard extends StatelessWidget {
               if (item is Map)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: Text(item['event'] is Map
-                      ? item['event']['title']?.toString() ?? 'Design event'
-                      : 'Design event'),
-                  subtitle: Text('Due ${item['due_date'] ?? ''}'),
+                  title: Text(item['title']?.toString() ??
+                      (item['event'] is Map
+                          ? item['event']['title']?.toString() ?? 'Design event'
+                          : 'Design event')),
+                  subtitle: Text([
+                    item['design_title'],
+                    item['day'],
+                    item['calendar_date'] ?? item['due_date'],
+                    item['reminder_status'],
+                  ]
+                      .where((value) => value != null && '$value'.isNotEmpty)
+                      .join(' · ')),
+                  trailing: PopupMenuButton<String>(
+                    onSelected: (value) async {
+                      final eventId = item['event_id']?.toString() ??
+                          (item['event'] is Map
+                              ? item['event']['event_id']?.toString()
+                              : null);
+                      if (eventId == null || eventId.isEmpty) return;
+                      if (value == 'complete') {
+                        await api.completeDesignReminder(eventId);
+                      } else {
+                        await api.dismissDesignReminder(eventId);
+                      }
+                      onChanged();
+                    },
+                    itemBuilder: (context) => const [
+                      PopupMenuItem(value: 'complete', child: Text('Complete')),
+                      PopupMenuItem(value: 'dismiss', child: Text('Dismiss')),
+                    ],
+                  ),
                 ),
           ],
         ),

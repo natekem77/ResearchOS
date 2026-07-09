@@ -48,10 +48,17 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                         event_type="treatment",
                         title="Start treatment",
                         alert_enabled=True,
+                        reminder_enabled=True,
                     ),
                 )
+                activated = main.activate_experiment_design(design.design_id)
                 timeline = main.experiment_design_timeline(design.design_id)
                 calendar = main.experiment_design_calendar(design.design_id)
+                reminders = main.experiment_design_reminders(include_drafts=False, workspace_id=None)
+                reminder_due = main.experiment_design_reminders_due_today(workspace_id=None)
+                reminder_upcoming = main.experiment_design_reminders_upcoming(days=7, workspace_id=None)
+                completed = main.complete_experiment_design_reminder(str(event["event_id"]))
+                dismissed = main.dismiss_experiment_design_reminder(str(event["event_id"]))
                 due = main.experiment_designs_due_today(workspace_id=None)
                 upcoming = main.experiment_designs_upcoming(days=7, workspace_id=None)
                 exported = main.export_experiment_design_csv(design.design_id)
@@ -83,11 +90,17 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                 main.settings = original_settings
 
         self.assertEqual(design.status, "active")
+        self.assertEqual(activated.status, "active")
         self.assertEqual(event["event_type"], "treatment")
+        self.assertEqual(reminders["count"], 1)
+        self.assertIn("reminders", reminder_due)
+        self.assertGreaterEqual(reminder_upcoming["count"], 1)
+        self.assertEqual(completed["event"]["reminder_status"], "completed")
+        self.assertEqual(dismissed["event"]["reminder_status"], "dismissed")
         self.assertEqual(timeline["event_count"], 1)
         self.assertEqual(calendar["calendar"][0]["label"], "D1")
         self.assertGreaterEqual(due["count"], 0)
-        self.assertGreaterEqual(upcoming["count"], 1)
+        self.assertEqual(upcoming["count"], 0)
         self.assertIn("DMSO control", exported.body.decode("utf-8"))
         self.assertEqual(preview["inferred_conditions"], ["BMP4 pulse"])
         self.assertEqual(imported.title, "Imported BMP4 design")

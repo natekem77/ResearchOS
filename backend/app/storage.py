@@ -515,6 +515,7 @@ class SQLiteStore:
                     cell_line_or_model TEXT,
                     reporters_json TEXT NOT NULL DEFAULT '[]',
                     description TEXT,
+                    start_date TEXT,
                     created_by TEXT,
                     linked_experiment_id TEXT,
                     status TEXT NOT NULL DEFAULT 'draft',
@@ -560,8 +561,13 @@ class SQLiteStore:
                     required INTEGER NOT NULL DEFAULT 1,
                     alert_enabled INTEGER NOT NULL DEFAULT 0,
                     alert_offset_days INTEGER NOT NULL DEFAULT 0,
+                    reminder_enabled INTEGER NOT NULL DEFAULT 0,
+                    reminder_offset_days INTEGER NOT NULL DEFAULT 0,
+                    reminder_status TEXT NOT NULL DEFAULT 'pending',
+                    due_date TEXT,
                     completed INTEGER NOT NULL DEFAULT 0,
                     completed_at TEXT,
+                    dismissed_at TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(design_id) REFERENCES experiment_designs(design_id) ON DELETE CASCADE,
@@ -609,6 +615,25 @@ class SQLiteStore:
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_barcode ON inventory_items(barcode)")
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_qr_code ON inventory_items(qr_code)")
                 connection.execute("CREATE INDEX IF NOT EXISTS idx_inventory_internal_label ON inventory_items(internal_label)")
+        design_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(experiment_designs)").fetchall()
+        }
+        if "start_date" not in design_columns:
+            connection.execute("ALTER TABLE experiment_designs ADD COLUMN start_date TEXT")
+        event_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(design_events)").fetchall()
+        }
+        for column, definition in {
+            "reminder_enabled": "INTEGER NOT NULL DEFAULT 0",
+            "reminder_offset_days": "INTEGER NOT NULL DEFAULT 0",
+            "reminder_status": "TEXT NOT NULL DEFAULT 'pending'",
+            "due_date": "TEXT",
+            "dismissed_at": "TEXT",
+        }.items():
+            if column not in event_columns:
+                connection.execute(f"ALTER TABLE design_events ADD COLUMN {column} {definition}")
         document_columns = {
             str(row["name"])
             for row in connection.execute("PRAGMA table_info(documents)").fetchall()
@@ -3051,8 +3076,10 @@ class SQLiteStore:
         """Convert SQLite booleans in design events."""
 
         record = dict(row)
-        for key in ["required", "alert_enabled", "completed"]:
+        for key in ["required", "alert_enabled", "reminder_enabled", "completed"]:
             record[key] = bool(record.get(key))
+        record["reminder_enabled"] = bool(record.get("reminder_enabled") or record.get("alert_enabled"))
+        record["reminder_offset_days"] = record.get("reminder_offset_days") if record.get("reminder_offset_days") is not None else record.get("alert_offset_days")
         return record
 
     def save_experiment_design(
@@ -3062,6 +3089,7 @@ class SQLiteStore:
         cell_line_or_model: str | None = None,
         reporters: list[str] | None = None,
         description: str | None = None,
+        start_date: str | None = None,
         created_by: str | None = None,
         linked_experiment_id: str | None = None,
         status: str = "draft",
@@ -3082,10 +3110,10 @@ class SQLiteStore:
                     """
                     INSERT INTO experiment_designs (
                         design_id, title, experiment_type, cell_line_or_model,
-                        reporters_json, description, created_by,
+                        reporters_json, description, start_date, created_by,
                         linked_experiment_id, status, owner_user_id, workspace_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id,
@@ -3094,6 +3122,7 @@ class SQLiteStore:
                         cell_line_or_model,
                         json.dumps(reporters or []),
                         description,
+                        start_date,
                         created_by or owner_user_id,
                         linked_experiment_id,
                         status,
@@ -3110,6 +3139,7 @@ class SQLiteStore:
                         cell_line_or_model = ?,
                         reporters_json = ?,
                         description = ?,
+                        start_date = ?,
                         created_by = COALESCE(?, created_by),
                         linked_experiment_id = ?,
                         status = ?,
@@ -3124,6 +3154,7 @@ class SQLiteStore:
                         cell_line_or_model,
                         json.dumps(reporters or []),
                         description,
+                        start_date,
                         created_by or owner_user_id,
                         linked_experiment_id,
                         status,
@@ -3264,13 +3295,20 @@ class SQLiteStore:
         required: bool = True,
         alert_enabled: bool = False,
         alert_offset_days: int = 0,
+        reminder_enabled: bool | None = None,
+        reminder_offset_days: int | None = None,
+        reminder_status: str = "pending",
+        due_date: str | None = None,
         completed: bool = False,
         completed_at: str | None = None,
+        dismissed_at: str | None = None,
         event_id: str | None = None,
     ) -> dict[str, Any]:
         """Create or update one design event."""
 
         resolved_id = event_id or f"design-event:{uuid.uuid4().hex[:16]}"
+        resolved_reminder_enabled = alert_enabled if reminder_enabled is None else reminder_enabled
+        resolved_reminder_offset = alert_offset_days if reminder_offset_days is None else reminder_offset_days
         with self._connect() as connection:
             existing = connection.execute("SELECT created_at FROM design_events WHERE event_id = ?", (resolved_id,)).fetchone()
             if existing is None:
@@ -3279,13 +3317,18 @@ class SQLiteStore:
                     INSERT INTO design_events (
                         event_id, design_id, condition_id, day, event_type,
                         title, description, required, alert_enabled,
-                        alert_offset_days, completed, completed_at
+                        alert_offset_days, reminder_enabled, reminder_offset_days,
+                        reminder_status, due_date, completed, completed_at,
+                        dismissed_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         resolved_id, design_id, condition_id, day, event_type, title, description,
-                        int(required), int(alert_enabled), alert_offset_days, int(completed), completed_at,
+                        int(required), int(alert_enabled), alert_offset_days,
+                        int(resolved_reminder_enabled), resolved_reminder_offset,
+                        reminder_status, due_date, int(completed), completed_at,
+                        dismissed_at,
                     ),
                 )
             else:
@@ -3300,14 +3343,22 @@ class SQLiteStore:
                         required = ?,
                         alert_enabled = ?,
                         alert_offset_days = ?,
+                        reminder_enabled = ?,
+                        reminder_offset_days = ?,
+                        reminder_status = ?,
+                        due_date = ?,
                         completed = ?,
                         completed_at = ?,
+                        dismissed_at = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE event_id = ?
                     """,
                     (
                         condition_id, day, event_type, title, description,
-                        int(required), int(alert_enabled), alert_offset_days, int(completed), completed_at, resolved_id,
+                        int(required), int(alert_enabled), alert_offset_days,
+                        int(resolved_reminder_enabled), resolved_reminder_offset,
+                        reminder_status, due_date, int(completed), completed_at,
+                        dismissed_at, resolved_id,
                     ),
                 )
         saved = self.get_design_event(resolved_id)

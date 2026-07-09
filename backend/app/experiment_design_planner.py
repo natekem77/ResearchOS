@@ -185,30 +185,102 @@ def preview_design_import(csv_text: str) -> dict[str, Any]:
 def event_due_date(design: dict[str, Any], event: dict[str, Any]) -> date:
     """Calculate a reminder date from design creation and event day."""
 
-    created = str(design.get("created_at") or date.today().isoformat())[:10]
+    created = str(design.get("start_date") or design.get("created_at") or date.today().isoformat())[:10]
     try:
         start = date.fromisoformat(created)
     except ValueError:
         start = date.today()
-    offset = parse_design_day(event.get("day")) - int(event.get("alert_offset_days") or 0)
+    offset = parse_design_day(event.get("day")) - int(event.get("reminder_offset_days") if event.get("reminder_offset_days") is not None else event.get("alert_offset_days") or 0)
     return start + timedelta(days=offset)
 
 
-def due_events(designs: list[dict[str, Any]], days: int = 0, today: date | None = None) -> list[dict[str, Any]]:
-    """Return alert-enabled events due today or within a future window."""
+def reminder_payload(design: dict[str, Any], event: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    """Build an actionable reminder payload."""
+
+    current = today or date.today()
+    due_date = event_due_date(design, event) if design.get("start_date") else None
+    status = str(event.get("reminder_status") or "pending")
+    if event.get("completed"):
+        status = "completed"
+    elif event.get("dismissed_at"):
+        status = "dismissed"
+    elif due_date:
+        if due_date < current:
+            status = "overdue"
+        elif due_date == current:
+            status = "due"
+        else:
+            status = "pending"
+    conditions = {condition.get("condition_id"): condition for condition in design.get("conditions", [])}
+    condition = conditions.get(event.get("condition_id"))
+    return {
+        "design_id": design.get("design_id"),
+        "design_title": design.get("title"),
+        "design_status": design.get("status"),
+        "event_id": event.get("event_id"),
+        "condition": condition,
+        "condition_name": (condition or {}).get("condition_name"),
+        "day": event.get("day"),
+        "event_type": event.get("event_type"),
+        "title": event.get("title"),
+        "description": event.get("description"),
+        "calendar_date": due_date.isoformat() if due_date else None,
+        "due_date": due_date.isoformat() if due_date else None,
+        "relative_due": due_date is None,
+        "reminder_enabled": bool(event.get("reminder_enabled") or event.get("alert_enabled")),
+        "reminder_status": status,
+        "completed_at": event.get("completed_at"),
+        "dismissed_at": event.get("dismissed_at"),
+        "design": design,
+        "event": event,
+    }
+
+
+def due_events(
+    designs: list[dict[str, Any]],
+    days: int = 0,
+    today: date | None = None,
+    include_drafts: bool = False,
+) -> list[dict[str, Any]]:
+    """Return reminder-enabled events due today or within a future window."""
 
     current = today or date.today()
     end = current + timedelta(days=max(0, days))
     due: list[dict[str, Any]] = []
     for design in designs:
+        if design.get("status") != "active" and not include_drafts:
+            continue
         for event in design.get("events", []):
-            if not event.get("alert_enabled") or event.get("completed"):
+            if not (event.get("reminder_enabled") or event.get("alert_enabled")):
                 continue
-            due_date = event_due_date(design, event)
-            if current <= due_date <= end:
-                due.append({"due_date": due_date.isoformat(), "design": design, "event": event})
-    due.sort(key=lambda item: (item["due_date"], item["event"].get("title") or ""))
+            reminder = reminder_payload(design, event, today=current)
+            if reminder["reminder_status"] in {"completed", "dismissed"}:
+                continue
+            if reminder["due_date"] is None:
+                if days > 0:
+                    due.append(reminder)
+                continue
+            parsed_due = date.fromisoformat(str(reminder["due_date"]))
+            if current <= parsed_due <= end:
+                due.append(reminder)
+            elif days == 0 and parsed_due < current:
+                due.append(reminder)
+    due.sort(key=lambda item: (item.get("due_date") or "9999-12-31", item.get("title") or ""))
     return due
+
+
+def all_reminders(designs: list[dict[str, Any]], include_drafts: bool = False) -> list[dict[str, Any]]:
+    """Return all reminder-enabled design events."""
+
+    reminders = []
+    for design in designs:
+        if design.get("status") != "active" and not include_drafts:
+            continue
+        for event in design.get("events", []):
+            if event.get("reminder_enabled") or event.get("alert_enabled"):
+                reminders.append(reminder_payload(design, event))
+    reminders.sort(key=lambda item: (item.get("due_date") or "9999-12-31", item.get("design_title") or "", item.get("title") or ""))
+    return reminders
 
 
 def full_factorial(factors: dict[str, list[str]]) -> dict[str, Any]:

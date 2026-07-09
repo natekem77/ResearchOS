@@ -436,18 +436,23 @@ function renderDailyDashboard() {
 }
 
 function renderDashboardDesignReminders() {
-  const due = state.designDueToday?.events || [];
-  const upcoming = state.designUpcoming?.events || [];
+  const due = state.designDueToday?.reminders || state.designDueToday?.events || [];
+  const upcoming = state.designUpcoming?.reminders || state.designUpcoming?.events || [];
   return `
     <details class="daily-card" open>
       <summary><span>Experiment design reminders</span><small>${escapeHtml(due.length)} due today / ${escapeHtml(upcoming.length)} upcoming</small></summary>
       <div class="daily-card-items">
         ${[...due, ...upcoming].slice(0, 6).map((item) => `
-          <a class="daily-card-item" href="#/design-planner">
+          <article class="daily-card-item">
             <strong>${escapeHtml(item.event?.title || "Design event")}</strong>
-            <span>${escapeHtml(item.design?.title || "Experiment design")} · ${escapeHtml(item.event?.day || "")} · due ${escapeHtml(item.due_date || "")}</span>
-            <small>Planned design reminder</small>
-          </a>
+            <span>${escapeHtml(item.design_title || item.design?.title || "Experiment design")} · ${escapeHtml(item.day || item.event?.day || "")} · ${escapeHtml(item.calendar_date || item.due_date || "relative day")}</span>
+            <small>${escapeHtml(item.condition_name || "all conditions")} · ${escapeHtml(item.event_type || item.event?.event_type || "custom")} · ${escapeHtml(item.reminder_status || "pending")}</small>
+            <div class="entry-actions compact-actions">
+              <a class="secondary-link-button" href="#/design-planner">Open</a>
+              <button type="button" class="secondary-button" data-design-reminder-complete="${escapeHtml(item.event_id || item.event?.event_id || "")}">Complete</button>
+              <button type="button" class="secondary-button" data-design-reminder-dismiss="${escapeHtml(item.event_id || item.event?.event_id || "")}">Dismiss</button>
+            </div>
+          </article>
         `).join("") || `<div class="empty-state">No planned design reminders due soon.</div>`}
       </div>
     </details>
@@ -1821,10 +1826,12 @@ function renderDesignPlanner() {
 function renderDesignReminderCards() {
   const target = $("#designReminderCards");
   if (!target) return;
+  const due = state.designDueToday?.reminders || state.designDueToday?.events || [];
+  const upcoming = state.designUpcoming?.reminders || state.designUpcoming?.events || [];
   target.innerHTML = `
     <article class="provider-card">
       <div class="provider-card-header"><span>Due today</span><strong>${escapeHtml(state.designDueToday?.count ?? 0)}</strong></div>
-      <p>${escapeHtml((state.designDueToday?.events || [])[0]?.event?.title || "No design reminders due today")}</p>
+      <p>${escapeHtml(due[0]?.title || due[0]?.event?.title || "No design reminders due today")}</p>
     </article>
     <article class="provider-card">
       <div class="provider-card-header"><span>Upcoming</span><strong>${escapeHtml(state.designUpcoming?.count ?? 0)}</strong></div>
@@ -2019,6 +2026,7 @@ async function saveExperimentDesign() {
     cell_line_or_model: $("#designModel").value.trim() || null,
     reporters: $("#designReporters").value.split(/[;,]/).map((item) => item.trim()).filter(Boolean),
     description: $("#designDescription").value.trim() || null,
+    start_date: $("#designStartDate").value || null,
     status: $("#designStatusSelect").value || "draft",
   };
   const saved = await requestJson("/experiment-designs", { method: "POST", body: JSON.stringify(payload) });
@@ -2062,6 +2070,7 @@ async function addDesignEvent() {
     title: $("#eventTitle").value.trim(),
     description: $("#eventDescription").value.trim() || null,
     alert_enabled: $("#eventAlert").value === "true",
+    reminder_enabled: $("#eventAlert").value === "true",
   };
   await requestJson(`/experiment-designs/${encodeURIComponent(designId)}/events`, { method: "POST", body: JSON.stringify(payload) });
   $("#designEventForm").reset();
@@ -2108,6 +2117,12 @@ async function checkSelectedDesignBalance() {
     body: JSON.stringify({ conditions: design.conditions || [] }),
   });
   $("#designPlannerStatus").textContent = result.warnings?.length ? result.warnings.join(" ") : "Design appears balanced by current checks.";
+}
+
+async function updateDesignReminder(eventId, action) {
+  if (!eventId) return;
+  await requestJson(`/experiment-designs/reminders/${encodeURIComponent(eventId)}/${action}`, { method: "POST" });
+  await refreshData();
 }
 
 async function updatePurchaseRequestStatus(requestId, action) {
@@ -4827,8 +4842,8 @@ async function refreshData() {
     requestJson("/purchase-requests"),
     requestJson("/receiving"),
     requestJson("/experiment-designs"),
-    requestJson("/experiment-designs/due-today"),
-    requestJson("/experiment-designs/upcoming?days=7"),
+    requestJson("/experiment-designs/reminders/due-today"),
+    requestJson("/experiment-designs/reminders/upcoming?days=7"),
     requestJson("/purchases/summary"),
     requestJson("/purchases/import-templates"),
     requestJson("/sessions"),
@@ -5290,6 +5305,20 @@ $("#checkDesignBalanceButton")?.addEventListener("click", () => {
   checkSelectedDesignBalance().catch((error) => {
     $("#designPlannerStatus").textContent = `Balance check failed: ${error.message}`;
   });
+});
+$("#dailyDashboardCards")?.addEventListener("click", (event) => {
+  const complete = event.target.closest("[data-design-reminder-complete]");
+  const dismiss = event.target.closest("[data-design-reminder-dismiss]");
+  if (complete) {
+    updateDesignReminder(complete.dataset.designReminderComplete, "complete").catch((error) => {
+      $("#dailyDashboardSummary").textContent = `Reminder completion failed: ${error.message}`;
+    });
+  }
+  if (dismiss) {
+    updateDesignReminder(dismiss.dataset.designReminderDismiss, "dismiss").catch((error) => {
+      $("#dailyDashboardSummary").textContent = `Reminder dismiss failed: ${error.message}`;
+    });
+  }
 });
 $("#purchaseRequestForm")?.addEventListener("submit", (event) => {
   event.preventDefault();

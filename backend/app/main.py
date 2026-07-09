@@ -26,6 +26,7 @@ from app.experiment_comparison import compare_experiments
 from app.experiment_design_planner import (
     DESIGN_STATUSES,
     EVENT_TYPES,
+    all_reminders,
     build_design_timeline,
     check_design_balance,
     copilot_design_checks,
@@ -1117,6 +1118,7 @@ class ExperimentDesignRequest(BaseModel):
     cell_line_or_model: str | None = None
     reporters: list[str] = Field(default_factory=list)
     description: str | None = None
+    start_date: str | None = None
     created_by: str | None = None
     linked_experiment_id: str | None = None
     status: str = "draft"
@@ -1159,8 +1161,13 @@ class DesignEventRequest(BaseModel):
     required: bool = True
     alert_enabled: bool = False
     alert_offset_days: int = 0
+    reminder_enabled: bool | None = None
+    reminder_offset_days: int | None = None
+    reminder_status: str = "pending"
+    due_date: str | None = None
     completed: bool = False
     completed_at: str | None = None
+    dismissed_at: str | None = None
 
 
 class DesignImportRequest(BaseModel):
@@ -4172,6 +4179,7 @@ def _save_experiment_design_request(
         cell_line_or_model=request.cell_line_or_model,
         reporters=request.reporters,
         description=request.description,
+        start_date=request.start_date,
         created_by=request.created_by or str(user.get("display_name") or user.get("email") or ""),
         linked_experiment_id=request.linked_experiment_id,
         status=status,
@@ -4228,9 +4236,56 @@ def _save_design_event(store: SQLiteStore, design_id: str, request: DesignEventR
         required=request.required,
         alert_enabled=request.alert_enabled,
         alert_offset_days=request.alert_offset_days,
+        reminder_enabled=request.reminder_enabled,
+        reminder_offset_days=request.reminder_offset_days,
+        reminder_status=request.reminder_status,
+        due_date=request.due_date,
         completed=request.completed,
         completed_at=request.completed_at,
+        dismissed_at=request.dismissed_at,
     )
+
+
+def _designs_for_reminders(workspace_id: str | None = None) -> list[dict[str, object]]:
+    """Return fully-loaded designs for reminder endpoints."""
+
+    store = SQLiteStore(settings=settings)
+    designs = [
+        store.get_experiment_design(str(design["design_id"]))
+        for design in store.list_experiment_designs(workspace_id=_current_workspace_id(workspace_id))
+    ]
+    return [design for design in designs if design]
+
+
+def _update_design_reminder_event(event_id: str, status: str) -> dict[str, object]:
+    """Mark a design event reminder complete or dismissed."""
+
+    store = SQLiteStore(settings=settings)
+    event = store.get_design_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail=f"Design event not found: {event_id}")
+    now = datetime.now(timezone.utc).isoformat()
+    updated = store.save_design_event(
+        event_id=event_id,
+        design_id=str(event["design_id"]),
+        condition_id=event.get("condition_id"),
+        day=str(event.get("day") or "D0"),
+        event_type=str(event.get("event_type") or "custom"),
+        title=str(event.get("title") or "Design event"),
+        description=event.get("description"),
+        required=bool(event.get("required")),
+        alert_enabled=bool(event.get("alert_enabled")),
+        alert_offset_days=int(event.get("alert_offset_days") or 0),
+        reminder_enabled=bool(event.get("reminder_enabled") or event.get("alert_enabled")),
+        reminder_offset_days=int(event.get("reminder_offset_days") if event.get("reminder_offset_days") is not None else event.get("alert_offset_days") or 0),
+        reminder_status=status,
+        due_date=event.get("due_date"),
+        completed=status == "completed",
+        completed_at=now if status == "completed" else event.get("completed_at"),
+        dismissed_at=now if status == "dismissed" else event.get("dismissed_at"),
+    )
+    _publish_event(EventType.PROVIDER_SYNCED, "experiment_designs", {"event": f"reminder_{status}", "event_id": event_id, "design_id": event.get("design_id")})
+    return updated
 
 
 def _inventory_item_entry(
@@ -4620,7 +4675,14 @@ def _mobile_experiment_workspace(experiment_id: str) -> dict[str, object]:
     for design in linked_designs:
         full_design = store.get_experiment_design(str(design["design_id"]))
         if full_design:
-            design_sections.append({"design": full_design, "timeline": build_design_timeline(full_design)})
+            reminders = all_reminders([full_design], include_drafts=True)
+            completed = [item for item in reminders if item.get("reminder_status") == "completed"]
+            design_sections.append({
+                "design": full_design,
+                "timeline": build_design_timeline(full_design),
+                "reminders": reminders,
+                "completed_reminders": completed,
+            })
     workspace["experiment_designs"] = design_sections
     workspace.setdefault("sections", {})["experiment_designs"] = design_sections
     return workspace
@@ -6272,12 +6334,8 @@ def create_experiment_design(request: ExperimentDesignRequest) -> ExperimentDesi
 def experiment_designs_due_today(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
     """Return alert-enabled design events due today."""
 
-    store = SQLiteStore(settings=settings)
-    designs = [
-        store.get_experiment_design(str(design["design_id"]))
-        for design in store.list_experiment_designs(workspace_id=_current_workspace_id(workspace_id))
-    ]
-    return {"count": len(due_events([design for design in designs if design], days=0)), "events": due_events([design for design in designs if design], days=0)}
+    events = due_events(_designs_for_reminders(workspace_id), days=0)
+    return {"count": len(events), "events": events}
 
 
 @app.get("/experiment-designs/upcoming", tags=["experiment-designs"])
@@ -6287,13 +6345,52 @@ def experiment_designs_upcoming(
 ) -> dict[str, object]:
     """Return alert-enabled design events due within a future window."""
 
-    store = SQLiteStore(settings=settings)
-    designs = [
-        store.get_experiment_design(str(design["design_id"]))
-        for design in store.list_experiment_designs(workspace_id=_current_workspace_id(workspace_id))
-    ]
-    events = due_events([design for design in designs if design], days=days)
+    events = due_events(_designs_for_reminders(workspace_id), days=days)
     return {"days": days, "count": len(events), "events": events}
+
+
+@app.get("/experiment-designs/reminders", tags=["experiment-designs"])
+def experiment_design_reminders(
+    include_drafts: bool = Query(default=False),
+    workspace_id: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Return all actionable experiment design reminders."""
+
+    reminders = all_reminders(_designs_for_reminders(workspace_id), include_drafts=include_drafts)
+    return {"count": len(reminders), "reminders": reminders}
+
+
+@app.get("/experiment-designs/reminders/due-today", tags=["experiment-designs"])
+def experiment_design_reminders_due_today(workspace_id: str | None = Query(default=None)) -> dict[str, object]:
+    """Return experiment design reminders due today."""
+
+    events = due_events(_designs_for_reminders(workspace_id), days=0)
+    return {"count": len(events), "reminders": events}
+
+
+@app.get("/experiment-designs/reminders/upcoming", tags=["experiment-designs"])
+def experiment_design_reminders_upcoming(
+    days: int = Query(default=7, ge=1, le=365),
+    workspace_id: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Return upcoming experiment design reminders."""
+
+    events = due_events(_designs_for_reminders(workspace_id), days=days)
+    return {"days": days, "count": len(events), "reminders": events}
+
+
+@app.post("/experiment-designs/reminders/{event_id}/complete", tags=["experiment-designs"])
+def complete_experiment_design_reminder(event_id: str) -> dict[str, object]:
+    """Complete a design reminder."""
+
+    return {"event": _update_design_reminder_event(event_id, "completed")}
+
+
+@app.post("/experiment-designs/reminders/{event_id}/dismiss", tags=["experiment-designs"])
+def dismiss_experiment_design_reminder(event_id: str) -> dict[str, object]:
+    """Dismiss a design reminder."""
+
+    return {"event": _update_design_reminder_event(event_id, "dismissed")}
 
 
 @app.post("/experiment-designs/doe/full-factorial", tags=["experiment-designs"])
@@ -6372,6 +6469,30 @@ def import_experiment_design_csv(request: DesignImportRequest) -> ExperimentDesi
             ),
         )
     return ExperimentDesignResponse(**_design_or_404(store, design.design_id))
+
+
+@app.post("/experiment-designs/{design_id}/activate", response_model=ExperimentDesignResponse, tags=["experiment-designs"])
+def activate_experiment_design(design_id: str) -> ExperimentDesignResponse:
+    """Activate a design so its reminders appear on dashboards/mobile."""
+
+    store = SQLiteStore(settings=settings)
+    design = _design_or_404(store, design_id)
+    activated = store.save_experiment_design(
+        design_id=design_id,
+        title=str(design.get("title") or ""),
+        experiment_type=design.get("experiment_type"),
+        cell_line_or_model=design.get("cell_line_or_model"),
+        reporters=design.get("reporters") or [],
+        description=design.get("description"),
+        start_date=design.get("start_date") or datetime.now(timezone.utc).date().isoformat(),
+        created_by=design.get("created_by"),
+        linked_experiment_id=design.get("linked_experiment_id"),
+        status="active",
+        owner_user_id=design.get("owner_user_id"),
+        workspace_id=design.get("workspace_id"),
+    )
+    _publish_event(EventType.PROVIDER_SYNCED, "experiment_designs", {"event": "design_activated", "design_id": design_id})
+    return ExperimentDesignResponse(**activated)
 
 
 @app.get("/experiment-designs/{design_id}", response_model=ExperimentDesignResponse, tags=["experiment-designs"])

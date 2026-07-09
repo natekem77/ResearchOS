@@ -75,6 +75,9 @@ EXPERIMENTS_FILE="$(request GET "/experiments")"
 request GET "/experiments?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/mobile/experiments" >/dev/null
 request GET "/experiment-designs" >/dev/null
+request GET "/experiment-designs/reminders" >/dev/null
+request GET "/experiment-designs/reminders/due-today" >/dev/null
+request GET "/experiment-designs/reminders/upcoming?days=7" >/dev/null
 request GET "/experiment-designs/due-today" >/dev/null
 request GET "/experiment-designs/upcoming?days=7" >/dev/null
 request POST "/experiment-designs/doe/full-factorial" '{"factors":{"compound":["DMSO","SAG"],"dose":["low","high"]}}' >/dev/null
@@ -99,11 +102,23 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     print(json.load(handle)["condition_id"])
 PY
 )"
-request POST "/experiment-designs/$SMOKE_DESIGN_ID/events" "{\"condition_id\":\"$SMOKE_CONDITION_ID\",\"day\":\"D1\",\"event_type\":\"treatment\",\"title\":\"Start treatment\",\"alert_enabled\":true}" >/dev/null
+SMOKE_DESIGN_EVENT_FILE="$(request POST "/experiment-designs/$SMOKE_DESIGN_ID/events" "{\"condition_id\":\"$SMOKE_CONDITION_ID\",\"day\":\"D1\",\"event_type\":\"treatment\",\"title\":\"Start treatment\",\"alert_enabled\":true,\"reminder_enabled\":true}")"
+SMOKE_DESIGN_EVENT_ID="$(
+  python3 - "$SMOKE_DESIGN_EVENT_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["event_id"])
+PY
+)"
+request POST "/experiment-designs/$SMOKE_DESIGN_ID/activate" "{}" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/timeline" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/calendar" >/dev/null
 request GET "/experiment-designs/$SMOKE_DESIGN_ID/export-csv" >/dev/null
+request POST "/experiment-designs/reminders/$SMOKE_DESIGN_EVENT_ID/complete" "{}" >/dev/null
+request POST "/experiment-designs/reminders/$SMOKE_DESIGN_EVENT_ID/dismiss" "{}" >/dev/null
 request POST "/experiment-designs/import-preview" '{"csv_text":"condition,day,event_type,treatment,dose,units,replicate,alert_enabled\nSmoke BMP4,D9,treatment,BMP4,10,ng/mL,1,true\n"}' >/dev/null
 request POST "/experiment-designs/import-csv" '{"title":"Smoke Imported Design","csv_text":"condition,day,event_type,treatment,dose,units,replicate,alert_enabled\nSmoke BMP4,D9,treatment,BMP4,10,ng/mL,1,true\n"}' >/dev/null
 WIZARD_EXPERIMENT_ID="SMOKE-WIZARD-$(date +%s)"

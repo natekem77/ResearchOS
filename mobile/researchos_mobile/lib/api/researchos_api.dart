@@ -98,11 +98,25 @@ class ResearchOsApi {
   }
 
   Future<Map<String, dynamic>> experimentDesignDueToday() {
-    return _getMap('/experiment-designs/due-today');
+    return _getMap('/experiment-designs/reminders/due-today');
   }
 
   Future<Map<String, dynamic>> experimentDesignUpcoming({int days = 7}) {
-    return _getMap('/experiment-designs/upcoming?days=$days');
+    return _getMap('/experiment-designs/reminders/upcoming?days=$days');
+  }
+
+  Future<Map<String, dynamic>> completeDesignReminder(String eventId) {
+    return _postMap(
+      '/experiment-designs/reminders/${Uri.encodeComponent(eventId)}/complete',
+      {},
+    );
+  }
+
+  Future<Map<String, dynamic>> dismissDesignReminder(String eventId) {
+    return _postMap(
+      '/experiment-designs/reminders/${Uri.encodeComponent(eventId)}/dismiss',
+      {},
+    );
   }
 
   Future<List<Map<String, dynamic>>> protocols() async {

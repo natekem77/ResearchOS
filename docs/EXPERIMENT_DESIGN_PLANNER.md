@@ -13,6 +13,7 @@ An `ExperimentDesign` stores the study-level plan:
 - model or cell line
 - reporters
 - description
+- start date
 - status
 - optional linked experiment ID
 
@@ -127,14 +128,37 @@ curl -X POST http://127.0.0.1:8001/experiment-designs/import-csv \
 
 ## Reminders
 
-Reminder endpoints use alert-enabled events:
+Active designs generate dashboard/mobile reminders from reminder-enabled events. Draft designs do not appear as due unless explicitly requested through lower-level APIs.
 
 ```bash
-curl http://127.0.0.1:8001/experiment-designs/due-today
-curl "http://127.0.0.1:8001/experiment-designs/upcoming?days=7"
+curl http://127.0.0.1:8001/experiment-designs/reminders
+curl http://127.0.0.1:8001/experiment-designs/reminders/due-today
+curl "http://127.0.0.1:8001/experiment-designs/reminders/upcoming?days=7"
 ```
 
-The current foundation calculates due dates from the design creation date plus the numeric part of the event day.
+Activate a design:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiment-designs/{design_id}/activate
+```
+
+Complete or dismiss a reminder:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiment-designs/reminders/{event_id}/complete
+curl -X POST http://127.0.0.1:8001/experiment-designs/reminders/{event_id}/dismiss
+```
+
+If `start_date` exists, ResearchOS calculates real calendar dates from `start_date + D-number - reminder_offset_days`. If no start date exists, reminders remain relative-day reminders.
+
+Example reminder events:
+
+- D1 SAG treatment: event type `treatment`, day `D1`, reminder enabled.
+- D9 SAG treatment: event type `treatment`, day `D9`, reminder enabled.
+- D32 imaging: event type `imaging`, day `D32`, reminder enabled.
+- Sample collection: event type `collection`, day `D32` or any custom day label, reminder enabled.
+
+Push notifications and Google/Outlook calendar sync are intentionally not implemented yet.
 
 ## Design of Experiments Foundation
 
