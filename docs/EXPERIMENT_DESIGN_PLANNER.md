@@ -118,6 +118,8 @@ curl -X POST http://127.0.0.1:8001/experiment-designs/import-preview \
   -d '{"csv_text":"condition,day,event_type\nDMSO,D1,treatment\n"}'
 ```
 
+The preview endpoint detects columns, suggests mappings, shows preview rows, infers conditions/event days/event types, reports missing required fields, and returns warnings.
+
 Import:
 
 ```bash
@@ -125,6 +127,36 @@ curl -X POST http://127.0.0.1:8001/experiment-designs/import-csv \
   -H "Content-Type: application/json" \
   -d '{"title":"Imported design","csv_text":"condition,day,event_type\nDMSO,D1,treatment\n"}'
 ```
+
+Import with explicit mappings:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiment-designs/import-mapped-csv \
+  -H "Content-Type: application/json" \
+  -d '{
+    "csv_text":"Experiment,Condition,Day,Event,Treatment,Replicate,Reminder\nD1 SAG,DMSO,D1,treatment,DMSO,1,true\n",
+    "mapping":{
+      "title":"Experiment",
+      "condition_name":"Condition",
+      "day":"Day",
+      "event_type":"Event",
+      "treatment":"Treatment",
+      "replicate":"Replicate",
+      "alert_enabled":"Reminder"
+    }
+  }'
+```
+
+Saved mapping templates:
+
+```bash
+curl http://127.0.0.1:8001/experiment-designs/import-templates
+curl -X POST http://127.0.0.1:8001/experiment-designs/import-templates \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Organoid design sheet","mapping":{"condition_name":"Group","day":"Timepoint","event_type":"Action"}}'
+```
+
+See [DESIGN_IMPORT_FORMATS.md](DESIGN_IMPORT_FORMATS.md) for supported aliases and examples.
 
 ## Reminders
 

@@ -1152,10 +1152,19 @@
                 </div>
               </form>
               <form class="entry-draft-form" id="designImportForm">
+                <div class="panel-heading compact-heading">
+                  <div>
+                    <p class="eyebrow">Import design spreadsheet</p>
+                    <h3>Preview, map, and import</h3>
+                  </div>
+                </div>
                 <label for="designCsvText">Import design CSV</label>
                 <textarea id="designCsvText" rows="4" placeholder="condition,day,event_type,treatment,dose,units,replicate,alert_enabled"></textarea>
+                <label for="designTemplateName">Template name</label>
+                <input id="designTemplateName" type="text" placeholder="Organoid design spreadsheet" />
                 <div class="entry-actions">
                   <button type="button" class="secondary-button" id="designImportPreviewButton">Preview Import</button>
+                  <button type="button" class="secondary-button" id="saveDesignTemplateButton">Save Template</button>
                   <button type="submit">Import Design CSV</button>
                 </div>
               </form>

@@ -25,6 +25,7 @@ from app.events.event_models import EventType, ResearchOSEvent
 from app.experiment_comparison import compare_experiments
 from app.experiment_design_planner import (
     DESIGN_STATUSES,
+    DEFAULT_DESIGN_IMPORT_TEMPLATES,
     EVENT_TYPES,
     all_reminders,
     build_design_timeline,
@@ -35,9 +36,11 @@ from app.experiment_design_planner import (
     design_to_ics,
     due_events,
     full_factorial,
+    import_design_rows,
     parse_design_csv,
     preview_design_import,
     reminders_to_ics,
+    truthy_design_value,
 )
 from app.experiment_extraction import extract_experiment
 from app.experiment_lifecycle import (
@@ -1180,6 +1183,32 @@ class DesignImportRequest(BaseModel):
     experiment_type: str | None = None
     cell_line_or_model: str | None = None
     confirm_overwrite: bool = False
+
+
+class DesignMappedCsvImportRequest(DesignImportRequest):
+    """CSV import payload with explicit field-to-column mapping."""
+
+    mapping: dict[str, str]
+
+
+class DesignImportTemplateRequest(BaseModel):
+    """Saved experiment design import mapping template."""
+
+    name: str
+    mapping: dict[str, str]
+    provider: str = "experiment_designs"
+
+
+class DesignImportTemplateResponse(DesignImportTemplateRequest):
+    """Stored experiment design import mapping template."""
+
+    template_id: str
+    is_default: bool = False
+    owner_user_id: str | None = None
+    created_by: str | None = None
+    workspace_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class FullFactorialRequest(BaseModel):
@@ -6432,6 +6461,95 @@ def experiment_design_check_balance(request: BalanceCheckRequest) -> dict[str, o
     return check_design_balance([condition.model_dump() for condition in request.conditions])
 
 
+def _import_experiment_design_from_mapping(request: DesignMappedCsvImportRequest) -> ExperimentDesignResponse:
+    """Import an experiment design from CSV using explicit or suggested column mappings."""
+
+    if not {"condition_name", "day"}.issubset(set(request.mapping.keys())):
+        raise HTTPException(status_code=400, detail="Mapping must include condition_name and day.")
+    normalized = import_design_rows(request.csv_text, request.mapping)
+    rows = normalized["rows"]
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows detected in CSV text.")
+    first = rows[0]
+    title = request.title or first.get("title") or "Imported experiment design"
+    design = create_experiment_design(
+        ExperimentDesignRequest(
+            title=title,
+            experiment_type=request.experiment_type or first.get("experiment_type") or None,
+            cell_line_or_model=request.cell_line_or_model or first.get("cell_line_or_model") or None,
+            reporters=[item.strip() for item in re.split(r"[;,]", str(first.get("reporters") or "")) if item.strip()],
+            description="Imported from mapped CSV design spreadsheet.",
+            status="draft",
+        )
+    )
+    store = SQLiteStore(settings=settings)
+    conditions_by_name: dict[str, dict[str, object]] = {}
+    replicate_counts: dict[str, int] = {}
+    for row in rows:
+        condition_name = row.get("condition_name") or "Condition"
+        replicate_counts[condition_name] = max(
+            replicate_counts.get(condition_name, 0),
+            int(row.get("replicate") or 1) if str(row.get("replicate") or "").strip().isdigit() else 1,
+        )
+        if condition_name not in conditions_by_name:
+            conditions_by_name[condition_name] = _save_design_condition(
+                store,
+                design.design_id,
+                DesignConditionRequest(
+                    condition_name=condition_name,
+                    treatment=row.get("treatment") or None,
+                    dose=row.get("dose") or None,
+                    units=row.get("units") or None,
+                    start_day=row.get("day") or None,
+                    notes=row.get("notes") or None,
+                    replicate_count=replicate_counts[condition_name],
+                    sample_count=1,
+                ),
+            )
+        event_type = (row.get("event_type") or "custom").strip().lower().replace(" ", "_")
+        event_title = " ".join(
+            part
+            for part in [
+                event_type.replace("_", " ").title(),
+                condition_name,
+                row.get("sample_id") or "",
+            ]
+            if part
+        )
+        notes = row.get("notes") or None
+        if row.get("sample_id"):
+            notes = " ".join(part for part in [notes, f"Sample ID: {row.get('sample_id')}"] if part)
+        _save_design_event(
+            store,
+            design.design_id,
+            DesignEventRequest(
+                condition_id=str(conditions_by_name[condition_name]["condition_id"]),
+                day=row.get("day") or "D0",
+                event_type=event_type,
+                title=event_title,
+                description=notes,
+                alert_enabled=truthy_design_value(row.get("alert_enabled") or row.get("reminder_enabled")),
+                reminder_enabled=truthy_design_value(row.get("alert_enabled") or row.get("reminder_enabled")),
+            ),
+        )
+    for condition_name, count in replicate_counts.items():
+        condition = conditions_by_name[condition_name]
+        if int(condition.get("replicate_count") or 0) != count:
+            store.save_design_condition(
+                design_id=design.design_id,
+                condition_id=str(condition["condition_id"]),
+                condition_name=condition_name,
+                treatment=condition.get("treatment") if isinstance(condition.get("treatment"), str) else None,
+                dose=condition.get("dose") if isinstance(condition.get("dose"), str) else None,
+                units=condition.get("units") if isinstance(condition.get("units"), str) else None,
+                start_day=condition.get("start_day") if isinstance(condition.get("start_day"), str) else None,
+                notes=condition.get("notes") if isinstance(condition.get("notes"), str) else None,
+                replicate_count=count,
+                sample_count=condition.get("sample_count") if isinstance(condition.get("sample_count"), int) else 1,
+            )
+    return ExperimentDesignResponse(**_design_or_404(store, design.design_id))
+
+
 @app.post("/experiment-designs/import-preview", tags=["experiment-designs"])
 def preview_experiment_design_import(request: DesignImportRequest) -> dict[str, object]:
     """Preview a CSV design import."""
@@ -6439,57 +6557,71 @@ def preview_experiment_design_import(request: DesignImportRequest) -> dict[str, 
     return preview_design_import(request.csv_text)
 
 
+@app.post("/experiment-designs/import-mapped-csv", response_model=ExperimentDesignResponse, tags=["experiment-designs"])
+def import_experiment_design_mapped_csv(request: DesignMappedCsvImportRequest) -> ExperimentDesignResponse:
+    """Import a design, conditions, and events using explicit field mappings."""
+
+    return _import_experiment_design_from_mapping(request)
+
+
 @app.post("/experiment-designs/import-csv", response_model=ExperimentDesignResponse, tags=["experiment-designs"])
 def import_experiment_design_csv(request: DesignImportRequest) -> ExperimentDesignResponse:
     """Import a design, conditions, and events from spreadsheet-style CSV."""
 
-    rows = parse_design_csv(request.csv_text)
-    if not rows:
-        raise HTTPException(status_code=400, detail="No rows detected in CSV text.")
-    title = request.title or rows[0].get("experiment_title") or rows[0].get("title") or "Imported experiment design"
-    design = create_experiment_design(
-        ExperimentDesignRequest(
-            title=title,
-            experiment_type=request.experiment_type or rows[0].get("experiment_type"),
-            cell_line_or_model=request.cell_line_or_model or rows[0].get("cell_line_or_model"),
-            reporters=[item.strip() for item in str(rows[0].get("reporters") or "").split(";") if item.strip()],
-            description="Imported from CSV design spreadsheet.",
-            status="draft",
+    preview = preview_design_import(request.csv_text)
+    mapping = preview.get("suggested_mappings") or {}
+    return _import_experiment_design_from_mapping(
+        DesignMappedCsvImportRequest(
+            csv_text=request.csv_text,
+            mapping=mapping,
+            title=request.title,
+            experiment_type=request.experiment_type,
+            cell_line_or_model=request.cell_line_or_model,
+            confirm_overwrite=request.confirm_overwrite,
         )
     )
+
+
+@app.get("/experiment-designs/import-templates", response_model=list[DesignImportTemplateResponse], tags=["experiment-designs"])
+def experiment_design_import_templates(workspace_id: str | None = Query(default=None)) -> list[DesignImportTemplateResponse]:
+    """Return default and locally saved experiment design import templates."""
+
     store = SQLiteStore(settings=settings)
-    conditions_by_name: dict[str, dict[str, object]] = {}
-    for row in rows:
-        condition_name = row.get("condition") or row.get("condition_name") or row.get("Condition") or "Condition"
-        if condition_name not in conditions_by_name:
-            conditions_by_name[condition_name] = _save_design_condition(
-                store,
-                design.design_id,
-                DesignConditionRequest(
-                    condition_name=condition_name,
-                    treatment=row.get("treatment") or row.get("Treatment"),
-                    dose=row.get("dose") or row.get("Dose"),
-                    units=row.get("units") or row.get("Units"),
-                    start_day=row.get("day") or row.get("Day"),
-                    notes=row.get("notes") or row.get("Notes"),
-                    replicate_count=int(row.get("replicate") or row.get("replicate_count") or 1),
-                    sample_count=1,
-                ),
-            )
-        event_type = (row.get("event_type") or row.get("Event Type") or "custom").strip().lower()
-        _save_design_event(
-            store,
-            design.design_id,
-            DesignEventRequest(
-                condition_id=str(conditions_by_name[condition_name]["condition_id"]),
-                day=row.get("day") or row.get("Day") or "D0",
-                event_type=event_type,
-                title=row.get("title") or row.get("event_title") or event_type.replace("_", " ").title(),
-                description=row.get("description") or row.get("notes") or row.get("Notes"),
-                alert_enabled=str(row.get("alert_enabled") or "").lower() in {"true", "1", "yes"},
-            ),
-        )
-    return ExperimentDesignResponse(**_design_or_404(store, design.design_id))
+    templates = [DesignImportTemplateResponse(**template) for template in DEFAULT_DESIGN_IMPORT_TEMPLATES]
+    templates.extend(
+        DesignImportTemplateResponse(**template)
+        for template in store.list_design_import_templates(workspace_id=_current_workspace_id(workspace_id))
+    )
+    return templates
+
+
+@app.post("/experiment-designs/import-templates", response_model=DesignImportTemplateResponse, tags=["experiment-designs"])
+def create_experiment_design_import_template(request: DesignImportTemplateRequest) -> DesignImportTemplateResponse:
+    """Save a reusable experiment design import mapping template."""
+
+    user, workspace = _current_user_workspace_metadata()
+    store = SQLiteStore(settings=settings)
+    template = store.save_design_import_template(
+        name=request.name,
+        provider=request.provider,
+        mapping=request.mapping,
+        owner_user_id=str(user.get("user_id") or ""),
+        created_by=str(user.get("user_id") or ""),
+        workspace_id=str(workspace.get("workspace_id") or ""),
+    )
+    return DesignImportTemplateResponse(**template)
+
+
+@app.delete("/experiment-designs/import-templates/{template_id}", tags=["experiment-designs"])
+def delete_experiment_design_import_template(template_id: str) -> dict[str, object]:
+    """Delete a saved experiment design import template."""
+
+    if template_id.startswith("default:"):
+        raise HTTPException(status_code=400, detail="Default import templates cannot be deleted.")
+    store = SQLiteStore(settings=settings)
+    if not store.delete_design_import_template(template_id):
+        raise HTTPException(status_code=404, detail=f"Import template not found: {template_id}")
+    return {"deleted": True, "template_id": template_id}
 
 
 @app.post("/experiment-designs/{design_id}/activate", response_model=ExperimentDesignResponse, tags=["experiment-designs"])

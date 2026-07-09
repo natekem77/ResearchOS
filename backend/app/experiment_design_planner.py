@@ -43,6 +43,48 @@ DESIGN_EXPORT_FIELDS = [
     "alert_enabled",
 ]
 
+DESIGN_IMPORT_ALIASES = {
+    "title": ["title", "experiment", "experiment title", "design", "study"],
+    "experiment_type": ["experiment type", "type", "study type", "model type"],
+    "cell_line_or_model": ["cell line", "model", "line", "organoid line", "cell model"],
+    "reporters": ["reporter", "reporters", "genotype"],
+    "condition_name": ["condition", "group", "treatment group"],
+    "treatment": ["treatment", "compound", "drug", "perturbation"],
+    "dose": ["dose", "concentration", "conc"],
+    "units": ["units", "unit"],
+    "day": ["day", "timepoint", "time point", "collection day", "imaging day"],
+    "event_type": ["event", "action", "procedure", "assay"],
+    "sample_id": ["sample", "sample id", "well", "tube"],
+    "replicate": ["replicate", "rep", "n"],
+    "notes": ["notes", "note", "description", "details"],
+    "alert_enabled": ["alert", "alert enabled", "reminder", "reminder enabled"],
+}
+
+DEFAULT_DESIGN_IMPORT_TEMPLATES = [
+    {
+        "template_id": "default:experiment_design_standard",
+        "name": "Experiment Design Standard",
+        "provider": "experiment_designs",
+        "mapping": {
+            "title": "Experiment",
+            "experiment_type": "Type",
+            "cell_line_or_model": "Cell Line",
+            "reporters": "Reporters",
+            "condition_name": "Condition",
+            "treatment": "Treatment",
+            "dose": "Dose",
+            "units": "Units",
+            "day": "Day",
+            "event_type": "Event",
+            "sample_id": "Sample ID",
+            "replicate": "Replicate",
+            "notes": "Notes",
+            "alert_enabled": "Reminder",
+        },
+        "is_default": True,
+    }
+]
+
 
 def parse_design_day(value: Any) -> int:
     """Return a numeric day from labels such as D0, Day32, or 9."""
@@ -298,24 +340,89 @@ def parse_design_csv(csv_text: str) -> list[dict[str, str]]:
     return [dict(row) for row in reader]
 
 
+def _normalize_header(value: str) -> str:
+    """Normalize a spreadsheet header for alias matching."""
+
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+
+
+def suggest_design_import_mapping(columns: list[str]) -> dict[str, str]:
+    """Suggest ResearchOS field mappings from flexible spreadsheet column names."""
+
+    normalized = {_normalize_header(column): column for column in columns}
+    suggestions: dict[str, str] = {}
+    for field, aliases in DESIGN_IMPORT_ALIASES.items():
+        for alias in aliases:
+            match = normalized.get(_normalize_header(alias))
+            if match:
+                suggestions[field] = match
+                break
+    return suggestions
+
+
+def mapped_design_row(row: dict[str, str], mapping: dict[str, str]) -> dict[str, str]:
+    """Apply a ResearchOS field-to-column mapping to one CSV row."""
+
+    normalized_row = {_normalize_header(key): value for key, value in row.items()}
+    mapped: dict[str, str] = {}
+    for field, column in mapping.items():
+        value = row.get(column)
+        if value is None:
+            value = normalized_row.get(_normalize_header(column))
+        mapped[field] = str(value or "").strip()
+    return mapped
+
+
 def preview_design_import(csv_text: str) -> dict[str, Any]:
     """Preview spreadsheet-style design import."""
 
     rows = parse_design_csv(csv_text)
     columns = list(rows[0].keys()) if rows else []
+    suggested_mapping = suggest_design_import_mapping(columns)
+    mapped_rows = [mapped_design_row(row, suggested_mapping) for row in rows]
     warnings = [] if rows else ["No rows detected in CSV text."]
-    inferred_conditions = sorted({row.get("condition") or row.get("condition_name") or row.get("Condition") for row in rows if any(row.values())})
-    inferred_days = sorted({day_label(row.get("day") or row.get("Day")) for row in rows if row.get("day") or row.get("Day")}, key=parse_design_day)
-    inferred_event_types = sorted({(row.get("event_type") or row.get("Event Type") or "custom").strip() for row in rows})
+    required_fields = ["condition_name", "day"]
+    missing_required = [field for field in required_fields if field not in suggested_mapping]
+    if missing_required:
+        warnings.append(f"Missing suggested mapping for: {', '.join(missing_required)}.")
+    inferred_conditions = sorted({row.get("condition_name") or "Condition" for row in mapped_rows if any(row.values())})
+    inferred_days = sorted({day_label(row.get("day")) for row in mapped_rows if row.get("day")}, key=parse_design_day)
+    inferred_event_types = sorted({(row.get("event_type") or "custom").strip() for row in mapped_rows})
     return {
         "detected_columns": columns,
+        "suggested_mappings": suggested_mapping,
         "rows_preview": rows[:5],
+        "preview_rows": rows[:5],
         "row_count": len(rows),
         "warnings": warnings,
+        "missing_required_fields": missing_required,
         "inferred_conditions": inferred_conditions,
+        "inferred_event_days": inferred_days,
         "inferred_days": inferred_days,
         "inferred_event_types": inferred_event_types,
     }
+
+
+def import_design_rows(csv_text: str, mapping: dict[str, str] | None = None) -> dict[str, Any]:
+    """Normalize mapped design CSV rows into design, condition, and event payloads."""
+
+    rows = parse_design_csv(csv_text)
+    if not rows:
+        return {"rows": [], "mapping": mapping or {}, "warnings": ["No rows detected in CSV text."]}
+    active_mapping = mapping or suggest_design_import_mapping(list(rows[0].keys()))
+    normalized_rows = [mapped_design_row(row, active_mapping) for row in rows]
+    warnings: list[str] = []
+    if "condition_name" not in active_mapping:
+        warnings.append("Mapping does not include condition_name; rows will use a generic condition.")
+    if "day" not in active_mapping:
+        warnings.append("Mapping does not include day; events will default to D0.")
+    return {"rows": normalized_rows, "mapping": active_mapping, "warnings": warnings}
+
+
+def truthy_design_value(value: Any) -> bool:
+    """Return whether a CSV value represents an enabled reminder/alert."""
+
+    return str(value or "").strip().lower() in {"true", "1", "yes", "y", "enabled", "reminder", "alert"}
 
 
 def event_due_date(design: dict[str, Any], event: dict[str, Any]) -> date:

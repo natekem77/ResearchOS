@@ -73,6 +73,37 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
                         "BMP4 pulse,D9,treatment,BMP4,10,ng/mL,1,true\n"
                     )
                 )
+                mapped_preview = main.preview_experiment_design_import(
+                    main.DesignImportRequest(
+                        csv_text="Experiment,Cell Line,Condition,Day,Event,Treatment,Replicate,Reminder\n"
+                        "Mapped SAG design,SIX6 reporter,DMSO,D1,treatment,DMSO,1,true\n"
+                    )
+                )
+                mapped = main.import_experiment_design_mapped_csv(
+                    main.DesignMappedCsvImportRequest(
+                        csv_text="Experiment,Cell Line,Condition,Day,Event,Treatment,Replicate,Reminder\n"
+                        "Mapped SAG design,SIX6 reporter,DMSO,D1,treatment,DMSO,1,true\n"
+                        "Mapped SAG design,SIX6 reporter,SAG,D9,imaging,SAG,2,true\n",
+                        mapping={
+                            "title": "Experiment",
+                            "cell_line_or_model": "Cell Line",
+                            "condition_name": "Condition",
+                            "day": "Day",
+                            "event_type": "Event",
+                            "treatment": "Treatment",
+                            "replicate": "Replicate",
+                            "alert_enabled": "Reminder",
+                        },
+                    )
+                )
+                templates = main.experiment_design_import_templates(workspace_id=None)
+                saved_template = main.create_experiment_design_import_template(
+                    main.DesignImportTemplateRequest(
+                        name="Mapped design template",
+                        mapping={"condition_name": "Condition", "day": "Day", "event_type": "Event"},
+                    )
+                )
+                deleted_template = main.delete_experiment_design_import_template(saved_template.template_id)
                 imported = main.import_experiment_design_csv(
                     main.DesignImportRequest(
                         csv_text="condition,day,event_type,treatment,dose,units,replicate,alert_enabled\n"
@@ -113,6 +144,14 @@ class ExperimentDesignPlannerTests(unittest.TestCase):
         self.assertEqual(missing_start_date.exception.status_code, 400)
         self.assertIn("start_date", missing_start_date.exception.detail)
         self.assertEqual(preview["inferred_conditions"], ["BMP4 pulse"])
+        self.assertEqual(mapped_preview["suggested_mappings"]["condition_name"], "Condition")
+        self.assertEqual(mapped_preview["missing_required_fields"], [])
+        self.assertEqual(mapped.title, "Mapped SAG design")
+        self.assertEqual(len(mapped.conditions), 2)
+        self.assertEqual(len(mapped.events), 2)
+        self.assertTrue(any(template.template_id.startswith("default:") for template in templates))
+        self.assertTrue(saved_template.template_id.startswith("design_import_template:"))
+        self.assertTrue(deleted_template["deleted"])
         self.assertEqual(imported.title, "Imported BMP4 design")
         self.assertEqual(factorial["condition_count"], 4)
         self.assertFalse(balance["balanced_replicates"])

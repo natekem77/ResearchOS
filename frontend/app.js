@@ -1913,8 +1913,32 @@ function renderDesignImportPreview() {
   target.innerHTML = `
     <article class="record-card">
       <h3>Design import preview</h3>
-      <p>${escapeHtml(preview.row_count || 0)} row(s). Conditions: ${escapeHtml((preview.inferred_conditions || []).join(", "))}</p>
-      <div class="meta">${(preview.inferred_days || []).map((day) => `<span class="tag">${escapeHtml(day)}</span>`).join("")}</div>
+      <p>${escapeHtml(preview.row_count || 0)} row(s). Conditions: ${escapeHtml((preview.inferred_conditions || []).join(", ") || "none detected")}</p>
+      <div class="meta">${(preview.inferred_event_days || preview.inferred_days || []).map((day) => `<span class="tag">${escapeHtml(day)}</span>`).join("")}</div>
+      ${(preview.warnings || []).length ? `<p class="warning-text">${escapeHtml(preview.warnings.join(" "))}</p>` : ""}
+      <h4>Suggested mappings</h4>
+      <div class="form-grid">
+        ${Object.entries(preview.suggested_mappings || {}).map(([field, column]) => `
+          <div>
+            <label for="designMap_${escapeHtml(field)}">${escapeHtml(field)}</label>
+            <input id="designMap_${escapeHtml(field)}" data-design-map-field="${escapeHtml(field)}" type="text" value="${escapeHtml(column)}" />
+          </div>
+        `).join("") || `<div class="empty-state">No mappings suggested. Add headers such as Condition, Day, Event, Treatment, or Replicate.</div>`}
+      </div>
+      <details>
+        <summary>Preview rows</summary>
+        <pre>${escapeHtml(JSON.stringify(preview.preview_rows || preview.rows_preview || [], null, 2))}</pre>
+      </details>
+      <details>
+        <summary>Saved templates</summary>
+        <div class="item-list">
+          ${(state.designImportTemplates || []).map((template) => `
+            <button type="button" class="item-link" data-design-template='${escapeHtml(JSON.stringify(template.mapping || {}))}'>
+              <strong>${escapeHtml(template.name)}</strong><span>${escapeHtml(template.provider || "experiment_designs")}</span>
+            </button>
+          `).join("") || `<div class="empty-state">No saved templates yet.</div>`}
+        </div>
+      </details>
     </article>
   `;
 }
@@ -2106,12 +2130,40 @@ async function importDesignCsv() {
     $("#designPlannerStatus").textContent = "Paste CSV text before importing.";
     return;
   }
-  const saved = await requestJson("/experiment-designs/import-csv", {
+  const mapping = collectDesignImportMapping();
+  const endpoint = Object.keys(mapping).length ? "/experiment-designs/import-mapped-csv" : "/experiment-designs/import-csv";
+  const saved = await requestJson(endpoint, {
     method: "POST",
-    body: JSON.stringify({ csv_text: csvText }),
+    body: JSON.stringify(Object.keys(mapping).length ? { csv_text: csvText, mapping } : { csv_text: csvText }),
   });
   $("#designCsvText").value = "";
+  state.designImportPreview = null;
   $("#designPlannerStatus").textContent = `Imported design: ${saved.title}`;
+  await refreshData();
+}
+
+function collectDesignImportMapping() {
+  const mapping = {};
+  document.querySelectorAll("[data-design-map-field]").forEach((input) => {
+    const field = input.dataset.designMapField;
+    const column = input.value.trim();
+    if (field && column) mapping[field] = column;
+  });
+  return mapping;
+}
+
+async function saveDesignImportTemplate() {
+  const mapping = collectDesignImportMapping();
+  const name = $("#designTemplateName").value.trim() || "Experiment Design Import";
+  if (!Object.keys(mapping).length) {
+    $("#designPlannerStatus").textContent = "Preview a CSV or enter mappings before saving a template.";
+    return;
+  }
+  await requestJson("/experiment-designs/import-templates", {
+    method: "POST",
+    body: JSON.stringify({ name, mapping, provider: "experiment_designs" }),
+  });
+  $("#designPlannerStatus").textContent = `Saved design import template: ${name}`;
   await refreshData();
 }
 
@@ -4835,7 +4887,7 @@ async function loadStatus() {
 }
 
 async function refreshData() {
-  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, designDueToday, designUpcoming, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
+  const [documents, papers, assets, spreadsheets, images, statistics, experiments, workflows, protocols, inventory, inventoryStatus, purchases, purchaseRequests, receiving, experimentDesigns, designDueToday, designUpcoming, designImportTemplates, purchaseSummary, purchaseImportTemplates, sessions, pendingEntries, compounds, markers, cellLines, organoidBatches, graphStats, entryTemplates, dailyDashboard] = await Promise.all([
     requestJson("/documents"),
     requestJson("/papers"),
     requestJson("/assets"),
@@ -4853,6 +4905,7 @@ async function refreshData() {
     requestJson("/experiment-designs"),
     requestJson("/experiment-designs/reminders/due-today"),
     requestJson("/experiment-designs/reminders/upcoming?days=7"),
+    requestJson("/experiment-designs/import-templates"),
     requestJson("/purchases/summary"),
     requestJson("/purchases/import-templates"),
     requestJson("/sessions"),
@@ -4882,6 +4935,7 @@ async function refreshData() {
   state.experimentDesigns = experimentDesigns;
   state.designDueToday = designDueToday;
   state.designUpcoming = designUpcoming;
+  state.designImportTemplates = designImportTemplates;
   state.purchaseSummary = purchaseSummary;
   state.purchaseImportTemplates = purchaseImportTemplates;
   state.sessions = sessions;
@@ -5303,6 +5357,25 @@ $("#designImportPreviewButton")?.addEventListener("click", () => {
   previewDesignImport().catch((error) => {
     $("#designPlannerStatus").textContent = `Import preview failed: ${error.message}`;
   });
+});
+$("#saveDesignTemplateButton")?.addEventListener("click", () => {
+  saveDesignImportTemplate().catch((error) => {
+    $("#designPlannerStatus").textContent = `Template save failed: ${error.message}`;
+  });
+});
+$("#designImportPreview")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-design-template]");
+  if (!button) return;
+  try {
+    const mapping = JSON.parse(button.dataset.designTemplate || "{}");
+    Object.entries(mapping).forEach(([field, column]) => {
+      const input = document.querySelector(`[data-design-map-field="${CSS.escape(field)}"]`);
+      if (input) input.value = column;
+    });
+    $("#designPlannerStatus").textContent = "Applied design import template.";
+  } catch (error) {
+    $("#designPlannerStatus").textContent = `Template apply failed: ${error.message}`;
+  }
 });
 $("#designImportForm")?.addEventListener("submit", (event) => {
   event.preventDefault();
