@@ -2,6 +2,15 @@
 
 ResearchOS mobile clients are thin clients. The iPhone, Android device, tablet, or simulator must reach the FastAPI backend over the network.
 
+The mobile app stores server profiles and automatically tries them in this order:
+
+1. Preferred profile
+2. Production HTTPS profile
+3. Tailscale/MagicDNS profile
+4. Last successful custom profile
+5. Local simulator/macOS fallback: `http://127.0.0.1:8001`
+6. Manual entry
+
 ## Why `127.0.0.1` Fails on iPhone
 
 `127.0.0.1` always means "this device."
@@ -60,7 +69,7 @@ If possible, it infers a LAN URL and prints it. You can override the mobile URL:
 PUBLIC_BASE_URL=http://<lan-or-tailscale-ip>:8001 ./scripts/mobile_dev_server.sh
 ```
 
-Enter the printed mobile URL in the Flutter app Server Connection screen.
+Enter the printed mobile URL as a Local/Custom Server profile in the Flutter app.
 
 ## Tailscale Testing
 
@@ -83,6 +92,14 @@ http://<tailscale-ip>:8001
 
 HTTPS is recommended for production-like use.
 
+Preferred stable profile:
+
+```text
+https://researchos-host.example-tailnet.ts.net
+```
+
+Add this as a Tailscale / Private Server profile. ResearchOS does not control the Tailscale app or store credentials, so open Tailscale on the phone first and confirm it is connected to the tailnet.
+
 ## Lab Server Mode
 
 Use `scripts/run_server.sh` for shared access:
@@ -92,6 +109,8 @@ HOST=0.0.0.0 PORT=8001 PUBLIC_BASE_URL=https://researchos-lab.example.edu ./scri
 ```
 
 Mobile clients should use `PUBLIC_BASE_URL`.
+
+Add this as a Production Server profile in the mobile app. After one successful connection, ResearchOS should open directly to Home on later launches.
 
 ## Windows and WSL Caveats
 

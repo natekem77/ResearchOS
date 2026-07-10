@@ -163,11 +163,34 @@ For a physical iPhone build:
 The app includes:
 
 - first-launch Server Connection screen
+- saved server profiles
+- automatic preferred-server reconnect
+- Production, Tailscale, Local, and Custom profile types
 - Server Settings in Settings
 - Test Connection button
 - local persistence of the selected backend URL
 
 Use this to switch between local simulator, LAN, Tailscale, or lab-server URLs.
+
+## Network-Agnostic Profiles
+
+ResearchOS now tries saved server profiles automatically:
+
+1. Preferred profile
+2. Production HTTPS URL
+3. Tailscale/MagicDNS HTTPS URL
+4. Last successful custom URL
+5. Local simulator/macOS fallback: `http://127.0.0.1:8001`
+
+If none work, the app shows saved servers with Retry, Edit, and Delete controls.
+
+For Tailscale, add a profile such as:
+
+```text
+https://researchos-host.example-tailnet.ts.net
+```
+
+The iPhone must already be connected to the tailnet. ResearchOS does not store Tailscale credentials.
 
 ## Common Errors
 

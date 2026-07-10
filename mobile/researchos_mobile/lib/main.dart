@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api/researchos_api.dart';
-import 'config/app_config.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
 import 'screens/copilot_screen.dart';
@@ -18,6 +16,7 @@ import 'screens/search_screen.dart';
 import 'screens/server_connection_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/whiteboard_screen.dart';
+import 'services/mobile_connection_service.dart';
 import 'widgets/app_scaffold.dart';
 
 void main() {
@@ -32,6 +31,8 @@ class ResearchOsMobileApp extends StatefulWidget {
 }
 
 class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
+  final MobileConnectionService _connectionService =
+      const MobileConnectionService();
   ResearchOsApi? _api;
   int _selectedIndex = 0;
   bool _loadingSavedServer = true;
@@ -44,36 +45,21 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
   }
 
   Future<void> _loadSavedServer() async {
-    final preferences = await SharedPreferences.getInstance();
-    final savedUrl =
-        preferences.getString(AppConfig.serverUrlPreferenceKey)?.trim();
-    final candidate = savedUrl == null || savedUrl.isEmpty
-        ? const AppConfig().defaultServerUrl
-        : savedUrl;
-    final api = ResearchOsApi(baseUrl: candidate);
-    try {
-      await api.status();
-      await preferences.setString(AppConfig.serverUrlPreferenceKey, candidate);
-      if (!mounted) return;
-      setState(() {
-        _api = api;
-        _loadingSavedServer = false;
+    final result = await _connectionService.connect();
+    if (!mounted) return;
+    setState(() {
+      _loadingSavedServer = false;
+      if (result.connected && result.profile != null) {
+        _api = ResearchOsApi(baseUrl: result.profile!.baseUrl);
         _connectionError = null;
-      });
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _loadingSavedServer = false;
+      } else {
         _connectionError =
-            'Could not reach $candidate. Start the backend, or use a LAN, Tailscale, or HTTPS URL for physical iPhone testing.';
-      });
-    }
+            'No saved ResearchOS server is reachable. Open Tailscale/VPN if needed, or add a server URL.';
+      }
+    });
   }
 
   Future<void> _connect(String serverUrl) async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(
-        AppConfig.serverUrlPreferenceKey, serverUrl.trim());
     setState(() {
       _api = ResearchOsApi(baseUrl: serverUrl.trim());
       _connectionError = null;

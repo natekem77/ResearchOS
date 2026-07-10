@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/researchos_api.dart';
 import '../config/app_config.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
+import '../models/server_profile.dart';
+import '../services/mobile_connection_service.dart';
 
 class ServerConnectionScreen extends StatefulWidget {
   const ServerConnectionScreen({
@@ -21,6 +22,8 @@ class ServerConnectionScreen extends StatefulWidget {
 }
 
 class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
+  final MobileConnectionService _connectionService =
+      const MobileConnectionService();
   final TextEditingController _controller =
       TextEditingController(text: const AppConfig().defaultServerUrl);
   bool _loading = false;
@@ -28,58 +31,100 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
   String? _error;
   MobileStatus? _status;
   Map<String, dynamic>? _connectionInfo;
+  List<MobileServerProfile> _profiles = const [];
+  Map<String, String> _failures = const {};
 
   @override
   void initState() {
     super.initState();
     _error = widget.initialError;
-    _loadSavedUrl();
+    _loadProfiles();
   }
 
-  Future<void> _loadSavedUrl() async {
-    final preferences = await SharedPreferences.getInstance();
-    final savedUrl =
-        preferences.getString(AppConfig.serverUrlPreferenceKey)?.trim();
-    if (savedUrl != null && savedUrl.isNotEmpty && mounted) {
-      _controller.text = savedUrl;
-    }
+  Future<void> _loadProfiles() async {
+    final profiles = await _connectionService.loadProfiles();
+    if (!mounted) return;
+    setState(() {
+      _profiles = profiles;
+      if (profiles.isNotEmpty) {
+        _controller.text = profiles.first.baseUrl;
+      }
+    });
   }
 
-  Future<bool> _testConnection() async {
+  Future<bool> _testConnection({MobileServerProfile? profile}) async {
     setState(() {
       _loading = true;
       _error = null;
       _connectionInfo = null;
     });
-    final api = ResearchOsApi(baseUrl: _controller.text.trim());
-    try {
+    final target = profile ?? _profileFromManualEntry();
+    final result = await _connectionService.connectProfile(target);
+    if (result.connected && result.profile != null) {
+      final api = ResearchOsApi(baseUrl: result.profile!.baseUrl);
       final status = await api.status();
-      final info = await api.connectionInfo();
       setState(() {
         _status = status;
-        _connectionInfo = info;
+        _connectionInfo = result.connectionInfo;
+        _profiles = result.profiles;
+        _failures = const {};
         _loading = false;
       });
       return true;
-    } catch (error) {
-      setState(() {
-        _error =
-            'Backend unreachable. Check the URL, Wi-Fi/VPN/Tailscale, and whether the backend is running. Details: $error';
-        _loading = false;
-      });
-      return false;
     }
+    setState(() {
+      _profiles = result.profiles;
+      _failures = result.failures;
+      _error = result.failures[target.profileId] ??
+          'Server unreachable. Check Wi-Fi, VPN/Tailscale, and the URL.';
+      _loading = false;
+    });
+    return false;
   }
 
-  Future<void> _connect() async {
-    final ok = await _testConnection();
+  Future<void> _connect({MobileServerProfile? profile}) async {
+    final target = profile ?? _profileFromManualEntry();
+    final ok = await _testConnection(profile: target);
     if (!ok) {
       return;
     }
-    final serverUrl = _controller.text.trim();
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(AppConfig.serverUrlPreferenceKey, serverUrl);
-    await widget.onConnected(serverUrl);
+    await widget.onConnected(target.baseUrl);
+  }
+
+  MobileServerProfile _profileFromManualEntry({
+    MobileConnectionType type = MobileConnectionType.custom,
+    String? displayName,
+  }) {
+    final url = _controller.text.trim();
+    return MobileServerProfile(
+      profileId: '${type.name}-${DateTime.now().millisecondsSinceEpoch}',
+      displayName: displayName ?? _displayNameForType(type),
+      baseUrl: url,
+      connectionType: type,
+      isDemo: type == MobileConnectionType.local,
+      requiresVpn: type == MobileConnectionType.tailscale,
+      notes: type == MobileConnectionType.tailscale
+          ? 'Open Tailscale and confirm this iPhone is connected to the tailnet.'
+          : null,
+    );
+  }
+
+  Future<void> _deleteProfile(MobileServerProfile profile) async {
+    await _connectionService.deleteProfile(profile.profileId);
+    await _loadProfiles();
+  }
+
+  void _useProfileTemplate(MobileConnectionType type) {
+    setState(() {
+      _showUrlField = true;
+      _controller.text = switch (type) {
+        MobileConnectionType.production => 'https://researchos.example.edu',
+        MobileConnectionType.tailscale =>
+          'https://researchos-host.example-tailnet.ts.net',
+        MobileConnectionType.local => const AppConfig().defaultServerUrl,
+        MobileConnectionType.custom => _controller.text,
+      };
+    });
   }
 
   @override
@@ -144,10 +189,17 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
                         : () {
                             _controller.text =
                                 const AppConfig().defaultServerUrl;
-                            _connect();
+                            _connect(
+                              profile: MobileServerProfile.localDemo(),
+                            );
                           },
                     icon: const Icon(Icons.play_circle_outline),
                     label: const Text('Use Local Demo Server'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.xs),
+                  Text(
+                    'Best for iOS Simulator or macOS. Physical iPhones should use Tailscale, HTTPS, or LAN.',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                   const SizedBox(height: ResearchOsSpacing.md),
                   OutlinedButton.icon(
@@ -160,6 +212,31 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
                     label: Text(
                       _showUrlField ? 'Hide Server URL' : 'Enter Server URL',
                     ),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  Wrap(
+                    spacing: ResearchOsSpacing.sm,
+                    runSpacing: ResearchOsSpacing.sm,
+                    children: [
+                      ActionChip(
+                        avatar: const Icon(Icons.lock_outline, size: 18),
+                        label: const Text('Add Production Server'),
+                        onPressed: () => _useProfileTemplate(
+                            MobileConnectionType.production),
+                      ),
+                      ActionChip(
+                        avatar: const Icon(Icons.vpn_key_outlined, size: 18),
+                        label: const Text('Add Tailscale Server'),
+                        onPressed: () =>
+                            _useProfileTemplate(MobileConnectionType.tailscale),
+                      ),
+                      ActionChip(
+                        avatar: const Icon(Icons.tune_outlined, size: 18),
+                        label: const Text('Add Local/Custom Server'),
+                        onPressed: () =>
+                            _useProfileTemplate(MobileConnectionType.custom),
+                      ),
+                    ],
                   ),
                   if (_showUrlField) ...[
                     const SizedBox(height: ResearchOsSpacing.sm),
@@ -174,7 +251,7 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
                     ),
                     const SizedBox(height: ResearchOsSpacing.md),
                     FilledButton.icon(
-                      onPressed: _loading ? null : _connect,
+                      onPressed: _loading ? null : () => _connect(),
                       icon: _loading
                           ? const SizedBox.square(
                               dimension: 18,
@@ -192,6 +269,21 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
                 ],
               ),
             ),
+            if (_profiles.isNotEmpty) ...[
+              const SizedBox(height: ResearchOsSpacing.md),
+              _SavedServersCard(
+                profiles: _profiles,
+                failures: _failures,
+                onRetry: (profile) => _connect(profile: profile),
+                onEdit: (profile) {
+                  setState(() {
+                    _showUrlField = true;
+                    _controller.text = profile.baseUrl;
+                  });
+                },
+                onDelete: _deleteProfile,
+              ),
+            ],
             const SizedBox(height: ResearchOsSpacing.md),
             const ResearchOsInfoCard(
               title: 'iOS Simulator',
@@ -238,6 +330,99 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
       ),
     );
   }
+}
+
+class _SavedServersCard extends StatelessWidget {
+  const _SavedServersCard({
+    required this.profiles,
+    required this.failures,
+    required this.onRetry,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final List<MobileServerProfile> profiles;
+  final Map<String, String> failures;
+  final ValueChanged<MobileServerProfile> onRetry;
+  final ValueChanged<MobileServerProfile> onEdit;
+  final ValueChanged<MobileServerProfile> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return ResearchOsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Saved servers', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: ResearchOsSpacing.sm),
+          for (final profile in profiles)
+            Material(
+              color: Colors.transparent,
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(_iconForType(profile.connectionType)),
+                title: Text(
+                  profile.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  [
+                    profile.baseUrl,
+                    if (profile.requiresVpn) 'Tailscale/VPN required',
+                    failures[profile.profileId],
+                  ]
+                      .whereType<String>()
+                      .where((item) => item.isNotEmpty)
+                      .join('\n'),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                trailing: Wrap(
+                  spacing: ResearchOsSpacing.xs,
+                  children: [
+                    IconButton(
+                      tooltip: 'Retry ${profile.displayName}',
+                      onPressed: () => onRetry(profile),
+                      icon: const Icon(Icons.refresh),
+                    ),
+                    IconButton(
+                      tooltip: 'Edit ${profile.displayName}',
+                      onPressed: () => onEdit(profile),
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                    if (profile.profileId != 'local-demo')
+                      IconButton(
+                        tooltip: 'Delete ${profile.displayName}',
+                        onPressed: () => onDelete(profile),
+                        icon: const Icon(Icons.delete_outline),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+String _displayNameForType(MobileConnectionType type) {
+  return switch (type) {
+    MobileConnectionType.production => 'Production Server',
+    MobileConnectionType.tailscale => 'Tailscale Server',
+    MobileConnectionType.local => 'Local Demo Server',
+    MobileConnectionType.custom => 'Custom Server',
+  };
+}
+
+IconData _iconForType(MobileConnectionType type) {
+  return switch (type) {
+    MobileConnectionType.production => Icons.lock_outline,
+    MobileConnectionType.tailscale => Icons.vpn_key_outlined,
+    MobileConnectionType.local => Icons.laptop_mac_outlined,
+    MobileConnectionType.custom => Icons.dns_outlined,
+  };
 }
 
 List<String> _warnings(Map<String, dynamic>? info) {

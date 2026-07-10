@@ -5667,7 +5667,12 @@ def mobile_connection_info(request: Request) -> dict[str, object]:
     return {
         "server_name": settings.project_name,
         "version": "ResearchOS v0.2 preview",
+        "environment": deployment.get("mode"),
+        "app_env": settings.environment,
+        "data_classification": settings.data_classification,
+        "demo_mode": settings.environment != "production" or settings.data_classification == "demo",
         "public_base_url": public_base_url,
+        "public_base_url_configured": bool(public_base_url),
         "current_host": request_host,
         "current_port": request_port,
         "configured_host": deployment.get("host"),
