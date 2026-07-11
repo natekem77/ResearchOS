@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'api/researchos_api.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
+import 'screens/chats_screen.dart';
 import 'screens/copilot_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/experiments_screen.dart';
@@ -157,6 +158,7 @@ class ResearchOsHome extends StatelessWidget {
       MorningBriefScreen(api: api),
       IntelligenceFeedScreen(api: api),
       WhiteboardScreen(api: api),
+      ChatsScreen(api: api),
     ];
     final titles = [
       'Home',
@@ -172,6 +174,7 @@ class ResearchOsHome extends StatelessWidget {
       'Morning Brief',
       'Intelligence',
       'Whiteboard',
+      'Chats',
     ];
     return ResearchOsScaffold(
       title: titles[selectedIndex],

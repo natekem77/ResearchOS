@@ -154,8 +154,10 @@ class AuthorizationService:
             users = [
                 ("user:pi-owner", "pi@researchos.local", "PI / Owner", "admin"),
                 ("user:lab-admin", "admin@researchos.local", "Lab Admin", "admin"),
+                ("user:supervisor", "supervisor@researchos.local", "Supervisor", "researcher"),
                 ("user:researcher-a", "researcher.a@researchos.local", "Researcher A", "researcher"),
                 ("user:researcher-b", "researcher.b@researchos.local", "Researcher B", "researcher"),
+                ("user:researcher-c", "researcher.c@researchos.local", "Researcher C", "researcher"),
                 ("user:guest", "guest@researchos.local", "Guest Scientist", "viewer"),
             ]
             for user_id, email, display_name, role in users:
@@ -180,8 +182,10 @@ class AuthorizationService:
             for user_id, role in [
                 ("user:pi-owner", "owner"),
                 ("user:lab-admin", "admin"),
+                ("user:supervisor", "supervisor"),
                 ("user:researcher-a", "researcher"),
                 ("user:researcher-b", "researcher"),
+                ("user:researcher-c", "researcher"),
                 ("user:guest", "guest"),
             ]:
                 connection.execute(

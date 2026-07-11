@@ -88,6 +88,7 @@ from app.inventory import (
     reagent_methods_entry,
     records_to_csv,
 )
+from app.lab_chat import ChatAuthorizationError, ChatValidationError, LabChatService
 from app.knowledge_graph_assistant import answer_with_knowledge_graph
 from app.knowledge_graph import build_knowledge_graph_entity, build_knowledge_graph_stats
 from app.lab_workspaces import ActiveWorkspaceService, bootstrap_default_workspace, current_workspace, workspace_with_membership
@@ -226,6 +227,10 @@ def _authorization_service() -> AuthorizationService:
     return AuthorizationService(settings=settings)
 
 
+def _chat_service() -> LabChatService:
+    return LabChatService(settings=settings)
+
+
 def _request_user_id(request: Request) -> str:
     """Resolve the current demo/dev user from server-side context.
 
@@ -262,6 +267,40 @@ class CreateGroupRequest(BaseModel):
 
 class AddGroupMemberRequest(BaseModel):
     user_id: str
+
+
+class CreateConversationRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    conversation_type: Literal["lab_channel", "project_channel", "group_chat", "direct_message"]
+    name: str
+    description: str | None = None
+    project_id: str | None = None
+    member_user_ids: list[str] = Field(default_factory=list)
+    membership_policy: Literal["members_manage", "moderators_manage", "creator_manages"] = "members_manage"
+
+
+class UpdateConversationRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class AddConversationMemberRequest(BaseModel):
+    user_id: str
+    member_role: Literal["owner", "moderator", "member"] = "member"
+
+
+class UpdateConversationMemberRoleRequest(BaseModel):
+    member_role: Literal["owner", "moderator", "member"]
+
+
+class SendMessageRequest(BaseModel):
+    body: str = ""
+    reply_to_message_id: str | None = None
+    attachments: list[dict[str, object]] = Field(default_factory=list)
+
+
+class UpdateMessageRequest(BaseModel):
+    body: str
 
 
 class AgentStatusResponse(BaseModel):
@@ -3559,6 +3598,171 @@ def audit_events(lab_id: str, request: Request) -> list[dict[str, object]]:
         return authz.audit_events(_request_user_id(request), lab_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc))
+
+
+def _chat_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ChatAuthorizationError):
+        return HTTPException(status_code=404, detail="Conversation not found.")
+    if isinstance(exc, ChatValidationError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/chat/conversations", tags=["chat"])
+def chat_conversations(request: Request, lab_id: str = Query("lab:demo")) -> list[dict[str, object]]:
+    """List conversations visible to the current user only."""
+
+    return _chat_service().list_conversations(_request_user_id(request), lab_id)
+
+
+@app.post("/chat/conversations", tags=["chat"])
+def create_chat_conversation(request_body: CreateConversationRequest, request: Request) -> dict[str, object]:
+    service = _chat_service()
+    try:
+        return service.create_conversation(
+            actor_user_id=_request_user_id(request),
+            lab_id=request_body.lab_id,
+            conversation_type=request_body.conversation_type,
+            name=request_body.name,
+            description=request_body.description,
+            project_id=request_body.project_id,
+            member_user_ids=request_body.member_user_ids,
+            membership_policy=request_body.membership_policy,
+        )
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.get("/chat/conversations/{conversation_id}", tags=["chat"])
+def chat_conversation_detail(conversation_id: str, request: Request) -> dict[str, object]:
+    conversation = _chat_service().get_conversation(_request_user_id(request), conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return conversation
+
+
+@app.put("/chat/conversations/{conversation_id}", tags=["chat"])
+def update_chat_conversation(conversation_id: str, request_body: UpdateConversationRequest, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().update_conversation(_request_user_id(request), conversation_id, request_body.name, request_body.description)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.post("/chat/conversations/{conversation_id}/archive", tags=["chat"])
+def archive_chat_conversation(conversation_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().archive_conversation(_request_user_id(request), conversation_id)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.get("/chat/conversations/{conversation_id}/members", tags=["chat"])
+def chat_conversation_members(conversation_id: str, request: Request) -> list[dict[str, object]]:
+    try:
+        return _chat_service().list_members(_request_user_id(request), conversation_id)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.post("/chat/conversations/{conversation_id}/members", tags=["chat"])
+def add_chat_conversation_member(conversation_id: str, request_body: AddConversationMemberRequest, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().add_member(_request_user_id(request), conversation_id, request_body.user_id, request_body.member_role)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.delete("/chat/conversations/{conversation_id}/members/{user_id}", tags=["chat"])
+def remove_chat_conversation_member(conversation_id: str, user_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().remove_member(_request_user_id(request), conversation_id, user_id)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.post("/chat/conversations/{conversation_id}/leave", tags=["chat"])
+def leave_chat_conversation(conversation_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().remove_member(_request_user_id(request), conversation_id, _request_user_id(request))
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.put("/chat/conversations/{conversation_id}/members/{user_id}/role", tags=["chat"])
+def update_chat_member_role(
+    conversation_id: str,
+    user_id: str,
+    request_body: UpdateConversationMemberRoleRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return _chat_service().set_member_role(_request_user_id(request), conversation_id, user_id, request_body.member_role)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.get("/chat/conversations/{conversation_id}/messages", tags=["chat"])
+def chat_messages(
+    conversation_id: str,
+    request: Request,
+    limit: int = Query(50, ge=1, le=100),
+    cursor: str | None = Query(None),
+) -> dict[str, object]:
+    try:
+        return _chat_service().list_messages(_request_user_id(request), conversation_id, limit, cursor)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.post("/chat/conversations/{conversation_id}/messages", tags=["chat"])
+def send_chat_message(conversation_id: str, request_body: SendMessageRequest, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().send_message(
+            sender_user_id=_request_user_id(request),
+            conversation_id=conversation_id,
+            body=request_body.body,
+            reply_to_message_id=request_body.reply_to_message_id,
+            attachments=list(request_body.attachments),
+        )
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.put("/chat/messages/{message_id}", tags=["chat"])
+def edit_chat_message(message_id: str, request_body: UpdateMessageRequest, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().edit_message(_request_user_id(request), message_id, request_body.body)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.delete("/chat/messages/{message_id}", tags=["chat"])
+def delete_chat_message(message_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().delete_message(_request_user_id(request), message_id)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.post("/chat/messages/{message_id}/read", tags=["chat"])
+def read_chat_message(message_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _chat_service().mark_read(_request_user_id(request), message_id)
+    except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
+        raise _chat_http_error(exc)
+
+
+@app.get("/chat/unread", tags=["chat"])
+def chat_unread(request: Request, lab_id: str = Query("lab:demo")) -> dict[str, object]:
+    return _chat_service().unread_counts(_request_user_id(request), lab_id)
+
+
+@app.get("/chat/search", tags=["chat"])
+def chat_search(request: Request, q: str = Query(...), lab_id: str = Query("lab:demo")) -> dict[str, object]:
+    return _chat_service().search(_request_user_id(request), q, lab_id)
 
 
 @app.post("/users/bootstrap-admin", response_model=UserResponse, tags=["users"])

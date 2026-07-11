@@ -472,6 +472,100 @@ class ResearchOsApi {
     );
   }
 
+  Future<List<Map<String, dynamic>>> chatConversations() async {
+    final json = await _getList('/chat/conversations');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> createChatConversation({
+    required String conversationType,
+    required String name,
+    String labId = 'lab:demo',
+    String? description,
+    List<String> memberUserIds = const [],
+  }) {
+    return _postMap('/chat/conversations', {
+      'lab_id': labId,
+      'conversation_type': conversationType,
+      'name': name,
+      if (description != null && description.trim().isNotEmpty)
+        'description': description.trim(),
+      'member_user_ids': memberUserIds,
+    });
+  }
+
+  Future<Map<String, dynamic>> chatMessages(
+    String conversationId, {
+    int limit = 50,
+    String? cursor,
+  }) {
+    final query = [
+      'limit=$limit',
+      if (cursor != null && cursor.trim().isNotEmpty)
+        'cursor=${Uri.encodeQueryComponent(cursor.trim())}',
+    ].join('&');
+    return _getMap(
+        '/chat/conversations/${Uri.encodeComponent(conversationId)}/messages?$query');
+  }
+
+  Future<Map<String, dynamic>> sendChatMessage({
+    required String conversationId,
+    required String body,
+    String? replyToMessageId,
+    List<Map<String, dynamic>> attachments = const [],
+  }) {
+    return _postMap(
+      '/chat/conversations/${Uri.encodeComponent(conversationId)}/messages',
+      {
+        'body': body,
+        if (replyToMessageId != null && replyToMessageId.trim().isNotEmpty)
+          'reply_to_message_id': replyToMessageId.trim(),
+        'attachments': attachments,
+      },
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> chatMembers(String conversationId) async {
+    final json = await _getList(
+        '/chat/conversations/${Uri.encodeComponent(conversationId)}/members');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> addChatMember({
+    required String conversationId,
+    required String userId,
+    String memberRole = 'member',
+  }) {
+    return _postMap(
+      '/chat/conversations/${Uri.encodeComponent(conversationId)}/members',
+      {'user_id': userId, 'member_role': memberRole},
+    );
+  }
+
+  Future<void> removeChatMember({
+    required String conversationId,
+    required String userId,
+  }) async {
+    await _delete(
+      '/chat/conversations/${Uri.encodeComponent(conversationId)}/members/${Uri.encodeComponent(userId)}',
+    );
+  }
+
+  Future<Map<String, dynamic>> leaveChatConversation(String conversationId) {
+    return _postMap(
+      '/chat/conversations/${Uri.encodeComponent(conversationId)}/leave',
+      {},
+    );
+  }
+
+  Future<Map<String, dynamic>> chatUnread() {
+    return _getMap('/chat/unread');
+  }
+
+  Future<Map<String, dynamic>> chatSearch(String query) {
+    return _getMap('/chat/search?q=${Uri.encodeQueryComponent(query)}');
+  }
+
   Future<Map<String, dynamic>> _getMap(String path) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     final response = await _client.get(uri);

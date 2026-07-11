@@ -110,6 +110,12 @@ const _primaryDestinations = [
     label: 'Search',
   ),
   _PrimaryDestination(
+    screenIndex: 13,
+    icon: Icons.chat_bubble_outline,
+    selectedIcon: Icons.chat_bubble,
+    label: 'Chat',
+  ),
+  _PrimaryDestination(
     screenIndex: 9,
     icon: Icons.settings_outlined,
     selectedIcon: Icons.settings,
