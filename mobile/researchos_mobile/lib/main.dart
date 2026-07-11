@@ -12,7 +12,7 @@ import 'screens/home_screen.dart';
 import 'screens/intelligence_feed_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/morning_brief_screen.dart';
-import 'screens/new_experiment_wizard_screen.dart';
+import 'screens/notebook_first_experiment_screen.dart';
 import 'screens/protocol_hub_screen.dart';
 import 'screens/resources_screen.dart';
 import 'screens/search_screen.dart';
@@ -142,7 +142,7 @@ class ResearchOsHome extends StatelessWidget {
       HomeScreen(api: api, onNavigate: onDestinationSelected),
       DashboardScreen(api: api),
       BenchModeScreen(api: api),
-      NewExperimentWizardScreen(api: api),
+      NotebookFirstExperimentScreen(api: api),
       ExperimentsScreen(api: api),
       ResourcesScreen(api: api),
       InventoryScreen(api: api),

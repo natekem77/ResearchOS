@@ -143,6 +143,122 @@ class ProtocolHubTests(unittest.TestCase):
 
         self.assertEqual(updated["version"], notebook["version"] + 1)
 
+    def test_paste_text_creates_reviewable_extraction_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            draft = service.create_extraction_draft_from_text(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                proposed_title="Meyer notes",
+                origin="pasted_text",
+                source_text=(
+                    "Meyer retinal organoid protocol notes.\n"
+                    "Add BMP4 on D6. Attach organoids on D9. "
+                    "Continue this current experiment through D90."
+                ),
+            )
+
+        self.assertEqual(draft["status"], "awaiting_review")
+        self.assertEqual(draft["proposed_biological_system"], "retinal organoid")
+        self.assertEqual(draft["proposed_sample_unit"], "organoid")
+        self.assertTrue(any(event["title"] == "BMP4" for event in draft["proposed_events"]))
+        self.assertIn("Add BMP4 on D6", draft["source_text"])
+        self.assertTrue(draft["extraction_evidence"])
+        self.assertTrue(any("concentration" in item.lower() for item in draft["ambiguities"]))
+
+    def test_protocol_import_metadata_and_incomplete_draft_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            imported = service.create_import(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                source_type="pdf",
+                original_filename="meyer.pdf",
+                storage_reference="attachments/protocols/meyer.pdf",
+                mime_type="application/pdf",
+            )
+            draft = service.create_extraction_draft_from_text(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                source_text="Protocol text without timed events.",
+                origin="document",
+                import_id=imported["import_id"],
+            )
+            saved = service.update_extraction_draft(draft["extraction_id"], {"status": "draft"})
+
+        self.assertEqual(imported["original_filename"], "meyer.pdf")
+        self.assertEqual(draft["import_id"], imported["import_id"])
+        self.assertEqual(saved["status"], "draft")
+        self.assertTrue(any("No timed protocol events" in item for item in saved["ambiguities"]))
+
+    def test_draft_approval_requires_confirmation_and_minimum_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            draft = service.create_extraction_draft_from_text(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                source_text="Treatment protocol. Image on D2.",
+                proposed_title="Treatment protocol",
+            )
+            with self.assertRaisesRegex(ValueError, "confirmation"):
+                service.approve_extraction_draft(
+                    actor_user_id="user:pi-owner",
+                    extraction_id=draft["extraction_id"],
+                    version_label="1.0",
+                    confirmed=False,
+                )
+            approved = service.approve_extraction_draft(
+                actor_user_id="user:pi-owner",
+                extraction_id=draft["extraction_id"],
+                version_label="1.0",
+                confirmed=True,
+            )
+
+        self.assertEqual(approved["draft"]["status"], "approved")
+        self.assertEqual(approved["protocol"]["status"], "approved")
+
+    def test_import_draft_can_be_added_as_new_version_without_overwriting_existing_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            protocol = service.get_protocol("protocol:meyer-retinal-organoid-protocol")
+            assert protocol is not None
+            old_version = protocol["current_version_id"]
+            draft = service.create_extraction_draft_from_text(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                source_text="Meyer source update. Image on D35.",
+                proposed_title="Meyer retinal organoid protocol",
+            )
+            approved = service.approve_extraction_draft(
+                actor_user_id="user:pi-owner",
+                extraction_id=draft["extraction_id"],
+                version_label="source-review-1",
+                confirmed=True,
+                target_protocol_id=protocol["protocol_id"],
+            )
+            updated = service.get_protocol(protocol["protocol_id"])
+
+        assert updated is not None
+        self.assertNotEqual(old_version, updated["current_version_id"])
+        self.assertEqual(approved["draft"]["protocol_id"], protocol["protocol_id"])
+
+    def test_meyer_seed_is_incomplete_and_contains_no_invented_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            protocol = service.get_protocol("protocol:meyer-retinal-organoid-protocol")
+            assert protocol is not None
+            workspace = protocol["workspace"]
+            serialized = str(workspace).lower()
+
+        self.assertEqual(protocol["status"], "draft")
+        self.assertIn("incomplete internal working draft", serialized)
+        self.assertTrue(any(event["title"] == "BMP4" for event in workspace["timeline"]))
+        self.assertFalse(workspace["materials"])
+        self.assertFalse(workspace["expected_results"])
+        self.assertNotIn("demo vendor", serialized)
+        self.assertNotIn("vsx2", serialized)
+        self.assertNotIn("protocol-defined", serialized)
+
 
 if __name__ == "__main__":
     unittest.main()

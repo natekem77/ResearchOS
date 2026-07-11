@@ -114,9 +114,39 @@ class ResearchOsApi {
     return _postMap('/experiments/general', payload);
   }
 
+  Future<Map<String, dynamic>> createNotebookFirstExperiment({
+    String? title,
+    String? initialNote,
+  }) {
+    return _postMap('/experiments/notebook-first', {
+      if (title != null && title.trim().isNotEmpty) 'title': title.trim(),
+      if (initialNote != null && initialNote.trim().isNotEmpty)
+        'initial_note': initialNote.trim(),
+    });
+  }
+
   Future<Map<String, dynamic>> createGeneralExperimentFromProtocol(
       Map<String, dynamic> payload) {
     return _postMap('/experiments/general/from-protocol', payload);
+  }
+
+  Future<Map<String, dynamic>> attachProtocolToExperiment({
+    required String experimentId,
+    required String protocolId,
+    required String protocolVersionId,
+    bool inheritEvents = true,
+    bool insertSummaryNote = false,
+  }) {
+    return _postMap(
+      '/experiments/${Uri.encodeComponent(experimentId)}/protocols/attach',
+      {
+        'protocol_id': protocolId,
+        'protocol_version_id': protocolVersionId,
+        'relationship': 'primary',
+        'inherit_events': inheritEvents,
+        'insert_summary_note': insertSummaryNote,
+      },
+    );
   }
 
   Future<Map<String, dynamic>> experimentCopilotDemoNarrative() {
@@ -180,6 +210,99 @@ class ResearchOsApi {
   Future<Map<String, dynamic>> protocolHubVersion(String protocolVersionId) {
     return _getMap(
         '/protocol-hub/versions/${Uri.encodeComponent(protocolVersionId)}');
+  }
+
+  Future<List<Map<String, dynamic>>> protocolHubTemplates() async {
+    final json = await _getList('/protocol-hub/templates');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> createBlankProtocolHubProtocol({
+    required String title,
+    String category = 'custom',
+    String versionNumber = 'draft-1',
+    String? biologicalSystem,
+    String? sampleUnit,
+    String? content,
+  }) {
+    return _postMap('/protocol-hub/create-blank', {
+      'title': title,
+      'category': category,
+      'version_number': versionNumber,
+      if (biologicalSystem != null && biologicalSystem.trim().isNotEmpty)
+        'biological_system': biologicalSystem.trim(),
+      if (sampleUnit != null && sampleUnit.trim().isNotEmpty)
+        'sample_unit': sampleUnit.trim(),
+      if (content != null && content.trim().isNotEmpty) 'content': content,
+    });
+  }
+
+  Future<Map<String, dynamic>> createProtocolHubImport({
+    required String sourceType,
+    String? originalFilename,
+    String? storageReference,
+    String? mimeType,
+  }) {
+    return _postMap('/protocol-hub/imports', {
+      'source_type': sourceType,
+      if (originalFilename != null && originalFilename.trim().isNotEmpty)
+        'original_filename': originalFilename.trim(),
+      if (storageReference != null && storageReference.trim().isNotEmpty)
+        'storage_reference': storageReference.trim(),
+      if (mimeType != null && mimeType.trim().isNotEmpty)
+        'mime_type': mimeType.trim(),
+    });
+  }
+
+  Future<Map<String, dynamic>> createProtocolHubTextDraft({
+    required String sourceText,
+    String origin = 'pasted_text',
+    String? proposedTitle,
+    String? proposedCategory,
+    String? sourceCitation,
+    String? importId,
+  }) {
+    return _postMap('/protocol-hub/drafts/from-text', {
+      'source_text': sourceText,
+      'origin': origin,
+      if (proposedTitle != null && proposedTitle.trim().isNotEmpty)
+        'proposed_title': proposedTitle.trim(),
+      if (proposedCategory != null && proposedCategory.trim().isNotEmpty)
+        'proposed_category': proposedCategory.trim(),
+      if (sourceCitation != null && sourceCitation.trim().isNotEmpty)
+        'source_citation': sourceCitation.trim(),
+      if (importId != null && importId.trim().isNotEmpty)
+        'import_id': importId.trim(),
+    });
+  }
+
+  Future<Map<String, dynamic>> describeProtocolHubDraft({
+    required String sourceText,
+    String? proposedTitle,
+  }) {
+    return _postMap('/protocol-hub/drafts/describe', {
+      'source_text': sourceText,
+      'origin': 'manual',
+      if (proposedTitle != null && proposedTitle.trim().isNotEmpty)
+        'proposed_title': proposedTitle.trim(),
+    });
+  }
+
+  Future<Map<String, dynamic>> approveProtocolHubDraft({
+    required String extractionId,
+    required String versionLabel,
+    required bool confirmed,
+    String? targetProtocolId,
+  }) {
+    return _postMap(
+      '/protocol-hub/drafts/${Uri.encodeComponent(extractionId)}/approve',
+      {
+        'version_label': versionLabel,
+        'confirmed': confirmed,
+        if (targetProtocolId != null && targetProtocolId.trim().isNotEmpty)
+          'target_protocol_id': targetProtocolId.trim(),
+      },
+    );
   }
 
   Future<Map<String, dynamic>> saveProtocolHubNotebook({

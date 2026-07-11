@@ -710,6 +710,28 @@ class GeneralExperimentService:
             "timeline": self.timeline(experiment_id, user_id),
             "sample_planning": SamplePlanningService().preview({"biological_replicates": None, "technical_replicates": None, "sample_units_per_replicate": None}),
             "sections": ["Overview", "Notebook", "Design", "Timeline", "Conditions", "Samples", "Plate Layout", "Tasks", "Data", "Chat", "History"],
+            "layout": {
+                "primary_surface": "notebook",
+                "tools_open_as": "side_panel_or_bottom_sheet",
+                "notebook_remains_visible": True,
+            },
+            "tool_palette": [
+                {"tool_id": "copilot", "label": "Experiment Copilot", "icon": "auto_awesome", "mode": "panel"},
+                {"tool_id": "protocols", "label": "Protocols", "icon": "description", "mode": "panel"},
+                {"tool_id": "spreadsheet", "label": "Spreadsheet Import", "icon": "table_chart", "mode": "panel"},
+                {"tool_id": "voice", "label": "Voice", "icon": "mic", "mode": "panel"},
+                {"tool_id": "images", "label": "Images", "icon": "photo_camera", "mode": "panel"},
+                {"tool_id": "attachments", "label": "Attachments", "icon": "attach_file", "mode": "panel"},
+                {"tool_id": "timeline", "label": "Timeline", "icon": "event", "mode": "panel"},
+                {"tool_id": "conditions", "label": "Conditions", "icon": "science", "mode": "panel"},
+                {"tool_id": "samples", "label": "Samples", "icon": "blur_circular", "mode": "panel"},
+                {"tool_id": "inventory", "label": "Inventory", "icon": "inventory_2", "mode": "panel"},
+                {"tool_id": "chat", "label": "Chat", "icon": "chat", "mode": "panel"},
+                {"tool_id": "analysis", "label": "Analysis", "icon": "analytics", "mode": "panel"},
+                {"tool_id": "literature", "label": "Literature", "icon": "menu_book", "mode": "panel"},
+                {"tool_id": "memory", "label": "Scientific Memory", "icon": "psychology", "mode": "panel"},
+                {"tool_id": "whiteboard", "label": "Whiteboard", "icon": "view_quilt", "mode": "panel"},
+            ],
             "empty_states": {
                 "plate_layout": "Plate layouts are optional and only needed for plate-based experiments.",
                 "tasks": "Task integration is future-ready.",
@@ -956,7 +978,7 @@ class GeneralExperimentService:
             "linked_protocol": experiment.get("primary_protocol_id"),
             "current_experimental_day": None,
             "alerts": [],
-            "quick_actions": ["Edit notebook", "Add condition", "Add event", "Attach data"],
+            "quick_actions": ["Write notes", "Open tools", "Attach data", "Ask Copilot"],
         }
 
     def _check_attachment_access(self, user_id: str, payload: dict[str, Any]) -> None:

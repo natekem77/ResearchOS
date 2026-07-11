@@ -59,6 +59,11 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
                       child: Text('Protocol Hub',
                           style: Theme.of(context).textTheme.headlineSmall),
                     ),
+                    IconButton.filledTonal(
+                      tooltip: 'Add protocol',
+                      onPressed: _showAddProtocolSheet,
+                      icon: const Icon(Icons.add),
+                    ),
                   ],
                 ),
                 const SizedBox(height: ResearchOsSpacing.sm),
@@ -96,15 +101,19 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
               }
               final protocols = snapshot.data ?? const [];
               if (protocols.isEmpty) {
-                return const ResearchOsEmptyState(
-                  title: 'No protocols found',
-                  message:
-                      'Structured protocol demos appear after the backend demo workspace is loaded.',
-                  icon: Icons.account_tree_outlined,
+                return _ProtocolOnboardingState(
+                  onImportDocument: () => _openImportDocument(),
+                  onPasteText: () => _openTextDraft(origin: 'pasted_text'),
+                  onDescribe: () => _openTextDraft(origin: 'manual'),
+                  onCreateBlank: () => _openBlankProtocol(),
+                  onBrowseTemplates: () => _openTemplates(),
+                  onScanPrinted: () => _showComingSoon('Scan Printed Protocol'),
                 );
               }
               return Column(
                 children: [
+                  _ProtocolLibrarySections(protocols: protocols),
+                  const SizedBox(height: ResearchOsSpacing.md),
                   for (final protocol in protocols) ...[
                     _ProtocolCard(
                       protocol: protocol,
@@ -127,6 +136,988 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _showAddProtocolSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: ResearchOsSpacing.screen,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Add Protocol',
+                  style: Theme.of(context).textTheme.headlineSmall),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              const Text(
+                  'Imported or described protocols become review drafts first. Nothing is approved until a researcher confirms it.'),
+              const SizedBox(height: ResearchOsSpacing.md),
+              _AddProtocolTile(
+                icon: Icons.upload_file_outlined,
+                title: 'Import PDF or Document',
+                subtitle: 'Preserve source metadata and review extracted text.',
+                onTap: () {
+                  Navigator.pop(context);
+                  _openImportDocument();
+                },
+              ),
+              _AddProtocolTile(
+                icon: Icons.content_paste_outlined,
+                title: 'Paste Text',
+                subtitle: 'Paste protocol notes and generate a review draft.',
+                onTap: () {
+                  Navigator.pop(context);
+                  _openTextDraft(origin: 'pasted_text');
+                },
+              ),
+              _AddProtocolTile(
+                icon: Icons.mic_none_outlined,
+                title: 'Describe with Text or Voice',
+                subtitle: 'Type or paste a dictated protocol description.',
+                onTap: () {
+                  Navigator.pop(context);
+                  _openTextDraft(origin: 'manual');
+                },
+              ),
+              _AddProtocolTile(
+                icon: Icons.dashboard_customize_outlined,
+                title: 'Start from Template',
+                subtitle:
+                    'Use a section-only template with no invented details.',
+                onTap: () {
+                  Navigator.pop(context);
+                  _openTemplates();
+                },
+              ),
+              _AddProtocolTile(
+                icon: Icons.note_add_outlined,
+                title: 'Create Blank Protocol',
+                subtitle: 'Start a blank draft protocol notebook.',
+                onTap: () {
+                  Navigator.pop(context);
+                  _openBlankProtocol();
+                },
+              ),
+              _AddProtocolTile(
+                icon: Icons.document_scanner_outlined,
+                title: 'Scan Printed Protocol',
+                subtitle: 'Coming soon: camera/OCR workflow.',
+                onTap: () {
+                  Navigator.pop(context);
+                  _showComingSoon('Scan Printed Protocol');
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openTextDraft({required String origin}) async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) =>
+            ProtocolTextDraftScreen(api: widget.api, origin: origin),
+      ),
+    );
+    if (changed == true) _reload();
+  }
+
+  Future<void> _openImportDocument() async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ProtocolImportDocumentScreen(api: widget.api),
+      ),
+    );
+    if (changed == true) _reload();
+  }
+
+  Future<void> _openBlankProtocol() async {
+    final changed = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ProtocolBlankScreen(api: widget.api),
+      ),
+    );
+    if (changed == true) _reload();
+  }
+
+  Future<void> _openTemplates() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => ProtocolTemplateScreen(api: widget.api),
+      ),
+    );
+  }
+
+  void _showComingSoon(String title) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text(title)),
+          body: SafeArea(
+            child: ListView(
+              padding: ResearchOsSpacing.screen,
+              children: const [
+                ResearchOsEmptyState(
+                  title: 'Coming soon',
+                  message:
+                      'Printed protocol scanning will preserve the image, extract draft text, and require researcher review before approval.',
+                  icon: Icons.document_scanner_outlined,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProtocolOnboardingState extends StatelessWidget {
+  const _ProtocolOnboardingState({
+    required this.onImportDocument,
+    required this.onPasteText,
+    required this.onDescribe,
+    required this.onCreateBlank,
+    required this.onBrowseTemplates,
+    required this.onScanPrinted,
+  });
+
+  final VoidCallback onImportDocument;
+  final VoidCallback onPasteText;
+  final VoidCallback onDescribe;
+  final VoidCallback onCreateBlank;
+  final VoidCallback onBrowseTemplates;
+  final VoidCallback onScanPrinted;
+
+  @override
+  Widget build(BuildContext context) {
+    return ResearchOsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Protocols', style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: ResearchOsSpacing.sm),
+          const Text('Build your lab’s shared protocol library.'),
+          const SizedBox(height: ResearchOsSpacing.sm),
+          const Text(
+            'Protocols can contain narrative instructions, timed events, materials, media, expected results, QC guidance, and version history.',
+          ),
+          const SizedBox(height: ResearchOsSpacing.lg),
+          _ProtocolActionGrid(actions: [
+            _ProtocolAction('Import Document', Icons.upload_file_outlined,
+                onImportDocument),
+            _ProtocolAction('Paste Protocol Text', Icons.content_paste_outlined,
+                onPasteText),
+            _ProtocolAction(
+                'Describe Protocol', Icons.mic_none_outlined, onDescribe),
+            _ProtocolAction(
+                'Create from Scratch', Icons.note_add_outlined, onCreateBlank),
+            _ProtocolAction('Browse Templates',
+                Icons.dashboard_customize_outlined, onBrowseTemplates),
+            _ProtocolAction('Scan Printed Protocol',
+                Icons.document_scanner_outlined, onScanPrinted,
+                secondary: true),
+          ]),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProtocolLibrarySections extends StatelessWidget {
+  const _ProtocolLibrarySections({required this.protocols});
+
+  final List<Map<String, dynamic>> protocols;
+
+  @override
+  Widget build(BuildContext context) {
+    final drafts = protocols
+        .where((item) => _text(item['status'], fallback: 'draft') == 'draft')
+        .length;
+    final approved = protocols
+        .where((item) => _text(item['status'], fallback: 'draft') == 'approved')
+        .length;
+    return Wrap(
+      spacing: ResearchOsSpacing.md,
+      runSpacing: ResearchOsSpacing.md,
+      children: [
+        ResearchOsSummaryCard(
+          label: 'Drafts Needing Review',
+          value: '$drafts',
+          icon: Icons.rate_review_outlined,
+        ),
+        ResearchOsSummaryCard(
+          label: 'Approved Protocols',
+          value: '$approved',
+          icon: Icons.verified_outlined,
+        ),
+        ResearchOsSummaryCard(
+          label: 'Templates',
+          value: '8',
+          icon: Icons.dashboard_customize_outlined,
+        ),
+      ],
+    );
+  }
+}
+
+class _ProtocolAction {
+  const _ProtocolAction(this.title, this.icon, this.onTap,
+      {this.secondary = false});
+
+  final String title;
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool secondary;
+}
+
+class _ProtocolActionGrid extends StatelessWidget {
+  const _ProtocolActionGrid({required this.actions});
+
+  final List<_ProtocolAction> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final narrow = constraints.maxWidth < 520;
+        return Wrap(
+          spacing: ResearchOsSpacing.sm,
+          runSpacing: ResearchOsSpacing.sm,
+          children: [
+            for (final action in actions)
+              SizedBox(
+                width: narrow
+                    ? double.infinity
+                    : (constraints.maxWidth - ResearchOsSpacing.sm) / 2,
+                child: FilledButton.tonalIcon(
+                  onPressed: action.onTap,
+                  icon: Icon(action.icon),
+                  label: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      action.secondary
+                          ? '${action.title} — Coming Soon'
+                          : action.title,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _AddProtocolTile extends StatelessWidget {
+  const _AddProtocolTile({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: ListTile(
+        leading: Icon(icon),
+        title: Text(title),
+        subtitle: Text(subtitle),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class ProtocolTextDraftScreen extends StatefulWidget {
+  const ProtocolTextDraftScreen({
+    super.key,
+    required this.api,
+    required this.origin,
+  });
+
+  final ResearchOsApi api;
+  final String origin;
+
+  @override
+  State<ProtocolTextDraftScreen> createState() =>
+      _ProtocolTextDraftScreenState();
+}
+
+class _ProtocolTextDraftScreenState extends State<ProtocolTextDraftScreen> {
+  final _title = TextEditingController();
+  final _source = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _source.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_source.text.trim().isEmpty || _submitting) return;
+    setState(() => _submitting = true);
+    try {
+      final draft = widget.origin == 'manual'
+          ? await widget.api.describeProtocolHubDraft(
+              sourceText: _source.text,
+              proposedTitle: _title.text,
+            )
+          : await widget.api.createProtocolHubTextDraft(
+              sourceText: _source.text,
+              origin: widget.origin,
+              proposedTitle: _title.text,
+            );
+      if (!mounted) return;
+      final approved = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => ProtocolDraftReviewScreen(
+            api: widget.api,
+            draft: draft,
+          ),
+        ),
+      );
+      if (mounted && approved == true) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final describe = widget.origin == 'manual';
+    return Scaffold(
+      appBar: AppBar(
+          title: Text(describe ? 'Describe Protocol' : 'Paste Protocol')),
+      body: SafeArea(
+        child: ListView(
+          padding: ResearchOsSpacing.screen,
+          children: [
+            ResearchOsCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    describe
+                        ? 'Describe or dictate a protocol'
+                        : 'Paste protocol text',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  const Text(
+                    'ResearchOS will create a structured draft for review. Extracted details remain proposals until explicitly approved.',
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _title,
+                    decoration:
+                        const InputDecoration(labelText: 'Suggested title'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _source,
+                    minLines: 12,
+                    maxLines: 24,
+                    keyboardType: TextInputType.multiline,
+                    decoration: InputDecoration(
+                      labelText: describe
+                          ? 'Description or transcript'
+                          : 'Original protocol text',
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _submitting ? null : _submit,
+                      icon: _submitting
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.rate_review_outlined),
+                      label: const Text('Generate Review Draft'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ProtocolImportDocumentScreen extends StatefulWidget {
+  const ProtocolImportDocumentScreen({super.key, required this.api});
+
+  final ResearchOsApi api;
+
+  @override
+  State<ProtocolImportDocumentScreen> createState() =>
+      _ProtocolImportDocumentScreenState();
+}
+
+class _ProtocolImportDocumentScreenState
+    extends State<ProtocolImportDocumentScreen> {
+  final _filename = TextEditingController();
+  final _mimeType = TextEditingController();
+  final _sourceText = TextEditingController();
+  String _sourceType = 'pdf';
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _filename.dispose();
+    _mimeType.dispose();
+    _sourceText.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_submitting) return;
+    setState(() => _submitting = true);
+    try {
+      final imported = await widget.api.createProtocolHubImport(
+        sourceType: _sourceType,
+        originalFilename: _filename.text,
+        mimeType: _mimeType.text,
+      );
+      if (_sourceText.text.trim().isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'Import metadata saved. Add extracted text when document parsing is available.'),
+            ),
+          );
+          Navigator.pop(context, true);
+        }
+        return;
+      }
+      final draft = await widget.api.createProtocolHubTextDraft(
+        sourceText: _sourceText.text,
+        origin: 'document',
+        importId: _text(imported['import_id']),
+      );
+      if (!mounted) return;
+      final approved = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => ProtocolDraftReviewScreen(
+            api: widget.api,
+            draft: draft,
+          ),
+        ),
+      );
+      if (mounted && approved == true) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Import Document')),
+      body: SafeArea(
+        child: ListView(
+          padding: ResearchOsSpacing.screen,
+          children: [
+            ResearchOsCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Import source document',
+                      style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  const Text(
+                    'This first version preserves document metadata and optional extracted text. Native file picking and OCR are future-ready paths.',
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  DropdownButtonFormField<String>(
+                    initialValue: _sourceType,
+                    decoration: const InputDecoration(labelText: 'Source type'),
+                    items: const [
+                      DropdownMenuItem(value: 'pdf', child: Text('PDF')),
+                      DropdownMenuItem(value: 'docx', child: Text('DOCX')),
+                      DropdownMenuItem(
+                          value: 'markdown', child: Text('Markdown')),
+                      DropdownMenuItem(value: 'txt', child: Text('TXT')),
+                      DropdownMenuItem(value: 'image', child: Text('Image')),
+                    ],
+                    onChanged: (value) {
+                      if (value != null) setState(() => _sourceType = value);
+                    },
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _filename,
+                    decoration:
+                        const InputDecoration(labelText: 'Original filename'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _mimeType,
+                    decoration:
+                        const InputDecoration(labelText: 'MIME type optional'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _sourceText,
+                    minLines: 8,
+                    maxLines: 18,
+                    decoration: const InputDecoration(
+                      labelText: 'Extracted or copied text optional',
+                      alignLabelWithHint: true,
+                    ),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _submitting ? null : _submit,
+                      icon: _submitting
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.upload_file_outlined),
+                      label: const Text('Save Import'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ProtocolBlankScreen extends StatefulWidget {
+  const ProtocolBlankScreen({super.key, required this.api});
+
+  final ResearchOsApi api;
+
+  @override
+  State<ProtocolBlankScreen> createState() => _ProtocolBlankScreenState();
+}
+
+class _ProtocolBlankScreenState extends State<ProtocolBlankScreen> {
+  final _title = TextEditingController();
+  final _category = TextEditingController(text: 'custom');
+  final _biologicalSystem = TextEditingController();
+  final _sampleUnit = TextEditingController();
+  bool _submitting = false;
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _category.dispose();
+    _biologicalSystem.dispose();
+    _sampleUnit.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_title.text.trim().isEmpty || _submitting) return;
+    setState(() => _submitting = true);
+    try {
+      final protocol = await widget.api.createBlankProtocolHubProtocol(
+        title: _title.text,
+        category: _category.text,
+        biologicalSystem: _biologicalSystem.text,
+        sampleUnit: _sampleUnit.text,
+      );
+      if (!mounted) return;
+      Navigator.pop(context, true);
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ProtocolHubDetailScreen(
+            api: widget.api,
+            protocolId: _text(protocol['protocol_id']),
+          ),
+        ),
+      );
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    } finally {
+      if (mounted) setState(() => _submitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Create Blank Protocol')),
+      body: SafeArea(
+        child: ListView(
+          padding: ResearchOsSpacing.screen,
+          children: [
+            ResearchOsCard(
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _title,
+                    decoration:
+                        const InputDecoration(labelText: 'Protocol title'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _category,
+                    decoration: const InputDecoration(labelText: 'Category'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _biologicalSystem,
+                    decoration: const InputDecoration(
+                        labelText: 'Biological system optional'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  TextField(
+                    controller: _sampleUnit,
+                    decoration: const InputDecoration(
+                        labelText: 'Sample unit optional'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _submitting ? null : _submit,
+                      icon: const Icon(Icons.note_add_outlined),
+                      label: const Text('Create Draft'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ProtocolTemplateScreen extends StatelessWidget {
+  const ProtocolTemplateScreen({super.key, required this.api});
+
+  final ResearchOsApi api;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Protocol Templates')),
+      body: SafeArea(
+        child: FutureBuilder<List<Map<String, dynamic>>>(
+          future: api.protocolHubTemplates(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const ResearchOsLoadingSkeleton(rows: 5);
+            }
+            if (snapshot.hasError) {
+              return ListView(
+                padding: ResearchOsSpacing.screen,
+                children: [
+                  ResearchOsErrorState(
+                    message: snapshot.error.toString(),
+                    onRetry: () {},
+                  ),
+                ],
+              );
+            }
+            final templates = snapshot.data ?? const [];
+            return ListView(
+              padding: ResearchOsSpacing.screen,
+              children: [
+                for (final template in templates) ...[
+                  ResearchOsInfoCard(
+                    title: _text(template['name']),
+                    subtitle: _text(template['description']),
+                    icon: Icons.dashboard_customize_outlined,
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                ],
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class ProtocolDraftReviewScreen extends StatefulWidget {
+  const ProtocolDraftReviewScreen({
+    super.key,
+    required this.api,
+    required this.draft,
+  });
+
+  final ResearchOsApi api;
+  final Map<String, dynamic> draft;
+
+  @override
+  State<ProtocolDraftReviewScreen> createState() =>
+      _ProtocolDraftReviewScreenState();
+}
+
+class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
+  final _version = TextEditingController(text: '1.0');
+  bool _confirmed = false;
+  bool _approving = false;
+
+  @override
+  void dispose() {
+    _version.dispose();
+    super.dispose();
+  }
+
+  Future<void> _approve() async {
+    if (!_confirmed || _approving) return;
+    setState(() => _approving = true);
+    try {
+      await widget.api.approveProtocolHubDraft(
+        extractionId: _text(widget.draft['extraction_id']),
+        versionLabel: _version.text,
+        confirmed: _confirmed,
+      );
+      if (mounted) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error.toString())));
+      }
+    } finally {
+      if (mounted) setState(() => _approving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final events = _maps(widget.draft['proposed_events']);
+    final materials = _maps(widget.draft['proposed_materials']);
+    final questions = _maps(widget.draft['clarification_questions']);
+    final warnings = _list(widget.draft['warnings']);
+    final ambiguities = _list(widget.draft['ambiguities']);
+    return Scaffold(
+      appBar: AppBar(title: const Text('Review Protocol Draft')),
+      body: SafeArea(
+        child: ListView(
+          padding: ResearchOsSpacing.screen,
+          children: [
+            ResearchOsCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(_text(widget.draft['proposed_title'],
+                      fallback: 'Untitled protocol draft')),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  Wrap(
+                    spacing: ResearchOsSpacing.sm,
+                    runSpacing: ResearchOsSpacing.sm,
+                    children: [
+                      _Badge(_text(widget.draft['status'],
+                          fallback: 'awaiting_review')),
+                      _Badge(_text(widget.draft['proposed_category'],
+                          fallback: 'custom')),
+                      _Badge(_text(widget.draft['proposed_biological_system'],
+                          fallback: 'unknown system')),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            _ReviewListSection(
+              title: 'Clarification Questions',
+              icon: Icons.help_outline,
+              items: [
+                for (final question in questions)
+                  _text(question['question'], fallback: 'Review this field.'),
+              ],
+            ),
+            _ReviewListSection(
+              title: 'Warnings',
+              icon: Icons.warning_amber_outlined,
+              items: [...warnings, ...ambiguities],
+            ),
+            _Section(
+              title: 'Timeline',
+              icon: Icons.timeline,
+              empty: 'No proposed events detected.',
+              children: [
+                for (final event in events)
+                  ResearchOsTimelineCard(
+                    title: _text(event['title']),
+                    timestamp: _dayLabel(event),
+                    eventType: _text(event['event_type'], fallback: 'event'),
+                    description: _text(event['source_excerpt'],
+                        fallback: _text(event['description'])),
+                  ),
+              ],
+            ),
+            _Section(
+              title: 'Materials',
+              icon: Icons.inventory_2_outlined,
+              empty: 'No proposed materials detected.',
+              children: [
+                for (final material in materials)
+                  ResearchOsInfoCard(
+                    title: _text(material['name']),
+                    subtitle: _text(material['notes']),
+                    icon: Icons.science_outlined,
+                  ),
+              ],
+            ),
+            _ReviewListSection(
+              title: 'Media',
+              icon: Icons.local_drink_outlined,
+              items: const [],
+              empty: 'No proposed media details. Unknown remains unknown.',
+            ),
+            _ReviewListSection(
+              title: 'Equipment',
+              icon: Icons.precision_manufacturing_outlined,
+              items: const [],
+              empty: 'No proposed equipment details.',
+            ),
+            _ReviewListSection(
+              title: 'Expected Results and QC',
+              icon: Icons.fact_check_outlined,
+              items: const [],
+              empty:
+                  'No expected results were inferred. Add source-supported details before approval if needed.',
+            ),
+            _ReviewListSection(
+              title: 'Troubleshooting',
+              icon: Icons.build_circle_outlined,
+              items: const [],
+              empty: 'No troubleshooting entries were inferred.',
+            ),
+            _ReviewListSection(
+              title: 'References',
+              icon: Icons.menu_book_outlined,
+              items: _maps(widget.draft['proposed_references'])
+                  .map((item) => _text(item['reference']))
+                  .where((item) => item.isNotEmpty)
+                  .toList(),
+              empty: 'No references supplied.',
+            ),
+            _Section(
+              title: 'Original Document',
+              icon: Icons.article_outlined,
+              empty: '',
+              children: [
+                ResearchOsCard(
+                  child: Text(
+                    _text(widget.draft['source_text']),
+                    maxLines: 14,
+                    overflow: TextOverflow.fade,
+                  ),
+                ),
+              ],
+            ),
+            ResearchOsCard(
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _version,
+                    decoration: const InputDecoration(
+                        labelText: 'Version label required'),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  Material(
+                    color: Colors.transparent,
+                    child: CheckboxListTile(
+                      value: _confirmed,
+                      onChanged: (value) =>
+                          setState(() => _confirmed = value ?? false),
+                      title: const Text(
+                          'I reviewed this draft and confirm the accepted fields.'),
+                      controlAffinity: ListTileControlAffinity.leading,
+                    ),
+                  ),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _confirmed ? _approve : null,
+                      icon: _approving
+                          ? const SizedBox.square(
+                              dimension: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.verified_outlined),
+                      label: const Text('Approve Protocol'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewListSection extends StatelessWidget {
+  const _ReviewListSection({
+    required this.title,
+    required this.icon,
+    required this.items,
+    this.empty,
+  });
+
+  final String title;
+  final IconData icon;
+  final List<String> items;
+  final String? empty;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Section(
+      title: title,
+      icon: icon,
+      empty: empty ?? 'None.',
+      children: [
+        for (final item in items)
+          if (item.trim().isNotEmpty)
+            ResearchOsInfoCard(title: item, subtitle: '', icon: icon),
+      ],
     );
   }
 }
@@ -724,6 +1715,14 @@ List<Map<String, dynamic>> _maps(Object? value) {
       .whereType<Map>()
       .map((item) => item.map((key, val) => MapEntry(key.toString(), val)))
       .toList();
+}
+
+List<String> _list(Object? value) {
+  if (value is List) {
+    return value.map((item) => item.toString()).toList();
+  }
+  final text = _text(value);
+  return text.isEmpty ? const [] : [text];
 }
 
 String _dayLabel(Map<String, dynamic> item) {

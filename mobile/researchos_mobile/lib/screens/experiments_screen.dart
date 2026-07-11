@@ -5,7 +5,7 @@ import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import '../widgets/state_views.dart';
 import 'experiment_detail_screen.dart';
-import 'new_experiment_wizard_screen.dart';
+import 'notebook_first_experiment_screen.dart';
 
 class ExperimentsScreen extends StatefulWidget {
   const ExperimentsScreen({super.key, required this.api});
@@ -51,19 +51,19 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
               ResearchOsEmptyState(
                 title: 'No experiments available',
                 message:
-                    'Create the first planned experiment with the New Experiment Wizard.',
+                    'Create an empty scientific workspace and start in the notebook.',
                 icon: Icons.science_outlined,
                 action: FilledButton.icon(
                   onPressed: () {
                     Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) =>
-                            NewExperimentWizardScreen(api: widget.api),
+                            NotebookFirstExperimentScreen(api: widget.api),
                       ),
                     );
                   },
                   icon: const Icon(Icons.add),
-                  label: const Text('Plan new experiment'),
+                  label: const Text('New Experiment'),
                 ),
               ),
             ],
@@ -81,7 +81,7 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
                     Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) =>
-                            NewExperimentWizardScreen(api: widget.api),
+                            NotebookFirstExperimentScreen(api: widget.api),
                       ),
                     );
                   },
@@ -93,10 +93,10 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('Plan new experiment',
+                            Text('New notebook workspace',
                                 style: Theme.of(context).textTheme.titleMedium),
                             const Text(
-                                'Use the guided wizard to create a workflow, workspace, timeline, and notebook draft.'),
+                                'Start with an empty notebook. Add protocols, timelines, analysis, and tools only when needed.'),
                           ],
                         ),
                       ),

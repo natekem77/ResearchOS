@@ -355,6 +355,13 @@ class GeneralExperimentCreateRequest(BaseModel):
     expected_end_day: int | None = None
 
 
+class NotebookFirstExperimentCreateRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    experiment_id: str | None = None
+    title: str | None = None
+    initial_note: str | None = None
+
+
 class GeneralExperimentFromProtocolRequest(BaseModel):
     lab_id: str = "lab:demo"
     experiment_id: str | None = None
@@ -414,6 +421,14 @@ class GeneralEventRequest(BaseModel):
     destructive: bool | None = None
     source: Literal["manual", "protocol", "imported", "generated", "ai_proposed", "protocol_override"] = "manual"
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class GeneralProtocolAttachRequest(BaseModel):
+    protocol_id: str
+    protocol_version_id: str
+    relationship: Literal["primary", "supporting", "assay", "imaging", "custom"] = "primary"
+    inherit_events: bool = True
+    insert_summary_note: bool = False
 
 
 class NotebookSaveRequest(BaseModel):
@@ -482,6 +497,61 @@ class ProtocolHubVersionRequest(BaseModel):
     summary_of_changes: str = ""
     content: str = ""
     events: list[dict[str, object]] = Field(default_factory=list)
+
+
+class ProtocolHubBlankRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    title: str
+    category: str | None = None
+    biological_system: str | None = None
+    sample_unit: str | None = None
+    version_number: str = "draft-1"
+    content: str | None = None
+
+
+class ProtocolHubImportRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    source_type: Literal["pdf", "docx", "markdown", "txt", "image", "pasted_text", "voice", "manual", "template"] = "txt"
+    original_filename: str | None = None
+    storage_reference: str | None = None
+    mime_type: str | None = None
+
+
+class ProtocolHubTextDraftRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    source_text: str
+    origin: Literal["document", "pasted_text", "voice", "manual", "template"] = "pasted_text"
+    proposed_title: str | None = None
+    proposed_category: str | None = None
+    source_citation: str | None = None
+    import_id: str | None = None
+
+
+class ProtocolHubDraftUpdateRequest(BaseModel):
+    proposed_title: str | None = None
+    proposed_category: str | None = None
+    proposed_biological_system: str | None = None
+    proposed_sample_unit: str | None = None
+    proposed_duration: str | None = None
+    proposed_events: list[dict[str, object]] | None = None
+    proposed_materials: list[dict[str, object]] | None = None
+    proposed_media: list[dict[str, object]] | None = None
+    proposed_equipment: list[dict[str, object]] | None = None
+    proposed_expected_results: list[dict[str, object]] | None = None
+    proposed_qc: list[dict[str, object]] | None = None
+    proposed_troubleshooting: list[dict[str, object]] | None = None
+    proposed_references: list[dict[str, object]] | None = None
+    ambiguities: list[object] | None = None
+    warnings: list[object] | None = None
+    confidence_by_field: dict[str, object] | None = None
+    extraction_evidence: dict[str, object] | None = None
+    status: Literal["draft", "awaiting_review", "approved", "rejected"] | None = None
+
+
+class ProtocolHubDraftApproveRequest(BaseModel):
+    version_label: str
+    confirmed: bool = False
+    target_protocol_id: str | None = None
 
 
 class ProtocolNotebookSaveRequest(BaseModel):
@@ -9253,6 +9323,124 @@ def protocol_hub_protocols(q: str | None = Query(default=None)) -> list[dict[str
     return _protocol_hub_service().list_protocols(query=q)
 
 
+@app.get("/protocol-hub/templates", tags=["protocol-hub"])
+def protocol_hub_templates() -> list[dict[str, object]]:
+    """Return section-only protocol templates."""
+
+    return _protocol_hub_service().protocol_templates()
+
+
+@app.get("/protocol-hub/meyer-onboarding", tags=["protocol-hub"])
+def protocol_hub_meyer_onboarding() -> dict[str, object]:
+    """Return the intentionally incomplete Meyer draft onboarding payload."""
+
+    return _protocol_hub_service().meyer_onboarding()
+
+
+@app.post("/protocol-hub/create-blank", tags=["protocol-hub"])
+def create_blank_protocol_hub_protocol(request_body: ProtocolHubBlankRequest, request: Request) -> dict[str, object]:
+    """Create an incomplete blank protocol draft."""
+
+    try:
+        return _protocol_hub_service().create_blank_protocol(
+            actor_user_id=_request_user_id(request),
+            lab_id=request_body.lab_id,
+            title=request_body.title,
+            category=request_body.category,
+            biological_system=request_body.biological_system,
+            sample_unit=request_body.sample_unit,
+            version_number=request_body.version_number,
+            content=request_body.content,
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/protocol-hub/imports", tags=["protocol-hub"])
+def create_protocol_hub_import(request_body: ProtocolHubImportRequest, request: Request) -> dict[str, object]:
+    """Store protocol import metadata without embedding large binary content."""
+
+    return _protocol_hub_service().create_import(
+        actor_user_id=_request_user_id(request),
+        lab_id=request_body.lab_id,
+        source_type=request_body.source_type,
+        original_filename=request_body.original_filename,
+        storage_reference=request_body.storage_reference,
+        mime_type=request_body.mime_type,
+    )
+
+
+@app.post("/protocol-hub/drafts/from-text", tags=["protocol-hub"])
+def create_protocol_hub_text_draft(request_body: ProtocolHubTextDraftRequest, request: Request) -> dict[str, object]:
+    """Create a reviewable protocol extraction draft from pasted, described, or imported text."""
+
+    try:
+        return _protocol_hub_service().create_extraction_draft_from_text(
+            actor_user_id=_request_user_id(request),
+            lab_id=request_body.lab_id,
+            source_text=request_body.source_text,
+            origin=request_body.origin,
+            proposed_title=request_body.proposed_title,
+            proposed_category=request_body.proposed_category,
+            source_citation=request_body.source_citation,
+            import_id=request_body.import_id,
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/protocol-hub/drafts/describe", tags=["protocol-hub"])
+def describe_protocol_hub_draft(request_body: ProtocolHubTextDraftRequest, request: Request) -> dict[str, object]:
+    """Create a protocol draft from a plain-language description or voice transcript."""
+
+    try:
+        return _protocol_hub_service().create_extraction_draft_from_text(
+            actor_user_id=_request_user_id(request),
+            lab_id=request_body.lab_id,
+            source_text=request_body.source_text,
+            origin="voice" if request_body.origin == "voice" else "manual",
+            proposed_title=request_body.proposed_title,
+            proposed_category=request_body.proposed_category,
+            source_citation=request_body.source_citation,
+            import_id=request_body.import_id,
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.get("/protocol-hub/drafts/{extraction_id}", tags=["protocol-hub"])
+def protocol_hub_draft(extraction_id: str) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().get_extraction_draft(extraction_id)
+    except ProtocolHubValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.put("/protocol-hub/drafts/{extraction_id}", tags=["protocol-hub"])
+def update_protocol_hub_draft(extraction_id: str, request_body: ProtocolHubDraftUpdateRequest) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().update_extraction_draft(
+            extraction_id,
+            {key: value for key, value in request_body.model_dump().items() if value is not None},
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/protocol-hub/drafts/{extraction_id}/approve", tags=["protocol-hub"])
+def approve_protocol_hub_draft(extraction_id: str, request_body: ProtocolHubDraftApproveRequest, request: Request) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().approve_extraction_draft(
+            actor_user_id=_request_user_id(request),
+            extraction_id=extraction_id,
+            version_label=request_body.version_label,
+            confirmed=request_body.confirmed,
+            target_protocol_id=request_body.target_protocol_id,
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
 @app.post("/protocol-hub/protocols", tags=["protocol-hub"])
 def create_protocol_hub_protocol(request_body: ProtocolHubCreateRequest, request: Request) -> dict[str, object]:
     """Create or update a structured protocol with an initial version."""
@@ -9390,6 +9578,45 @@ def create_general_experiment(request_body: GeneralExperimentCreateRequest, requ
         raise _general_experiment_http_error(exc)
 
 
+@app.post("/experiments/notebook-first", tags=["experiments"])
+def create_notebook_first_experiment(request_body: NotebookFirstExperimentCreateRequest, request: Request) -> dict[str, object]:
+    """Immediately create an empty notebook-first experiment workspace."""
+
+    service = _general_experiment_service()
+    user_id = _request_user_id(request)
+    title = (request_body.title or "").strip()
+    if not title:
+        title = f"Untitled Experiment {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+    try:
+        experiment = service.create_blank_experiment(
+            actor_user_id=user_id,
+            lab_id=request_body.lab_id,
+            title=title,
+            experiment_id=request_body.experiment_id,
+            status="draft",
+        )
+        workspace = service.get_workspace(str(experiment["experiment_id"]), user_id)
+        if request_body.initial_note and workspace:
+            notebook = workspace.get("notebook") if isinstance(workspace.get("notebook"), dict) else {}
+            content = str(notebook.get("content") or "")
+            appended = f"{content.rstrip()}\n\n{request_body.initial_note.strip()}\n"
+            service.save_notebook(
+                user_id=user_id,
+                document_id=str(notebook.get("document_id")),
+                current_version=int(notebook.get("version") or 1),
+                content=appended,
+            )
+            workspace = service.get_workspace(str(experiment["experiment_id"]), user_id)
+        return {
+            "experiment": experiment,
+            "workspace": workspace,
+            "open_to": "notebook",
+            "philosophy": "notebook_first",
+        }
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
 @app.post("/experiments/general/from-protocol", tags=["experiments"])
 def create_general_experiment_from_protocol(request_body: GeneralExperimentFromProtocolRequest, request: Request) -> dict[str, object]:
     service = _general_experiment_service()
@@ -9403,6 +9630,43 @@ def create_general_experiment_from_protocol(request_body: GeneralExperimentFromP
             experiment_id=request_body.experiment_id,
         )
         return {"experiment": experiment}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiments/{experiment_id}/protocols/attach", tags=["experiments"])
+def attach_protocol_to_experiment(experiment_id: str, request_body: GeneralProtocolAttachRequest, request: Request) -> dict[str, object]:
+    """Attach a protocol to an existing notebook-first workspace."""
+
+    service = _general_experiment_service()
+    user_id = _request_user_id(request)
+    try:
+        link = service.link_protocol(
+            actor_user_id=user_id,
+            experiment_id=experiment_id,
+            protocol_id=request_body.protocol_id,
+            protocol_version_id=request_body.protocol_version_id,
+            relationship=request_body.relationship,
+            inherit_events=request_body.inherit_events,
+        )
+        if request_body.insert_summary_note:
+            protocol = service.get_protocol(request_body.protocol_id) or {}
+            notebook = service.get_or_create_notebook(user_id, experiment_id)
+            summary = (
+                f"\n\n## Attached Protocol\n\n"
+                f"- Protocol: {protocol.get('title') or request_body.protocol_id}\n"
+                f"- Version: {request_body.protocol_version_id}\n"
+                f"- Timeline inherited: {'yes' if request_body.inherit_events else 'no'}\n"
+                "Researcher-selected protocol attachment; notebook content was not overwritten.\n"
+            )
+            service.save_notebook(
+                user_id=user_id,
+                document_id=str(notebook["document_id"]),
+                current_version=int(notebook["version"]),
+                content=f"{str(notebook.get('content') or '').rstrip()}{summary}",
+            )
+        workspace = service.get_workspace(experiment_id, user_id)
+        return {"link": link, "workspace": workspace}
     except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
         raise _general_experiment_http_error(exc)
 

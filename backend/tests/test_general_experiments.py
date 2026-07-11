@@ -38,6 +38,53 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertEqual(experiment["status"], "draft")
         self.assertEqual(experiment["sample_unit_type"], "dish")
 
+    def test_notebook_first_workspace_exposes_notebook_and_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment(
+                "user:researcher-a",
+                "lab:demo",
+                "Notebook-first experiment",
+            )
+            workspace = service.get_workspace(experiment["experiment_id"], "user:researcher-a")
+
+        assert workspace is not None
+        self.assertEqual(workspace["layout"]["primary_surface"], "notebook")
+        self.assertTrue(workspace["layout"]["notebook_remains_visible"])
+        self.assertTrue(workspace["notebook"]["document_id"])
+        self.assertTrue(any(tool["tool_id"] == "protocols" for tool in workspace["tool_palette"]))
+
+    def test_protocol_tool_attach_preserves_notebook_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment(
+                "user:researcher-a",
+                "lab:demo",
+                "Protocol tool attach",
+            )
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                "Free-form notebook notes stay primary.",
+            )
+            protocol = service.get_protocol("protocol:meyer-retinal-organoid-protocol")
+            assert protocol is not None
+            service.link_protocol(
+                "user:researcher-a",
+                experiment["experiment_id"],
+                protocol["protocol_id"],
+                protocol["current_version_id"],
+                inherit_events=True,
+            )
+            workspace = service.get_workspace(experiment["experiment_id"], "user:researcher-a")
+
+        assert workspace is not None
+        self.assertIn("Free-form notebook notes stay primary.", workspace["notebook"]["content"])
+        self.assertTrue(workspace["design"]["protocol_references"])
+        self.assertTrue(any(event["source"] == "protocol" for event in workspace["timeline"]["events"]))
+
     def test_create_from_protocol_version_inherits_linked_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

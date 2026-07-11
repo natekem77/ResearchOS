@@ -35,6 +35,21 @@ The Protocol Workspace is organized around:
 
 The current implementation stores structured tabs through local SQLite tables and exposes them through `/protocol-hub` endpoints.
 
+## Import and Draft Review
+
+Protocol Hub supports multiple creation paths:
+
+- Import Document
+- Paste Protocol Text
+- Describe Protocol
+- Create Blank Protocol
+- Browse Templates
+- Scan Printed Protocol as a future OCR workflow
+
+Imported, pasted, or described content becomes a `ProtocolExtractionDraft`. The draft preserves original source text, extracted fields, confidence, evidence excerpts, ambiguities, warnings, and clarification questions.
+
+Approval requires explicit researcher confirmation and a version label. Unknown values remain unknown.
+
 ## API Examples
 
 ```bash
@@ -42,6 +57,8 @@ curl http://127.0.0.1:8001/protocol-hub/protocols
 curl http://127.0.0.1:8001/protocol-hub/protocols/protocol:meyer-retinal-organoid-protocol
 curl "http://127.0.0.1:8001/protocol-hub/search?q=BMP4"
 curl "http://127.0.0.1:8001/protocol-hub/compare?left_version_id=...&right_version_id=..."
+curl http://127.0.0.1:8001/protocol-hub/templates
+curl http://127.0.0.1:8001/protocol-hub/meyer-onboarding
 ```
 
 Create a protocol:
@@ -66,6 +83,14 @@ curl -X POST http://127.0.0.1:8001/protocol-hub/protocols \
   }'
 ```
 
+Create a review draft from pasted text:
+
+```bash
+curl -X POST http://127.0.0.1:8001/protocol-hub/drafts/from-text \
+  -H "Content-Type: application/json" \
+  -d '{"proposed_title":"Meyer notes","origin":"pasted_text","source_text":"Add BMP4 on D6. Attach organoids on D9."}'
+```
+
 ## Demo Protocols
 
 Protocol Hub seeds representative structured protocols:
@@ -78,11 +103,10 @@ Protocol Hub seeds representative structured protocols:
 - Immunostaining
 - RNA extraction
 
-These are demo scaffolds, not validated wet-lab instructions.
+These are demo scaffolds, not validated wet-lab instructions. The Meyer retinal organoid seed is deliberately marked as an incomplete internal working draft and omits concentrations, recipes, catalog numbers, expected markers, and unsupported procedural details until an authoritative source is imported and reviewed.
 
 ## Experiment Integration
 
 Starting an experiment from a protocol should inherit protocol events, materials, media, QC expectations, and expected results. The experiment references the protocol version actually used. Later protocol updates do not alter the historical experiment.
 
 Experiments define deviations and overrides. Protocols define the baseline.
-

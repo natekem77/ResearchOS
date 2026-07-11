@@ -4,7 +4,7 @@ import '../api/researchos_api.dart';
 import '../brand/mundi_brand.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
-import 'new_experiment_wizard_screen.dart';
+import 'notebook_first_experiment_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key, required this.api});
@@ -260,12 +260,12 @@ class _WelcomeCard extends StatelessWidget {
                 onPressed: () {
                   Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => NewExperimentWizardScreen(api: api),
+                      builder: (_) => NotebookFirstExperimentScreen(api: api),
                     ),
                   );
                 },
                 icon: const Icon(Icons.add_circle_outline),
-                label: const Text('Plan new experiment'),
+                label: const Text('New experiment'),
               ),
               const EvidenceBadge(
                   label: 'Observed', kind: EvidenceBadgeKind.observed),
