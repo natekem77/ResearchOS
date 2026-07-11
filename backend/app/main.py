@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.manager import create_default_agent_manager
 from app.ai_providers import AIProviderError, get_ai_provider
+from app.authorization import AuthorizationService
 from app.config import get_settings
 from app.dashboard_service import DashboardService
 from app.entry_drafting import available_entry_templates, draft_entry_from_notes
@@ -221,11 +222,46 @@ def _require_admin() -> dict[str, object]:
     return user
 
 
+def _authorization_service() -> AuthorizationService:
+    return AuthorizationService(settings=settings)
+
+
+def _request_user_id(request: Request) -> str:
+    """Resolve the current demo/dev user from server-side context.
+
+    Production auth is still future work; this development-only header lets
+    tests and demos exercise backend authorization without query parameters.
+    """
+
+    return _authorization_service().current_user_id(dict(request.headers))
+
+
 class HealthResponse(BaseModel):
     """Response model for the health check endpoint."""
 
     status: Literal["ok"]
     project: Literal["ResearchOS"]
+
+
+class ShareNotebookRequest(BaseModel):
+    principal_type: Literal["user", "group", "role"]
+    principal_id: str
+    access_level: Literal["view", "comment", "edit", "manage"]
+    expires_at: str | None = None
+
+
+class UpdateNotebookPermissionRequest(BaseModel):
+    access_level: Literal["view", "comment", "edit", "manage"]
+
+
+class CreateGroupRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    name: str
+    description: str | None = None
+
+
+class AddGroupMemberRequest(BaseModel):
+    user_id: str
 
 
 class AgentStatusResponse(BaseModel):
@@ -3373,6 +3409,156 @@ def user_detail(user_id: str) -> UserResponse:
     if user is None:
         raise HTTPException(status_code=404, detail=f"User not found: {user_id}")
     return UserResponse(**{**user_with_permissions(user), "auth_mode": current["auth_mode"], "auth_enabled": current["auth_enabled"]})
+
+
+@app.get("/users/me/access", tags=["authorization"])
+def my_access(request: Request, lab_id: str = Query("lab:demo")) -> dict[str, object]:
+    """Return current user's lab role and granular permissions."""
+
+    authz = _authorization_service()
+    return authz.user_access(_request_user_id(request), lab_id)
+
+
+@app.get("/labs/{lab_id}/members", tags=["authorization"])
+def lab_members(lab_id: str, request: Request) -> list[dict[str, object]]:
+    """Return lab members when caller may manage members or owns the lab."""
+
+    authz = _authorization_service()
+    user_id = _request_user_id(request)
+    access = authz.user_access(user_id, lab_id)
+    if "lab.members.manage" not in access["permissions"] and access["role"] != "owner":
+        raise HTTPException(status_code=403, detail="Not allowed to view lab members.")
+    return authz.list_members(lab_id)
+
+
+@app.get("/notebooks", tags=["notebooks"])
+def notebooks(request: Request, lab_id: str = Query("lab:demo")) -> list[dict[str, object]]:
+    """List only notebooks visible to the current user."""
+
+    authz = _authorization_service()
+    return authz.list_visible_notebooks(_request_user_id(request), lab_id)
+
+
+@app.get("/notebooks/{notebook_id}", tags=["notebooks"])
+def notebook_detail(notebook_id: str, request: Request) -> dict[str, object]:
+    """Return a notebook only when authorized."""
+
+    authz = _authorization_service()
+    notebook = authz.get_notebook(_request_user_id(request), notebook_id)
+    if notebook is None:
+        raise HTTPException(status_code=404, detail="Notebook not found.")
+    return notebook
+
+
+@app.get("/notebooks/{notebook_id}/entries", tags=["notebooks"])
+def notebook_entries(notebook_id: str, request: Request) -> list[dict[str, object]]:
+    """List entries using notebook-level authorization."""
+
+    authz = _authorization_service()
+    try:
+        return authz.notebook_entries(_request_user_id(request), notebook_id)
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="Notebook not found.")
+
+
+@app.get("/notebook-entries/{entry_id}", tags=["notebooks"])
+def notebook_entry_detail(entry_id: str, request: Request) -> dict[str, object]:
+    """Return entry details only if the parent notebook is visible."""
+
+    authz = _authorization_service()
+    try:
+        entry = authz.entry_detail(_request_user_id(request), entry_id)
+    except PermissionError:
+        raise HTTPException(status_code=404, detail="Entry not found.")
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Entry not found.")
+    return entry
+
+
+@app.post("/notebooks/{notebook_id}/share", tags=["notebooks"])
+def share_notebook(notebook_id: str, request_body: ShareNotebookRequest, request: Request) -> dict[str, object]:
+    """Share a notebook with a user, group, or role."""
+
+    authz = _authorization_service()
+    try:
+        return authz.share_notebook(
+            actor_user_id=_request_user_id(request),
+            notebook_id=notebook_id,
+            principal_type=request_body.principal_type,
+            principal_id=request_body.principal_id,
+            access_level=request_body.access_level,
+            expires_at=request_body.expires_at,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@app.get("/notebooks/{notebook_id}/permissions", tags=["notebooks"])
+def notebook_permissions(notebook_id: str, request: Request) -> list[dict[str, object]]:
+    """List notebook sharing grants for notebook managers."""
+
+    authz = _authorization_service()
+    if not authz.can_user(_request_user_id(request), "manage", "notebook", notebook_id).allowed:
+        raise HTTPException(status_code=403, detail="Not allowed to manage notebook sharing.")
+    return authz.list_permissions(notebook_id)
+
+
+@app.put("/notebooks/{notebook_id}/permissions/{permission_id}", tags=["notebooks"])
+def update_notebook_permission(
+    notebook_id: str,
+    permission_id: str,
+    request_body: UpdateNotebookPermissionRequest,
+    request: Request,
+) -> dict[str, object]:
+    authz = _authorization_service()
+    try:
+        permission = authz.update_permission(_request_user_id(request), notebook_id, permission_id, request_body.access_level)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if permission is None:
+        raise HTTPException(status_code=404, detail="Permission not found.")
+    return permission
+
+
+@app.delete("/notebooks/{notebook_id}/permissions/{permission_id}", tags=["notebooks"])
+def delete_notebook_permission(notebook_id: str, permission_id: str, request: Request) -> dict[str, object]:
+    authz = _authorization_service()
+    try:
+        deleted = authz.revoke_permission(_request_user_id(request), notebook_id, permission_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Permission not found.")
+    return {"deleted": True}
+
+
+@app.post("/groups", tags=["authorization"])
+def create_group(request_body: CreateGroupRequest, request: Request) -> dict[str, object]:
+    authz = _authorization_service()
+    try:
+        return authz.create_group(_request_user_id(request), request_body.lab_id, request_body.name, request_body.description)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@app.post("/groups/{group_id}/members", tags=["authorization"])
+def add_group_member(group_id: str, request_body: AddGroupMemberRequest, request: Request) -> dict[str, object]:
+    authz = _authorization_service()
+    try:
+        return authz.add_group_member(_request_user_id(request), group_id, request_body.user_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Group not found.")
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+@app.get("/labs/{lab_id}/audit", tags=["authorization"])
+def audit_events(lab_id: str, request: Request) -> list[dict[str, object]]:
+    authz = _authorization_service()
+    try:
+        return authz.audit_events(_request_user_id(request), lab_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
 
 @app.post("/users/bootstrap-admin", response_model=UserResponse, tags=["users"])

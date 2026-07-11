@@ -411,6 +411,67 @@ class ResearchOsApi {
     return MobileSettings.fromJson(await _getMap('/mobile/settings'));
   }
 
+  Future<Map<String, dynamic>> accessSummary() {
+    return _getMap('/users/me/access');
+  }
+
+  Future<List<Map<String, dynamic>>> labMembers(String labId) async {
+    final json = await _getList('/labs/${Uri.encodeComponent(labId)}/members');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<List<Map<String, dynamic>>> notebooks() async {
+    final json = await _getList('/notebooks');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> notebook(String notebookId) {
+    return _getMap('/notebooks/${Uri.encodeComponent(notebookId)}');
+  }
+
+  Future<List<Map<String, dynamic>>> notebookPermissions(
+      String notebookId) async {
+    final json = await _getList(
+        '/notebooks/${Uri.encodeComponent(notebookId)}/permissions');
+    return json.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> shareNotebook({
+    required String notebookId,
+    required String principalType,
+    required String principalId,
+    required String accessLevel,
+  }) {
+    return _postMap(
+      '/notebooks/${Uri.encodeComponent(notebookId)}/share',
+      {
+        'principal_type': principalType,
+        'principal_id': principalId,
+        'access_level': accessLevel,
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> updateNotebookPermission({
+    required String notebookId,
+    required String permissionId,
+    required String accessLevel,
+  }) {
+    return _putMap(
+      '/notebooks/${Uri.encodeComponent(notebookId)}/permissions/${Uri.encodeComponent(permissionId)}',
+      {'access_level': accessLevel},
+    );
+  }
+
+  Future<void> revokeNotebookPermission({
+    required String notebookId,
+    required String permissionId,
+  }) async {
+    await _delete(
+      '/notebooks/${Uri.encodeComponent(notebookId)}/permissions/${Uri.encodeComponent(permissionId)}',
+    );
+  }
+
   Future<Map<String, dynamic>> _getMap(String path) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     final response = await _client.get(uri);
@@ -456,5 +517,33 @@ class ResearchOsApi {
       throw const ResearchOsApiException('Unexpected API response shape.');
     }
     return decoded;
+  }
+
+  Future<Map<String, dynamic>> _putMap(
+      String path, Map<String, dynamic> body) async {
+    final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
+    final response = await _client.put(
+      uri,
+      headers: const {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ResearchOsApiException(
+          'Request failed (${response.statusCode}): $path');
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const ResearchOsApiException('Unexpected API response shape.');
+    }
+    return decoded;
+  }
+
+  Future<void> _delete(String path) async {
+    final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
+    final response = await _client.delete(uri);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ResearchOsApiException(
+          'Request failed (${response.statusCode}): $path');
+    }
   }
 }

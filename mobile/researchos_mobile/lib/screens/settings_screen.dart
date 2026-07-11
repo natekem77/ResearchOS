@@ -6,6 +6,7 @@ import '../config/app_config.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import '../models/server_profile.dart';
+import 'notebooks_screen.dart';
 import '../services/mobile_connection_service.dart';
 import '../widgets/state_views.dart';
 
@@ -67,6 +68,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
               subtitle: 'Server: ${data.settings.serverUrl}',
               leading: const Icon(Icons.groups_outlined),
             ),
+            ResearchOsInfoCard(
+              title: 'Lab notebooks',
+              subtitle:
+                  'View your notebooks, sharing status, and member access.',
+              icon: Icons.menu_book_outlined,
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (context) => NotebooksScreen(api: widget.api),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
             _ServerSettingsCard(api: widget.api),
             InfoCard(
               title: 'OneNote',
