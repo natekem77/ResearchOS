@@ -358,7 +358,7 @@ class _ProtocolLibrarySections extends StatelessWidget {
           value: '$approved',
           icon: Icons.verified_outlined,
         ),
-        ResearchOsSummaryCard(
+        const ResearchOsSummaryCard(
           label: 'Templates',
           value: '8',
           icon: Icons.dashboard_customize_outlined,
@@ -1003,29 +1003,29 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
                   ),
               ],
             ),
-            _ReviewListSection(
+            const _ReviewListSection(
               title: 'Media',
               icon: Icons.local_drink_outlined,
-              items: const [],
+              items: [],
               empty: 'No proposed media details. Unknown remains unknown.',
             ),
-            _ReviewListSection(
+            const _ReviewListSection(
               title: 'Equipment',
               icon: Icons.precision_manufacturing_outlined,
-              items: const [],
+              items: [],
               empty: 'No proposed equipment details.',
             ),
-            _ReviewListSection(
+            const _ReviewListSection(
               title: 'Expected Results and QC',
               icon: Icons.fact_check_outlined,
-              items: const [],
+              items: [],
               empty:
                   'No expected results were inferred. Add source-supported details before approval if needed.',
             ),
-            _ReviewListSection(
+            const _ReviewListSection(
               title: 'Troubleshooting',
               icon: Icons.build_circle_outlined,
-              items: const [],
+              items: [],
               empty: 'No troubleshooting entries were inferred.',
             ),
             _ReviewListSection(

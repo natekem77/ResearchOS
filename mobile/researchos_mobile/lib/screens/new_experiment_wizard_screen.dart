@@ -1345,7 +1345,9 @@ class _StartFromProtocolFlow extends StatelessWidget {
                   if (version is Map<String, dynamic>)
                     RadioListTile<String>(
                       value: version['protocol_version_id'].toString(),
+                      // ignore: deprecated_member_use
                       groupValue: selectedVersionId,
+                      // ignore: deprecated_member_use
                       onChanged: (_) => onProtocolSelected(
                         protocol['protocol_id'].toString(),
                         version['protocol_version_id'].toString(),

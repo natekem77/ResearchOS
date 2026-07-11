@@ -594,6 +594,24 @@ class GeneralExperimentService:
                     self._history(connection, experiment_id, actor_user_id, "protocol_event.inherited", {"protocol_event_id": row["protocol_event_id"]})
         return {"experiment_id": experiment_id, "protocol_id": protocol_id, "protocol_version_id": protocol_version_id, "inherited_events": inherit_events}
 
+    def update_experiment_title(self, actor_user_id: str, experiment_id: str, title: str) -> dict[str, Any]:
+        self._require_access(actor_user_id, experiment_id, "edit")
+        resolved_title = title.strip() or "Untitled Experiment"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE experiment_workspaces
+                SET title = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE experiment_id = ?
+                """,
+                (resolved_title, experiment_id),
+            )
+            self._history(connection, experiment_id, actor_user_id, "experiment.title_updated", {"title": resolved_title})
+        experiment = self._experiment(experiment_id)
+        if experiment is None:
+            raise ExperimentValidationError("Experiment not found.")
+        return experiment
+
     def add_cohort(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_access(actor_user_id, experiment_id, "edit")
         cohort_id = payload.get("cohort_id") or f"cohort:{uuid.uuid4().hex[:16]}"

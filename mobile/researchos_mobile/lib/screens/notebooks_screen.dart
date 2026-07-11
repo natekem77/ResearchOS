@@ -295,7 +295,7 @@ class _ShareNotebookDialogState extends State<_ShareNotebookDialog> {
           mainAxisSize: MainAxisSize.min,
           children: [
             DropdownButtonFormField<String>(
-              value: _principalType,
+              initialValue: _principalType,
               decoration: const InputDecoration(labelText: 'Share with'),
               items: const [
                 DropdownMenuItem(value: 'user', child: Text('User')),
@@ -321,7 +321,7 @@ class _ShareNotebookDialogState extends State<_ShareNotebookDialog> {
             ),
             const SizedBox(height: ResearchOsSpacing.md),
             DropdownButtonFormField<String>(
-              value: _accessLevel,
+              initialValue: _accessLevel,
               decoration: const InputDecoration(labelText: 'Permission'),
               items: const [
                 DropdownMenuItem(value: 'view', child: Text('View')),

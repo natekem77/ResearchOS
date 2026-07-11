@@ -431,6 +431,10 @@ class GeneralProtocolAttachRequest(BaseModel):
     insert_summary_note: bool = False
 
 
+class GeneralExperimentUpdateRequest(BaseModel):
+    title: str | None = None
+
+
 class NotebookSaveRequest(BaseModel):
     current_version: int
     content: str
@@ -9667,6 +9671,24 @@ def attach_protocol_to_experiment(experiment_id: str, request_body: GeneralProto
             )
         workspace = service.get_workspace(experiment_id, user_id)
         return {"link": link, "workspace": workspace}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.put("/experiments/{experiment_id}/general", tags=["experiments"])
+def update_general_experiment(experiment_id: str, request_body: GeneralExperimentUpdateRequest, request: Request) -> dict[str, object]:
+    service = _general_experiment_service()
+    user_id = _request_user_id(request)
+    try:
+        if request_body.title is None:
+            raise ExperimentValidationError("No supported experiment fields were provided.")
+        experiment = service.update_experiment_title(
+            actor_user_id=user_id,
+            experiment_id=experiment_id,
+            title=request_body.title,
+        )
+        workspace = service.get_workspace(experiment_id, user_id)
+        return {"experiment": experiment, "workspace": workspace}
     except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
         raise _general_experiment_http_error(exc)
 

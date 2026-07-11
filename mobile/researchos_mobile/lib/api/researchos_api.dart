@@ -114,6 +114,18 @@ class ResearchOsApi {
     return _postMap('/experiments/general', payload);
   }
 
+  Future<Map<String, dynamic>> updateGeneralExperimentTitle({
+    required String experimentId,
+    required String title,
+  }) {
+    final resolvedTitle =
+        title.trim().isEmpty ? 'Untitled Experiment' : title.trim();
+    return _putMap(
+      '/experiments/${Uri.encodeComponent(experimentId)}/general',
+      {'title': resolvedTitle},
+    );
+  }
+
   Future<Map<String, dynamic>> createNotebookFirstExperiment({
     String? title,
     String? initialNote,

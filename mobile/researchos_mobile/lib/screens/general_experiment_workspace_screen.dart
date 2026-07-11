@@ -30,7 +30,10 @@ class _GeneralExperimentWorkspaceScreenState
   String? _documentId;
   String? _selectedTool;
   String? _saveMessage;
+  String _experimentTitle = 'Untitled Experiment';
+  String _titleStatus = '';
   bool _saving = false;
+  bool _savingTitle = false;
   Timer? _autosaveTimer;
   String _lastSavedContent = '';
 
@@ -63,6 +66,9 @@ class _GeneralExperimentWorkspaceScreenState
 
   void _hydrateNotebook(Map<String, dynamic> workspace) {
     final notebook = _map(workspace['notebook']);
+    final experiment = _map(workspace['experiment']);
+    _experimentTitle =
+        _text(experiment['title'], fallback: 'Untitled Experiment');
     _documentId = notebook['document_id']?.toString();
     _notebookVersion = int.tryParse('${notebook['version'] ?? 1}');
     _notebookController.text = notebook['content']?.toString() ?? '';
@@ -113,6 +119,45 @@ class _GeneralExperimentWorkspaceScreenState
     });
   }
 
+  Future<bool> _saveTitle(String rawTitle) async {
+    final previousTitle = _experimentTitle;
+    final nextTitle =
+        rawTitle.trim().isEmpty ? 'Untitled Experiment' : rawTitle.trim();
+    if (nextTitle == previousTitle && _titleStatus != 'Error') {
+      return true;
+    }
+    setState(() {
+      _experimentTitle = nextTitle;
+      _savingTitle = true;
+      _titleStatus = 'Saving';
+    });
+    try {
+      final response = await widget.api.updateGeneralExperimentTitle(
+        experimentId: widget.experimentId,
+        title: nextTitle,
+      );
+      final experiment = _map(response['experiment']);
+      if (!mounted) return true;
+      setState(() {
+        _experimentTitle = _text(experiment['title'], fallback: nextTitle);
+        _savingTitle = false;
+        _titleStatus = 'Saved';
+      });
+      return true;
+    } catch (error) {
+      if (!mounted) return false;
+      setState(() {
+        _experimentTitle = previousTitle;
+        _savingTitle = false;
+        _titleStatus = 'Error';
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save experiment title: $error')),
+      );
+      return false;
+    }
+  }
+
   void _insertIntoNotebook(String text) {
     final current = _notebookController.text.trimRight();
     _notebookController.text = current.isEmpty ? text : '$current\n\n$text';
@@ -131,22 +176,31 @@ class _GeneralExperimentWorkspaceScreenState
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: Padding(
-          padding: ResearchOsSpacing.screen,
-          child: _WorkspaceToolPanel(
-            api: widget.api,
-            experimentId: widget.experimentId,
-            toolId: toolId,
-            workspace: workspace,
-            onInsertText: _insertIntoNotebook,
-            onWorkspaceChanged: () {
-              Navigator.pop(context);
-              _reload();
-            },
+      builder: (context) {
+        final viewInsets = MediaQuery.viewInsetsOf(context);
+        return SafeArea(
+          child: FractionallySizedBox(
+            heightFactor: 0.9,
+            alignment: Alignment.bottomCenter,
+            child: SingleChildScrollView(
+              padding: ResearchOsSpacing.screen.copyWith(
+                bottom: ResearchOsSpacing.lg + viewInsets.bottom,
+              ),
+              child: _WorkspaceToolPanel(
+                api: widget.api,
+                experimentId: widget.experimentId,
+                toolId: toolId,
+                workspace: workspace,
+                onInsertText: _insertIntoNotebook,
+                onWorkspaceChanged: () {
+                  Navigator.pop(context);
+                  _reload();
+                },
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -168,20 +222,22 @@ class _GeneralExperimentWorkspaceScreenState
               );
             }
             final workspace = snapshot.data ?? const <String, dynamic>{};
-            final experiment = _map(workspace['experiment']);
             final overview = _map(workspace['overview']);
             final tools = _maps(workspace['tool_palette']);
             return LayoutBuilder(
               builder: (context, constraints) {
                 final wide = constraints.maxWidth >= 900;
                 final notebook = _NotebookSurface(
-                  experiment: experiment,
                   overview: overview,
+                  title: _experimentTitle,
+                  titleStatus: _titleStatus,
+                  savingTitle: _savingTitle,
                   tools: tools,
                   controller: _notebookController,
                   saving: _saving,
                   saveMessage: _saveMessage,
                   onSave: _saveNotebook,
+                  onTitleSubmitted: _saveTitle,
                   onToolSelected: (toolId) => _openTool(toolId, workspace),
                 );
                 if (!wide) {
@@ -226,23 +282,29 @@ class _GeneralExperimentWorkspaceScreenState
 
 class _NotebookSurface extends StatelessWidget {
   const _NotebookSurface({
-    required this.experiment,
     required this.overview,
+    required this.title,
+    required this.titleStatus,
+    required this.savingTitle,
     required this.tools,
     required this.controller,
     required this.saving,
     required this.saveMessage,
     required this.onSave,
+    required this.onTitleSubmitted,
     required this.onToolSelected,
   });
 
-  final Map<String, dynamic> experiment;
   final Map<String, dynamic> overview;
+  final String title;
+  final String titleStatus;
+  final bool savingTitle;
   final List<Map<String, dynamic>> tools;
   final TextEditingController controller;
   final bool saving;
   final String? saveMessage;
   final VoidCallback onSave;
+  final Future<bool> Function(String title) onTitleSubmitted;
   final ValueChanged<String> onToolSelected;
 
   @override
@@ -254,9 +316,11 @@ class _NotebookSurface extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                _text(experiment['title'], fallback: 'Untitled Experiment'),
-                style: Theme.of(context).textTheme.headlineSmall,
+              EditableExperimentTitle(
+                title: title,
+                saveStatus: titleStatus,
+                saving: savingTitle,
+                onSubmitted: onTitleSubmitted,
               ),
               const SizedBox(height: ResearchOsSpacing.sm),
               Wrap(
@@ -329,12 +393,163 @@ class _NotebookSurface extends StatelessWidget {
           ),
         ),
         const SizedBox(height: ResearchOsSpacing.md),
-        ResearchOsSectionHeader(
+        const ResearchOsSectionHeader(
           title: 'Tools',
-          trailing: const Icon(Icons.tune_outlined),
+          trailing: Icon(Icons.tune_outlined),
         ),
         _ToolPalette(tools: tools, onToolSelected: onToolSelected),
       ],
+    );
+  }
+}
+
+class EditableExperimentTitle extends StatefulWidget {
+  const EditableExperimentTitle({
+    super.key,
+    required this.title,
+    required this.onSubmitted,
+    this.saveStatus = '',
+    this.saving = false,
+  });
+
+  final String title;
+  final Future<bool> Function(String title) onSubmitted;
+  final String saveStatus;
+  final bool saving;
+
+  @override
+  State<EditableExperimentTitle> createState() =>
+      _EditableExperimentTitleState();
+}
+
+class _EditableExperimentTitleState extends State<EditableExperimentTitle> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+  bool _editing = false;
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.title);
+    _focusNode = FocusNode();
+    _focusNode.addListener(_handleFocusChange);
+  }
+
+  @override
+  void didUpdateWidget(covariant EditableExperimentTitle oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_editing && oldWidget.title != widget.title) {
+      _controller.text = widget.title;
+    }
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_handleFocusChange);
+    _focusNode.dispose();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _startEditing() {
+    setState(() {
+      _editing = true;
+      _controller.text = widget.title;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _focusNode.requestFocus();
+      _controller.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _controller.text.length,
+      );
+    });
+  }
+
+  void _handleFocusChange() {
+    if (!_focusNode.hasFocus && _editing) {
+      _submit();
+    }
+  }
+
+  Future<void> _submit() async {
+    if (_submitting) return;
+    final nextTitle = _controller.text.trim().isEmpty
+        ? 'Untitled Experiment'
+        : _controller.text.trim();
+    setState(() {
+      _submitting = true;
+      _controller.text = nextTitle;
+    });
+    final saved = await widget.onSubmitted(nextTitle);
+    if (!mounted) return;
+    setState(() {
+      _submitting = false;
+      _editing = !saved;
+      if (!saved) {
+        _controller.text = widget.title;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final status = widget.saving || _submitting
+        ? 'Saving'
+        : widget.saveStatus.isNotEmpty
+            ? widget.saveStatus
+            : 'Tap title to edit';
+    if (_editing) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            key: const ValueKey('experiment-title-field'),
+            controller: _controller,
+            focusNode: _focusNode,
+            textInputAction: TextInputAction.done,
+            style: Theme.of(context).textTheme.headlineSmall,
+            decoration: const InputDecoration(
+              labelText: 'Experiment title',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+          const SizedBox(height: ResearchOsSpacing.xs),
+          Text(status, style: Theme.of(context).textTheme.bodySmall),
+        ],
+      );
+    }
+    return InkWell(
+      key: const ValueKey('experiment-title-display'),
+      borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+      onTap: _startEditing,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.xs),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    widget.title,
+                    style: Theme.of(context).textTheme.headlineSmall,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.xs),
+                  Text(status, style: Theme.of(context).textTheme.bodySmall),
+                ],
+              ),
+            ),
+            const SizedBox(width: ResearchOsSpacing.sm),
+            const Icon(Icons.edit_outlined, size: 20),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -467,10 +682,10 @@ class _WorkspaceToolPanelState extends State<_WorkspaceToolPanel> {
               'No structured conditions yet. Add them manually or ask Copilot to propose them from notebook text.',
         );
       case 'samples':
-        return _DesignListTool(
+        return const _DesignListTool(
           title: 'Samples',
           icon: Icons.blur_circular_outlined,
-          items: const [],
+          items: [],
           empty:
               'Sample planning is available when replicate and sample-unit assumptions are entered.',
         );
@@ -500,7 +715,14 @@ class _ProtocolsTool extends StatelessWidget {
         future: api.generalProtocols(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const ResearchOsLoadingSkeleton(rows: 4);
+            return const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                LinearProgressIndicator(),
+                SizedBox(height: ResearchOsSpacing.md),
+                Text('Loading protocol library...'),
+              ],
+            );
           }
           if (snapshot.hasError) {
             return ResearchOsErrorState(

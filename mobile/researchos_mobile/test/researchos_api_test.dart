@@ -42,4 +42,38 @@ void main() {
     expect(response['philosophy'], 'notebook_first');
     expect((response['workspace'] as Map)['notebook'], isA<Map>());
   });
+
+  test('updateGeneralExperimentTitle puts JSON title and decodes response',
+      () async {
+    late http.Request captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'experiment': {
+              'experiment_id': 'experiment:test',
+              'title': 'Edited Experiment',
+            },
+            'workspace': {},
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final response = await api.updateGeneralExperimentTitle(
+      experimentId: 'experiment:test',
+      title: 'Edited Experiment',
+    );
+    final body = jsonDecode(captured.body) as Map<String, dynamic>;
+
+    expect(captured.method, 'PUT');
+    expect(captured.url.path, '/experiments/experiment%3Atest/general');
+    expect(captured.headers['Content-Type'], 'application/json');
+    expect(body['title'], 'Edited Experiment');
+    expect((response['experiment'] as Map)['title'], 'Edited Experiment');
+  });
 }

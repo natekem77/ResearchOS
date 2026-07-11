@@ -85,6 +85,31 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertTrue(workspace["design"]["protocol_references"])
         self.assertTrue(any(event["source"] == "protocol" for event in workspace["timeline"]["events"]))
 
+    def test_update_experiment_title_persists_and_handles_empty_title(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment(
+                "user:researcher-a",
+                "lab:demo",
+                "Original title",
+            )
+            updated = service.update_experiment_title(
+                "user:researcher-a",
+                experiment["experiment_id"],
+                "Edited title",
+            )
+            fallback = service.update_experiment_title(
+                "user:researcher-a",
+                experiment["experiment_id"],
+                "   ",
+            )
+            workspace = service.get_workspace(experiment["experiment_id"], "user:researcher-a")
+
+        assert workspace is not None
+        self.assertEqual(updated["title"], "Edited title")
+        self.assertEqual(fallback["title"], "Untitled Experiment")
+        self.assertEqual(workspace["experiment"]["title"], "Untitled Experiment")
+
     def test_create_from_protocol_version_inherits_linked_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)
