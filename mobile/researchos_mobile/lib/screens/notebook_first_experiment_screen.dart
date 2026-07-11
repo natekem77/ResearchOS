@@ -36,8 +36,11 @@ class _NotebookFirstExperimentScreenState
       _error = null;
     });
     try {
-      final result = await widget.api.createNotebookFirstExperiment();
+      final result = await widget.api.createNotebookFirstExperiment(
+        title: 'Untitled Experiment',
+      );
       final experiment = result['experiment'];
+      final workspace = result['workspace'];
       final experimentId =
           experiment is Map ? experiment['experiment_id']?.toString() : null;
       if (!mounted || experimentId == null || experimentId.isEmpty) return;
@@ -46,6 +49,12 @@ class _NotebookFirstExperimentScreenState
           builder: (_) => GeneralExperimentWorkspaceScreen(
             api: widget.api,
             experimentId: experimentId,
+            initialWorkspace: workspace is Map<String, dynamic>
+                ? workspace
+                : workspace is Map
+                    ? workspace
+                        .map((key, value) => MapEntry(key.toString(), value))
+                    : null,
           ),
         ),
       );

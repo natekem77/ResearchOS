@@ -118,8 +118,11 @@ class ResearchOsApi {
     String? title,
     String? initialNote,
   }) {
+    final resolvedTitle = title == null || title.trim().isEmpty
+        ? 'Untitled Experiment'
+        : title.trim();
     return _postMap('/experiments/notebook-first', {
-      if (title != null && title.trim().isNotEmpty) 'title': title.trim(),
+      'title': resolvedTitle,
       if (initialNote != null && initialNote.trim().isNotEmpty)
         'initial_note': initialNote.trim(),
     });

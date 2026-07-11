@@ -10,10 +10,12 @@ class GeneralExperimentWorkspaceScreen extends StatefulWidget {
     super.key,
     required this.api,
     required this.experimentId,
+    this.initialWorkspace,
   });
 
   final ResearchOsApi api;
   final String experimentId;
+  final Map<String, dynamic>? initialWorkspace;
 
   @override
   State<GeneralExperimentWorkspaceScreen> createState() =>
@@ -36,7 +38,13 @@ class _GeneralExperimentWorkspaceScreenState
   void initState() {
     super.initState();
     _notebookController.addListener(_scheduleAutosave);
-    _future = _load();
+    final initialWorkspace = widget.initialWorkspace;
+    if (initialWorkspace == null) {
+      _future = _load();
+    } else {
+      _hydrateNotebook(initialWorkspace);
+      _future = Future.value(initialWorkspace);
+    }
   }
 
   @override
@@ -49,12 +57,16 @@ class _GeneralExperimentWorkspaceScreenState
   Future<Map<String, dynamic>> _load() async {
     final workspace =
         await widget.api.generalExperimentWorkspace(widget.experimentId);
+    _hydrateNotebook(workspace);
+    return workspace;
+  }
+
+  void _hydrateNotebook(Map<String, dynamic> workspace) {
     final notebook = _map(workspace['notebook']);
     _documentId = notebook['document_id']?.toString();
     _notebookVersion = int.tryParse('${notebook['version'] ?? 1}');
     _notebookController.text = notebook['content']?.toString() ?? '';
     _lastSavedContent = _notebookController.text;
-    return workspace;
   }
 
   Future<void> _reload() async {
