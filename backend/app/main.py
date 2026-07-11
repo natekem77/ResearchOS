@@ -24,6 +24,7 @@ from app.events.automation_engine import AutomationEngine
 from app.events.event_bus import get_event_bus
 from app.events.event_models import EventType, ResearchOSEvent
 from app.experiment_comparison import compare_experiments
+from app.experiment_design_copilot import ExperimentCopilotError, ExperimentDesignCopilot
 from app.experiment_design_planner import (
     BUILTIN_EXPERIMENT_DESIGN_TEMPLATES,
     DESIGN_STATUSES,
@@ -66,6 +67,13 @@ from app.graphpad_provider import (
     graphpad_status,
     scan_graphpad_assets,
 )
+from app.general_experiments import (
+    ExperimentAuthorizationError,
+    ExperimentConflictError,
+    ExperimentValidationError,
+    GeneralExperimentService,
+    SamplePlanningService,
+)
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.inventory import (
     DEFAULT_PURCHASE_IMPORT_TEMPLATES,
@@ -100,8 +108,10 @@ from app.onenote_provider import list_notebooks, list_pages, list_sections, sync
 from app.overnight_intelligence import OvernightIntelligenceService
 from app.permissions import permission_summary
 from app.plate_layout_planner import generate_plate_layout, plate_layout_to_csv
+from app.protocol_hub import ProtocolHubService, ProtocolHubValidationError
 from app.protocol_intelligence import ProtocolService
 from app.quantification_workspace import QuantificationWorkspaceService
+from app.research_objects import ResearchObjectService
 from app.retinal_ontology import build_retinal_ontology
 from app.research_assistant import ask_research_assistant
 from app.resources import RESOURCE_TYPES, normalize_resource_type
@@ -231,6 +241,22 @@ def _chat_service() -> LabChatService:
     return LabChatService(settings=settings)
 
 
+def _general_experiment_service() -> GeneralExperimentService:
+    return GeneralExperimentService(settings=settings)
+
+
+def _protocol_hub_service() -> ProtocolHubService:
+    return ProtocolHubService(settings=settings)
+
+
+def _research_object_service() -> ResearchObjectService:
+    return ResearchObjectService(settings=settings)
+
+
+def _experiment_design_copilot() -> ExperimentDesignCopilot:
+    return ExperimentDesignCopilot(settings=settings)
+
+
 def _request_user_id(request: Request) -> str:
     """Resolve the current demo/dev user from server-side context.
 
@@ -301,6 +327,166 @@ class SendMessageRequest(BaseModel):
 
 class UpdateMessageRequest(BaseModel):
     body: str
+
+
+class ObjectReferenceCreateRequest(BaseModel):
+    source_object_id: str
+    source_object_type: str
+    target_object_id: str
+    reference_text: str | None = None
+    context: str | None = None
+    lab_id: str = "lab:demo"
+
+
+class ReferenceResolveRequest(BaseModel):
+    text: str
+    lab_id: str = "lab:demo"
+
+
+class GeneralExperimentCreateRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    experiment_id: str | None = None
+    title: str
+    short_description: str | None = None
+    status: Literal["draft", "planned", "active", "paused", "completed", "archived"] = "draft"
+    biological_system: str | None = None
+    sample_unit_type: str = "sample"
+    start_date: str | None = None
+    expected_end_day: int | None = None
+
+
+class GeneralExperimentFromProtocolRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    experiment_id: str | None = None
+    title: str
+    protocol_id: str
+    protocol_version_id: str
+
+
+class GeneralCohortRequest(BaseModel):
+    name: str
+    description: str | None = None
+    start_day: int | None = None
+    start_date: str | None = None
+    parent_cohort_id: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class GeneralConditionRequest(BaseModel):
+    cohort_id: str | None = None
+    name: str
+    description: str | None = None
+    condition_type: Literal["untreated", "vehicle_control", "treatment", "positive_control", "negative_control", "reference", "custom"] = "custom"
+    replicate_count: int | None = None
+    sample_count_per_replicate: int | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class GeneralInterventionRequest(BaseModel):
+    cohort_id: str | None = None
+    condition_id: str | None = None
+    name: str
+    intervention_type: Literal["compound", "media_change", "transfection", "infection", "stimulation", "inhibition", "surgery", "imaging", "collection", "assay", "custom"] = "custom"
+    resource_id: str | None = None
+    concentration_value: float | None = None
+    concentration_unit: str | None = None
+    dilution: str | None = None
+    dose_value: float | None = None
+    dose_unit: str | None = None
+    duration_value: float | None = None
+    duration_unit: str | None = None
+    route: str | None = None
+    notes: str | None = None
+
+
+class GeneralEventRequest(BaseModel):
+    cohort_id: str | None = None
+    condition_id: str | None = None
+    protocol_event_id: str | None = None
+    event_type: Literal["protocol_step", "treatment", "media_change", "collection", "imaging", "assay", "observation", "milestone", "endpoint", "reminder", "custom"] = "custom"
+    title: str
+    description: str | None = None
+    day: int | None = None
+    date: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    applies_to_all_conditions: bool = False
+    destructive: bool | None = None
+    source: Literal["manual", "protocol", "imported", "generated", "ai_proposed", "protocol_override"] = "manual"
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class NotebookSaveRequest(BaseModel):
+    current_version: int
+    content: str
+    document_format: Literal["rich_text_json", "markdown", "html"] = "markdown"
+    title: str | None = None
+
+
+class NotebookAttachmentRequest(BaseModel):
+    attachment_type: Literal["image", "file", "spreadsheet", "pdf", "url", "researchos_resource"]
+    resource_id: str | None = None
+    storage_reference: str | None = None
+    display_name: str
+    mime_type: str | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ExtractionDraftRequest(BaseModel):
+    experiment_id: str | None = None
+    source_type: Literal["typed_text", "voice_transcript", "document", "protocol_plus_text"] = "typed_text"
+    source_text: str
+    proposed_protocol_id: str | None = None
+    proposed_protocol_version_id: str | None = None
+
+
+class SamplePlanningPreviewRequest(BaseModel):
+    assumptions: dict[str, object] = Field(default_factory=dict)
+
+
+class ExperimentCopilotDraftRequest(BaseModel):
+    narrative: str
+    source_type: Literal["typed_text", "voice_transcript", "protocol_notes", "meeting_notes", "planning_notes"] = "typed_text"
+    lab_id: str = "lab:demo"
+
+
+class ExperimentCopilotClarifyRequest(BaseModel):
+    answers: dict[str, object] = Field(default_factory=dict)
+
+
+class ExperimentCopilotApproveRequest(BaseModel):
+    title: str | None = None
+    experiment_id: str | None = None
+
+
+class ProtocolHubCreateRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    title: str
+    short_name: str | None = None
+    description: str | None = None
+    category: str | None = None
+    biological_system: str | None = None
+    sample_unit: str | None = None
+    version_number: str = "1.0"
+    summary_of_changes: str | None = None
+    content: str = ""
+    events: list[dict[str, object]] = Field(default_factory=list)
+    materials: list[dict[str, object]] = Field(default_factory=list)
+    media: list[dict[str, object]] = Field(default_factory=list)
+    expected_results: list[dict[str, object]] = Field(default_factory=list)
+    troubleshooting: list[dict[str, object]] = Field(default_factory=list)
+
+
+class ProtocolHubVersionRequest(BaseModel):
+    version_number: str
+    summary_of_changes: str = ""
+    content: str = ""
+    events: list[dict[str, object]] = Field(default_factory=list)
+
+
+class ProtocolNotebookSaveRequest(BaseModel):
+    current_version: int
+    content: str
 
 
 class AgentStatusResponse(BaseModel):
@@ -2295,6 +2481,121 @@ def universal_search(q: str = Query(..., min_length=1), limit_per_group: int = Q
     return universal_search_service.search(q, limit_per_group=limit_per_group)
 
 
+@app.get("/objects", tags=["objects"])
+def research_objects(
+    request: Request,
+    lab_id: str = Query("lab:demo"),
+    object_type: str | None = Query(default=None),
+    limit: int = Query(250, ge=1, le=1000),
+) -> list[dict[str, object]]:
+    """Return visible universal ResearchOS objects."""
+
+    return _research_object_service().list_objects(
+        _request_user_id(request),
+        lab_id=lab_id,
+        object_type=object_type,
+        limit=limit,
+    )
+
+
+@app.get("/objects/search", tags=["objects"])
+def research_object_search(
+    request: Request,
+    q: str = Query(..., min_length=1),
+    lab_id: str = Query("lab:demo"),
+    limit: int = Query(12, ge=1, le=50),
+) -> list[dict[str, object]]:
+    """Fuzzy-search visible ResearchOS objects for autocomplete/reference insertion."""
+
+    return _research_object_service().search(_request_user_id(request), q, lab_id=lab_id, limit=limit)
+
+
+@app.get("/objects/autocomplete", tags=["objects"])
+def research_object_autocomplete(
+    request: Request,
+    q: str = Query(...),
+    lab_id: str = Query("lab:demo"),
+    limit: int = Query(8, ge=1, le=25),
+) -> list[dict[str, object]]:
+    """Return display-ready autocomplete candidates for @ and [[ ]] references."""
+
+    return _research_object_service().autocomplete(_request_user_id(request), q, lab_id=lab_id, limit=limit)
+
+
+@app.get("/objects/resolve", tags=["objects"])
+def resolve_research_object_reference(
+    request: Request,
+    ref: str = Query(...),
+    lab_id: str = Query("lab:demo"),
+) -> dict[str, object]:
+    """Resolve a user-facing reference token to a visible ResearchObject."""
+
+    return _research_object_service().resolve_reference(_request_user_id(request), ref, lab_id=lab_id)
+
+
+@app.post("/references/resolve", tags=["objects"])
+def resolve_research_object_references(request_body: ReferenceResolveRequest, request: Request) -> list[dict[str, object]]:
+    """Extract and resolve all @ and [[ ]] references in a text block."""
+
+    return _research_object_service().extract_references_from_text(
+        _request_user_id(request),
+        request_body.text,
+        lab_id=request_body.lab_id,
+    )
+
+
+@app.post("/references", tags=["objects"])
+def create_research_object_reference(request_body: ObjectReferenceCreateRequest, request: Request) -> dict[str, object]:
+    """Persist an explicit source-object to target-object reference."""
+
+    try:
+        return _research_object_service().create_reference(
+            user_id=_request_user_id(request),
+            source_object_id=request_body.source_object_id,
+            source_object_type=request_body.source_object_type,
+            target_object_id=request_body.target_object_id,
+            reference_text=request_body.reference_text,
+            context=request_body.context,
+            lab_id=request_body.lab_id,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/objects/{object_id:path}/hover-card", tags=["objects"])
+def research_object_hover_card(object_id: str, request: Request, lab_id: str = Query("lab:demo")) -> dict[str, object]:
+    """Return a compact preview card for hover/long-press object references."""
+
+    card = _research_object_service().hover_card(_request_user_id(request), object_id, lab_id=lab_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail="Object not found.")
+    return card
+
+
+@app.get("/objects/{object_id:path}/backlinks", tags=["objects"])
+def research_object_backlinks(object_id: str, request: Request, lab_id: str = Query("lab:demo")) -> list[dict[str, object]]:
+    """Return visible objects that explicitly or implicitly reference this object."""
+
+    return _research_object_service().backlinks(_request_user_id(request), object_id, lab_id=lab_id)
+
+
+@app.get("/objects/{object_id:path}/references", tags=["objects"])
+def research_object_references(object_id: str, request: Request, lab_id: str = Query("lab:demo")) -> list[dict[str, object]]:
+    """Return visible outgoing object references from this source object."""
+
+    return _research_object_service().references_from(_request_user_id(request), object_id, lab_id=lab_id)
+
+
+@app.get("/objects/{object_id:path}", tags=["objects"])
+def research_object_detail(object_id: str, request: Request, lab_id: str = Query("lab:demo")) -> dict[str, object]:
+    """Return a visible object detail/preview payload."""
+
+    obj = _research_object_service().get_object(_request_user_id(request), object_id, lab_id=lab_id)
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Object not found.")
+    return obj
+
+
 @app.get("/health", response_model=HealthResponse, tags=["system"])
 def health() -> HealthResponse:
     """Return a minimal health check for uptime probes and local smoke tests."""
@@ -3720,13 +4021,24 @@ def chat_messages(
 @app.post("/chat/conversations/{conversation_id}/messages", tags=["chat"])
 def send_chat_message(conversation_id: str, request_body: SendMessageRequest, request: Request) -> dict[str, object]:
     try:
-        return _chat_service().send_message(
-            sender_user_id=_request_user_id(request),
+        user_id = _request_user_id(request)
+        message = _chat_service().send_message(
+            sender_user_id=user_id,
             conversation_id=conversation_id,
             body=request_body.body,
             reply_to_message_id=request_body.reply_to_message_id,
             attachments=list(request_body.attachments),
         )
+        try:
+            _research_object_service().sync_text_references(
+                user_id=user_id,
+                source_object_id=str(message["message_id"]),
+                source_object_type="Chat Message",
+                text=request_body.body,
+            )
+        except Exception:
+            logger.debug("Chat object reference sync failed.", exc_info=True)
+        return message
     except (ChatAuthorizationError, ChatValidationError, PermissionError) as exc:
         raise _chat_http_error(exc)
 
@@ -8894,6 +9206,375 @@ def create_experiment(request: NewExperimentWizardRequest) -> dict[str, object]:
     """Create a planned experiment from the New Experiment Wizard."""
 
     return _create_experiment_from_wizard(request, mobile=False)
+
+
+def _general_experiment_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ExperimentConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, ExperimentAuthorizationError):
+        return HTTPException(status_code=404, detail="Experiment not found.")
+    if isinstance(exc, ExperimentValidationError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/experiment-creation-modes", tags=["experiments"])
+def experiment_creation_modes() -> dict[str, object]:
+    """Return supported and future-ready experiment creation modes."""
+
+    return {
+        "fully_implemented": [
+            {"id": "blank", "label": "Blank Experiment", "description": "Start with a free-form notebook and optional structured plan."},
+            {"id": "protocol", "label": "Start from Protocol", "description": "Select a protocol version and inherit linked timeline events."},
+            {"id": "guided_builder", "label": "Guided Builder", "description": "Create basics, cohorts, conditions, interventions, and timeline events."},
+            {"id": "describe", "label": "Describe Experiment", "description": "Use Experiment Design Copilot to turn narrative text or voice transcripts into a reviewed draft."},
+        ],
+        "placeholders": [
+            {"id": "import_spreadsheet", "label": "Import Spreadsheet", "description": "Future mapped design import into the generalized schema."},
+        ],
+    }
+
+
+@app.get("/general-protocols", tags=["experiments", "protocols"])
+def general_protocols() -> list[dict[str, object]]:
+    return _general_experiment_service().list_protocols()
+
+
+def _protocol_hub_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ProtocolHubValidationError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/protocol-hub/protocols", tags=["protocol-hub"])
+def protocol_hub_protocols(q: str | None = Query(default=None)) -> list[dict[str, object]]:
+    """List structured, versioned Protocol Hub protocols."""
+
+    return _protocol_hub_service().list_protocols(query=q)
+
+
+@app.post("/protocol-hub/protocols", tags=["protocol-hub"])
+def create_protocol_hub_protocol(request_body: ProtocolHubCreateRequest, request: Request) -> dict[str, object]:
+    """Create or update a structured protocol with an initial version."""
+
+    try:
+        return _protocol_hub_service().create_or_update_protocol(
+            actor_user_id=_request_user_id(request),
+            lab_id=request_body.lab_id,
+            title=request_body.title,
+            short_name=request_body.short_name,
+            description=request_body.description,
+            category=request_body.category,
+            biological_system=request_body.biological_system,
+            sample_unit=request_body.sample_unit,
+            version_number=request_body.version_number,
+            summary_of_changes=request_body.summary_of_changes,
+            content=request_body.content,
+            events=list(request_body.events),
+            materials=list(request_body.materials),
+            media=list(request_body.media),
+            expected_results=list(request_body.expected_results),
+            troubleshooting=list(request_body.troubleshooting),
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.get("/protocol-hub/protocols/{protocol_id}", tags=["protocol-hub"])
+def protocol_hub_protocol(protocol_id: str) -> dict[str, object]:
+    protocol = _protocol_hub_service().get_protocol(protocol_id)
+    if protocol is None:
+        raise HTTPException(status_code=404, detail="Protocol not found.")
+    return protocol
+
+
+@app.get("/protocol-hub/versions/{protocol_version_id}", tags=["protocol-hub"])
+def protocol_hub_version_workspace(protocol_version_id: str) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().version_workspace(protocol_version_id)
+    except ProtocolHubValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/protocol-hub/protocols/{protocol_id}/versions", tags=["protocol-hub"])
+def create_protocol_hub_version(protocol_id: str, request_body: ProtocolHubVersionRequest, request: Request) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().create_version(
+            actor_user_id=_request_user_id(request),
+            protocol_id=protocol_id,
+            version_number=request_body.version_number,
+            summary_of_changes=request_body.summary_of_changes,
+            content=request_body.content,
+            events=list(request_body.events),
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.get("/protocol-hub/protocols/{protocol_id}/usage", tags=["protocol-hub"])
+def protocol_hub_usage(protocol_id: str) -> dict[str, object]:
+    return _protocol_hub_service().usage_statistics(protocol_id)
+
+
+@app.get("/protocol-hub/compare", tags=["protocol-hub"])
+def protocol_hub_compare(left_version_id: str = Query(...), right_version_id: str = Query(...)) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().compare_versions(left_version_id, right_version_id)
+    except ProtocolHubValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/protocol-hub/search", tags=["protocol-hub"])
+def protocol_hub_search(q: str = Query(...)) -> dict[str, object]:
+    return _protocol_hub_service().search(q)
+
+
+@app.put("/protocol-hub/notebooks/{document_id}", tags=["protocol-hub"])
+def save_protocol_hub_notebook(document_id: str, request_body: ProtocolNotebookSaveRequest, request: Request) -> dict[str, object]:
+    try:
+        user_id = _request_user_id(request)
+        notebook = _protocol_hub_service().save_notebook(
+            actor_user_id=user_id,
+            document_id=document_id,
+            current_version=request_body.current_version,
+            content=request_body.content,
+        )
+        try:
+            _research_object_service().sync_text_references(
+                user_id=user_id,
+                source_object_id=document_id,
+                source_object_type="Notebook Entry",
+                text=request_body.content,
+            )
+        except Exception:
+            logger.debug("Protocol notebook object reference sync failed.", exc_info=True)
+        return notebook
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.get("/general-protocols/{protocol_id}", tags=["experiments", "protocols"])
+def general_protocol_detail(protocol_id: str) -> dict[str, object]:
+    protocol = _general_experiment_service().get_protocol(protocol_id)
+    if protocol is None:
+        raise HTTPException(status_code=404, detail="Protocol not found.")
+    return protocol
+
+
+@app.get("/general-protocol-versions/{protocol_version_id}", tags=["experiments", "protocols"])
+def general_protocol_version(protocol_version_id: str) -> dict[str, object]:
+    version = _general_experiment_service().get_protocol_version(protocol_version_id)
+    if version is None:
+        raise HTTPException(status_code=404, detail="Protocol version not found.")
+    return version
+
+
+@app.post("/experiments/general", tags=["experiments"])
+def create_general_experiment(request_body: GeneralExperimentCreateRequest, request: Request) -> dict[str, object]:
+    service = _general_experiment_service()
+    try:
+        experiment = service.create_blank_experiment(
+            actor_user_id=_request_user_id(request),
+            lab_id=request_body.lab_id,
+            title=request_body.title,
+            experiment_id=request_body.experiment_id,
+            short_description=request_body.short_description,
+            biological_system=request_body.biological_system,
+            sample_unit_type=request_body.sample_unit_type,
+            start_date=request_body.start_date,
+            expected_end_day=request_body.expected_end_day,
+            status=request_body.status,
+        )
+        return {"experiment": experiment}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiments/general/from-protocol", tags=["experiments"])
+def create_general_experiment_from_protocol(request_body: GeneralExperimentFromProtocolRequest, request: Request) -> dict[str, object]:
+    service = _general_experiment_service()
+    try:
+        experiment = service.create_from_protocol(
+            actor_user_id=_request_user_id(request),
+            protocol_id=request_body.protocol_id,
+            protocol_version_id=request_body.protocol_version_id,
+            title=request_body.title,
+            lab_id=request_body.lab_id,
+            experiment_id=request_body.experiment_id,
+        )
+        return {"experiment": experiment}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.get("/experiments/{experiment_id}/general-workspace", tags=["experiments"])
+def general_experiment_workspace(experiment_id: str, request: Request) -> dict[str, object]:
+    workspace = _general_experiment_service().get_workspace(experiment_id, _request_user_id(request))
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Experiment not found.")
+    return workspace
+
+
+@app.post("/experiments/{experiment_id}/cohorts", tags=["experiments"])
+def add_general_cohort(experiment_id: str, request_body: GeneralCohortRequest, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().add_cohort(_request_user_id(request), experiment_id, request_body.model_dump())
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiments/{experiment_id}/conditions", tags=["experiments"])
+def add_general_condition(experiment_id: str, request_body: GeneralConditionRequest, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().add_condition(_request_user_id(request), experiment_id, request_body.model_dump())
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiments/{experiment_id}/interventions", tags=["experiments"])
+def add_general_intervention(experiment_id: str, request_body: GeneralInterventionRequest, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().add_intervention(_request_user_id(request), experiment_id, request_body.model_dump())
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiments/{experiment_id}/events", tags=["experiments"])
+def add_general_event(experiment_id: str, request_body: GeneralEventRequest, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().add_event(_request_user_id(request), experiment_id, request_body.model_dump())
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.get("/experiments/{experiment_id}/general-timeline", tags=["experiments"])
+def general_experiment_timeline(experiment_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().timeline(experiment_id, _request_user_id(request))
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.get("/experiments/{experiment_id}/notebook", tags=["experiments"])
+def general_experiment_notebook(experiment_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().get_or_create_notebook(_request_user_id(request), experiment_id)
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.put("/experiment-notebooks/{document_id}", tags=["experiments"])
+def save_general_experiment_notebook(document_id: str, request_body: NotebookSaveRequest, request: Request) -> dict[str, object]:
+    try:
+        user_id = _request_user_id(request)
+        notebook = _general_experiment_service().save_notebook(
+            user_id=user_id,
+            document_id=document_id,
+            current_version=request_body.current_version,
+            content=request_body.content,
+            document_format=request_body.document_format,
+            title=request_body.title,
+        )
+        try:
+            _research_object_service().sync_text_references(
+                user_id=user_id,
+                source_object_id=document_id,
+                source_object_type="Notebook Entry",
+                text=request_body.content,
+            )
+        except Exception:
+            logger.debug("Experiment notebook object reference sync failed.", exc_info=True)
+        return notebook
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiment-notebooks/{document_id}/attachments", tags=["experiments"])
+def add_general_experiment_notebook_attachment(document_id: str, request_body: NotebookAttachmentRequest, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().add_notebook_attachment(_request_user_id(request), document_id, request_body.model_dump())
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiment-extraction-drafts", tags=["experiments"])
+def experiment_extraction_draft(request_body: ExtractionDraftRequest, request: Request) -> dict[str, object]:
+    try:
+        return _general_experiment_service().create_extraction_draft(_request_user_id(request), request_body.model_dump())
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+def _experiment_copilot_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ExperimentCopilotError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/experiment-copilot/demo-narrative", tags=["experiments"])
+def experiment_copilot_demo_narrative() -> dict[str, str]:
+    """Return the retinal organoid SAG demo narrative."""
+
+    return _experiment_design_copilot().demo_narrative()
+
+
+@app.post("/experiment-copilot/draft", tags=["experiments"])
+def experiment_copilot_create_draft(request_body: ExperimentCopilotDraftRequest, request: Request) -> dict[str, object]:
+    """Convert narrative scientific text into a review-only draft experiment."""
+
+    try:
+        return _experiment_design_copilot().create_draft(
+            user_id=_request_user_id(request),
+            narrative=request_body.narrative,
+            source_type=request_body.source_type,
+            lab_id=request_body.lab_id,
+        )
+    except ExperimentCopilotError as exc:
+        raise _experiment_copilot_http_error(exc)
+
+
+@app.get("/experiment-copilot/drafts/{session_id}", tags=["experiments"])
+def experiment_copilot_get_draft(session_id: str, request: Request) -> dict[str, object]:
+    """Return a copilot draft session for the current user."""
+
+    try:
+        return _experiment_design_copilot().get_draft(_request_user_id(request), session_id)
+    except ExperimentCopilotError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/experiment-copilot/drafts/{session_id}/clarify", tags=["experiments"])
+def experiment_copilot_clarify(session_id: str, request_body: ExperimentCopilotClarifyRequest, request: Request) -> dict[str, object]:
+    """Apply clarification answers to a draft and update readiness for approval."""
+
+    try:
+        return _experiment_design_copilot().answer_clarifications(
+            _request_user_id(request),
+            session_id,
+            dict(request_body.answers),
+        )
+    except ExperimentCopilotError as exc:
+        raise _experiment_copilot_http_error(exc)
+
+
+@app.post("/experiment-copilot/drafts/{session_id}/approve", tags=["experiments"])
+def experiment_copilot_approve(session_id: str, request_body: ExperimentCopilotApproveRequest, request: Request) -> dict[str, object]:
+    """Create a structured draft experiment only after explicit researcher approval."""
+
+    try:
+        return _experiment_design_copilot().approve_draft(
+            _request_user_id(request),
+            session_id,
+            title=request_body.title,
+            experiment_id=request_body.experiment_id,
+        )
+    except ExperimentCopilotError as exc:
+        raise _experiment_copilot_http_error(exc)
+
+
+@app.post("/sample-planning/preview", tags=["experiments"])
+def sample_planning_preview(request_body: SamplePlanningPreviewRequest) -> dict[str, object]:
+    return SamplePlanningService().preview(dict(request_body.assumptions))
 
 
 @app.post("/experiments/compare", response_model=ExperimentCompareResponse, tags=["experiments"])

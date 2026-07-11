@@ -8,7 +8,8 @@ void main() {
     await tester.pumpWidget(const ResearchOsMobileApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('ResearchOS'), findsOneWidget);
+    expect(find.text('MUNDI'), findsOneWidget);
+    expect(find.text('Powered by ResearchOS'), findsOneWidget);
     expect(find.text('Use Local Demo Server'), findsOneWidget);
     expect(find.text('Enter Server URL'), findsOneWidget);
     expect(find.text('Test Connection'), findsOneWidget);

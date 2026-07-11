@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../brand/mundi_brand.dart';
 import '../design_system/researchos_design_system.dart';
 
 class LoadingView extends StatelessWidget {
-  const LoadingView({super.key, this.message = 'Loading ResearchOS...'});
+  const LoadingView({super.key, this.message = 'Loading Mundi...'});
 
   final String message;
 
@@ -13,7 +14,7 @@ class LoadingView extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const CircularProgressIndicator(),
+          const MundiLoadingIndicator(size: 56),
           const SizedBox(height: ResearchOsSpacing.lg),
           Text(message),
         ],

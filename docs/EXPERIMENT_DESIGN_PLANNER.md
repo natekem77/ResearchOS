@@ -272,3 +272,8 @@ Future DoE work can add randomization, blocking, power calculations, blinded sam
 - power analysis
 - integration with inventory availability
 - OneNote draft generation from design timelines
+# Generalized Experiment Model Note
+
+ResearchOS now has a generalized experiment workspace foundation alongside the existing design planner. New work should prefer the generalized schema for cohorts, conditions, interventions, events, protocol-version references, and rich notebook documents.
+
+The existing planner remains available for demo workflows and backwards compatibility. It should gradually migrate away from organoid-specific assumptions and use configurable terminology such as sample, well, dish, animal, tissue, organoid, sequencing library, image field, or custom.

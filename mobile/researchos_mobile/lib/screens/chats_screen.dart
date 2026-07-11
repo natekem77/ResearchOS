@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
+import '../widgets/object_reference_widgets.dart';
 import '../widgets/state_views.dart';
 
 class ChatsScreen extends StatefulWidget {
@@ -209,6 +210,32 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  Future<void> _insertObjectReference() async {
+    final selected = await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => ObjectReferencePicker(
+        api: widget.api,
+        onSelected: (object) => Navigator.of(context).pop(object),
+      ),
+    );
+    if (selected == null) {
+      return;
+    }
+    final objectId = selected['object_id']?.toString();
+    if (objectId == null || objectId.isEmpty) {
+      return;
+    }
+    final insertion = ' [[$objectId]]';
+    final current = _composer.text;
+    final selection = _composer.selection;
+    final start = selection.start < 0 ? current.length : selection.start;
+    final end = selection.end < 0 ? current.length : selection.end;
+    _composer.text = current.replaceRange(start, end, insertion);
+    _composer.selection =
+        TextSelection.collapsed(offset: start + insertion.length);
+  }
+
   Future<void> _openMembers() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -268,8 +295,10 @@ class _ConversationScreenState extends State<ConversationScreen> {
                   return ListView.builder(
                     padding: ResearchOsSpacing.screen,
                     itemCount: messages.length,
-                    itemBuilder: (context, index) =>
-                        _MessageBubble(message: messages[index]),
+                    itemBuilder: (context, index) => _MessageBubble(
+                      api: widget.api,
+                      message: messages[index],
+                    ),
                   );
                 },
               ),
@@ -286,14 +315,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
                 children: [
                   IconButton(
                     tooltip: 'Attach ResearchOS Resource',
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                              'Attachment picker will resolve ResearchOS resources without granting extra access.'),
-                        ),
-                      );
-                    },
+                    onPressed: _insertObjectReference,
                     icon: const Icon(Icons.attach_file_outlined),
                   ),
                   Expanded(
@@ -600,8 +622,9 @@ class _ConversationCard extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.api, required this.message});
 
+  final ResearchOsApi api;
   final Map<String, dynamic> message;
 
   @override
@@ -627,11 +650,11 @@ class _MessageBubble extends StatelessWidget {
             if (!isSystem)
               Text(message['sender_user_id']?.toString() ?? 'Unknown',
                   style: Theme.of(context).textTheme.labelMedium),
-            Text(
-              message['deleted_at'] == null
-                  ? message['body']?.toString() ?? ''
-                  : 'Message deleted',
-            ),
+            if (message['deleted_at'] == null)
+              _ReferenceAwareText(
+                  api: api, text: message['body']?.toString() ?? '')
+            else
+              const Text('Message deleted'),
             if (attachments.isNotEmpty) ...[
               const SizedBox(height: ResearchOsSpacing.sm),
               Wrap(
@@ -653,6 +676,104 @@ class _MessageBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ReferenceAwareText extends StatelessWidget {
+  const _ReferenceAwareText({required this.api, required this.text});
+
+  final ResearchOsApi api;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final parts = _splitReferences(text);
+    if (parts.length == 1 && !parts.first.isReference) {
+      return Text(text);
+    }
+    return Wrap(
+      spacing: ResearchOsSpacing.xs,
+      runSpacing: ResearchOsSpacing.xs,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        for (final part in parts)
+          if (part.isReference)
+            ObjectReferenceChip(
+              label: part.label,
+              onTap: () => _showReferencePreview(context, api, part.objectId),
+            )
+          else
+            Text(part.label),
+      ],
+    );
+  }
+}
+
+Future<void> _showReferencePreview(
+  BuildContext context,
+  ResearchOsApi api,
+  String objectId,
+) async {
+  try {
+    final card = await api.objectHoverCard(objectId);
+    if (!context.mounted) return;
+    final object = (card['object'] as Map?)?.cast<String, dynamic>() ??
+        const <String, dynamic>{};
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (context) {
+        return SafeArea(
+          child: Padding(
+            padding: ResearchOsSpacing.screen,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ObjectReferenceCard(object: object),
+                const SizedBox(height: ResearchOsSpacing.md),
+                Text(card['summary']?.toString() ?? 'ResearchOS reference'),
+                const SizedBox(height: ResearchOsSpacing.md),
+                FilledButton.icon(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.open_in_new_outlined),
+                  label: const Text('Open later'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  } catch (error) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(error.toString())));
+  }
+}
+
+List<_ReferencePart> _splitReferences(String text) {
+  final pattern = RegExp(r'\[\[([^\]]+)\]\]|@([A-Za-z0-9_.:+#/-]+)');
+  final parts = <_ReferencePart>[];
+  var cursor = 0;
+  for (final match in pattern.allMatches(text)) {
+    if (match.start > cursor) {
+      parts.add(_ReferencePart(text.substring(cursor, match.start), false));
+    }
+    final objectId = match.group(1) ?? match.group(2) ?? '';
+    parts.add(_ReferencePart(objectId, true, objectId: objectId));
+    cursor = match.end;
+  }
+  if (cursor < text.length) {
+    parts.add(_ReferencePart(text.substring(cursor), false));
+  }
+  return parts;
+}
+
+class _ReferencePart {
+  const _ReferencePart(this.label, this.isReference, {this.objectId = ''});
+
+  final String label;
+  final bool isReference;
+  final String objectId;
 }
 
 class _NewConversationDialog extends StatefulWidget {

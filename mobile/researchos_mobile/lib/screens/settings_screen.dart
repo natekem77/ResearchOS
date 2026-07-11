@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/researchos_api.dart';
+import '../brand/mundi_brand.dart';
 import '../config/app_config.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
@@ -56,6 +57,27 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return ListView(
           padding: ResearchOsSpacing.screen,
           children: [
+            ResearchOsCard(
+              child: Row(
+                children: [
+                  const MundiLogoMark(size: 56),
+                  const SizedBox(width: ResearchOsSpacing.md),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(MundiBrand.appName,
+                            style: Theme.of(context).textTheme.titleLarge),
+                        const Text(MundiBrand.poweredBy),
+                        Text('Version ${data.settings.appVersion}'),
+                        const Text('Git hash: not configured'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
             InfoCard(
               title: data.user.displayName,
               subtitle: '${data.user.role} · auth mode ${data.user.authMode}',

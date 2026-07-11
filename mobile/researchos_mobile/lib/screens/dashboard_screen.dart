@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
+import '../brand/mundi_brand.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import 'new_experiment_wizard_screen.dart';
@@ -228,31 +229,21 @@ class _WelcomeCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return ResearchOsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Container(
-                width: 48,
-                height: 48,
-                decoration: BoxDecoration(
-                  color: colorScheme.primaryContainer,
-                  borderRadius: ResearchOsSpacing.radius,
-                ),
-                child: Icon(Icons.biotech_outlined,
-                    color: colorScheme.onPrimaryContainer),
-              ),
+              const MundiLogoMark(size: 48),
               const SizedBox(width: ResearchOsSpacing.md),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('ResearchOS',
+                    Text(MundiBrand.appName,
                         style: Theme.of(context).textTheme.headlineSmall),
-                    const Text('AI-powered laboratory knowledge system'),
+                    const Text(MundiBrand.poweredBy),
                   ],
                 ),
               ),

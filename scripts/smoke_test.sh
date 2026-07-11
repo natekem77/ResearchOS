@@ -203,6 +203,23 @@ WORKFLOWS_FILE="$(request GET "/workflows")"
 request GET "/workflows?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/workflows/definitions" >/dev/null
 request GET "/protocols" >/dev/null
+request GET "/protocol-hub/protocols" >/dev/null
+request GET "/protocol-hub/protocols/protocol:meyer-retinal-organoid-protocol" >/dev/null
+request GET "/protocol-hub/search?q=BMP4" >/dev/null
+request GET "/experiment-copilot/demo-narrative" >/dev/null
+COPILOT_FILE="$(request POST "/experiment-copilot/draft" '{"narrative":"Using the Meyer retinal organoid protocol, plan NK_Expt_26 with an early treatment cohort on D1 and a late treatment cohort on D9. Conditions include untreated, DMSO control, SAG 300 nM, and SAG 300 nM plus GRKi 10 nM. Image all conditions on D16, D25, and D35. Culture endpoint D90. DMSO is 1000x and needs confirmation.","source_type":"typed_text"}')"
+COPILOT_SESSION_ID="$(
+  python3 - "$COPILOT_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["session_id"])
+PY
+)"
+request GET "/experiment-copilot/drafts/$COPILOT_SESSION_ID" >/dev/null
+request POST "/experiment-copilot/drafts/$COPILOT_SESSION_ID/clarify" '{"answers":{"replicates":"3 biological replicates","sample_counts":"6 organoids per replicate","protocol_version":"current Meyer protocol version","dmso_dilution":"Needs confirmation: likely 1:1000 final dilution.","longitudinal_imaging":"Yes, imaging is longitudinal when possible."}}' >/dev/null
+request POST "/experiment-copilot/drafts/$COPILOT_SESSION_ID/approve" "{\"experiment_id\":\"SMOKE-COPILOT-$(date +%s)\",\"title\":\"Smoke Copilot Draft\"}" >/dev/null
 request GET "/sessions" >/dev/null
 request GET "/sessions?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/mobile/sessions" >/dev/null
@@ -391,6 +408,10 @@ request GET "/papers" >/dev/null
 request GET "/papers?workspace_id=workspace:demo-lab" >/dev/null
 request GET "/graph/stats" >/dev/null
 request GET "/search/universal?q=SAG" >/dev/null
+request GET "/objects?limit=10" >/dev/null
+request GET "/objects/autocomplete?q=BMP4" >/dev/null
+request GET "/objects/resolve?ref=%40BMP4" >/dev/null
+request POST "/references/resolve" '{"text":"Compare @BMP4 with [[NK_Expt_26]]."}' >/dev/null
 request GET "/mobile/search?q=SAG" >/dev/null
 request GET "/knowledgegraph" >/dev/null
 request GET "/knowledgegraph?workspace_id=workspace:demo-lab" >/dev/null

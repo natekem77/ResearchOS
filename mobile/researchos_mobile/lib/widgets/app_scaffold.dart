@@ -98,6 +98,12 @@ const _primaryDestinations = [
     label: 'Experiments',
   ),
   _PrimaryDestination(
+    screenIndex: 14,
+    icon: Icons.account_tree_outlined,
+    selectedIcon: Icons.account_tree,
+    label: 'Protocols',
+  ),
+  _PrimaryDestination(
     screenIndex: 2,
     icon: Icons.home_outlined,
     selectedIcon: Icons.home,

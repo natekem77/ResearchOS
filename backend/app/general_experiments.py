@@ -1,0 +1,1002 @@
+"""General-purpose experiment workspace and rich notebook foundation.
+
+This module intentionally avoids organoid-specific assumptions. It models a
+free-form notebook layer and a structured plan layer side by side; structured
+data never overwrites narrative notes.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Literal
+
+from app.authorization import AuthorizationService
+from app.config import Settings
+from app.storage import SQLiteStore
+
+EXPERIMENT_ACCESS_ORDER = {"view": 1, "comment": 2, "edit": 3, "manage": 4}
+
+
+class ExperimentAuthorizationError(PermissionError):
+    """Raised when a user cannot access an experiment workspace."""
+
+
+class ExperimentConflictError(RuntimeError):
+    """Raised when optimistic concurrency detects a stale notebook save."""
+
+
+class ExperimentValidationError(ValueError):
+    """Raised for invalid experiment workspace requests."""
+
+
+@dataclass(frozen=True)
+class ExtractionProviderResult:
+    """Future-ready extraction provider result."""
+
+    proposed_cohorts: list[dict[str, Any]]
+    proposed_conditions: list[dict[str, Any]]
+    proposed_interventions: list[dict[str, Any]]
+    proposed_events: list[dict[str, Any]]
+    ambiguities: list[str]
+    warnings: list[str]
+    confidence_by_field: dict[str, float]
+
+
+class ExperimentExtractionProvider:
+    """Interface for future text, voice, document, or AI extraction."""
+
+    def extract_from_text(self, source_text: str) -> ExtractionProviderResult:
+        raise NotImplementedError
+
+    def extract_from_transcript(self, source_text: str) -> ExtractionProviderResult:
+        return self.extract_from_text(source_text)
+
+    def reconcile_with_protocol(self, draft: dict[str, Any], protocol_version_id: str | None) -> dict[str, Any]:
+        return draft | {"proposed_protocol_version_id": protocol_version_id}
+
+    def validate_draft(self, draft: dict[str, Any]) -> dict[str, Any]:
+        warnings = list(draft.get("warnings") or [])
+        if not draft.get("source_text"):
+            warnings.append("No source text provided.")
+        return draft | {"warnings": warnings}
+
+
+class DeterministicExperimentExtractionProvider(ExperimentExtractionProvider):
+    """Small deterministic provider for demos and tests; no LLM calls."""
+
+    def extract_from_text(self, source_text: str) -> ExtractionProviderResult:
+        lowered = source_text.lower()
+        conditions = []
+        for term in ["untreated", "dmso", "vehicle", "control"]:
+            if term in lowered:
+                conditions.append({"name": term.upper() if term == "dmso" else term, "condition_type": "vehicle_control" if term in {"dmso", "vehicle"} else "untreated"})
+        events = []
+        for token in source_text.replace(",", " ").split():
+            if token.upper().startswith("D") and token[1:].isdigit():
+                events.append({"title": f"Event on {token.upper()}", "event_type": "milestone", "day": int(token[1:]), "source": "generated"})
+        return ExtractionProviderResult(
+            proposed_cohorts=[],
+            proposed_conditions=conditions,
+            proposed_interventions=[],
+            proposed_events=events,
+            ambiguities=[],
+            warnings=["Deterministic draft only; researcher confirmation required."],
+            confidence_by_field={"conditions": 0.45, "events": 0.4},
+        )
+
+
+class SamplePlanningService:
+    """Explainable sample-planning preview without inventing recommendations."""
+
+    def preview(self, assumptions: dict[str, Any]) -> dict[str, Any]:
+        required = ["biological_replicates", "technical_replicates", "sample_units_per_replicate"]
+        missing = [field for field in required if assumptions.get(field) in (None, "", 0)]
+        if missing:
+            return {
+                "status": "incomplete",
+                "assumptions": assumptions,
+                "missing_values": missing,
+                "calculation_preview": None,
+                "message": "Sample counts are not calculated until required inputs are provided.",
+            }
+        biological = float(assumptions["biological_replicates"])
+        technical = float(assumptions["technical_replicates"])
+        units = float(assumptions["sample_units_per_replicate"])
+        attrition = float(assumptions.get("expected_attrition_percent") or 0) / 100.0
+        reserve = float(assumptions.get("reserve_percent") or 0) / 100.0
+        base = biological * technical * units
+        adjusted = base * (1 + attrition + reserve)
+        return {
+            "status": "preview",
+            "assumptions": assumptions,
+            "missing_values": [],
+            "calculation_preview": {
+                "base_units": base,
+                "attrition_percent": attrition * 100,
+                "reserve_percent": reserve * 100,
+                "estimated_units": adjusted,
+                "formula": "biological_replicates * technical_replicates * sample_units_per_replicate * (1 + attrition + reserve)",
+            },
+            "message": "Preview only. Final optimization is intentionally not implemented yet.",
+        }
+
+
+class GeneralExperimentService:
+    """General experiment workspace repository and authorization boundary."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.store = SQLiteStore(settings=settings)
+        self.authz = AuthorizationService(settings=settings)
+        self._ensure_schema()
+        self.ensure_demo_data()
+        self.migrate_legacy_organoid_experiments()
+
+    def _connect(self) -> sqlite3.Connection:
+        return self.store._connect()
+
+    def _ensure_schema(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS experiment_workspaces (
+                    experiment_id TEXT PRIMARY KEY,
+                    lab_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    short_description TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    biological_system TEXT,
+                    sample_unit_type TEXT,
+                    sample_unit_label TEXT,
+                    start_date TEXT,
+                    nominal_day_zero TEXT,
+                    expected_end_day INTEGER,
+                    expected_end_date TEXT,
+                    primary_protocol_id TEXT,
+                    primary_protocol_version_id TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_permissions (
+                    permission_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    principal_type TEXT NOT NULL,
+                    principal_id TEXT NOT NULL,
+                    access_level TEXT NOT NULL,
+                    granted_by TEXT NOT NULL,
+                    granted_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_cohorts (
+                    cohort_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    start_day INTEGER,
+                    start_date TEXT,
+                    parent_cohort_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_conditions (
+                    condition_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    cohort_id TEXT,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    condition_type TEXT NOT NULL DEFAULT 'custom',
+                    replicate_count INTEGER,
+                    sample_count_per_replicate INTEGER,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_interventions (
+                    intervention_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    cohort_id TEXT,
+                    condition_id TEXT,
+                    name TEXT NOT NULL,
+                    intervention_type TEXT NOT NULL DEFAULT 'custom',
+                    resource_id TEXT,
+                    concentration_value REAL,
+                    concentration_unit TEXT,
+                    dilution TEXT,
+                    dose_value REAL,
+                    dose_unit TEXT,
+                    duration_value REAL,
+                    duration_unit TEXT,
+                    route TEXT,
+                    notes TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_events_general (
+                    event_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    cohort_id TEXT,
+                    condition_id TEXT,
+                    protocol_event_id TEXT,
+                    event_type TEXT NOT NULL DEFAULT 'custom',
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    day INTEGER,
+                    date TEXT,
+                    start_time TEXT,
+                    end_time TEXT,
+                    applies_to_all_conditions INTEGER NOT NULL DEFAULT 0,
+                    destructive INTEGER,
+                    completed_at TEXT,
+                    completed_by TEXT,
+                    source TEXT NOT NULL DEFAULT 'manual',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_assays (
+                    assay_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    event_id TEXT,
+                    name TEXT NOT NULL,
+                    assay_type TEXT NOT NULL,
+                    destructive INTEGER NOT NULL DEFAULT 0,
+                    sample_requirement TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS protocols_general (
+                    protocol_id TEXT PRIMARY KEY,
+                    lab_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    biological_system TEXT,
+                    default_sample_unit TEXT,
+                    current_version_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS protocol_versions_general (
+                    protocol_version_id TEXT PRIMARY KEY,
+                    protocol_id TEXT NOT NULL,
+                    version_label TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_by TEXT,
+                    approved_at TEXT,
+                    approved_by TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS protocol_events_general (
+                    protocol_event_id TEXT PRIMARY KEY,
+                    protocol_version_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    day INTEGER,
+                    relative_time TEXT,
+                    event_type TEXT NOT NULL,
+                    default_resource_id TEXT,
+                    default_concentration TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_protocol_references (
+                    experiment_id TEXT NOT NULL,
+                    protocol_id TEXT NOT NULL,
+                    protocol_version_id TEXT NOT NULL,
+                    relationship TEXT NOT NULL DEFAULT 'primary',
+                    inherited_events INTEGER NOT NULL DEFAULT 1,
+                    added_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    added_by TEXT,
+                    PRIMARY KEY(experiment_id, protocol_version_id, relationship)
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_notebook_documents (
+                    document_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    document_format TEXT NOT NULL DEFAULT 'markdown',
+                    content TEXT NOT NULL,
+                    plain_text_cache TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_by TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_notebook_attachments (
+                    attachment_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    attachment_type TEXT NOT NULL,
+                    resource_id TEXT,
+                    storage_reference TEXT,
+                    display_name TEXT NOT NULL,
+                    mime_type TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_by TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_extraction_drafts (
+                    extraction_id TEXT PRIMARY KEY,
+                    experiment_id TEXT,
+                    source_type TEXT NOT NULL,
+                    source_text TEXT NOT NULL,
+                    proposed_protocol_id TEXT,
+                    proposed_protocol_version_id TEXT,
+                    proposed_cohorts_json TEXT NOT NULL DEFAULT '[]',
+                    proposed_conditions_json TEXT NOT NULL DEFAULT '[]',
+                    proposed_interventions_json TEXT NOT NULL DEFAULT '[]',
+                    proposed_events_json TEXT NOT NULL DEFAULT '[]',
+                    ambiguities_json TEXT NOT NULL DEFAULT '[]',
+                    warnings_json TEXT NOT NULL DEFAULT '[]',
+                    confidence_by_field_json TEXT NOT NULL DEFAULT '{}',
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    created_by TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_history_events (
+                    history_id TEXT PRIMARY KEY,
+                    experiment_id TEXT NOT NULL,
+                    actor_user_id TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+    def ensure_demo_data(self) -> None:
+        protocol = self.seed_protocol(
+            lab_id="lab:demo",
+            title="Meyer retinal organoid protocol",
+            description="Generalized demo protocol for retinal organoid differentiation.",
+            biological_system="retinal organoid",
+            default_sample_unit="organoid",
+            version_label="demo-v1",
+            content="Meyer retinal organoid protocol demo. Includes BMP4 pulse on D6.",
+            created_by="user:pi-owner",
+            events=[
+                {"title": "BMP4 on D6", "description": "Protocol-derived BMP4 event.", "day": 6, "event_type": "treatment", "default_concentration": "Needs protocol confirmation"},
+            ],
+        )
+        if self.get_workspace("NK_Expt_26", "user:pi-owner") is None:
+            experiment = self.create_blank_experiment(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                title="NK_Expt_26 generalized SAG timing experiment",
+                experiment_id="NK_Expt_26",
+                short_description="Demo generalized experiment with early and late SAG cohorts.",
+                biological_system="retinal organoid",
+                sample_unit_type="organoid",
+                start_date=None,
+                expected_end_day=90,
+                status="planned",
+            )
+            experiment_id = experiment["experiment_id"]
+            self.link_protocol("user:researcher-a", experiment_id, protocol["protocol_id"], protocol["current_version_id"], inherit_events=True)
+            early = self.add_cohort("user:researcher-a", experiment_id, {"name": "Early treatment cohort on D1", "start_day": 1})
+            late = self.add_cohort("user:researcher-a", experiment_id, {"name": "Late treatment cohort on D9", "start_day": 9})
+            for cohort in [early, late]:
+                for name, kind in [
+                    ("Untreated", "untreated"),
+                    ("DMSO control", "vehicle_control"),
+                    ("SAG 300 nM", "treatment"),
+                    ("SAG 300 nM + GRKi 10 nM", "treatment"),
+                ]:
+                    condition = self.add_condition("user:researcher-a", experiment_id, {"cohort_id": cohort["cohort_id"], "name": name, "condition_type": kind})
+                    if "SAG" in name:
+                        self.add_intervention("user:researcher-a", experiment_id, {"cohort_id": cohort["cohort_id"], "condition_id": condition["condition_id"], "name": "SAG", "intervention_type": "compound", "concentration_value": 300, "concentration_unit": "nM"})
+                    if "GRKi" in name:
+                        self.add_intervention("user:researcher-a", experiment_id, {"cohort_id": cohort["cohort_id"], "condition_id": condition["condition_id"], "name": "GRKi", "intervention_type": "inhibition", "concentration_value": 10, "concentration_unit": "nM"})
+            for title, day, event_type, cohort_id in [
+                ("Untreated collection D1", 1, "collection", None),
+                ("Early cohort collection D2", 2, "collection", early["cohort_id"]),
+                ("Early cohort collection D3", 3, "collection", early["cohort_id"]),
+                ("Late untreated baseline D9", 9, "collection", late["cohort_id"]),
+                ("Late cohort collection D11", 11, "collection", late["cohort_id"]),
+                ("Late cohort collection D13", 13, "collection", late["cohort_id"]),
+                ("Imaging D16", 16, "imaging", None),
+                ("Imaging D25", 25, "imaging", None),
+                ("Imaging D35", 35, "imaging", None),
+                ("Culture endpoint D90", 90, "endpoint", None),
+            ]:
+                self.add_event("user:researcher-a", experiment_id, {"title": title, "day": day, "event_type": event_type, "cohort_id": cohort_id, "applies_to_all_conditions": cohort_id is None})
+            notebook = self.get_or_create_notebook("user:researcher-a", experiment_id)
+            self.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                current_version=notebook["version"],
+                content=(
+                    "# NK_Expt_26 design\n\n"
+                    "Generalized retinal organoid experiment comparing early D1 and late D9 SAG treatment windows.\n\n"
+                    "## Conditions\n\n"
+                    "- Untreated\n- DMSO control\n- SAG 300 nM\n- SAG 300 nM + GRKi 10 nM\n\n"
+                    "Needs confirmation: likely 1:1000 final dilution for DMSO 1000x.\n"
+                ),
+                document_format="markdown",
+            )
+
+    def seed_protocol(self, lab_id: str, title: str, description: str, biological_system: str | None, default_sample_unit: str | None, version_label: str, content: str, created_by: str, events: list[dict[str, Any]]) -> dict[str, Any]:
+        protocol_id = f"protocol:{_slug(title)}"
+        version_id = f"protocol-version:{_slug(title)}:{_slug(version_label)}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO protocols_general
+                    (protocol_id, lab_id, title, description, biological_system, default_sample_unit, current_version_id, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'approved')
+                ON CONFLICT(protocol_id) DO UPDATE SET current_version_id = COALESCE(protocols_general.current_version_id, excluded.current_version_id)
+                """,
+                (protocol_id, lab_id, title, description, biological_system, default_sample_unit, version_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO protocol_versions_general
+                    (protocol_version_id, protocol_id, version_label, content, created_by, approved_at, approved_by)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                ON CONFLICT(protocol_version_id) DO NOTHING
+                """,
+                (version_id, protocol_id, version_label, content, created_by, created_by),
+            )
+            for event in events:
+                event_id = f"protocol-event:{version_id}:{_slug(str(event.get('title') or uuid.uuid4().hex))}"
+                connection.execute(
+                    """
+                    INSERT INTO protocol_events_general
+                        (protocol_event_id, protocol_version_id, title, description, day, relative_time, event_type, default_resource_id, default_concentration, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(protocol_event_id) DO NOTHING
+                    """,
+                    (
+                        event_id,
+                        version_id,
+                        event.get("title"),
+                        event.get("description"),
+                        event.get("day"),
+                        event.get("relative_time"),
+                        event.get("event_type", "protocol_step"),
+                        event.get("default_resource_id"),
+                        event.get("default_concentration"),
+                        json.dumps(event.get("metadata") or {}),
+                    ),
+                )
+        return self.get_protocol(protocol_id) or {"protocol_id": protocol_id, "current_version_id": version_id}
+
+    def migrate_legacy_organoid_experiments(self) -> None:
+        for experiment in self.store.list_experiments():
+            experiment_id = str(experiment.get("experiment_id") or experiment.get("id") or "")
+            if not experiment_id:
+                continue
+            with self._connect() as connection:
+                exists = connection.execute("SELECT 1 FROM experiment_workspaces WHERE experiment_id = ?", (experiment_id,)).fetchone()
+                if exists:
+                    continue
+                biological_system = "retinal organoid" if _mentions_organoid(experiment) else str(experiment.get("cell_line") or "experimental system")
+                connection.execute(
+                    """
+                    INSERT INTO experiment_workspaces
+                        (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, created_at, updated_at)
+                    VALUES (?, 'lab:demo', COALESCE(?, 'user:pi-owner'), ?, ?, 'active', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (
+                        experiment_id,
+                        experiment.get("owner_user_id") or experiment.get("created_by"),
+                        experiment.get("title") or experiment_id,
+                        experiment.get("notes"),
+                        biological_system,
+                        "organoid" if "organoid" in biological_system.lower() else "sample",
+                    ),
+                )
+
+    def create_blank_experiment(
+        self,
+        actor_user_id: str,
+        lab_id: str,
+        title: str,
+        experiment_id: str | None = None,
+        short_description: str | None = None,
+        biological_system: str | None = None,
+        sample_unit_type: str | None = None,
+        start_date: str | None = None,
+        expected_end_day: int | None = None,
+        status: str = "draft",
+    ) -> dict[str, Any]:
+        self._require_lab_member(actor_user_id, lab_id)
+        experiment_id = experiment_id or f"experiment:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_workspaces
+                    (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, start_date, nominal_day_zero, expected_end_day)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (experiment_id, lab_id, actor_user_id, title, short_description, status, biological_system, sample_unit_type or "sample", start_date, start_date, expected_end_day),
+            )
+            self._history(connection, experiment_id, actor_user_id, "experiment.created", {"status": status})
+        self.get_or_create_notebook(actor_user_id, experiment_id)
+        workspace = self.get_workspace(experiment_id, actor_user_id)
+        assert workspace is not None
+        return workspace["experiment"]
+
+    def create_from_protocol(self, actor_user_id: str, protocol_id: str, protocol_version_id: str, title: str, lab_id: str = "lab:demo", experiment_id: str | None = None) -> dict[str, Any]:
+        protocol = self.get_protocol(protocol_id)
+        version = self.get_protocol_version(protocol_version_id)
+        if protocol is None or version is None or version["protocol_id"] != protocol_id:
+            raise ExperimentValidationError("Protocol version not found.")
+        experiment = self.create_blank_experiment(
+            actor_user_id=actor_user_id,
+            lab_id=lab_id,
+            title=title,
+            experiment_id=experiment_id,
+            biological_system=protocol.get("biological_system"),
+            sample_unit_type=protocol.get("default_sample_unit") or "sample",
+            status="planned",
+        )
+        self.link_protocol(actor_user_id, experiment["experiment_id"], protocol_id, protocol_version_id, inherit_events=True)
+        return self.get_workspace(experiment["experiment_id"], actor_user_id)["experiment"]
+
+    def link_protocol(self, actor_user_id: str, experiment_id: str, protocol_id: str, protocol_version_id: str, relationship: str = "primary", inherit_events: bool = True) -> dict[str, Any]:
+        self._require_access(actor_user_id, experiment_id, "edit")
+        protocol = self.get_protocol(protocol_id)
+        version = self.get_protocol_version(protocol_version_id)
+        if protocol is None or version is None:
+            raise ExperimentValidationError("Protocol or version not found.")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO experiment_protocol_references
+                    (experiment_id, protocol_id, protocol_version_id, relationship, inherited_events, added_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (experiment_id, protocol_id, protocol_version_id, relationship, 1 if inherit_events else 0, actor_user_id),
+            )
+            connection.execute(
+                """
+                UPDATE experiment_workspaces
+                SET primary_protocol_id = ?, primary_protocol_version_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE experiment_id = ? AND ? = 'primary'
+                """,
+                (protocol_id, protocol_version_id, experiment_id, relationship),
+            )
+            self._history(connection, experiment_id, actor_user_id, "protocol.linked", {"protocol_id": protocol_id, "protocol_version_id": protocol_version_id})
+            if inherit_events:
+                for row in connection.execute("SELECT * FROM protocol_events_general WHERE protocol_version_id = ?", (protocol_version_id,)).fetchall():
+                    event_id = f"event:{uuid.uuid4().hex}"
+                    connection.execute(
+                        """
+                        INSERT INTO experiment_events_general
+                            (event_id, experiment_id, protocol_event_id, event_type, title, description, day, source, metadata_json)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'protocol', ?)
+                        """,
+                        (
+                            event_id,
+                            experiment_id,
+                            row["protocol_event_id"],
+                            row["event_type"],
+                            row["title"],
+                            row["description"],
+                            row["day"],
+                            json.dumps({"protocol_version_id": protocol_version_id, "inherited": True}),
+                        ),
+                    )
+                    self._history(connection, experiment_id, actor_user_id, "protocol_event.inherited", {"protocol_event_id": row["protocol_event_id"]})
+        return {"experiment_id": experiment_id, "protocol_id": protocol_id, "protocol_version_id": protocol_version_id, "inherited_events": inherit_events}
+
+    def add_cohort(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_access(actor_user_id, experiment_id, "edit")
+        cohort_id = payload.get("cohort_id") or f"cohort:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_cohorts
+                    (cohort_id, experiment_id, name, description, start_day, start_date, parent_cohort_id, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (cohort_id, experiment_id, payload["name"], payload.get("description"), payload.get("start_day"), payload.get("start_date"), payload.get("parent_cohort_id"), json.dumps(payload.get("metadata") or {})),
+            )
+            self._history(connection, experiment_id, actor_user_id, "cohort.added", {"cohort_id": cohort_id})
+        return self._row_by_id("experiment_cohorts", "cohort_id", cohort_id)
+
+    def add_condition(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_access(actor_user_id, experiment_id, "edit")
+        condition_id = payload.get("condition_id") or f"condition:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_conditions
+                    (condition_id, experiment_id, cohort_id, name, description, condition_type, replicate_count, sample_count_per_replicate, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (condition_id, experiment_id, payload.get("cohort_id"), payload["name"], payload.get("description"), payload.get("condition_type", "custom"), payload.get("replicate_count"), payload.get("sample_count_per_replicate"), json.dumps(payload.get("metadata") or {})),
+            )
+            self._history(connection, experiment_id, actor_user_id, "condition.added", {"condition_id": condition_id})
+        return self._row_by_id("experiment_conditions", "condition_id", condition_id)
+
+    def add_intervention(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_access(actor_user_id, experiment_id, "edit")
+        intervention_id = payload.get("intervention_id") or f"intervention:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_interventions
+                    (intervention_id, experiment_id, cohort_id, condition_id, name, intervention_type, resource_id, concentration_value, concentration_unit, dilution, dose_value, dose_unit, duration_value, duration_unit, route, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    intervention_id,
+                    experiment_id,
+                    payload.get("cohort_id"),
+                    payload.get("condition_id"),
+                    payload["name"],
+                    payload.get("intervention_type", "custom"),
+                    payload.get("resource_id"),
+                    payload.get("concentration_value"),
+                    payload.get("concentration_unit"),
+                    payload.get("dilution"),
+                    payload.get("dose_value"),
+                    payload.get("dose_unit"),
+                    payload.get("duration_value"),
+                    payload.get("duration_unit"),
+                    payload.get("route"),
+                    payload.get("notes"),
+                ),
+            )
+            self._history(connection, experiment_id, actor_user_id, "intervention.added", {"intervention_id": intervention_id})
+        return self._row_by_id("experiment_interventions", "intervention_id", intervention_id)
+
+    def add_event(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_access(actor_user_id, experiment_id, "edit")
+        event_id = payload.get("event_id") or f"event:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_events_general
+                    (event_id, experiment_id, cohort_id, condition_id, protocol_event_id, event_type, title, description, day, date, start_time, end_time, applies_to_all_conditions, destructive, source, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    experiment_id,
+                    payload.get("cohort_id"),
+                    payload.get("condition_id"),
+                    payload.get("protocol_event_id"),
+                    payload.get("event_type", "custom"),
+                    payload["title"],
+                    payload.get("description"),
+                    payload.get("day"),
+                    payload.get("date"),
+                    payload.get("start_time"),
+                    payload.get("end_time"),
+                    1 if payload.get("applies_to_all_conditions") else 0,
+                    None if payload.get("destructive") is None else 1 if payload.get("destructive") else 0,
+                    payload.get("source", "manual"),
+                    json.dumps(payload.get("metadata") or {}),
+                ),
+            )
+            action = "event.added" if payload.get("source") != "protocol_override" else "protocol_event.overridden"
+            self._history(connection, experiment_id, actor_user_id, action, {"event_id": event_id, "protocol_event_id": payload.get("protocol_event_id")})
+        return self._row_by_id("experiment_events_general", "event_id", event_id)
+
+    def get_workspace(self, experiment_id: str, user_id: str) -> dict[str, Any] | None:
+        if not self.can_access(user_id, experiment_id, "view"):
+            return None
+        experiment = self._experiment(experiment_id)
+        if experiment is None:
+            return None
+        notebook = self.get_or_create_notebook(user_id, experiment_id)
+        return {
+            "experiment": experiment,
+            "overview": self._overview(experiment),
+            "notebook": notebook,
+            "design": {
+                "cohorts": self._rows("experiment_cohorts", experiment_id),
+                "conditions": self._rows("experiment_conditions", experiment_id),
+                "interventions": self._rows("experiment_interventions", experiment_id),
+                "assays": self._rows("experiment_assays", experiment_id),
+                "protocol_references": self._protocol_references(experiment_id),
+            },
+            "timeline": self.timeline(experiment_id, user_id),
+            "sample_planning": SamplePlanningService().preview({"biological_replicates": None, "technical_replicates": None, "sample_units_per_replicate": None}),
+            "sections": ["Overview", "Notebook", "Design", "Timeline", "Conditions", "Samples", "Plate Layout", "Tasks", "Data", "Chat", "History"],
+            "empty_states": {
+                "plate_layout": "Plate layouts are optional and only needed for plate-based experiments.",
+                "tasks": "Task integration is future-ready.",
+                "data": "Attach data assets as they are generated.",
+                "chat": "Use Lab Chat to discuss this experiment with authorized collaborators.",
+            },
+        }
+
+    def timeline(self, experiment_id: str, user_id: str) -> dict[str, Any]:
+        self._require_access(user_id, experiment_id, "view")
+        events = self._rows("experiment_events_general", experiment_id)
+        events.sort(key=lambda item: (item.get("day") if item.get("day") is not None else 10**9, str(item.get("date") or ""), str(item.get("created_at") or "")))
+        return {
+            "experiment_id": experiment_id,
+            "events": events,
+            "export_interfaces": ["csv", "ics"],
+            "ui_capabilities": ["horizontal_scroll", "event_details", "cohort_filter", "condition_filter", "add_event", "edit_event", "duplicate_event", "mark_complete"],
+        }
+
+    def get_or_create_notebook(self, user_id: str, experiment_id: str) -> dict[str, Any]:
+        self._require_access(user_id, experiment_id, "view")
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM experiment_notebook_documents WHERE experiment_id = ? ORDER BY version DESC LIMIT 1", (experiment_id,)).fetchone()
+            if row:
+                return self._notebook_payload(connection, dict(row))
+            document_id = f"experiment-notebook:{experiment_id}"
+            experiment = self._experiment(experiment_id) or {}
+            title = str(experiment.get("title") or experiment_id)
+            content = f"# {title}\n\nStart writing experimental notes here. Structured plan data will not overwrite this narrative workspace.\n"
+            connection.execute(
+                """
+                INSERT INTO experiment_notebook_documents
+                    (document_id, experiment_id, title, document_format, content, plain_text_cache, updated_by)
+                VALUES (?, ?, ?, 'markdown', ?, ?, ?)
+                """,
+                (document_id, experiment_id, title, content, _plain_text(content), user_id),
+            )
+            row = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
+            assert row is not None
+            return self._notebook_payload(connection, dict(row))
+
+    def save_notebook(self, user_id: str, document_id: str, current_version: int, content: str, document_format: str = "markdown", title: str | None = None) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
+            if row is None:
+                raise ExperimentValidationError("Notebook document not found.")
+            document = dict(row)
+            self._require_access(user_id, str(document["experiment_id"]), "edit")
+            if int(document["version"]) != current_version:
+                raise ExperimentConflictError("Notebook has changed since it was loaded.")
+            connection.execute(
+                """
+                UPDATE experiment_notebook_documents
+                SET title = COALESCE(?, title), document_format = ?, content = ?, plain_text_cache = ?,
+                    version = version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ?
+                WHERE document_id = ?
+                """,
+                (title, document_format, content, _plain_text(content), user_id, document_id),
+            )
+            self._history(connection, str(document["experiment_id"]), user_id, "notebook.edited", {"document_id": document_id, "new_version": current_version + 1})
+            updated = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
+            assert updated is not None
+            return self._notebook_payload(connection, dict(updated))
+
+    def add_notebook_attachment(self, user_id: str, document_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._connect() as connection:
+            doc = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
+            if doc is None:
+                raise ExperimentValidationError("Notebook document not found.")
+            self._require_access(user_id, str(doc["experiment_id"]), "edit")
+            self._check_attachment_access(user_id, payload)
+            attachment_id = f"notebook-attachment:{uuid.uuid4().hex[:16]}"
+            connection.execute(
+                """
+                INSERT INTO experiment_notebook_attachments
+                    (attachment_id, document_id, attachment_type, resource_id, storage_reference, display_name, mime_type, metadata_json, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attachment_id,
+                    document_id,
+                    payload.get("attachment_type"),
+                    payload.get("resource_id"),
+                    payload.get("storage_reference"),
+                    payload.get("display_name") or payload.get("resource_id") or "Attachment",
+                    payload.get("mime_type"),
+                    json.dumps(payload.get("metadata") or {}),
+                    user_id,
+                ),
+            )
+            self._history(connection, str(doc["experiment_id"]), user_id, "attachment.added", {"attachment_id": attachment_id, "attachment_type": payload.get("attachment_type")})
+        return self._row_by_id("experiment_notebook_attachments", "attachment_id", attachment_id)
+
+    def create_extraction_draft(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        provider = DeterministicExperimentExtractionProvider()
+        source_text = str(payload.get("source_text") or "")
+        result = provider.extract_from_text(source_text)
+        extraction_id = f"extraction:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_extraction_drafts
+                    (extraction_id, experiment_id, source_type, source_text, proposed_protocol_id, proposed_protocol_version_id,
+                     proposed_cohorts_json, proposed_conditions_json, proposed_interventions_json, proposed_events_json,
+                     ambiguities_json, warnings_json, confidence_by_field_json, status, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_confirmation', ?)
+                """,
+                (
+                    extraction_id,
+                    payload.get("experiment_id"),
+                    payload.get("source_type", "typed_text"),
+                    source_text,
+                    payload.get("proposed_protocol_id"),
+                    payload.get("proposed_protocol_version_id"),
+                    json.dumps(result.proposed_cohorts),
+                    json.dumps(result.proposed_conditions),
+                    json.dumps(result.proposed_interventions),
+                    json.dumps(result.proposed_events),
+                    json.dumps(result.ambiguities),
+                    json.dumps(result.warnings),
+                    json.dumps(result.confidence_by_field),
+                    user_id,
+                ),
+            )
+        return self._row_by_id("experiment_extraction_drafts", "extraction_id", extraction_id)
+
+    def list_protocols(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            return [_decode(row) for row in connection.execute("SELECT * FROM protocols_general ORDER BY updated_at DESC").fetchall()]
+
+    def get_protocol(self, protocol_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM protocols_general WHERE protocol_id = ?", (protocol_id,)).fetchone()
+            if not row:
+                return None
+            payload = _decode(row)
+            payload["versions"] = [_decode(item) for item in connection.execute("SELECT * FROM protocol_versions_general WHERE protocol_id = ? ORDER BY created_at DESC", (protocol_id,)).fetchall()]
+            return payload
+
+    def get_protocol_version(self, protocol_version_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM protocol_versions_general WHERE protocol_version_id = ?", (protocol_version_id,)).fetchone()
+            if not row:
+                return None
+            payload = _decode(row)
+            payload["events"] = [_decode(item) for item in connection.execute("SELECT * FROM protocol_events_general WHERE protocol_version_id = ? ORDER BY day", (protocol_version_id,)).fetchall()]
+            return payload
+
+    def create_protocol_version(self, actor_user_id: str, protocol_id: str, version_label: str, content: str, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        protocol = self.get_protocol(protocol_id)
+        if protocol is None:
+            raise ExperimentValidationError("Protocol not found.")
+        version_id = f"protocol-version:{_slug(protocol_id)}:{_slug(version_label)}:{uuid.uuid4().hex[:8]}"
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO protocol_versions_general (protocol_version_id, protocol_id, version_label, content, created_by) VALUES (?, ?, ?, ?, ?)",
+                (version_id, protocol_id, version_label, content, actor_user_id),
+            )
+            connection.execute("UPDATE protocols_general SET current_version_id = ?, updated_at = CURRENT_TIMESTAMP WHERE protocol_id = ?", (version_id, protocol_id))
+            for event in events or []:
+                connection.execute(
+                    """
+                    INSERT INTO protocol_events_general
+                        (protocol_event_id, protocol_version_id, title, description, day, event_type, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (f"protocol-event:{uuid.uuid4().hex[:16]}", version_id, event.get("title"), event.get("description"), event.get("day"), event.get("event_type", "protocol_step"), json.dumps(event.get("metadata") or {})),
+                )
+        version = self.get_protocol_version(version_id)
+        assert version is not None
+        return version
+
+    def can_access(self, user_id: str, experiment_id: str, access_level: str = "view") -> bool:
+        experiment = self._experiment(experiment_id)
+        if experiment is None:
+            return False
+        if experiment["owner_user_id"] == user_id:
+            return True
+        lab_access = self.authz.user_access(user_id, str(experiment["lab_id"]))
+        if "lab.notebooks.view_all" in lab_access["permissions"] and access_level == "view":
+            return True
+        required = EXPERIMENT_ACCESS_ORDER[access_level]
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM experiment_permissions WHERE experiment_id = ?", (experiment_id,)).fetchall()
+        for row in rows:
+            grant = dict(row)
+            if EXPERIMENT_ACCESS_ORDER.get(grant["access_level"], 0) < required:
+                continue
+            if grant["principal_type"] == "user" and grant["principal_id"] == user_id:
+                return True
+            if grant["principal_type"] == "role" and grant["principal_id"] == lab_access["role"]:
+                return True
+        return False
+
+    def grant_access(self, actor_user_id: str, experiment_id: str, principal_type: str, principal_id: str, access_level: str) -> dict[str, Any]:
+        self._require_access(actor_user_id, experiment_id, "manage")
+        permission_id = f"experiment-permission:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO experiment_permissions (permission_id, experiment_id, principal_type, principal_id, access_level, granted_by) VALUES (?, ?, ?, ?, ?, ?)",
+                (permission_id, experiment_id, principal_type, principal_id, access_level, actor_user_id),
+            )
+        return self._row_by_id("experiment_permissions", "permission_id", permission_id)
+
+    def _require_access(self, user_id: str, experiment_id: str, access_level: str) -> None:
+        if not self.can_access(user_id, experiment_id, access_level):
+            raise ExperimentAuthorizationError("Experiment not found or access denied.")
+
+    def _require_lab_member(self, user_id: str, lab_id: str) -> None:
+        if not self.authz.membership(user_id, lab_id):
+            raise ExperimentAuthorizationError("Active lab membership required.")
+
+    def _experiment(self, experiment_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM experiment_workspaces WHERE experiment_id = ?", (experiment_id,)).fetchone()
+            return _decode(row) if row else None
+
+    def _rows(self, table: str, experiment_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            return [_decode(row) for row in connection.execute(f"SELECT * FROM {table} WHERE experiment_id = ? ORDER BY created_at", (experiment_id,)).fetchall()]
+
+    def _protocol_references(self, experiment_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            return [_decode(row) for row in connection.execute("SELECT * FROM experiment_protocol_references WHERE experiment_id = ? ORDER BY added_at", (experiment_id,)).fetchall()]
+
+    def _notebook_payload(self, connection: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+        attachments = [_decode(item) for item in connection.execute("SELECT * FROM experiment_notebook_attachments WHERE document_id = ? ORDER BY created_at", (row["document_id"],)).fetchall()]
+        return _decode(row) | {"attachments": attachments, "editor_capabilities": ["headings", "paragraphs", "bold", "italic", "lists", "checklists", "tables", "links", "attachments", "resource_links"]}
+
+    def _row_by_id(self, table: str, key: str, value: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(f"SELECT * FROM {table} WHERE {key} = ?", (value,)).fetchone()
+            if row is None:
+                raise ExperimentValidationError(f"Missing row: {table}.{key}={value}")
+            return _decode(row)
+
+    def _overview(self, experiment: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": experiment.get("title"),
+            "owner_user_id": experiment.get("owner_user_id"),
+            "status": experiment.get("status"),
+            "biological_system": experiment.get("biological_system"),
+            "sample_unit_type": experiment.get("sample_unit_type"),
+            "linked_protocol": experiment.get("primary_protocol_id"),
+            "current_experimental_day": None,
+            "alerts": [],
+            "quick_actions": ["Edit notebook", "Add condition", "Add event", "Attach data"],
+        }
+
+    def _check_attachment_access(self, user_id: str, payload: dict[str, Any]) -> None:
+        attachment_type = str(payload.get("attachment_type") or "")
+        resource_id = payload.get("resource_id")
+        if attachment_type == "notebook" and resource_id and not self.authz.can_user(user_id, "view", "notebook", str(resource_id)).allowed:
+            raise ExperimentAuthorizationError("Attached notebook is not visible to this user.")
+        if attachment_type == "experiment" and resource_id and not self.can_access(user_id, str(resource_id), "view"):
+            raise ExperimentAuthorizationError("Attached experiment is not visible to this user.")
+
+    def _history(self, connection: sqlite3.Connection, experiment_id: str, actor_user_id: str, action: str, metadata: dict[str, Any]) -> None:
+        connection.execute(
+            """
+            INSERT INTO experiment_history_events (history_id, experiment_id, actor_user_id, action, metadata_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (f"history:{uuid.uuid4().hex[:16]}", experiment_id, actor_user_id, action, json.dumps(metadata)),
+        )
+
+
+def _decode(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    payload = dict(row)
+    for key in list(payload):
+        if key.endswith("_json"):
+            target = key.removesuffix("_json")
+            try:
+                payload[target] = json.loads(payload[key] or "{}")
+            except json.JSONDecodeError:
+                payload[target] = payload[key]
+    return payload
+
+
+def _plain_text(content: str) -> str:
+    return content.replace("#", "").replace("*", "").replace("|", " ")
+
+
+def _slug(value: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")[:80] or uuid.uuid4().hex[:8]
+
+
+def _mentions_organoid(experiment: dict[str, Any]) -> bool:
+    text = " ".join(str(value) for value in experiment.values() if value).lower()
+    return "organoid" in text

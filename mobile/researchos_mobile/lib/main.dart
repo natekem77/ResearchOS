@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'api/researchos_api.dart';
+import 'brand/mundi_brand.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
 import 'screens/chats_screen.dart';
@@ -12,6 +13,7 @@ import 'screens/intelligence_feed_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/morning_brief_screen.dart';
 import 'screens/new_experiment_wizard_screen.dart';
+import 'screens/protocol_hub_screen.dart';
 import 'screens/resources_screen.dart';
 import 'screens/search_screen.dart';
 import 'screens/server_connection_screen.dart';
@@ -55,7 +57,7 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
         _connectionError = null;
       } else {
         _connectionError =
-            'No saved ResearchOS server is reachable. Open Tailscale/VPN if needed, or add a server URL.';
+            'No saved Mundi server is reachable. Open Tailscale/VPN if needed, or add a server URL.';
       }
     });
   }
@@ -70,7 +72,7 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ResearchOS',
+      title: MundiBrand.appName,
       debugShowCheckedModeBanner: false,
       theme: ResearchOsTheme.light(),
       darkTheme: ResearchOsTheme.dark(),
@@ -100,7 +102,7 @@ class _StartupLoadingScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return const Scaffold(
       body: SafeArea(
         child: Center(
           child: Padding(
@@ -108,19 +110,11 @@ class _StartupLoadingScreen extends StatelessWidget {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                CircleAvatar(
-                  radius: 32,
-                  backgroundColor: Theme.of(context).colorScheme.primary,
-                  foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                  child: const Icon(Icons.biotech_outlined, size: 34),
-                ),
-                const SizedBox(height: ResearchOsSpacing.lg),
-                Text('ResearchOS',
-                    style: Theme.of(context).textTheme.headlineSmall),
-                const SizedBox(height: ResearchOsSpacing.sm),
-                const Text('Connecting to your lab workspace...'),
-                const SizedBox(height: ResearchOsSpacing.lg),
-                const CircularProgressIndicator(),
+                MundiSplashSequence(),
+                SizedBox(height: ResearchOsSpacing.sm),
+                Text('Connecting to your lab workspace...'),
+                SizedBox(height: ResearchOsSpacing.lg),
+                CircularProgressIndicator(),
               ],
             ),
           ),
@@ -159,6 +153,7 @@ class ResearchOsHome extends StatelessWidget {
       IntelligenceFeedScreen(api: api),
       WhiteboardScreen(api: api),
       ChatsScreen(api: api),
+      ProtocolHubScreen(api: api),
     ];
     final titles = [
       'Home',
@@ -175,6 +170,7 @@ class ResearchOsHome extends StatelessWidget {
       'Intelligence',
       'Whiteboard',
       'Chats',
+      'Protocols',
     ];
     return ResearchOsScaffold(
       title: titles[selectedIndex],

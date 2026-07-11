@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
+import '../brand/mundi_brand.dart';
 import '../config/app_config.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
@@ -129,31 +130,19 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return Scaffold(
       body: SafeArea(
         child: ListView(
           padding: ResearchOsSpacing.screen,
           children: [
             const SizedBox(height: ResearchOsSpacing.lg),
-            Center(
+            const Center(
               child: Column(
                 children: [
-                  CircleAvatar(
-                    radius: 38,
-                    backgroundColor: colorScheme.primary,
-                    foregroundColor: colorScheme.onPrimary,
-                    child: const Icon(Icons.biotech_outlined, size: 40),
-                  ),
-                  const SizedBox(height: ResearchOsSpacing.lg),
+                  MundiBrandLockup(logoSize: 86),
+                  SizedBox(height: ResearchOsSpacing.sm),
                   Text(
-                    'ResearchOS',
-                    style: Theme.of(context).textTheme.headlineMedium,
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: ResearchOsSpacing.sm),
-                  const Text(
-                    "Your lab's experiments, notes, inventory, timelines, and analyses in one place.",
+                    MundiBrand.valueStatement,
                     textAlign: TextAlign.center,
                   ),
                 ],
@@ -176,7 +165,7 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
                           children: [
                             Text('Server connection',
                                 style: Theme.of(context).textTheme.titleMedium),
-                            const Text('Connect this app to ResearchOS.'),
+                            const Text('Connect Mundi to ResearchOS.'),
                           ],
                         ),
                       ),

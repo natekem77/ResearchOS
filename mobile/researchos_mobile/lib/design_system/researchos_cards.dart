@@ -692,7 +692,7 @@ class ResearchOsErrorState extends StatelessWidget {
   Widget build(BuildContext context) {
     return ResearchOsEmptyState(
       icon: Icons.cloud_off_outlined,
-      title: 'ResearchOS is unreachable',
+      title: 'Mundi is unreachable',
       message: message,
       action: FilledButton.icon(
         onPressed: onRetry,

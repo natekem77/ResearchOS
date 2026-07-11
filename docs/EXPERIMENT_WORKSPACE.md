@@ -118,3 +118,35 @@ The workspace page includes:
 - AI/local summary
 - limitations
 - provenance
+
+## Generalized Workspace Foundation
+
+The generalized experiment foundation adds a parallel workspace endpoint for
+the narrative-notebook plus structured-plan model:
+
+```bash
+curl http://127.0.0.1:8001/experiments/NK_Expt_26/general-workspace \
+  -H "X-ResearchOS-User: user:researcher-a"
+```
+
+Create a blank experiment:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiments/general \
+  -H "Content-Type: application/json" \
+  -H "X-ResearchOS-User: user:researcher-a" \
+  -d '{"title":"Primary cell assay","biological_system":"primary cells","sample_unit_type":"well"}'
+```
+
+Create from protocol:
+
+```bash
+curl -X POST http://127.0.0.1:8001/experiments/general/from-protocol \
+  -H "Content-Type: application/json" \
+  -H "X-ResearchOS-User: user:researcher-a" \
+  -d '{"title":"Protocol-derived test","protocol_id":"protocol:meyer-retinal-organoid-protocol","protocol_version_id":"protocol-version:meyer-retinal-organoid-protocol:demo-v1"}'
+```
+
+Protocol-derived events retain `protocol_event_id` and protocol version
+metadata. Protocol changes do not silently alter historical experiment
+timelines.

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/researchos_api.dart';
+import '../brand/mundi_brand.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 
@@ -49,7 +50,9 @@ class _HomeScreenState extends State<HomeScreen> {
             (_) => <String, dynamic>{},
           ),
       widget.api.morningBrief().catchError((_) => <String, dynamic>{}),
-      widget.api.protocols().catchError((_) => <Map<String, dynamic>>[]),
+      widget.api
+          .protocolHubProtocols()
+          .catchError((_) => <Map<String, dynamic>>[]),
       widget.api.resources().catchError((_) => <Map<String, dynamic>>[]),
       widget.api.inventory().catchError((_) => <Map<String, dynamic>>[]),
     ]);
@@ -279,6 +282,7 @@ class _HomeDestinations {
   static const copilot = 8;
   static const morningBrief = 10;
   static const whiteboard = 12;
+  static const protocols = 14;
 }
 
 class _PreferenceKeys {
@@ -307,29 +311,24 @@ class _HeroCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
     return ResearchOsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              CircleAvatar(
-                backgroundColor: colorScheme.primaryContainer,
-                foregroundColor: colorScheme.onPrimaryContainer,
-                child: const Icon(Icons.biotech_outlined),
-              ),
+              const MundiLogoMark(size: 48),
               const SizedBox(width: ResearchOsSpacing.md),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'ResearchOS',
+                      MundiBrand.appName,
                       style: Theme.of(context).textTheme.headlineSmall,
                     ),
                     Text(
-                      'Home Command Center',
+                      MundiBrand.poweredBy,
                       style: Theme.of(context).textTheme.bodyMedium,
                     ),
                   ],
@@ -348,7 +347,7 @@ class _HeroCard extends StatelessWidget {
           ),
           const SizedBox(height: ResearchOsSpacing.sm),
           const Text(
-            'Continue experiments, create new work, review lab alerts, and ask ResearchOS from one landing page.',
+            'Continue experiments, create new work, review lab alerts, and ask Mundi from one landing page.',
           ),
         ],
       ),
@@ -772,7 +771,7 @@ class _RecentlyUsed extends StatelessWidget {
               protocol['name']?.toString() ??
               'Protocol',
           subtitle: 'Protocol',
-          onTap: () => onNavigate(_HomeDestinations.dashboard),
+          onTap: () => onNavigate(_HomeDestinations.protocols),
         ),
       for (final item in model.inventory.take(2))
         _HomeListTile(

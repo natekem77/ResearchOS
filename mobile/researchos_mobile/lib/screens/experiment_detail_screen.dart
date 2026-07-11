@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
+import 'general_experiment_workspace_screen.dart';
 import 'quantification_workspace_screen.dart';
 
 class ExperimentDetailScreen extends StatefulWidget {
@@ -102,6 +103,22 @@ class _ExperimentDetailScreenState extends State<ExperimentDetailScreen> {
                 },
                 icon: const Icon(Icons.analytics_outlined),
                 label: const Text('Open Quantification Workspace'),
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              OutlinedButton.icon(
+                onPressed: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => GeneralExperimentWorkspaceScreen(
+                        api: widget.api,
+                        experimentId: widget.experiment.humanExperimentId ??
+                            widget.experiment.id,
+                      ),
+                    ),
+                  );
+                },
+                icon: const Icon(Icons.article_outlined),
+                label: const Text('Open General Workspace'),
               ),
               const ResearchOsSectionHeader(title: 'Overview'),
               ResearchOsCard(

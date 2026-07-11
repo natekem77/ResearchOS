@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Mundi Soft Orbit Nebula Hint logo">
+  <defs>
+    <radialGradient id="space" cx="52%" cy="44%" r="78%">
+      <stop offset="0%" stop-color="#0A2444"/>
+      <stop offset="58%" stop-color="#07172F"/>
+      <stop offset="100%" stop-color="#041020"/>
+    </radialGradient>
+    <radialGradient id="nebula" cx="69%" cy="43%" r="44%">
+      <stop offset="0%" stop-color="#5FD4FF" stop-opacity="0.34"/>
+      <stop offset="42%" stop-color="#2B7CFF" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#2B7CFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="beam" x1="330" y1="548" x2="620" y2="444" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5FD4FF" stop-opacity="0"/>
+      <stop offset="48%" stop-color="#5FD4FF" stop-opacity="0.34"/>
+      <stop offset="100%" stop-color="#5FD4FF" stop-opacity="0.86"/>
+    </linearGradient>
+    <radialGradient id="starGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="1"/>
+      <stop offset="24%" stop-color="#5FD4FF" stop-opacity="0.88"/>
+      <stop offset="100%" stop-color="#5FD4FF" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1024" height="1024" rx="220" fill="url(#space)"/>
+  <ellipse cx="692" cy="438" rx="270" ry="210" fill="url(#nebula)"/>
+
+  <g fill="#FFFFFF" opacity="0.72">
+    <circle cx="150" cy="178" r="3.5"/>
+    <circle cx="238" cy="210" r="3.5"/>
+    <circle cx="820" cy="175" r="3.5"/>
+    <circle cx="865" cy="725" r="3.5"/>
+    <circle cx="180" cy="805" r="3.5"/>
+    <circle cx="725" cy="844" r="3.5"/>
+    <circle cx="894" cy="365" r="3.5"/>
+    <circle cx="105" cy="545" r="3.5"/>
+  </g>
+
+  <g transform="translate(512 512) rotate(-19.5)">
+    <ellipse cx="0" cy="0" rx="330" ry="220" fill="none" stroke="#E6B85C" stroke-width="14" stroke-linecap="round" opacity="0.86"/>
+  </g>
+  <g transform="translate(512 512) rotate(32)">
+    <ellipse cx="0" cy="0" rx="245" ry="150" fill="none" stroke="#E6B85C" stroke-width="9" stroke-linecap="round" opacity="0.46"/>
+  </g>
+
+  <path d="M336 512 C405 456 493 441 594 444 C550 484 507 525 454 582 C411 559 374 537 336 512 Z" fill="url(#beam)" filter="url(#softGlow)"/>
+
+  <circle cx="512" cy="512" r="155" fill="url(#starGlow)" opacity="0.9"/>
+  <path d="M512 442 L526 493 L582 512 L526 531 L512 582 L498 531 L442 512 L498 493 Z" fill="#FFFFFF"/>
+  <circle cx="512" cy="512" r="24" fill="#5FD4FF"/>
+
+  <g fill="#E6B85C">
+    <circle cx="230" cy="398" r="13"/>
+    <circle cx="355" cy="275" r="13"/>
+    <circle cx="710" cy="275" r="13"/>
+    <circle cx="805" cy="512" r="13"/>
+    <circle cx="674" cy="735" r="13"/>
+    <circle cx="290" cy="662" r="13"/>
+  </g>
+  <g fill="#E6B85C" opacity="0.62">
+    <circle cx="381" cy="474" r="8"/>
+    <circle cx="623" cy="396" r="8"/>
+    <circle cx="663" cy="591" r="8"/>
+    <circle cx="402" cy="621" r="8"/>
+  </g>
+</svg>
