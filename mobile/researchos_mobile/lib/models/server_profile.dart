@@ -35,7 +35,7 @@ class MobileServerProfile {
   factory MobileServerProfile.fromJson(Map<String, dynamic> json) {
     return MobileServerProfile(
       profileId: json['profile_id']?.toString() ?? '',
-      displayName: json['display_name']?.toString() ?? 'ResearchOS Server',
+      displayName: json['display_name']?.toString() ?? 'Mundi Server',
       baseUrl: json['base_url']?.toString() ?? '',
       connectionType: _connectionTypeFromString(
         json['connection_type']?.toString(),

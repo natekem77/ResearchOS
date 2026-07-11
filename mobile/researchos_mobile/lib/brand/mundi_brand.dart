@@ -4,6 +4,7 @@ class MundiBrand {
   static const appName = 'Mundi';
   static const platformName = 'ResearchOS';
   static const poweredBy = 'Powered by ResearchOS';
+  static const approvedIconAsset = 'assets/brand/mundi_approved_icon_1024.png';
   static const valueStatement =
       "Your lab's experiments, notes, inventory, timelines, and analyses in one place.";
 
@@ -24,8 +25,13 @@ class MundiLogoMark extends StatelessWidget {
   Widget build(BuildContext context) {
     return SizedBox.square(
       dimension: size,
-      child: CustomPaint(
-        painter: _MundiLogoPainter(),
+      child: Image.asset(
+        MundiBrand.approvedIconAsset,
+        width: size,
+        height: size,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.high,
+        semanticLabel: 'Mundi',
       ),
     );
   }
@@ -210,161 +216,4 @@ class _MundiLoadingIndicatorState extends State<MundiLoadingIndicator>
       },
     );
   }
-}
-
-class _MundiLogoPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final scale = size.width / 1024.0;
-    canvas.scale(scale);
-
-    final background = Paint()
-      ..shader = const RadialGradient(
-        center: Alignment(0.18, -0.1),
-        radius: 0.82,
-        colors: [MundiBrand.deepNavy, MundiBrand.darkSpace],
-      ).createShader(const Rect.fromLTWH(0, 0, 1024, 1024));
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        const Rect.fromLTWH(0, 0, 1024, 1024),
-        const Radius.circular(220),
-      ),
-      background,
-    );
-
-    final nebula = Paint()
-      ..shader = RadialGradient(
-        center: const Alignment(0.5, -0.05),
-        radius: 0.55,
-        colors: [
-          MundiBrand.nebulaBlue.withValues(alpha: 0.3),
-          MundiBrand.electricBlue.withValues(alpha: 0.08),
-          Colors.transparent,
-        ],
-      ).createShader(const Rect.fromLTWH(0, 0, 1024, 1024));
-    canvas.drawOval(const Rect.fromLTWH(430, 250, 470, 390), nebula);
-
-    final outerOrbit = Paint()
-      ..color = MundiBrand.orbitGold.withValues(alpha: 0.86)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 14
-      ..strokeCap = StrokeCap.round;
-    canvas.save();
-    canvas.translate(512, 512);
-    canvas.rotate(-0.34);
-    canvas.drawOval(const Rect.fromLTWH(-330, -220, 660, 440), outerOrbit);
-    canvas.restore();
-
-    final innerOrbit = Paint()
-      ..color = MundiBrand.orbitGold.withValues(alpha: 0.46)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 9
-      ..strokeCap = StrokeCap.round;
-    canvas.save();
-    canvas.translate(512, 512);
-    canvas.rotate(0.56);
-    canvas.drawOval(const Rect.fromLTWH(-245, -150, 490, 300), innerOrbit);
-    canvas.restore();
-
-    final beam = Paint()
-      ..shader = LinearGradient(
-        colors: [
-          MundiBrand.electricBlue.withValues(alpha: 0.0),
-          MundiBrand.electricBlue.withValues(alpha: 0.32),
-          MundiBrand.electricBlue.withValues(alpha: 0.84),
-        ],
-      ).createShader(const Rect.fromLTWH(360, 420, 260, 120));
-    final beamPath = Path()
-      ..moveTo(336, 512)
-      ..cubicTo(405, 456, 493, 441, 594, 444)
-      ..cubicTo(550, 484, 507, 525, 454, 582)
-      ..cubicTo(411, 559, 374, 537, 336, 512);
-    canvas.drawPath(beamPath, beam);
-
-    final starGlow = Paint()
-      ..shader = RadialGradient(
-        colors: [
-          MundiBrand.electricBlue.withValues(alpha: 0.9),
-          MundiBrand.electricBlue.withValues(alpha: 0.15),
-          Colors.transparent,
-        ],
-      ).createShader(Rect.fromCircle(
-        center: const Offset(512, 512),
-        radius: 155,
-      ));
-    canvas.drawCircle(const Offset(512, 512), 155, starGlow);
-
-    final star = Paint()..color = MundiBrand.starWhite;
-    _drawStar(canvas, const Offset(512, 512), 70, 18, star);
-    final core = Paint()..color = MundiBrand.electricBlue;
-    canvas.drawCircle(const Offset(512, 512), 24, core);
-
-    final gold = Paint()..color = MundiBrand.orbitGold;
-    for (final point in const [
-      Offset(230, 398),
-      Offset(355, 275),
-      Offset(710, 275),
-      Offset(805, 512),
-      Offset(674, 735),
-      Offset(290, 662),
-    ]) {
-      canvas.drawCircle(point, 13, gold);
-    }
-
-    final faintGold = Paint()
-      ..color = MundiBrand.orbitGold.withValues(alpha: 0.62);
-    for (final point in const [
-      Offset(381, 474),
-      Offset(623, 396),
-      Offset(663, 591),
-      Offset(402, 621),
-    ]) {
-      canvas.drawCircle(point, 8, faintGold);
-    }
-
-    final tinyStars = Paint()..color = Colors.white.withValues(alpha: 0.72);
-    for (final point in const [
-      Offset(150, 178),
-      Offset(238, 210),
-      Offset(820, 175),
-      Offset(865, 725),
-      Offset(180, 805),
-      Offset(725, 844),
-      Offset(894, 365),
-      Offset(105, 545),
-    ]) {
-      canvas.drawCircle(point, 3.5, tinyStars);
-    }
-  }
-
-  void _drawStar(
-    Canvas canvas,
-    Offset center,
-    double outerRadius,
-    double innerRadius,
-    Paint paint,
-  ) {
-    final path = Path();
-    for (var i = 0; i < 16; i++) {
-      final angle = -1.5708 + (i * 3.14159 / 8);
-      final radius = i.isEven ? outerRadius : innerRadius;
-      final point = Offset(
-        center.dx + radius * _cos(angle),
-        center.dy + radius * _sin(angle),
-      );
-      if (i == 0) {
-        path.moveTo(point.dx, point.dy);
-      } else {
-        path.lineTo(point.dx, point.dy);
-      }
-    }
-    path.close();
-    canvas.drawPath(path, paint);
-  }
-
-  double _sin(double value) => Offset.fromDirection(value).dy;
-  double _cos(double value) => Offset.fromDirection(value).dx;
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

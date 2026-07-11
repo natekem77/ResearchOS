@@ -314,7 +314,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               child: Row(
                 children: [
                   IconButton(
-                    tooltip: 'Attach ResearchOS Resource',
+                    tooltip: 'Attach Mundi Resource',
                     onPressed: _insertObjectReference,
                     icon: const Icon(Icons.attach_file_outlined),
                   ),
@@ -730,7 +730,7 @@ Future<void> _showReferencePreview(
               children: [
                 ObjectReferenceCard(object: object),
                 const SizedBox(height: ResearchOsSpacing.md),
-                Text(card['summary']?.toString() ?? 'ResearchOS reference'),
+                Text(card['summary']?.toString() ?? 'Mundi reference'),
                 const SizedBox(height: ResearchOsSpacing.md),
                 FilledButton.icon(
                   onPressed: () => Navigator.of(context).pop(),

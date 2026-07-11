@@ -54,7 +54,7 @@ class _ObjectReferencePickerState extends State<ObjectReferencePicker> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Reference ResearchOS object',
+            Text('Reference Mundi object',
                 style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: ResearchOsSpacing.sm),
             const Text(
@@ -143,7 +143,7 @@ class ObjectReferenceCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  object['title']?.toString() ?? 'ResearchOS object',
+                  object['title']?.toString() ?? 'Mundi object',
                   style: Theme.of(context).textTheme.titleSmall,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -188,7 +188,7 @@ class ObjectReferenceChip extends StatelessWidget {
       avatar: Icon(_iconFor(objectType ?? ''), size: 16),
       label: Text(label, overflow: TextOverflow.ellipsis),
       onPressed: onTap,
-      tooltip: 'Open ResearchOS reference',
+      tooltip: 'Open Mundi reference',
     );
   }
 }

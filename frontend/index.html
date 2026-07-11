@@ -3,23 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#0f6b5b" />
+    <meta name="theme-color" content="#061123" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="ResearchOS" />
-    <title>ResearchOS</title>
+    <meta name="apple-mobile-web-app-title" content="Mundi" />
+    <title>Mundi</title>
     <link rel="manifest" href="/frontend-assets/manifest.webmanifest" />
-    <link rel="icon" href="/frontend-assets/icons/icon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/frontend-assets/icons/icon.svg" />
+    <link rel="icon" href="/frontend-assets/icons/favicon.ico" sizes="any" />
+    <link rel="icon" href="/frontend-assets/icons/favicon-32.png" type="image/png" />
+    <link rel="apple-touch-icon" href="/frontend-assets/icons/apple-touch-icon.png" />
     <link rel="stylesheet" href="/frontend-assets/styles.css" />
   </head>
   <body>
     <div class="app-frame">
       <aside class="sidebar">
-        <a class="brand" href="#/dashboard" aria-label="ResearchOS dashboard">
-          <span class="brand-mark">R</span>
+        <a class="brand" href="#/dashboard" aria-label="Mundi dashboard">
+          <span class="brand-mark" aria-hidden="true"></span>
           <span>
-            <strong>ResearchOS</strong>
-            <small>Lab Intelligence</small>
+            <strong>Mundi</strong>
+            <small>Powered by ResearchOS</small>
           </span>
         </a>
 
@@ -63,14 +64,14 @@
         <header class="topbar">
           <div>
             <p class="eyebrow" id="viewEyebrow">Dashboard</p>
-            <h1 id="viewTitle">ResearchOS Dashboard</h1>
+            <h1 id="viewTitle">Mundi Dashboard</h1>
           </div>
           <div class="topbar-status">
             <button type="button" class="global-search-button" id="globalSearchButton" aria-label="Open universal search">
               Search
               <kbd>Ctrl K</kbd>
             </button>
-            <span class="status-pill ok release-badge">ResearchOS v0.2 preview</span>
+            <span class="status-pill ok release-badge">Mundi preview</span>
             <select id="workspaceSwitcher" class="workspace-switcher" aria-label="Active workspace" title="Workspace switching is scaffolded; full isolation is not enforced yet.">
               <option>Workspace</option>
             </select>
@@ -81,8 +82,8 @@
         </header>
 
         <main class="content">
-          <section class="status-banner" aria-label="Current ResearchOS status">
-            <span><strong>ResearchOS v0.2 preview</strong> Stable local preview</span>
+          <section class="status-banner" aria-label="Current Mundi status">
+            <span><strong>Mundi preview</strong> Stable local preview</span>
             <span><strong>ResearchOS core</strong> Active</span>
             <span><strong>Markdown demo</strong> Active</span>
             <span><strong>OneNote</strong> Pending login/approval</span>
@@ -108,7 +109,7 @@
           <section class="view active" id="dashboardView">
             <section class="hero-panel welcome-card">
               <div>
-                <p class="eyebrow">ResearchOS</p>
+                <p class="eyebrow">Mundi</p>
                 <h2>AI-powered laboratory knowledge system</h2>
                 <p class="welcome-copy">Local-first research search, experiment extraction, literature comparison, and OneNote-ready lab intelligence.</p>
               </div>
@@ -123,7 +124,7 @@
               <p class="demo-status" id="demoStatus"></p>
             </section>
 
-            <section class="metric-grid" aria-label="ResearchOS metrics">
+            <section class="metric-grid" aria-label="Mundi metrics">
               <article class="metric-card">
                 <span>Documents</span>
                 <strong id="metricDocuments">0</strong>
@@ -190,7 +191,7 @@
                 </div>
                 <span class="status-pill ok">Local evidence</span>
               </div>
-              <p class="card-copy" id="dailyDashboardSummary">Loading daily ResearchOS attention summary...</p>
+              <p class="card-copy" id="dailyDashboardSummary">Loading daily Mundi attention summary...</p>
               <div class="daily-dashboard-grid" id="dailyDashboardCards"></div>
             </section>
 
@@ -242,7 +243,7 @@
                 <div class="demo-mode-list">
                   <a href="#/dashboard">Load demo notes</a>
                   <a href="#/new-experiment">New Experiment dictation demo</a>
-                  <a href="#/chat">Ask ResearchOS</a>
+                  <a href="#/chat">Ask Mundi</a>
                   <a href="#/experiments">Compare experiments</a>
                   <a href="#/chat">Compare with literature</a>
                   <span>OneNote integration pending IT approval</span>
@@ -299,7 +300,7 @@
                 <div class="panel-heading">
                   <div>
                     <p class="eyebrow">AI Chat</p>
-                    <h2>Ask ResearchOS</h2>
+                    <h2>Ask Mundi</h2>
                   </div>
                 </div>
                 <form class="chat-form" id="dashboardChatForm">
@@ -351,7 +352,7 @@
                 </div>
                 <div class="entry-actions">
                   <button type="submit">Generate structured entry</button>
-                  <button type="button" id="saveDraftButton" class="secondary-button">Save Draft in ResearchOS</button>
+                  <button type="button" id="saveDraftButton" class="secondary-button">Save Draft in Mundi</button>
                   <button type="button" id="markReadyButton" class="secondary-button">Mark ready for OneNote</button>
                   <button type="button" disabled>Save to OneNote</button>
                   <span class="muted">Write-back is intentionally disabled until UCSD IT approves OneNote create/write permissions.</span>
@@ -1007,7 +1008,7 @@
               <div class="panel-heading">
                 <div>
                   <p class="eyebrow">AI Assistant</p>
-                  <h2>Chat with ResearchOS</h2>
+                  <h2>Chat with Mundi</h2>
                 </div>
               </div>
               <div class="prompt-row" role="group" aria-label="Assistant mode">
@@ -1063,7 +1064,7 @@
               <div class="panel-heading">
                 <div>
                   <p class="eyebrow">Follow-up Experiment Planner</p>
-                  <h2>Plan a concrete next experiment from ResearchOS evidence</h2>
+                  <h2>Plan a concrete next experiment from Mundi evidence</h2>
                 </div>
               </div>
               <form class="chat-form" id="plannerForm">
@@ -1343,7 +1344,7 @@
                   <h3>Marketplace</h3>
                 </div>
               </div>
-              <p class="approval-note" id="extensionMarketplace">Future ResearchOS extension marketplace is not implemented yet.</p>
+              <p class="approval-note" id="extensionMarketplace">Future Mundi extension marketplace is not implemented yet.</p>
             </section>
           </section>
 
@@ -1360,8 +1361,8 @@
             </section>
           </section>
 
-          <footer class="app-footer" aria-label="ResearchOS footer">
-            <strong>ResearchOS v0.2 preview</strong>
+          <footer class="app-footer" aria-label="Mundi footer">
+            <strong>Mundi preview</strong>
             <span>Local-first</span>
             <span>OneNote-ready</span>
             <span>AI-assisted</span>
@@ -1375,11 +1376,11 @@
         <div class="search-dialog-header">
           <div>
             <p class="eyebrow">Universal Scientific Search</p>
-            <h2 id="globalSearchTitle">Search ResearchOS</h2>
+            <h2 id="globalSearchTitle">Search Mundi</h2>
           </div>
           <button type="button" class="secondary-button" id="globalSearchClose">Close</button>
         </div>
-        <label class="sr-only" for="globalSearchInput">Search all ResearchOS objects</label>
+        <label class="sr-only" for="globalSearchInput">Search all Mundi objects</label>
         <input id="globalSearchInput" class="global-search-input" type="search" placeholder='Search SAG, "SAG D32", BRN3B, NK_Expt_31...' autocomplete="off" />
         <div class="global-search-meta" id="globalSearchMeta">Type to search notebooks, experiments, entities, assets, literature, and commands.</div>
         <div class="global-search-results" id="globalSearchResults"></div>

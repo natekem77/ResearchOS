@@ -1,23 +1,29 @@
 {
-  "name": "ResearchOS",
-  "short_name": "ResearchOS",
+  "name": "Mundi",
+  "short_name": "Mundi",
   "description": "Local-first AI-powered laboratory knowledge system.",
   "start_url": "/#/dashboard",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#f5f5f2",
-  "theme_color": "#0f6b5b",
+  "background_color": "#061123",
+  "theme_color": "#061123",
   "icons": [
     {
-      "src": "/frontend-assets/icons/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/frontend-assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/frontend-assets/icons/maskable-icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/frontend-assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/frontend-assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "maskable"
     }
   ]

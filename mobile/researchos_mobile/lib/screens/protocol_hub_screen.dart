@@ -323,7 +323,7 @@ class _ProtocolCard extends StatelessWidget {
                   label: '${protocol['expected_result_count'] ?? 0} expected'),
               if (_text(protocol['biological_system']).isNotEmpty)
                 _MetricChip(
-                    icon: Icons.biotech_outlined,
+                    icon: Icons.science_outlined,
                     label: _text(protocol['biological_system'])),
             ],
           ),

@@ -4,8 +4,11 @@ const STATIC_ASSETS = [
   "/frontend-assets/styles.css",
   "/frontend-assets/app.js",
   "/frontend-assets/manifest.webmanifest",
-  "/frontend-assets/icons/icon.svg",
-  "/frontend-assets/icons/maskable-icon.svg"
+  "/frontend-assets/icons/icon-192.png",
+  "/frontend-assets/icons/icon-512.png",
+  "/frontend-assets/icons/apple-touch-icon.png",
+  "/frontend-assets/icons/favicon-32.png",
+  "/frontend-assets/icons/favicon-16.png"
 ];
 
 self.addEventListener("install", (event) => {

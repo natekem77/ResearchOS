@@ -123,7 +123,7 @@ class _IntelligenceFeedScreenState extends State<IntelligenceFeedScreen> {
                 const ResearchOsInfoCard(
                   title: 'No feed items',
                   subtitle:
-                      'ResearchOS has not found any provenance-backed updates for this filter.',
+                      'Mundi has not found any provenance-backed updates for this filter.',
                   icon: Icons.check_circle_outline,
                 )
               else

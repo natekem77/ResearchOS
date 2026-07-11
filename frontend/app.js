@@ -328,7 +328,7 @@ function route() {
   activateNav(target);
 
   const titles = {
-    dashboard: ["Dashboard", "ResearchOS Dashboard"],
+    dashboard: ["Dashboard", "Mundi Dashboard"],
     whiteboard: ["Whiteboard", "Laboratory situational awareness"],
     "new-experiment": ["New Experiment", "Dictation Draft"],
     sessions: ["Sessions", "Experiment Sessions"],
@@ -347,7 +347,7 @@ function route() {
     literature: ["Literature", "Paper Library"],
     graph: ["Knowledge Graph", "Graph Explorer"],
     search: ["Search", "Search Research Notes"],
-    chat: ["AI Chat", "Ask ResearchOS"],
+    chat: ["AI Chat", "Ask Mundi"],
     reasoning: ["Scientific Reasoning", "Evidence-Based Reasoning"],
     planner: ["Experiment Planner", "Plan Follow-up Experiment"],
     "design-planner": ["Design Planner", "Multi-condition Experiment Design"],
@@ -410,11 +410,11 @@ function renderDailyDashboard() {
   if (!target || !summary) return;
   const dashboard = state.dailyDashboard;
   if (!dashboard) {
-    summary.textContent = "Daily dashboard is loading local ResearchOS state.";
+    summary.textContent = "Daily dashboard is loading local Mundi state.";
     target.innerHTML = `<div class="empty-state">Daily dashboard unavailable.</div>`;
     return;
   }
-  summary.textContent = dashboard.assistant_summary?.text || "Daily dashboard generated from local ResearchOS records.";
+  summary.textContent = dashboard.assistant_summary?.text || "Daily dashboard generated from local Mundi records.";
   const workspace = state.currentWorkspace || dashboard.workspace || {};
   if (workspace.name) {
     summary.textContent = `${workspace.name}: ${summary.textContent}`;
@@ -478,11 +478,11 @@ function renderMorningBrief() {
   if (!summary || !target) return;
   const brief = state.dailyDashboard?.morning_brief;
   if (!brief) {
-    summary.textContent = "Morning Brief is loading local ResearchOS state.";
+    summary.textContent = "Morning Brief is loading local Mundi state.";
     target.innerHTML = `<div class="empty-state">Morning Brief unavailable.</div>`;
     return;
   }
-  summary.textContent = brief.summary || "No observed ResearchOS changes were detected.";
+  summary.textContent = brief.summary || "No observed Mundi changes were detected.";
   const sections = brief.sections || {};
   const sectionLabels = {
     new_experiments: "New experiments",
@@ -521,7 +521,7 @@ function renderMorningBriefItem(item) {
   const provenance = (item.provenance || [])
     .map((prov) => [prov.fact, prov.source, prov.provider, prov.experiment_id, prov.asset_id, prov.document_id, prov.resource_id, prov.workflow_id].filter(Boolean).join(" / "))
     .filter(Boolean)
-    .join(" | ") || "ResearchOS provenance";
+    .join(" | ") || "Mundi provenance";
   const content = `
     <strong>${escapeHtml(item.title || "Morning Brief item")}</strong>
     <span>${escapeHtml(item.summary || "")}</span>
@@ -538,7 +538,7 @@ function renderIntelligenceFeedItem(item) {
   const provenance = (item.provenance || [])
     .map((prov) => [prov.fact, prov.source, prov.provider, prov.experiment_id, prov.asset_id, prov.document_id, prov.resource_id, prov.session_id].filter(Boolean).join(" / "))
     .filter(Boolean)
-    .join(" | ") || "ResearchOS provenance";
+    .join(" | ") || "Mundi provenance";
   const content = `
     <div class="intelligence-feed-header">
       <span class="status-pill ${priorityClass(item.priority)}">${escapeHtml(item.priority || "low")}</span>
@@ -619,7 +619,7 @@ function renderDailyDashboardItem(item) {
   const content = `
     <strong>${escapeHtml(item.title || "Dashboard item")}</strong>
     <span>${escapeHtml(item.summary || "")}</span>
-    <small>${escapeHtml(item.category || "observed")} · ${escapeHtml((item.provenance || []).map((prov) => [prov.fact, prov.source, prov.provider, prov.id, prov.experiment_id, prov.asset_id, prov.document_id].filter(Boolean).join(" / ")).join(" | ") || "ResearchOS provenance")}</small>
+    <small>${escapeHtml(item.category || "observed")} · ${escapeHtml((item.provenance || []).map((prov) => [prov.fact, prov.source, prov.provider, prov.id, prov.experiment_id, prov.asset_id, prov.document_id].filter(Boolean).join(" / ")).join(" | ") || "Mundi provenance")}</small>
   `;
   return item.href
     ? `<a class="daily-card-item" href="${escapeHtml(item.href)}">${content}</a>`
@@ -635,7 +635,7 @@ function renderWhiteboard() {
   const generatedTarget = $("#whiteboardGenerated");
   if (!metricsTarget || !sectionsTarget || !rotationTarget || !controlsTarget) return;
   if (!board) {
-    generatedTarget.textContent = "Whiteboard is loading local ResearchOS state.";
+    generatedTarget.textContent = "Whiteboard is loading local Mundi state.";
     metricsTarget.innerHTML = "";
     rotationTarget.innerHTML = `<div class="empty-state">Whiteboard unavailable.</div>`;
     sectionsTarget.innerHTML = "";
@@ -950,7 +950,7 @@ async function endActiveSession() {
   }
   await requestJson(`/sessions/${encodeURIComponent(session.session_id)}/end`, {
     method: "POST",
-    body: JSON.stringify({ notes: "Session ended from ResearchOS UI." }),
+    body: JSON.stringify({ notes: "Session ended from Mundi UI." }),
   });
   await refreshData();
   $("#sessionStatus").textContent = "Session ended.";
@@ -2795,7 +2795,7 @@ async function renderProtocolWorkspace(protocolId) {
         <ul>${listItems(protocol.research_copilot?.potential_concerns || [])}</ul>
         <h4>Suggested improvements</h4>
         <ul>${listItems(protocol.research_copilot?.suggested_improvements || [])}</ul>
-        <p class="privacy-note">${escapeHtml(protocol.research_copilot?.guardrail || "ResearchOS never automatically edits protocols.")}</p>
+        <p class="privacy-note">${escapeHtml(protocol.research_copilot?.guardrail || "Mundi never automatically edits protocols.")}</p>
       </section>
       ${workspaceSection("Version History", history, renderProtocolHistoryItem)}
       <section class="detail-section" id="protocolComparisonPanel" hidden></section>
@@ -2956,7 +2956,7 @@ function renderCurrentUserSettings() {
     providerCard(
       "Signed in as",
       "active",
-      user.display_name || user.email || "ResearchOS user",
+      user.display_name || user.email || "Mundi user",
       user.email || "",
     ),
     providerCard(
@@ -2983,7 +2983,7 @@ function renderCurrentUserSettings() {
       "Current workspace",
       "active",
       workspace.name || "Demo Lab Workspace",
-      workspace.institution || "ResearchOS Local Demo",
+      workspace.institution || "Mundi Local Demo",
     ),
     providerCard(
       "Workspace membership",
@@ -3033,7 +3033,7 @@ function renderAuthReadinessSettings() {
       "Redirect URI",
       "active",
       readiness.redirect_uri || "Not configured",
-      "This is separate from the future ResearchOS app-login redirect design.",
+      "This is separate from the future Mundi app-login redirect design.",
     ),
     providerCard(
       "Production warnings",
@@ -3165,7 +3165,7 @@ function renderDeploymentSettings() {
       "Data directory",
       "active",
       deployment.data_dir,
-      "Local-first ResearchOS state",
+      "Local-first Mundi state",
     ),
     providerCard(
       "OneNote redirect",
@@ -3468,8 +3468,8 @@ async function saveCurrentDraft(status = "draft") {
   state.currentEntryDraft = savedEntryToDraft(payload);
   await refreshData();
   $("#entryExportStatus").textContent = status === "ready_for_onenote"
-    ? "Draft marked ready for OneNote inside ResearchOS. OneNote write-back is still disabled."
-    : "Draft saved inside ResearchOS.";
+    ? "Draft marked ready for OneNote inside Mundi. OneNote write-back is still disabled."
+    : "Draft saved inside Mundi.";
   recordActivity("Saved notebook draft", `${payload.title} · ${payload.status}`);
 }
 
@@ -3557,7 +3557,7 @@ async function renderSavedDraftDetail(entryId) {
         <button type="button" id="markSavedReadyButton" class="secondary-button">Mark Ready for OneNote</button>
         <button type="button" disabled>Save to OneNote</button>
       </div>
-      <p class="privacy-note">OneNote write-back is pending UCSD IT approval. This draft is stored locally in ResearchOS and can be copied or downloaded as Markdown.</p>
+      <p class="privacy-note">OneNote write-back is pending UCSD IT approval. This draft is stored locally in Mundi and can be copied or downloaded as Markdown.</p>
       <p class="demo-status" id="savedDraftActionStatus"></p>
       <pre class="markdown-preview">${escapeHtml(entry.markdown)}</pre>
     `;
@@ -3999,7 +3999,7 @@ function renderCopilotStatement(statement) {
         provenance
           .map((item) => [item.fact, item.source, item.provider, item.document, item.asset].filter(Boolean).join(" · "))
           .filter(Boolean)
-          .join(" | ") || "ResearchOS workspace provenance",
+          .join(" | ") || "Mundi workspace provenance",
       )}</small>
     </article>
   `;
@@ -4379,7 +4379,7 @@ function renderGraphVisualization(stats) {
   }[type] || "var(--muted)");
 
   $("#graphCanvas").innerHTML = `
-    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="ResearchOS force-directed knowledge graph">
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Mundi force-directed knowledge graph">
       ${rawLinks
         .map((link) => {
           const a = byId.get(link.source);
@@ -4875,7 +4875,7 @@ function renderExperimentPlan(target, payload) {
     </section>
     <section class="detail-section">
       <h3>Suggested OneNote draft entry</h3>
-      <p class="demo-status">Write-back is disabled. Save this as a local ResearchOS draft for review/export.</p>
+      <p class="demo-status">Write-back is disabled. Save this as a local Mundi draft for review/export.</p>
       <pre class="markdown-preview">${escapeHtml(payload.suggested_onenote_draft_entry)}</pre>
     </section>
     <div class="source-list">
@@ -4920,7 +4920,7 @@ async function runExperimentPlanner(message, target) {
       body: JSON.stringify({ question: message }),
     });
     state.currentExperimentPlan = payload;
-    $("#plannerStatus").textContent = "Plan generated. Review before saving as a ResearchOS draft.";
+  $("#plannerStatus").textContent = "Plan generated. Review before saving as a Mundi draft.";
     renderExperimentPlan(target, payload);
   } catch (error) {
     $("#plannerStatus").textContent = `Planning failed: ${error.message}`;
@@ -4974,7 +4974,7 @@ async function runUniversalSearch(query) {
     output.innerHTML = "";
     return;
   }
-  meta.textContent = "Searching all ResearchOS providers...";
+  meta.textContent = "Searching all Mundi providers...";
   const payload = await requestJson(`/search/universal?q=${encodeURIComponent(query)}&limit_per_group=6`);
   meta.textContent = `${payload.total_results} result${payload.total_results === 1 ? "" : "s"} for "${payload.query}"`;
   renderUniversalSearchResults(output, payload);
@@ -5191,7 +5191,7 @@ async function saveExperimentPlanDraft() {
     }),
   });
   await refreshData();
-  $("#plannerStatus").textContent = `Saved local ResearchOS draft: ${payload.title}. OneNote write-back was not used.`;
+  $("#plannerStatus").textContent = `Saved local Mundi draft: ${payload.title}. OneNote write-back was not used.`;
   recordActivity("Saved planned experiment draft", payload.title);
 }
 
@@ -5421,7 +5421,7 @@ function renderExtensions() {
   const status = state.extensions;
   if (!status) {
     target.innerHTML = `<div class="empty-state">Extension registry is not available.</div>`;
-    if (marketplace) marketplace.textContent = "Future ResearchOS extension marketplace is not implemented yet.";
+    if (marketplace) marketplace.textContent = "Future Mundi extension marketplace is not implemented yet.";
     return;
   }
   const extensions = status.extensions || [];
@@ -5429,7 +5429,7 @@ function renderExtensions() {
     ? extensions.map(renderExtensionCard).join("")
     : `<div class="empty-state">No extensions are installed.</div>`;
   if (marketplace) {
-    marketplace.textContent = status.marketplace?.message || "Future ResearchOS extension marketplace is not implemented yet.";
+    marketplace.textContent = status.marketplace?.message || "Future Mundi extension marketplace is not implemented yet.";
   }
 }
 
@@ -5443,7 +5443,7 @@ function renderExtensionCard(extension) {
         <span>${escapeHtml(extension.name)}</span>
         <strong class="status-pill ${extension.enabled ? "ok" : "warn"}">${extension.enabled ? "Enabled" : "Disabled"}</strong>
       </div>
-      <p>${escapeHtml(extension.description || "ResearchOS extension.")}</p>
+      <p>${escapeHtml(extension.description || "Mundi extension.")}</p>
       <small>${escapeHtml(extension.version)} · ${escapeHtml(extension.author)} · ${escapeHtml(capabilities)}</small>
       <div class="meta">
         <span class="tag">${escapeHtml(contributionCount)} contribution${contributionCount === 1 ? "" : "s"}</span>
@@ -5551,7 +5551,7 @@ async function testAiFromSettings() {
     const payload = await requestJson("/chat", {
       method: "POST",
       body: JSON.stringify({
-        message: "Reply with one short sentence confirming ResearchOS AI chat is configured.",
+        message: "Reply with one short sentence confirming Mundi AI chat is configured.",
         use_search_context: false,
       }),
     });

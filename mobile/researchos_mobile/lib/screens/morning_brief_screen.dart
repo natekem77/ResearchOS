@@ -76,7 +76,7 @@ class _MorningBriefScreenState extends State<MorningBriefScreen> {
               ResearchOsInfoCard(
                 title: 'Morning Brief',
                 subtitle: brief['summary']?.toString() ??
-                    'No observed ResearchOS changes were detected.',
+                    'No observed Mundi changes were detected.',
                 icon: Icons.wb_sunny_outlined,
               ),
               const SizedBox(height: ResearchOsSpacing.md),

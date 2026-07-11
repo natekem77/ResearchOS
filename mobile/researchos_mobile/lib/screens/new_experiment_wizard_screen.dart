@@ -474,7 +474,7 @@ class _NewExperimentWizardScreenState extends State<NewExperimentWizardScreen> {
               ResearchOsCopilotCard(
                 title: 'Experiment created',
                 message: _created!['message']?.toString() ??
-                    'ResearchOS created the planned experiment.',
+                    'Mundi created the planned experiment.',
                 level: CopilotCardLevel.success,
               ),
             ],
@@ -1030,8 +1030,8 @@ class _SummaryStep extends StatelessWidget {
           value: createDraft,
           onChanged: onCreateDraft,
           title: const Text('Create notebook draft'),
-          subtitle: const Text(
-              'Saves a ResearchOS draft that can be copied or exported.'),
+          subtitle:
+              const Text('Saves a Mundi draft that can be copied or exported.'),
         ),
         SwitchListTile(
           value: startSession,
@@ -1188,7 +1188,7 @@ class _ExperimentCreationModeLanding extends StatelessWidget {
                       style: Theme.of(context).textTheme.headlineSmall),
                   const SizedBox(height: ResearchOsSpacing.sm),
                   const Text(
-                    'ResearchOS keeps free-form scientific notes and structured design data synchronized, without overwriting narrative notes.',
+                    'Mundi keeps free-form scientific notes and structured design data synchronized, without overwriting narrative notes.',
                   ),
                 ],
               ),
@@ -1556,7 +1556,7 @@ class _DescribeExperimentCopilotFlowState
             const ResearchOsCopilotCard(
               title: 'Experiment Design Copilot',
               message:
-                  'Describe the experiment in plain scientific language. ResearchOS drafts structure, asks clarifying questions, and waits for approval before creating anything.',
+                  'Describe the experiment in plain scientific language. Mundi drafts structure, asks clarifying questions, and waits for approval before creating anything.',
             ),
             const SizedBox(height: ResearchOsSpacing.md),
             Row(
@@ -1944,8 +1944,8 @@ class _FutureCreationMode extends StatelessWidget {
                   ? 'Spreadsheet import is future-ready'
                   : 'Experiment extraction is future-ready',
               message: isImport
-                  ? 'ResearchOS will later preview mapped spreadsheet columns and wait for confirmation before creating structured design data.'
-                  : 'ResearchOS will later draft cohorts, conditions, interventions, and events from text or voice. Nothing will become active without researcher confirmation.',
+                  ? 'Mundi will later preview mapped spreadsheet columns and wait for confirmation before creating structured design data.'
+                  : 'Mundi will later draft cohorts, conditions, interventions, and events from text or voice. Nothing will become active without researcher confirmation.',
               icon: isImport
                   ? Icons.table_chart_outlined
                   : Icons.auto_awesome_outlined,

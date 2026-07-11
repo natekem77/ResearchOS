@@ -4,7 +4,13 @@
 
 Mundi presents ResearchOS as a premium scientific companion: calm, connected, precise, and exploratory.
 
-The approved logo is **Soft Orbit - Nebula Hint**.
+The approved logo is the frozen Mundi icon stored at:
+
+```text
+mobile/researchos_mobile/assets/brand/mundi_approved_icon_1024.png
+```
+
+This PNG is the only canonical source. The previous generated SVG/vector concept is not an approved source and must not be used.
 
 ## Logo Characteristics
 
@@ -18,7 +24,7 @@ The approved logo is **Soft Orbit - Nebula Hint**.
 - Tiny background stars
 - Premium dark navy background
 
-The master SVG should remain the source of truth for exported assets.
+The approved PNG remains the source of truth for exported assets.
 
 ## Colors
 

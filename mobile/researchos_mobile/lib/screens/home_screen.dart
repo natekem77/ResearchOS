@@ -795,7 +795,7 @@ class _RecentlyUsed extends StatelessWidget {
     if (items.isEmpty) {
       return const ResearchOsEmptyState(
         title: 'No recent items yet',
-        message: 'Use ResearchOS and recently accessed work will appear here.',
+        message: 'Use Mundi and recently accessed work will appear here.',
         icon: Icons.history,
       );
     }

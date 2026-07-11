@@ -9,7 +9,7 @@ class MobileStatus {
   factory MobileStatus.fromJson(Map<String, dynamic> json) {
     return MobileStatus(
       status: json['status']?.toString() ?? 'unknown',
-      project: json['project']?.toString() ?? 'ResearchOS',
+      project: json['project']?.toString() ?? 'Mundi',
       appVersion: json['app_version']?.toString() ?? 'unknown',
       warnings: _stringList(json['warnings']),
     );
@@ -138,7 +138,7 @@ class MobileUser {
     final workspace = json['workspace'];
     return MobileUser(
       userId: json['user_id']?.toString() ?? '',
-      displayName: json['display_name']?.toString() ?? 'ResearchOS user',
+      displayName: json['display_name']?.toString() ?? 'Mundi user',
       email: json['email']?.toString(),
       role: json['role']?.toString() ?? 'viewer',
       authMode: json['auth_mode']?.toString() ?? 'dev',
@@ -171,7 +171,7 @@ class MobileSettings {
     final oneNote = json['onenote_readiness'];
     final production = json['production_readiness'];
     return MobileSettings(
-      appVersion: json['app_version']?.toString() ?? 'ResearchOS',
+      appVersion: json['app_version']?.toString() ?? 'Mundi',
       serverUrl: json['server_url']?.toString() ?? '',
       authMode: json['auth_mode']?.toString() ?? 'dev',
       workspaceName: workspace is Map<String, dynamic>
