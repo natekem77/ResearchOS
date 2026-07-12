@@ -335,33 +335,124 @@ void main() {
   testWidgets('reopen restores image embed and remove does not delete storage',
       (tester) async {
     var delta = '';
-    final payload = jsonEncode({
-      'embed_type': 'experiment_attachment',
-      'attachment_type': 'image',
-      'attachment_id': 'attachment:pasted-image',
-      'display_name': 'Restored image',
-      'alt_text': null,
-    });
-    final content = jsonEncode([
-      {
-        'insert': {
-          'custom': jsonEncode({'experiment_attachment': payload})
-        }
-      },
-      {'insert': '\n'}
-    ]);
     await pumpRichEditor(
       tester,
-      initialContent: content,
+      initialContent: _imageEmbedContent(
+        displayName: 'Restored image',
+        caption: 'Preserved caption',
+        altText: 'Preserved alt text',
+      ),
       onChanged: (edit) => delta = edit.deltaJson,
     );
 
     expect(find.text('Restored image'), findsOneWidget);
-    await tester.tap(find.byTooltip('Remove from document'));
+    expect(find.text('Preserved caption'), findsOneWidget);
+    await tester.tap(find.text('Restored image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Remove from document'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 200));
 
     expect(delta, isNot(contains('attachment:pasted-image')));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tapping image selects it and opens inspector', (tester) async {
+    await pumpRichEditor(
+      tester,
+      initialContent: _imageEmbedContent(displayName: 'Selectable image'),
+    );
+
+    await tester.tap(find.text('Selectable image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const ValueKey('selected-image-attachment:pasted-image')),
+        findsOneWidget);
+    expect(find.text('Image options'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('resize alignment caption and alt text persist in image embed',
+      (tester) async {
+    var delta = '';
+    await pumpRichEditor(
+      tester,
+      initialContent: _imageEmbedContent(
+        displayName: 'Editable image',
+        aspectRatio: 1.777,
+      ),
+      onChanged: (edit) => delta = edit.deltaJson,
+    );
+
+    await tester.tap(find.text('Editable image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Medium'));
+    await tester.pump();
+    await tester.tap(find.text('Right'));
+    await tester.pump();
+    await tester.enterText(find.widgetWithText(TextField, 'Caption'),
+        'Figure 1. Retinal organoid image');
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Alt text'), 'Brightfield organoid');
+    await tester.tap(find.text('Apply Image Changes'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(delta, contains('width_mode'));
+    expect(delta, contains('medium'));
+    expect(delta, contains('alignment'));
+    expect(delta, contains('right'));
+    expect(delta, contains('Figure 1. Retinal organoid image'));
+    expect(delta, contains('Brightfield organoid'));
+    expect(delta, contains('aspect_ratio'));
+    expect(delta, contains('1.777'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Move Down relocates image within document flow', (tester) async {
+    var delta = '';
+    await pumpRichEditor(
+      tester,
+      initialContent: _imageEmbedContent(
+        before: 'Before paragraph\n',
+        displayName: 'Movable image',
+        after: 'After paragraph\n',
+      ),
+      onChanged: (edit) => delta = edit.deltaJson,
+    );
+
+    await tester.tap(find.text('Movable image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('Move Down'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(delta.indexOf('After paragraph'),
+        lessThan(delta.indexOf('attachment:pasted-image')));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'image inspector fits small iPhone layout without viewport errors',
+      (tester) async {
+    await pumpRichEditor(
+      tester,
+      size: const Size(375, 667),
+      initialContent: _imageEmbedContent(displayName: 'Small phone image'),
+    );
+
+    await tester.tap(find.text('Small phone image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.drag(find.text('Image options'), const Offset(0, -180));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Apply Image Changes'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
@@ -370,10 +461,11 @@ Future<void> pumpRichEditor(
   WidgetTester tester, {
   ClipboardImageReader reader = const _FakeClipboardImageReader(null),
   String initialContent = '[{"insert":"\\n"}]',
+  Size size = const Size(430, 932),
   ValueChanged<RichNotebookEdit>? onChanged,
   PastedImageUploader? onPasteImage,
 }) async {
-  tester.view.physicalSize = const Size(430, 932);
+  tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
@@ -552,6 +644,39 @@ Map<String, dynamic> _imageAttachment({String displayName = 'Pasted image'}) {
     'upload_status': 'complete',
     'processing_status': 'not_started',
   };
+}
+
+String _imageEmbedContent({
+  String before = '',
+  String displayName = 'Restored image',
+  String? caption,
+  String? altText,
+  String widthMode = 'full',
+  String alignment = 'center',
+  double? aspectRatio,
+  String after = '',
+}) {
+  final payload = jsonEncode({
+    'embed_type': 'experiment_attachment',
+    'attachment_type': 'image',
+    'attachment_id': 'attachment:pasted-image',
+    'display_name': displayName,
+    'width_mode': widthMode,
+    'alignment': alignment,
+    'caption': caption,
+    'alt_text': altText,
+    'aspect_ratio': aspectRatio,
+  });
+  return jsonEncode([
+    if (before.isNotEmpty) {'insert': before},
+    {
+      'insert': {
+        'custom': jsonEncode({'experiment_attachment': payload})
+      }
+    },
+    {'insert': '\n'},
+    if (after.isNotEmpty) {'insert': after},
+  ]);
 }
 
 class _FakeClipboardImageReader extends ClipboardImageReader {

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -170,7 +171,12 @@ class _RichScientificNotebookEditorState
           attachment['display_name']?.toString().trim().isNotEmpty == true
               ? attachment['display_name'].toString()
               : attachment['original_filename']?.toString() ?? 'Pasted image',
+      'width_mode': 'full',
+      'alignment': 'center',
+      'caption': null,
       'alt_text': null,
+      'aspect_ratio': attachment['aspect_ratio'] ??
+          _mapValue(attachment['metadata'])?['aspect_ratio'],
     };
     final selection = _controller.selection;
     final index = selection.baseOffset < 0
@@ -673,6 +679,7 @@ class QuillClipboardImageReader extends ClipboardImageReader {
     final mimeType = _detectImageMimeType(bytes);
     final extension = _extensionForMimeType(mimeType);
     final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
+    final aspectRatio = await _readImageAspectRatio(bytes);
     return PastedNotebookImage(
       bytes: bytes,
       mimeType: mimeType,
@@ -681,6 +688,7 @@ class QuillClipboardImageReader extends ClipboardImageReader {
       metadata: {
         'source': 'clipboard',
         'detected_mime_type': mimeType,
+        if (aspectRatio != null) 'aspect_ratio': aspectRatio,
       },
     );
   }
@@ -840,88 +848,428 @@ class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {
       );
     }
     final url = downloadUrlForAttachment(attachmentId);
+    return _SelectableNotebookImage(
+      key: ValueKey('notebook-image-$attachmentId'),
+      payload: payload,
+      url: url,
+      controller: embedContext.controller,
+      documentOffset: embedContext.node.documentOffset,
+    );
+  }
+}
+
+class _SelectableNotebookImage extends StatefulWidget {
+  const _SelectableNotebookImage({
+    super.key,
+    required this.payload,
+    required this.url,
+    required this.controller,
+    required this.documentOffset,
+  });
+
+  final Map<String, dynamic> payload;
+  final String url;
+  final QuillController controller;
+  final int documentOffset;
+
+  @override
+  State<_SelectableNotebookImage> createState() =>
+      _SelectableNotebookImageState();
+}
+
+class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
+  bool _selected = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final payload = widget.payload;
+    final label = payload['display_name']?.toString() ?? 'Pasted image';
+    final caption = payload['caption']?.toString() ?? '';
+    final altText = payload['alt_text']?.toString() ?? '';
+    final alignment = _imageAlignment(payload['alignment']?.toString());
+    final widthFactor = _imageWidthFactor(payload['width_mode']?.toString());
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Material(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: url.isEmpty
-                  ? null
-                  : () => showDialog<void>(
-                        context: context,
-                        builder: (context) => Dialog(
-                          child: InteractiveViewer(
-                            child: Image.network(
-                              url,
-                              fit: BoxFit.contain,
-                              errorBuilder: (context, error, stackTrace) =>
-                                  const _ImagePlaceholder(
-                                icon: Icons.broken_image_outlined,
-                                label: 'Image preview failed',
-                              ),
-                            ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final availableWidth = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : MediaQuery.sizeOf(context).width;
+          final imageWidth = (availableWidth * widthFactor)
+              .clamp(96.0, availableWidth)
+              .toDouble();
+          return Align(
+            alignment: alignment,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: imageWidth),
+              child: Material(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: _openInspector,
+                  child: AnimatedContainer(
+                    key: _selected
+                        ? ValueKey(
+                            'selected-image-${payload['attachment_id'] ?? ''}')
+                        : null,
+                    duration: const Duration(milliseconds: 120),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: _selected
+                            ? Theme.of(context).colorScheme.primary
+                            : Colors.transparent,
+                        width: _selected ? 3 : 0,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 420),
+                          child: _NotebookImagePreview(
+                            url: widget.url,
+                            label: label,
+                            altText: altText,
                           ),
                         ),
-                      ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 360),
-                    child: url.isEmpty
-                        ? const _ImagePlaceholder(
-                            icon: Icons.image_not_supported_outlined,
-                            label: 'Image reference unavailable',
-                          )
-                        : Image.network(
-                            url,
-                            fit: BoxFit.contain,
-                            loadingBuilder: (context, child, progress) {
-                              if (progress == null) return child;
-                              return const _ImagePlaceholder(
-                                icon: Icons.image_outlined,
-                                label: 'Loading image...',
-                              );
-                            },
-                            errorBuilder: (context, error, stackTrace) =>
-                                const _ImagePlaceholder(
-                              icon: Icons.broken_image_outlined,
-                              label: 'Image preview failed',
-                            ),
+                        Padding(
+                          padding: const EdgeInsets.all(ResearchOsSpacing.sm),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(label),
+                              if (caption.trim().isNotEmpty) ...[
+                                const SizedBox(height: 4),
+                                Text(
+                                  caption,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                            ],
                           ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.all(ResearchOsSpacing.sm),
-                    child: Row(
-                      children: [
-                        Expanded(child: Text(label)),
-                        IconButton(
-                          tooltip: 'Remove from document',
-                          onPressed: () {
-                            embedContext.controller.replaceText(
-                              embedContext.node.documentOffset,
-                              1,
-                              '',
-                              TextSelection.collapsed(
-                                offset: embedContext.node.documentOffset,
-                              ),
-                            );
-                          },
-                          icon: const Icon(Icons.close),
                         ),
                       ],
                     ),
                   ),
-                ],
+                ),
               ),
             ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _openInspector() async {
+    setState(() => _selected = true);
+    try {
+      await showModalBottomSheet<void>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (context) => _ImageInspectorSheet(
+          payload: widget.payload,
+          imageUrl: widget.url,
+          onUpdate: _replacePayload,
+          onMoveUp: () => _moveImage(up: true),
+          onMoveDown: () => _moveImage(up: false),
+          onRemove: _removeImage,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _selected = false);
+    }
+  }
+
+  void _replacePayload(Map<String, dynamic> payload) {
+    final offset = _currentEmbedOffset() ?? widget.documentOffset;
+    final embed = BlockEmbed.custom(
+      CustomBlockEmbed('experiment_attachment', jsonEncode(payload)),
+    );
+    widget.controller.replaceText(
+      offset,
+      1,
+      embed,
+      TextSelection.collapsed(offset: offset + 1),
+    );
+  }
+
+  void _removeImage() {
+    final offset = _currentEmbedOffset() ?? widget.documentOffset;
+    widget.controller.replaceText(
+      offset,
+      1,
+      '',
+      TextSelection.collapsed(offset: offset),
+    );
+  }
+
+  void _moveImage({required bool up}) {
+    final currentOffset = _currentEmbedOffset() ?? widget.documentOffset;
+    final payload = Map<String, dynamic>.from(widget.payload);
+    var destination = up ? 0 : widget.controller.document.length - 1;
+    if (destination == currentOffset) return;
+    final embed = BlockEmbed.custom(
+      CustomBlockEmbed('experiment_attachment', jsonEncode(payload)),
+    );
+    widget.controller.replaceText(
+      currentOffset,
+      1,
+      '',
+      TextSelection.collapsed(offset: currentOffset),
+    );
+    if (destination > currentOffset) destination -= 1;
+    destination =
+        destination.clamp(0, widget.controller.document.length - 1).toInt();
+    widget.controller.replaceText(
+      destination,
+      0,
+      embed,
+      TextSelection.collapsed(offset: destination + 1),
+    );
+    widget.controller.replaceText(
+      destination + 1,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: destination + 2),
+    );
+  }
+
+  int? _currentEmbedOffset() {
+    final targetId = widget.payload['attachment_id']?.toString();
+    if (targetId == null || targetId.isEmpty) return null;
+    var offset = 0;
+    for (final rawOp in widget.controller.document.toDelta().toJson()) {
+      final insert = rawOp['insert'];
+      if (_insertReferencesAttachment(insert, targetId)) return offset;
+      offset += _insertLength(insert);
+    }
+    return null;
+  }
+}
+
+class _NotebookImagePreview extends StatelessWidget {
+  const _NotebookImagePreview({
+    required this.url,
+    required this.label,
+    required this.altText,
+  });
+
+  final String url;
+  final String label;
+  final String altText;
+
+  @override
+  Widget build(BuildContext context) {
+    if (url.isEmpty) {
+      return _ImagePlaceholder(
+        icon: Icons.image_not_supported_outlined,
+        label: altText.isEmpty ? 'Image reference unavailable' : altText,
+      );
+    }
+    return Semantics(
+      label: altText.isEmpty ? label : altText,
+      image: true,
+      child: Image.network(
+        url,
+        fit: BoxFit.contain,
+        loadingBuilder: (context, child, progress) {
+          if (progress == null) return child;
+          return const _ImagePlaceholder(
+            icon: Icons.image_outlined,
+            label: 'Loading image...',
+          );
+        },
+        errorBuilder: (context, error, stackTrace) => const _ImagePlaceholder(
+          icon: Icons.broken_image_outlined,
+          label: 'Image preview failed',
+        ),
+      ),
+    );
+  }
+}
+
+class _ImageInspectorSheet extends StatefulWidget {
+  const _ImageInspectorSheet({
+    required this.payload,
+    required this.imageUrl,
+    required this.onUpdate,
+    required this.onMoveUp,
+    required this.onMoveDown,
+    required this.onRemove,
+  });
+
+  final Map<String, dynamic> payload;
+  final String imageUrl;
+  final ValueChanged<Map<String, dynamic>> onUpdate;
+  final VoidCallback onMoveUp;
+  final VoidCallback onMoveDown;
+  final VoidCallback onRemove;
+
+  @override
+  State<_ImageInspectorSheet> createState() => _ImageInspectorSheetState();
+}
+
+class _ImageInspectorSheetState extends State<_ImageInspectorSheet> {
+  late String _widthMode;
+  late String _alignment;
+  late final TextEditingController _caption;
+  late final TextEditingController _altText;
+
+  @override
+  void initState() {
+    super.initState();
+    _widthMode = _normalizedWidthMode(widget.payload['width_mode']?.toString());
+    _alignment = _normalizedAlignment(widget.payload['alignment']?.toString());
+    _caption = TextEditingController(
+      text: widget.payload['caption']?.toString() ?? '',
+    );
+    _altText = TextEditingController(
+      text: widget.payload['alt_text']?.toString() ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _caption.dispose();
+    _altText.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          ResearchOsSpacing.lg,
+          ResearchOsSpacing.sm,
+          ResearchOsSpacing.lg,
+          ResearchOsSpacing.lg + viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Image options',
+                style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: ResearchOsSpacing.md),
+            Text('Size', style: Theme.of(context).textTheme.labelLarge),
+            const SizedBox(height: ResearchOsSpacing.xs),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'small', label: Text('Small')),
+                ButtonSegment(value: 'medium', label: Text('Medium')),
+                ButtonSegment(value: 'large', label: Text('Large')),
+                ButtonSegment(value: 'full', label: Text('Full width')),
+              ],
+              selected: {_widthMode},
+              onSelectionChanged: (selection) =>
+                  setState(() => _widthMode = selection.single),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            Text('Alignment', style: Theme.of(context).textTheme.labelLarge),
+            const SizedBox(height: ResearchOsSpacing.xs),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'left', label: Text('Left')),
+                ButtonSegment(value: 'center', label: Text('Center')),
+                ButtonSegment(value: 'right', label: Text('Right')),
+              ],
+              selected: {_alignment},
+              onSelectionChanged: (selection) =>
+                  setState(() => _alignment = selection.single),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            TextField(
+              controller: _caption,
+              decoration: const InputDecoration(
+                labelText: 'Caption',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            TextField(
+              controller: _altText,
+              decoration: const InputDecoration(
+                labelText: 'Alt text',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            Wrap(
+              spacing: ResearchOsSpacing.sm,
+              runSpacing: ResearchOsSpacing.sm,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: widget.imageUrl.isEmpty
+                      ? null
+                      : () => _previewOriginal(context),
+                  icon: const Icon(Icons.open_in_full),
+                  label: const Text('Preview'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: widget.onMoveUp,
+                  icon: const Icon(Icons.arrow_upward),
+                  label: const Text('Move Up'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: widget.onMoveDown,
+                  icon: const Icon(Icons.arrow_downward),
+                  label: const Text('Move Down'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    widget.onRemove();
+                    Navigator.pop(context);
+                  },
+                  icon: const Icon(Icons.close),
+                  label: const Text('Remove from document'),
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            FilledButton.icon(
+              onPressed: () {
+                widget.onUpdate(_updatedPayload());
+                Navigator.pop(context);
+              },
+              icon: const Icon(Icons.check),
+              label: const Text('Apply Image Changes'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Map<String, dynamic> _updatedPayload() {
+    final payload = Map<String, dynamic>.from(widget.payload);
+    payload['width_mode'] = _widthMode;
+    payload['alignment'] = _alignment;
+    payload['caption'] =
+        _caption.text.trim().isEmpty ? null : _caption.text.trim();
+    payload['alt_text'] =
+        _altText.text.trim().isEmpty ? null : _altText.text.trim();
+    return payload;
+  }
+
+  void _previewOriginal(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => Dialog(
+        child: InteractiveViewer(
+          child: Image.network(
+            widget.imageUrl,
+            fit: BoxFit.contain,
+            errorBuilder: (context, error, stackTrace) =>
+                const _ImagePlaceholder(
+              icon: Icons.broken_image_outlined,
+              label: 'Image preview failed',
+            ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -1000,6 +1348,97 @@ String _extensionForMimeType(String mimeType) {
     default:
       return '.png';
   }
+}
+
+Future<double?> _readImageAspectRatio(Uint8List bytes) async {
+  try {
+    final codec = await ui.instantiateImageCodec(bytes);
+    final frame = await codec.getNextFrame();
+    final width = frame.image.width;
+    final height = frame.image.height;
+    frame.image.dispose();
+    codec.dispose();
+    if (width <= 0 || height <= 0) return null;
+    return width / height;
+  } catch (_) {
+    return null;
+  }
+}
+
+Map<String, dynamic>? _mapValue(Object? value) {
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) return Map<String, dynamic>.from(value);
+  return null;
+}
+
+String _normalizedWidthMode(String? value) {
+  switch (value) {
+    case 'small':
+    case 'medium':
+    case 'large':
+    case 'full':
+      return value!;
+    default:
+      return 'full';
+  }
+}
+
+String _normalizedAlignment(String? value) {
+  switch (value) {
+    case 'left':
+    case 'center':
+    case 'right':
+      return value!;
+    default:
+      return 'center';
+  }
+}
+
+double _imageWidthFactor(String? value) {
+  switch (_normalizedWidthMode(value)) {
+    case 'small':
+      return 0.35;
+    case 'medium':
+      return 0.55;
+    case 'large':
+      return 0.75;
+    default:
+      return 1.0;
+  }
+}
+
+Alignment _imageAlignment(String? value) {
+  switch (_normalizedAlignment(value)) {
+    case 'left':
+      return Alignment.centerLeft;
+    case 'right':
+      return Alignment.centerRight;
+    default:
+      return Alignment.center;
+  }
+}
+
+int _insertLength(Object? insert) {
+  if (insert is String) return insert.length;
+  if (insert is Map) return 1;
+  return 0;
+}
+
+bool _insertReferencesAttachment(Object? insert, String attachmentId) {
+  if (insert is! Map) return false;
+  final custom = insert['custom'];
+  if (custom == null) return false;
+  try {
+    final decoded = custom is String ? jsonDecode(custom) : custom;
+    if (decoded is Map) {
+      final rawPayload = decoded['experiment_attachment'];
+      final payload = _decodeAttachmentEmbed(rawPayload);
+      return payload['attachment_id']?.toString() == attachmentId;
+    }
+  } catch (_) {
+    return false;
+  }
+  return false;
 }
 
 Document _documentFromContent(String content, String documentFormat) {
