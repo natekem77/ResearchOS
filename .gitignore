@@ -42,3 +42,4 @@ Thumbs.db
 logs/
 .researchos-dev.pid
 .researchos-dev.log
+backend/data/
