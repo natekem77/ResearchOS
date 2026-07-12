@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.attachment_storage import LocalAttachmentStorage
 from app.config import Settings
 from app.general_experiments import (
     ExperimentAuthorizationError,
@@ -109,6 +110,25 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertEqual(updated["title"], "Edited title")
         self.assertEqual(fallback["title"], "Untitled Experiment")
         self.assertEqual(workspace["experiment"]["title"], "Untitled Experiment")
+
+    def test_saved_experiment_is_listed_and_reopenable_after_service_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment(
+                "user:researcher-a",
+                "lab:demo",
+                "Attachment Persistence Test",
+            )
+            experiment_id = experiment["experiment_id"]
+            listed = service.list_experiments("user:researcher-a", lab_id="lab:demo")
+            restarted = self._service(tmpdir)
+            reopened = restarted.get_workspace(experiment_id, "user:researcher-a")
+            relisted = restarted.list_experiments("user:researcher-a", lab_id="lab:demo")
+
+        self.assertTrue(any(item["experiment_id"] == experiment_id for item in listed))
+        assert reopened is not None
+        self.assertEqual(reopened["experiment"]["title"], "Attachment Persistence Test")
+        self.assertTrue(any(item["experiment_id"] == experiment_id for item in relisted))
 
     def test_create_from_protocol_version_inherits_linked_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -222,6 +242,60 @@ class GeneralExperimentTests(unittest.TestCase):
                     notebook["document_id"],
                     {"attachment_type": "notebook", "resource_id": "notebook:researcher-a", "display_name": "A private notebook"},
                 )
+
+    def test_link_attachment_validates_and_persists_separately_from_notebook_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Link attachment test")
+            with self.assertRaises(ValueError):
+                service.create_link_attachment(
+                    "user:researcher-a",
+                    experiment["experiment_id"],
+                    {"external_url": "not-a-url"},
+                )
+            attachment = service.create_link_attachment(
+                "user:researcher-a",
+                experiment["experiment_id"],
+                {
+                    "external_url": "https://docs.google.com/spreadsheets/d/example",
+                    "display_name": "Google SAG sheet",
+                    "description": "External analysis workbook",
+                },
+            )
+            workspace = service.get_workspace(experiment["experiment_id"], "user:researcher-a")
+
+        assert workspace is not None
+        self.assertEqual(attachment["source_type"], "external_link")
+        self.assertEqual(attachment["attachment_type"], "google_sheet")
+        self.assertIn("Google SAG sheet", [item["display_name"] for item in workspace["attachments"]])
+        self.assertNotIn("docs.google.com", workspace["notebook"]["content"])
+
+    def test_uploaded_attachment_metadata_persists_and_delete_marks_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(tmpdir)
+            service = GeneralExperimentService(settings=settings)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Upload attachment test")
+            stored = LocalAttachmentStorage(settings).save(
+                experiment_id=experiment["experiment_id"],
+                filename="results.csv",
+                data=b"group,value\ncontrol,1\n",
+                mime_type="text/csv",
+            )
+            attachment = service.record_uploaded_attachment(
+                "user:researcher-a",
+                experiment["experiment_id"],
+                stored.__dict__,
+            )
+            listed = service.list_attachments("user:researcher-a", experiment["experiment_id"])
+            deleted = service.delete_attachment("user:researcher-a", attachment["attachment_id"])
+            after_delete = service.list_attachments("user:researcher-a", experiment["experiment_id"])
+
+        self.assertEqual(attachment["source_type"], "uploaded_file")
+        self.assertEqual(attachment["attachment_type"], "spreadsheet")
+        self.assertEqual(attachment["processing_status"], "metadata_pending")
+        self.assertTrue(any(item["attachment_id"] == attachment["attachment_id"] for item in listed))
+        self.assertTrue(deleted["deleted"])
+        self.assertFalse(any(item["attachment_id"] == attachment["attachment_id"] for item in after_delete))
 
     def test_legacy_organoid_experiment_migrates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -148,10 +148,64 @@ void main() {
     await tester.drag(find.text('Protocol 1'), const Offset(0, -320));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
-    await tester.tapAt(const Offset(20, 40));
+    Navigator.of(tester.element(find.textContaining('Attach a protocol')))
+        .pop();
     await tester.pumpAndSettle();
-    expect(find.text('Scientific notebook'), findsOneWidget);
-    expect(find.text('Start writing here.'), findsOneWidget);
+    expect(find.text('Mundi Workspace'), findsOneWidget);
+  });
+
+  testWidgets('attachment cards render below notebook and link flow posts URL',
+      (tester) async {
+    final requests = <http.Request>[];
+    final api = _api(onRequest: requests.add);
+    await pumpWorkspace(
+      tester,
+      api: api,
+      workspace: _workspace(title: 'Attachment Workspace', attachments: [
+        {
+          'attachment_id': 'attachment:existing',
+          'source_type': 'external_link',
+          'attachment_type': 'google_sheet',
+          'display_name': 'Existing Google Sheet',
+          'external_url': 'https://docs.google.com/spreadsheets/d/example',
+          'upload_status': 'complete',
+          'processing_status': 'not_started',
+          'metadata': {'host': 'docs.google.com'},
+        }
+      ]),
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Attachments'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Attachments'), findsOneWidget);
+    expect(find.text('Existing Google Sheet'), findsOneWidget);
+    expect(find.text('Upload Spreadsheet'), findsOneWidget);
+
+    final addLinkButton =
+        find.widgetWithText(OutlinedButton, 'Add External Link');
+    await tester.ensureVisible(addLinkButton);
+    await tester.pumpAndSettle();
+    await tester.tap(addLinkButton);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'URL'),
+        'https://docs.google.com/spreadsheets/d/new');
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Display name optional'), 'New Sheet');
+    await tester.tap(find.text('Add Link'));
+    await tester.pumpAndSettle();
+
+    expect(
+      requests.any((request) =>
+          request.method == 'POST' &&
+          request.url.path.endsWith('/attachments/link') &&
+          (jsonDecode(request.body) as Map)['external_url'] ==
+              'https://docs.google.com/spreadsheets/d/new'),
+      isTrue,
+    );
+    expect(find.text('Link attachment added'), findsOneWidget);
   });
 }
 
@@ -199,13 +253,50 @@ ResearchOsApi _api({
           headers: {'Content-Type': 'application/json'},
         );
       }
+      if (request.method == 'GET' &&
+          request.url.path.endsWith('/general-workspace')) {
+        return http.Response(
+          jsonEncode(_workspace(title: 'Attachment Workspace', attachments: [
+            {
+              'attachment_id': 'attachment:new',
+              'source_type': 'external_link',
+              'attachment_type': 'google_sheet',
+              'display_name': 'New Sheet',
+              'external_url': 'https://docs.google.com/spreadsheets/d/new',
+              'upload_status': 'complete',
+              'processing_status': 'not_started',
+              'metadata': {'host': 'docs.google.com'},
+            }
+          ])),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+      if (request.method == 'POST' &&
+          request.url.path.endsWith('/attachments/link')) {
+        return http.Response(
+          jsonEncode({
+            'attachment': {
+              'attachment_id': 'attachment:new',
+              'source_type': 'external_link',
+              'attachment_type': 'google_sheet',
+              'display_name': 'New Sheet',
+            }
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
       return http.Response('{}', 200,
           headers: {'Content-Type': 'application/json'});
     }),
   );
 }
 
-Map<String, dynamic> _workspace({required String title}) {
+Map<String, dynamic> _workspace({
+  required String title,
+  List<Map<String, dynamic>> attachments = const [],
+}) {
   return {
     'experiment': {'experiment_id': 'experiment:test', 'title': title},
     'overview': {
@@ -217,11 +308,15 @@ Map<String, dynamic> _workspace({required String title}) {
       'document_id': 'experiment-notebook:test',
       'version': 1,
       'content': 'Start writing here.',
+      'attachments': attachments,
     },
+    'attachments': attachments,
     'design': {'conditions': []},
     'timeline': {'events': []},
     'tool_palette': [
       {'tool_id': 'protocols', 'label': 'Protocols'},
+      {'tool_id': 'spreadsheet', 'label': 'Spreadsheet Import'},
+      {'tool_id': 'attachments', 'label': 'Attachments'},
       {'tool_id': 'voice', 'label': 'Voice'},
       {'tool_id': 'timeline', 'label': 'Timeline'},
     ],

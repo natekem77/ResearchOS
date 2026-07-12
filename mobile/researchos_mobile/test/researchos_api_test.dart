@@ -76,4 +76,76 @@ void main() {
     expect(body['title'], 'Edited Experiment');
     expect((response['experiment'] as Map)['title'], 'Edited Experiment');
   });
+
+  test('experiments decodes notebook-first workspace cards from mobile list',
+      () async {
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        expect(request.method, 'GET');
+        expect(request.url.path, '/mobile/experiments');
+        return http.Response(
+          jsonEncode({
+            'experiments': [
+              {
+                'id': 'experiment:test',
+                'title': 'Attachment Persistence Test',
+                'human_experiment_id': 'experiment:test',
+                'route': '/experiments/experiment:test/general-workspace',
+              }
+            ],
+            'count': 1,
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final experiments = await api.experiments();
+
+    expect(experiments, hasLength(1));
+    expect(experiments.single.id, 'experiment:test');
+    expect(experiments.single.title, 'Attachment Persistence Test');
+    expect(experiments.single.route, contains('general-workspace'));
+  });
+
+  test('createExperimentLinkAttachment posts URL as attachment JSON', () async {
+    late http.Request captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'attachment': {
+              'attachment_id': 'attachment:test',
+              'source_type': 'external_link',
+              'attachment_type': 'google_sheet',
+              'display_name': 'Google Sheet',
+            }
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final response = await api.createExperimentLinkAttachment(
+      experimentId: 'experiment:test',
+      url: 'https://docs.google.com/spreadsheets/d/example',
+      displayName: 'Google Sheet',
+      description: 'analysis',
+    );
+    final body = jsonDecode(captured.body) as Map<String, dynamic>;
+
+    expect(captured.method, 'POST');
+    expect(
+        captured.url.path, '/experiments/experiment%3Atest/attachments/link');
+    expect(captured.headers['Content-Type'], 'application/json');
+    expect(
+        body['external_url'], 'https://docs.google.com/spreadsheets/d/example');
+    expect(body['display_name'], 'Google Sheet');
+    expect((response['attachment'] as Map)['source_type'], 'external_link');
+  });
 }

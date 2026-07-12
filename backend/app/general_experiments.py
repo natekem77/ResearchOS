@@ -8,17 +8,21 @@ data never overwrites narrative notes.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
+from urllib.parse import urlparse
 
+from app.attachment_storage import SPREADSHEET_EXTENSIONS, classify_attachment_type
 from app.authorization import AuthorizationService
 from app.config import Settings
 from app.storage import SQLiteStore
 
 EXPERIMENT_ACCESS_ORDER = {"view": 1, "comment": 2, "edit": 3, "manage": 4}
+logger = logging.getLogger(__name__)
 
 
 class ExperimentAuthorizationError(PermissionError):
@@ -356,6 +360,21 @@ class GeneralExperimentService:
                 );
                 """
             )
+            for column, definition in {
+                "experiment_id": "TEXT",
+                "source_type": "TEXT NOT NULL DEFAULT 'uploaded_file'",
+                "original_filename": "TEXT",
+                "file_extension": "TEXT",
+                "size_bytes": "INTEGER",
+                "storage_path": "TEXT",
+                "external_url": "TEXT",
+                "description": "TEXT",
+                "upload_status": "TEXT NOT NULL DEFAULT 'complete'",
+                "processing_status": "TEXT NOT NULL DEFAULT 'not_started'",
+                "updated_at": "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "checksum": "TEXT",
+            }.items():
+                self._ensure_column(connection, "experiment_notebook_attachments", column, definition)
 
     def ensure_demo_data(self) -> None:
         protocol = self.seed_protocol(
@@ -515,6 +534,7 @@ class GeneralExperimentService:
     ) -> dict[str, Any]:
         self._require_lab_member(actor_user_id, lab_id)
         experiment_id = experiment_id or f"experiment:{uuid.uuid4().hex[:16]}"
+        logger.info("Creating general experiment workspace", extra={"experiment_id": experiment_id, "lab_id": lab_id, "user_id": actor_user_id})
         with self._connect() as connection:
             connection.execute(
                 """
@@ -528,7 +548,26 @@ class GeneralExperimentService:
         self.get_or_create_notebook(actor_user_id, experiment_id)
         workspace = self.get_workspace(experiment_id, actor_user_id)
         assert workspace is not None
+        logger.info("Created general experiment workspace", extra={"experiment_id": experiment_id, "user_id": actor_user_id})
         return workspace["experiment"]
+
+    def list_experiments(self, user_id: str, lab_id: str | None = None) -> list[dict[str, Any]]:
+        """Return accessible generalized experiment workspaces newest first."""
+
+        with self._connect() as connection:
+            if lab_id:
+                rows = connection.execute(
+                    "SELECT * FROM experiment_workspaces WHERE lab_id = ? ORDER BY updated_at DESC, created_at DESC",
+                    (lab_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM experiment_workspaces ORDER BY updated_at DESC, created_at DESC"
+                ).fetchall()
+        experiments = [_decode(row) for row in rows]
+        accessible = [experiment for experiment in experiments if self.can_access(user_id, str(experiment.get("experiment_id")), "view")]
+        logger.debug("Listed general experiment workspaces", extra={"count": len(accessible), "user_id": user_id, "lab_id": lab_id})
+        return accessible
 
     def create_from_protocol(self, actor_user_id: str, protocol_id: str, protocol_version_id: str, title: str, lab_id: str = "lab:demo", experiment_id: str | None = None) -> dict[str, Any]:
         protocol = self.get_protocol(protocol_id)
@@ -714,10 +753,12 @@ class GeneralExperimentService:
         if experiment is None:
             return None
         notebook = self.get_or_create_notebook(user_id, experiment_id)
+        attachments = self.list_attachments(user_id, experiment_id)
         return {
             "experiment": experiment,
             "overview": self._overview(experiment),
             "notebook": notebook,
+            "attachments": attachments,
             "design": {
                 "cohorts": self._rows("experiment_cohorts", experiment_id),
                 "conditions": self._rows("experiment_conditions", experiment_id),
@@ -825,13 +866,16 @@ class GeneralExperimentService:
             connection.execute(
                 """
                 INSERT INTO experiment_notebook_attachments
-                    (attachment_id, document_id, attachment_type, resource_id, storage_reference, display_name, mime_type, metadata_json, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (attachment_id, document_id, experiment_id, attachment_type, source_type, resource_id, storage_reference,
+                     display_name, mime_type, metadata_json, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     attachment_id,
                     document_id,
+                    doc["experiment_id"],
                     payload.get("attachment_type"),
+                    payload.get("source_type") or "researchos_resource",
                     payload.get("resource_id"),
                     payload.get("storage_reference"),
                     payload.get("display_name") or payload.get("resource_id") or "Attachment",
@@ -842,6 +886,145 @@ class GeneralExperimentService:
             )
             self._history(connection, str(doc["experiment_id"]), user_id, "attachment.added", {"attachment_id": attachment_id, "attachment_type": payload.get("attachment_type")})
         return self._row_by_id("experiment_notebook_attachments", "attachment_id", attachment_id)
+
+    def record_uploaded_attachment(self, user_id: str, experiment_id: str, stored: dict[str, Any], display_name: str | None = None, description: str | None = None, attachment_type: str | None = None) -> dict[str, Any]:
+        self._require_access(user_id, experiment_id, "edit")
+        notebook = self.get_or_create_notebook(user_id, experiment_id)
+        resolved_type = attachment_type or classify_attachment_type(str(stored.get("original_filename") or stored.get("safe_filename") or ""), stored.get("mime_type"))
+        metadata = self._attachment_processing_metadata(str(stored.get("file_extension") or ""), int(stored.get("size_bytes") or 0))
+        attachment_id = f"experiment-attachment:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_notebook_attachments
+                    (attachment_id, document_id, experiment_id, attachment_type, source_type, storage_reference, storage_path,
+                     display_name, original_filename, mime_type, file_extension, size_bytes, description, upload_status,
+                     processing_status, checksum, metadata_json, created_by, updated_at)
+                VALUES (?, ?, ?, ?, 'uploaded_file', ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    attachment_id,
+                    notebook["document_id"],
+                    experiment_id,
+                    resolved_type,
+                    stored.get("storage_path"),
+                    stored.get("storage_path"),
+                    display_name or stored.get("original_filename") or "Attachment",
+                    stored.get("original_filename"),
+                    stored.get("mime_type"),
+                    stored.get("file_extension"),
+                    stored.get("size_bytes"),
+                    description,
+                    metadata["processing_status"],
+                    stored.get("checksum"),
+                    json.dumps(metadata),
+                    user_id,
+                ),
+            )
+            self._history(connection, experiment_id, user_id, "attachment.uploaded", {"attachment_id": attachment_id, "attachment_type": resolved_type})
+        logger.info("Stored experiment attachment metadata", extra={"experiment_id": experiment_id, "attachment_id": attachment_id, "user_id": user_id})
+        return self.get_attachment(user_id, attachment_id)
+
+    def create_link_attachment(self, user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_access(user_id, experiment_id, "edit")
+        url = str(payload.get("external_url") or payload.get("url") or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ExperimentValidationError("Attachment link must be a valid HTTP or HTTPS URL.")
+        notebook = self.get_or_create_notebook(user_id, experiment_id)
+        provider = _link_provider(url)
+        attachment_type = str(payload.get("attachment_type") or provider.get("attachment_type") or "external_link")
+        display_name = str(payload.get("display_name") or provider.get("display_name") or parsed.netloc)
+        attachment_id = f"experiment-attachment:{uuid.uuid4().hex[:16]}"
+        metadata = {"provider": provider.get("provider"), "host": parsed.netloc}
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO experiment_notebook_attachments
+                    (attachment_id, document_id, experiment_id, attachment_type, source_type, display_name, external_url,
+                     description, upload_status, processing_status, metadata_json, created_by, updated_at)
+                VALUES (?, ?, ?, ?, 'external_link', ?, ?, ?, 'complete', 'not_started', ?, ?, CURRENT_TIMESTAMP)
+                """,
+                (
+                    attachment_id,
+                    notebook["document_id"],
+                    experiment_id,
+                    attachment_type,
+                    display_name,
+                    url,
+                    payload.get("description"),
+                    json.dumps(metadata),
+                    user_id,
+                ),
+            )
+            self._history(connection, experiment_id, user_id, "attachment.link_added", {"attachment_id": attachment_id, "provider": provider.get("provider")})
+        logger.info("Created experiment link attachment", extra={"experiment_id": experiment_id, "attachment_id": attachment_id, "provider": provider.get("provider")})
+        return self.get_attachment(user_id, attachment_id)
+
+    def list_attachments(self, user_id: str, experiment_id: str) -> list[dict[str, Any]]:
+        self._require_access(user_id, experiment_id, "view")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM experiment_notebook_attachments
+                WHERE (experiment_id = ? OR document_id IN (SELECT document_id FROM experiment_notebook_documents WHERE experiment_id = ?))
+                  AND COALESCE(upload_status, 'complete') != 'deleted'
+                ORDER BY created_at DESC
+                """,
+                (experiment_id, experiment_id),
+            ).fetchall()
+        return [_decode(row) for row in rows]
+
+    def get_attachment(self, user_id: str, attachment_id: str) -> dict[str, Any]:
+        attachment = self._row_by_id("experiment_notebook_attachments", "attachment_id", attachment_id)
+        experiment_id = str(attachment.get("experiment_id") or "")
+        if not experiment_id:
+            with self._connect() as connection:
+                doc = connection.execute(
+                    "SELECT experiment_id FROM experiment_notebook_documents WHERE document_id = ?",
+                    (attachment.get("document_id"),),
+                ).fetchone()
+                experiment_id = str(doc["experiment_id"]) if doc else ""
+        self._require_access(user_id, experiment_id, "view")
+        return attachment | {"experiment_id": experiment_id}
+
+    def update_attachment(self, user_id: str, attachment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        attachment = self.get_attachment(user_id, attachment_id)
+        experiment_id = str(attachment["experiment_id"])
+        self._require_access(user_id, experiment_id, "edit")
+        display_name = payload.get("display_name")
+        description = payload.get("description")
+        if display_name is not None and not str(display_name).strip():
+            raise ExperimentValidationError("Display name cannot be empty.")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE experiment_notebook_attachments
+                SET display_name = COALESCE(?, display_name),
+                    description = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE attachment_id = ?
+                """,
+                (str(display_name).strip() if display_name is not None else None, description, attachment_id),
+            )
+            self._history(connection, experiment_id, user_id, "attachment.updated", {"attachment_id": attachment_id})
+        return self.get_attachment(user_id, attachment_id)
+
+    def delete_attachment(self, user_id: str, attachment_id: str) -> dict[str, Any]:
+        attachment = self.get_attachment(user_id, attachment_id)
+        experiment_id = str(attachment["experiment_id"])
+        self._require_access(user_id, experiment_id, "edit")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE experiment_notebook_attachments
+                SET upload_status = 'deleted', updated_at = CURRENT_TIMESTAMP
+                WHERE attachment_id = ?
+                """,
+                (attachment_id,),
+            )
+            self._history(connection, experiment_id, user_id, "attachment.deleted", {"attachment_id": attachment_id})
+        return {"attachment_id": attachment_id, "deleted": True, "storage_path": attachment.get("storage_path") or attachment.get("storage_reference")}
 
     def create_extraction_draft(self, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         provider = DeterministicExperimentExtractionProvider()
@@ -976,8 +1159,32 @@ class GeneralExperimentService:
             return [_decode(row) for row in connection.execute("SELECT * FROM experiment_protocol_references WHERE experiment_id = ? ORDER BY added_at", (experiment_id,)).fetchall()]
 
     def _notebook_payload(self, connection: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
-        attachments = [_decode(item) for item in connection.execute("SELECT * FROM experiment_notebook_attachments WHERE document_id = ? ORDER BY created_at", (row["document_id"],)).fetchall()]
+        attachments = [_decode(item) for item in connection.execute("SELECT * FROM experiment_notebook_attachments WHERE document_id = ? AND COALESCE(upload_status, 'complete') != 'deleted' ORDER BY created_at", (row["document_id"],)).fetchall()]
         return _decode(row) | {"attachments": attachments, "editor_capabilities": ["headings", "paragraphs", "bold", "italic", "lists", "checklists", "tables", "links", "attachments", "resource_links"]}
+
+    def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _attachment_processing_metadata(self, extension: str, size_bytes: int) -> dict[str, Any]:
+        extension = extension.lower()
+        metadata: dict[str, Any] = {"future_ai_actions": ["summarize_spreadsheet", "inspect_columns", "generate_experimental_design", "compare_experiments", "suggest_statistical_analyses", "generate_plots"]}
+        if extension in SPREADSHEET_EXTENSIONS:
+            metadata["file_format"] = extension.lstrip(".")
+            metadata["spreadsheet_ready"] = True
+            metadata["sheet_names"] = []
+            metadata["row_count"] = None
+            metadata["column_count"] = None
+            metadata["processing_status_message"] = "Original spreadsheet retained; lightweight parsing is future-ready."
+            processing_status = "metadata_pending"
+        else:
+            metadata["file_format"] = extension.lstrip(".") or "unknown"
+            metadata["spreadsheet_ready"] = False
+            processing_status = "not_applicable"
+        metadata["size_bytes"] = size_bytes
+        metadata["processing_status"] = processing_status
+        return metadata
 
     def _row_by_id(self, table: str, key: str, value: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -1031,6 +1238,23 @@ def _decode(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
 
 def _plain_text(content: str) -> str:
     return content.replace("#", "").replace("*", "").replace("|", " ")
+
+
+def _link_provider(url: str) -> dict[str, str]:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+    if "docs.google.com" in host and "/spreadsheets/" in path:
+        return {"provider": "Google Sheets", "attachment_type": "google_sheet", "display_name": "Google Sheet"}
+    if "drive.google.com" in host or "docs.google.com" in host:
+        return {"provider": "Google Drive", "attachment_type": "google_drive", "display_name": "Google Drive file"}
+    if "sharepoint.com" in host:
+        return {"provider": "SharePoint", "attachment_type": "sharepoint", "display_name": "SharePoint file"}
+    if "onedrive.live.com" in host or "1drv.ms" in host:
+        return {"provider": "OneDrive", "attachment_type": "onedrive", "display_name": "OneDrive file"}
+    if "dropbox.com" in host:
+        return {"provider": "Dropbox", "attachment_type": "dropbox", "display_name": "Dropbox file"}
+    return {"provider": "External Link", "attachment_type": "external_link", "display_name": host or "External link"}
 
 
 def _slug(value: str) -> str:

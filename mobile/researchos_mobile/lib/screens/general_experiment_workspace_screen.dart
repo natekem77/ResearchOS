@@ -1,6 +1,9 @@
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
@@ -34,6 +37,7 @@ class _GeneralExperimentWorkspaceScreenState
   String _titleStatus = '';
   bool _saving = false;
   bool _savingTitle = false;
+  bool _attachmentWorking = false;
   Timer? _autosaveTimer;
   String _lastSavedContent = '';
 
@@ -113,6 +117,7 @@ class _GeneralExperimentWorkspaceScreenState
 
   void _scheduleAutosave() {
     _autosaveTimer?.cancel();
+    if (mounted) setState(() {});
     if (_notebookController.text == _lastSavedContent) return;
     _autosaveTimer = Timer(const Duration(milliseconds: 1400), () {
       if (mounted) _saveNotebook();
@@ -166,6 +171,196 @@ class _GeneralExperimentWorkspaceScreenState
     );
   }
 
+  Future<void> _pickAndUploadAttachment({String? attachmentType}) async {
+    if (_attachmentWorking) return;
+    setState(() {
+      _attachmentWorking = true;
+      _saveMessage = 'Selecting file...';
+    });
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowMultiple: false,
+        allowedExtensions: const [
+          'xlsx',
+          'xls',
+          'csv',
+          'tsv',
+          'pdf',
+          'docx',
+          'txt',
+          'md',
+          'png',
+          'jpg',
+          'jpeg',
+          'gif',
+          'tif',
+          'tiff',
+          'heic',
+          'webp',
+        ],
+      );
+      if (result == null || result.files.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _saveMessage = 'File selection cancelled';
+          _attachmentWorking = false;
+        });
+        return;
+      }
+      final platformFile = result.files.single;
+      final path = platformFile.path;
+      if (path == null || path.isEmpty) {
+        throw const ResearchOsApiException(
+            'This platform did not provide a readable file path.');
+      }
+      if (!mounted) return;
+      setState(() => _saveMessage = 'Uploading ${platformFile.name}...');
+      await widget.api.uploadExperimentAttachment(
+        experimentId: widget.experimentId,
+        file: File(path),
+        attachmentType: attachmentType,
+        displayName: platformFile.name,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Uploaded ${platformFile.name}')),
+      );
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saveMessage = 'Attachment upload failed: $error');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Attachment upload failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _attachmentWorking = false);
+    }
+  }
+
+  Future<void> _showAddLinkDialog() async {
+    final link = await showDialog<_AttachmentLinkDraft>(
+      context: context,
+      builder: (context) => const _AddLinkDialog(),
+    );
+    if (link == null) return;
+    setState(() {
+      _attachmentWorking = true;
+      _saveMessage = 'Adding link...';
+    });
+    try {
+      await widget.api.createExperimentLinkAttachment(
+        experimentId: widget.experimentId,
+        url: link.url,
+        displayName: link.displayName,
+        description: link.description,
+        attachmentType: link.attachmentType,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Link attachment added')),
+      );
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saveMessage = 'Could not add link: $error');
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Could not add link: $error')));
+    } finally {
+      if (mounted) setState(() => _attachmentWorking = false);
+    }
+  }
+
+  Future<void> _deleteAttachment(Map<String, dynamic> attachment) async {
+    final attachmentId = _text(attachment['attachment_id']);
+    if (attachmentId.isEmpty || _attachmentWorking) return;
+    final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Delete attachment?'),
+            content: Text(
+                'Remove ${_text(attachment['display_name'], fallback: 'this attachment')} from this experiment?'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Cancel')),
+              FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Delete')),
+            ],
+          ),
+        ) ??
+        false;
+    if (!confirmed) return;
+    setState(() {
+      _attachmentWorking = true;
+      _saveMessage = 'Deleting attachment...';
+    });
+    try {
+      await widget.api.deleteExperimentAttachment(attachmentId);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Attachment deleted')),
+      );
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _saveMessage = 'Could not delete attachment: $error');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete attachment: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _attachmentWorking = false);
+    }
+  }
+
+  Future<void> _openAttachment(Map<String, dynamic> attachment) async {
+    final sourceType = _text(attachment['source_type']);
+    final attachmentId = _text(attachment['attachment_id']);
+    final url = sourceType == 'external_link'
+        ? _text(attachment['external_url'])
+        : '${widget.api.baseUrl.replaceAll(RegExp(r'/$'), '')}/experiment-attachments/${Uri.encodeComponent(attachmentId)}/download';
+    final uri = Uri.tryParse(url);
+    if (uri == null ||
+        !await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not open attachment')),
+      );
+    }
+  }
+
+  Future<bool> _confirmDiscardUnsavedChanges() async {
+    if (_notebookController.text == _lastSavedContent) return true;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Unsaved notebook changes'),
+        content: const Text(
+            'Save your notebook before leaving, or stay on this experiment.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'stay'),
+            child: const Text('Stay'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.pop(context, 'leave'),
+            child: const Text('Leave Without Saving'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, 'save'),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (choice == 'save') {
+      await _saveNotebook();
+      return _notebookController.text == _lastSavedContent;
+    }
+    return choice == 'leave';
+  }
+
   void _openTool(String toolId, Map<String, dynamic> workspace) {
     final wide = MediaQuery.sizeOf(context).width >= 900;
     if (wide) {
@@ -192,6 +387,8 @@ class _GeneralExperimentWorkspaceScreenState
                 toolId: toolId,
                 workspace: workspace,
                 onInsertText: _insertIntoNotebook,
+                onUploadAttachment: _pickAndUploadAttachment,
+                onAddLink: _showAddLinkDialog,
                 onWorkspaceChanged: () {
                   Navigator.pop(context);
                   _reload();
@@ -206,74 +403,95 @@ class _GeneralExperimentWorkspaceScreenState
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Mundi Workspace')),
-      body: SafeArea(
-        child: FutureBuilder<Map<String, dynamic>>(
-          future: _future,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const ResearchOsLoadingSkeleton(rows: 6);
-            }
-            if (snapshot.hasError) {
-              return ResearchOsErrorState(
-                message: snapshot.error.toString(),
-                onRetry: _reload,
-              );
-            }
-            final workspace = snapshot.data ?? const <String, dynamic>{};
-            final overview = _map(workspace['overview']);
-            final tools = _maps(workspace['tool_palette']);
-            return LayoutBuilder(
-              builder: (context, constraints) {
-                final wide = constraints.maxWidth >= 900;
-                final notebook = _NotebookSurface(
-                  overview: overview,
-                  title: _experimentTitle,
-                  titleStatus: _titleStatus,
-                  savingTitle: _savingTitle,
-                  tools: tools,
-                  controller: _notebookController,
-                  saving: _saving,
-                  saveMessage: _saveMessage,
-                  onSave: _saveNotebook,
-                  onTitleSubmitted: _saveTitle,
-                  onToolSelected: (toolId) => _openTool(toolId, workspace),
+    return PopScope<Object?>(
+      canPop: _notebookController.text == _lastSavedContent,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        if (await _confirmDiscardUnsavedChanges() && context.mounted) {
+          Navigator.of(context).pop(result);
+        }
+      },
+      child: Scaffold(
+        appBar: AppBar(title: const Text('Mundi Workspace')),
+        body: SafeArea(
+          child: FutureBuilder<Map<String, dynamic>>(
+            future: _future,
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const ResearchOsLoadingSkeleton(rows: 6);
+              }
+              if (snapshot.hasError) {
+                return ResearchOsErrorState(
+                  message: snapshot.error.toString(),
+                  onRetry: _reload,
                 );
-                if (!wide) {
-                  return notebook;
-                }
-                return Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Expanded(flex: 3, child: notebook),
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      width: _selectedTool == null ? 0 : 380,
-                      child: _selectedTool == null
-                          ? const SizedBox.shrink()
-                          : Material(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .surfaceContainerHighest,
-                              child: SingleChildScrollView(
-                                padding: ResearchOsSpacing.screen,
-                                child: _WorkspaceToolPanel(
-                                  api: widget.api,
-                                  experimentId: widget.experimentId,
-                                  toolId: _selectedTool!,
-                                  workspace: workspace,
-                                  onInsertText: _insertIntoNotebook,
-                                  onWorkspaceChanged: _reload,
+              }
+              final workspace = snapshot.data ?? const <String, dynamic>{};
+              final overview = _map(workspace['overview']);
+              final tools = _maps(workspace['tool_palette']);
+              final attachments = _maps(workspace['attachments']).isNotEmpty
+                  ? _maps(workspace['attachments'])
+                  : _maps(_map(workspace['notebook'])['attachments']);
+              return LayoutBuilder(
+                builder: (context, constraints) {
+                  final wide = constraints.maxWidth >= 900;
+                  final notebook = _NotebookSurface(
+                    overview: overview,
+                    title: _experimentTitle,
+                    titleStatus: _titleStatus,
+                    savingTitle: _savingTitle,
+                    tools: tools,
+                    controller: _notebookController,
+                    saving: _saving,
+                    saveMessage: _saveMessage,
+                    attachments: attachments,
+                    attachmentWorking: _attachmentWorking,
+                    onSave: _saveNotebook,
+                    onTitleSubmitted: _saveTitle,
+                    onToolSelected: (toolId) => _openTool(toolId, workspace),
+                    onUploadAttachment: _pickAndUploadAttachment,
+                    onAddLink: _showAddLinkDialog,
+                    onOpenAttachment: _openAttachment,
+                    onDeleteAttachment: _deleteAttachment,
+                  );
+                  if (!wide) {
+                    return notebook;
+                  }
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(flex: 3, child: notebook),
+                      AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        width: _selectedTool == null ? 0 : 380,
+                        child: _selectedTool == null
+                            ? const SizedBox.shrink()
+                            : Material(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest,
+                                child: SingleChildScrollView(
+                                  padding: ResearchOsSpacing.screen,
+                                  child: _WorkspaceToolPanel(
+                                    api: widget.api,
+                                    experimentId: widget.experimentId,
+                                    toolId: _selectedTool!,
+                                    workspace: workspace,
+                                    onInsertText: _insertIntoNotebook,
+                                    onUploadAttachment:
+                                        _pickAndUploadAttachment,
+                                    onAddLink: _showAddLinkDialog,
+                                    onWorkspaceChanged: _reload,
+                                  ),
                                 ),
                               ),
-                            ),
-                    ),
-                  ],
-                );
-              },
-            );
-          },
+                      ),
+                    ],
+                  );
+                },
+              );
+            },
+          ),
         ),
       ),
     );
@@ -290,9 +508,15 @@ class _NotebookSurface extends StatelessWidget {
     required this.controller,
     required this.saving,
     required this.saveMessage,
+    required this.attachments,
+    required this.attachmentWorking,
     required this.onSave,
     required this.onTitleSubmitted,
     required this.onToolSelected,
+    required this.onUploadAttachment,
+    required this.onAddLink,
+    required this.onOpenAttachment,
+    required this.onDeleteAttachment,
   });
 
   final Map<String, dynamic> overview;
@@ -303,9 +527,15 @@ class _NotebookSurface extends StatelessWidget {
   final TextEditingController controller;
   final bool saving;
   final String? saveMessage;
+  final List<Map<String, dynamic>> attachments;
+  final bool attachmentWorking;
   final VoidCallback onSave;
   final Future<bool> Function(String title) onTitleSubmitted;
   final ValueChanged<String> onToolSelected;
+  final Future<void> Function({String? attachmentType}) onUploadAttachment;
+  final VoidCallback onAddLink;
+  final ValueChanged<Map<String, dynamic>> onOpenAttachment;
+  final ValueChanged<Map<String, dynamic>> onDeleteAttachment;
 
   @override
   Widget build(BuildContext context) {
@@ -393,11 +623,383 @@ class _NotebookSurface extends StatelessWidget {
           ),
         ),
         const SizedBox(height: ResearchOsSpacing.md),
+        _AttachmentsSection(
+          attachments: attachments,
+          working: attachmentWorking,
+          onUploadAttachment: onUploadAttachment,
+          onAddLink: onAddLink,
+          onOpenAttachment: onOpenAttachment,
+          onDeleteAttachment: onDeleteAttachment,
+        ),
+        const SizedBox(height: ResearchOsSpacing.md),
         const ResearchOsSectionHeader(
           title: 'Tools',
           trailing: Icon(Icons.tune_outlined),
         ),
         _ToolPalette(tools: tools, onToolSelected: onToolSelected),
+      ],
+    );
+  }
+}
+
+class _AttachmentsSection extends StatelessWidget {
+  const _AttachmentsSection({
+    required this.attachments,
+    required this.working,
+    required this.onUploadAttachment,
+    required this.onAddLink,
+    required this.onOpenAttachment,
+    required this.onDeleteAttachment,
+  });
+
+  final List<Map<String, dynamic>> attachments;
+  final bool working;
+  final Future<void> Function({String? attachmentType}) onUploadAttachment;
+  final VoidCallback onAddLink;
+  final ValueChanged<Map<String, dynamic>> onOpenAttachment;
+  final ValueChanged<Map<String, dynamic>> onDeleteAttachment;
+
+  @override
+  Widget build(BuildContext context) {
+    return ResearchOsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text('Attachments',
+                    style: Theme.of(context).textTheme.titleLarge),
+              ),
+              if (working)
+                const SizedBox.square(
+                  dimension: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+            ],
+          ),
+          const SizedBox(height: ResearchOsSpacing.sm),
+          const Text(
+            'Attach files and external links as experiment assets. They are stored separately from notebook text.',
+          ),
+          const SizedBox(height: ResearchOsSpacing.md),
+          Wrap(
+            spacing: ResearchOsSpacing.sm,
+            runSpacing: ResearchOsSpacing.sm,
+            children: [
+              FilledButton.icon(
+                onPressed: working
+                    ? null
+                    : () => onUploadAttachment(attachmentType: 'spreadsheet'),
+                icon: const Icon(Icons.table_chart_outlined),
+                label: const Text('Upload Spreadsheet'),
+              ),
+              OutlinedButton.icon(
+                onPressed: working
+                    ? null
+                    : () => onUploadAttachment(attachmentType: 'csv'),
+                icon: const Icon(Icons.grid_on_outlined),
+                label: const Text('Upload CSV'),
+              ),
+              OutlinedButton.icon(
+                onPressed: working
+                    ? null
+                    : () => onUploadAttachment(attachmentType: 'pdf'),
+                icon: const Icon(Icons.picture_as_pdf_outlined),
+                label: const Text('Upload PDF'),
+              ),
+              OutlinedButton.icon(
+                onPressed: working
+                    ? null
+                    : () => onUploadAttachment(attachmentType: 'image'),
+                icon: const Icon(Icons.image_outlined),
+                label: const Text('Upload Image'),
+              ),
+              OutlinedButton.icon(
+                onPressed: working
+                    ? null
+                    : () => onUploadAttachment(attachmentType: 'document'),
+                icon: const Icon(Icons.description_outlined),
+                label: const Text('Upload Document'),
+              ),
+              OutlinedButton.icon(
+                onPressed: working
+                    ? null
+                    : () => onUploadAttachment(attachmentType: 'file'),
+                icon: const Icon(Icons.attach_file),
+                label: const Text('Upload Other File'),
+              ),
+              OutlinedButton.icon(
+                onPressed: working ? null : onAddLink,
+                icon: const Icon(Icons.link),
+                label: const Text('Add External Link'),
+              ),
+            ],
+          ),
+          const SizedBox(height: ResearchOsSpacing.md),
+          if (attachments.isEmpty)
+            const Text(
+              'No attachments yet. Upload a spreadsheet, PDF, image, document, or add a cloud link.',
+            )
+          else
+            Column(
+              children: [
+                for (final attachment in attachments) ...[
+                  _AttachmentCard(
+                    attachment: attachment,
+                    onOpen: () => onOpenAttachment(attachment),
+                    onDelete: () => onDeleteAttachment(attachment),
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                ],
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AttachmentCard extends StatelessWidget {
+  const _AttachmentCard({
+    required this.attachment,
+    required this.onOpen,
+    required this.onDelete,
+  });
+
+  final Map<String, dynamic> attachment;
+  final VoidCallback onOpen;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final sourceType = _text(attachment['source_type']);
+    final type = _text(attachment['attachment_type'], fallback: 'file');
+    final metadata = _map(attachment['metadata']);
+    final subtitle = sourceType == 'external_link'
+        ? _text(metadata['host'],
+            fallback: _host(_text(attachment['external_url'])))
+        : _text(attachment['original_filename'],
+            fallback:
+                _text(attachment['mime_type'], fallback: 'uploaded file'));
+    final size = _formatBytes(attachment['size_bytes']);
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(_attachmentIcon(type, sourceType), size: 28),
+                const SizedBox(width: ResearchOsSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _text(attachment['display_name'],
+                            fallback: 'Attachment'),
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: ResearchOsSpacing.xs),
+                      Text(
+                        [subtitle, type, size]
+                            .where((item) => item.trim().isNotEmpty)
+                            .join(' · '),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Wrap(
+              spacing: ResearchOsSpacing.sm,
+              runSpacing: ResearchOsSpacing.xs,
+              children: [
+                ScientificBadge(
+                  label: _statusLabel(
+                      _text(attachment['upload_status'], fallback: 'complete')),
+                  icon: Icons.cloud_done_outlined,
+                ),
+                ScientificBadge(
+                  label: _statusLabel(_text(attachment['processing_status'],
+                      fallback: 'not started')),
+                  icon: Icons.memory_outlined,
+                ),
+                ScientificBadge(
+                  label: _text(attachment['created_at']).isEmpty
+                      ? 'saved'
+                      : 'saved',
+                  icon: Icons.schedule_outlined,
+                ),
+              ],
+            ),
+            if (_text(attachment['description']).isNotEmpty) ...[
+              const SizedBox(height: ResearchOsSpacing.sm),
+              Text(_text(attachment['description'])),
+            ],
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Row(
+              children: [
+                TextButton.icon(
+                  onPressed: onOpen,
+                  icon: Icon(sourceType == 'external_link'
+                      ? Icons.open_in_new
+                      : Icons.download_outlined),
+                  label: const Text('Open'),
+                ),
+                const Spacer(),
+                IconButton(
+                  tooltip: 'Delete attachment',
+                  onPressed: onDelete,
+                  icon: const Icon(Icons.delete_outline),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AttachmentLinkDraft {
+  const _AttachmentLinkDraft({
+    required this.url,
+    this.displayName,
+    this.description,
+    this.attachmentType,
+  });
+
+  final String url;
+  final String? displayName;
+  final String? description;
+  final String? attachmentType;
+}
+
+class _AddLinkDialog extends StatefulWidget {
+  const _AddLinkDialog();
+
+  @override
+  State<_AddLinkDialog> createState() => _AddLinkDialogState();
+}
+
+class _AddLinkDialogState extends State<_AddLinkDialog> {
+  final _url = TextEditingController();
+  final _displayName = TextEditingController();
+  final _description = TextEditingController();
+  String _type = 'external_link';
+  String? _error;
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _displayName.dispose();
+    _description.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final text = _url.text.trim();
+    final uri = Uri.tryParse(text);
+    if (uri == null ||
+        !(uri.scheme == 'http' || uri.scheme == 'https') ||
+        uri.host.isEmpty) {
+      setState(() => _error = 'Enter a valid HTTP or HTTPS URL.');
+      return;
+    }
+    Navigator.pop(
+      context,
+      _AttachmentLinkDraft(
+        url: text,
+        displayName:
+            _displayName.text.trim().isEmpty ? null : _displayName.text.trim(),
+        description:
+            _description.text.trim().isEmpty ? null : _description.text.trim(),
+        attachmentType: _type,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add External Link'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _url,
+              keyboardType: TextInputType.url,
+              decoration: InputDecoration(
+                labelText: 'URL',
+                errorText: _error,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            TextField(
+              controller: _displayName,
+              decoration: const InputDecoration(
+                labelText: 'Display name optional',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            DropdownButtonFormField<String>(
+              initialValue: _type,
+              isExpanded: true,
+              decoration: const InputDecoration(
+                labelText: 'Attachment type',
+                border: OutlineInputBorder(),
+              ),
+              items: const [
+                DropdownMenuItem(
+                    value: 'google_sheet', child: Text('Google Sheet')),
+                DropdownMenuItem(
+                    value: 'onedrive', child: Text('OneDrive file')),
+                DropdownMenuItem(
+                    value: 'sharepoint', child: Text('SharePoint file')),
+                DropdownMenuItem(value: 'dropbox', child: Text('Dropbox')),
+                DropdownMenuItem(value: 'protocol', child: Text('Protocol')),
+                DropdownMenuItem(value: 'dataset', child: Text('Dataset')),
+                DropdownMenuItem(value: 'external_link', child: Text('Other')),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _type = value);
+              },
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            TextField(
+              controller: _description,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Description optional',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.link),
+          label: const Text('Add Link'),
+        ),
       ],
     );
   }
@@ -585,6 +1187,8 @@ class _WorkspaceToolPanel extends StatefulWidget {
     required this.toolId,
     required this.workspace,
     required this.onInsertText,
+    required this.onUploadAttachment,
+    required this.onAddLink,
     required this.onWorkspaceChanged,
   });
 
@@ -593,6 +1197,8 @@ class _WorkspaceToolPanel extends StatefulWidget {
   final String toolId;
   final Map<String, dynamic> workspace;
   final ValueChanged<String> onInsertText;
+  final Future<void> Function({String? attachmentType}) onUploadAttachment;
+  final VoidCallback onAddLink;
   final VoidCallback onWorkspaceChanged;
 
   @override
@@ -662,14 +1268,32 @@ class _WorkspaceToolPanelState extends State<_WorkspaceToolPanel> {
           onInsert: widget.onInsertText,
         );
       case 'spreadsheet':
-        return _TextInsertTool(
+        return _AttachmentTool(
           title: 'Spreadsheet Import',
           icon: Icons.table_chart_outlined,
-          controller: _scratch,
           helper:
-              'Paste a table preview or import note. You can attach only, extract conditions, or convert later.',
-          buttonLabel: 'Insert Spreadsheet Preview',
-          onInsert: widget.onInsertText,
+              'Upload an Excel, CSV, or TSV file as an attachment. Mundi preserves the original file and records metadata for future analysis.',
+          onUpload: () =>
+              widget.onUploadAttachment(attachmentType: 'spreadsheet'),
+          onAddLink: widget.onAddLink,
+        );
+      case 'attachments':
+        return _AttachmentTool(
+          title: 'Attachments',
+          icon: Icons.attach_file,
+          helper:
+              'Attach files or cloud links to this experiment without changing notebook text.',
+          onUpload: () => widget.onUploadAttachment(),
+          onAddLink: widget.onAddLink,
+        );
+      case 'images':
+        return _AttachmentTool(
+          title: 'Images',
+          icon: Icons.photo_camera_outlined,
+          helper:
+              'Upload image files as experiment attachments. Camera capture remains future-ready.',
+          onUpload: () => widget.onUploadAttachment(attachmentType: 'image'),
+          onAddLink: widget.onAddLink,
         );
       case 'timeline':
         return _TimelineTool(workspace: widget.workspace);
@@ -753,6 +1377,54 @@ class _ProtocolsTool extends StatelessWidget {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+class _AttachmentTool extends StatelessWidget {
+  const _AttachmentTool({
+    required this.title,
+    required this.icon,
+    required this.helper,
+    required this.onUpload,
+    required this.onAddLink,
+  });
+
+  final String title;
+  final IconData icon;
+  final String helper;
+  final VoidCallback onUpload;
+  final VoidCallback onAddLink;
+
+  @override
+  Widget build(BuildContext context) {
+    return _ToolShell(
+      title: title,
+      icon: icon,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(helper),
+          const SizedBox(height: ResearchOsSpacing.md),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: onUpload,
+              icon: const Icon(Icons.upload_file_outlined),
+              label: const Text('Upload File'),
+            ),
+          ),
+          const SizedBox(height: ResearchOsSpacing.sm),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: onAddLink,
+              icon: const Icon(Icons.link),
+              label: const Text('Add External Link'),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -987,6 +1659,49 @@ IconData _toolIcon(String toolId) {
     default:
       return Icons.tune_outlined;
   }
+}
+
+IconData _attachmentIcon(String type, String sourceType) {
+  if (sourceType == 'external_link') return Icons.link;
+  switch (type) {
+    case 'spreadsheet':
+    case 'csv':
+    case 'google_sheet':
+      return Icons.table_chart_outlined;
+    case 'pdf':
+      return Icons.picture_as_pdf_outlined;
+    case 'image':
+      return Icons.image_outlined;
+    case 'document':
+      return Icons.description_outlined;
+    default:
+      return Icons.insert_drive_file_outlined;
+  }
+}
+
+String _formatBytes(Object? value) {
+  final bytes = int.tryParse('${value ?? ''}');
+  if (bytes == null || bytes <= 0) return '';
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+String _statusLabel(String value) {
+  return switch (value.toLowerCase().replaceAll('_', ' ')) {
+    'metadata pending' => 'pending',
+    'not applicable' => 'n/a',
+    'not started' => 'queued',
+    'uploaded' => 'uploaded',
+    'complete' => 'complete',
+    'failed' => 'failed',
+    _ => value.length > 12 ? '${value.substring(0, 12)}…' : value,
+  };
+}
+
+String _host(String url) {
+  final uri = Uri.tryParse(url);
+  return uri?.host ?? '';
 }
 
 Map<String, dynamic> _map(Object? value) {

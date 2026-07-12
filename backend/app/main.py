@@ -8,12 +8,13 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.agents.manager import create_default_agent_manager
+from app.attachment_storage import AttachmentStorageError, LocalAttachmentStorage
 from app.ai_providers import AIProviderError, get_ai_provider
 from app.authorization import AuthorizationService
 from app.config import get_settings
@@ -449,6 +450,18 @@ class NotebookAttachmentRequest(BaseModel):
     display_name: str
     mime_type: str | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+class ExperimentLinkAttachmentRequest(BaseModel):
+    external_url: str
+    display_name: str | None = None
+    description: str | None = None
+    attachment_type: str | None = None
+
+
+class ExperimentAttachmentUpdateRequest(BaseModel):
+    display_name: str | None = None
+    description: str | None = None
 
 
 class ExtractionDraftRequest(BaseModel):
@@ -5209,6 +5222,25 @@ def _mobile_experiment_card(store: SQLiteStore, experiment: dict[str, object]) -
     }
 
 
+def _mobile_general_experiment_card(experiment: dict[str, object]) -> dict[str, object]:
+    experiment_id = str(experiment.get("experiment_id") or experiment.get("id") or "")
+    return {
+        "id": experiment_id,
+        "title": experiment.get("title") or experiment_id or "Experiment",
+        "human_experiment_id": experiment_id,
+        "date": experiment.get("start_date") or experiment.get("created_at"),
+        "workflow_stage": str(experiment.get("status") or "Draft").replace("_", " ").title(),
+        "key_compounds": [],
+        "key_markers": [],
+        "status": experiment.get("status") or "draft",
+        "last_activity": experiment.get("updated_at") or experiment.get("created_at"),
+        "route": f"/experiments/{experiment_id}/general-workspace",
+        "icon": "experiment",
+        "type_label": "Experiment",
+        "workspace_type": "notebook_first",
+    }
+
+
 def _asset_has_statistics(asset: dict[str, object]) -> bool:
     """Return whether an asset carries parsed quantitative/statistical metadata."""
 
@@ -6630,8 +6662,23 @@ def mobile_experiments() -> dict[str, object]:
 
     store = SQLiteStore(settings=settings)
     workspace_id = _current_workspace_id()
-    experiments = store.list_experiments(workspace_id=workspace_id)
-    return {"experiments": [_mobile_experiment_card(store, experiment) for experiment in experiments], "count": len(experiments)}
+    legacy_experiments = store.list_experiments(workspace_id=workspace_id)
+    user_id = _authorization_service().current_user_id({})
+    general_experiments = _general_experiment_service().list_experiments(user_id=user_id, lab_id="lab:demo")
+    legacy_ids = {str(experiment.get("experiment_id") or experiment.get("id") or "") for experiment in legacy_experiments}
+    general_cards = [
+        _mobile_general_experiment_card(experiment)
+        for experiment in general_experiments
+        if str(experiment.get("experiment_id") or "") not in legacy_ids
+    ]
+    legacy_cards = [_mobile_experiment_card(store, experiment) for experiment in legacy_experiments]
+    cards = sorted(
+        [*general_cards, *legacy_cards],
+        key=lambda item: str(item.get("last_activity") or item.get("date") or ""),
+        reverse=True,
+    )
+    logger.debug("Mobile experiments listed", extra={"legacy_count": len(legacy_cards), "general_count": len(general_cards), "total": len(cards)})
+    return {"experiments": cards, "count": len(cards)}
 
 
 @app.post("/mobile/experiments/create", tags=["mobile"])
@@ -6648,7 +6695,23 @@ def mobile_experiment_detail(experiment_id: str) -> dict[str, object]:
     store = SQLiteStore(settings=settings)
     experiment = store.find_experiment_by_reference(experiment_id)
     if experiment is None:
-        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+        general_workspace = _general_experiment_service().get_workspace(experiment_id, _authorization_service().current_user_id({}))
+        if general_workspace is None:
+            raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+        general_experiment = general_workspace.get("experiment") if isinstance(general_workspace.get("experiment"), dict) else {}
+        timeline_events = (general_workspace.get("timeline") or {}).get("events", []) if isinstance(general_workspace.get("timeline"), dict) else []
+        attachments = list(general_workspace.get("attachments") or [])
+        return {
+            "overview": _mobile_general_experiment_card(general_experiment),
+            "workflow_stage": general_experiment.get("status") or "draft",
+            "latest_timeline_events": timeline_events[:5],
+            "key_findings": [],
+            "linked_assets_count": len(attachments),
+            "statistics_summary": "No statistics uploaded yet.",
+            "image_count": len([item for item in attachments if item.get("attachment_type") == "image"]),
+            "notebook_count": 1 if general_workspace.get("notebook") else 0,
+            "quick_actions": ["open_workspace", "attach_file", "ask_copilot"],
+        }
     timeline = _experiment_timeline(store, experiment)
     linked_assets = store.list_assets_for_experiment(experiment)
     statistics_assets = [asset for asset in linked_assets if _asset_has_statistics(asset)]
@@ -9779,6 +9842,108 @@ def save_general_experiment_notebook(document_id: str, request_body: NotebookSav
 def add_general_experiment_notebook_attachment(document_id: str, request_body: NotebookAttachmentRequest, request: Request) -> dict[str, object]:
     try:
         return _general_experiment_service().add_notebook_attachment(_request_user_id(request), document_id, request_body.model_dump())
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.get("/experiments/{experiment_id}/attachments", tags=["experiments"])
+def list_experiment_attachments(experiment_id: str, request: Request) -> dict[str, object]:
+    try:
+        attachments = _general_experiment_service().list_attachments(_request_user_id(request), experiment_id)
+        return {"attachments": attachments, "count": len(attachments)}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiments/{experiment_id}/attachments/link", tags=["experiments"])
+def create_experiment_link_attachment(experiment_id: str, request_body: ExperimentLinkAttachmentRequest, request: Request) -> dict[str, object]:
+    try:
+        attachment = _general_experiment_service().create_link_attachment(
+            _request_user_id(request),
+            experiment_id,
+            request_body.model_dump(),
+        )
+        return {"attachment": attachment}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.post("/experiments/{experiment_id}/attachments/upload", tags=["experiments"])
+async def upload_experiment_attachment(
+    experiment_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    attachment_type: str | None = Form(default=None),
+    display_name: str | None = Form(default=None),
+    description: str | None = Form(default=None),
+) -> dict[str, object]:
+    try:
+        payload = await file.read()
+        stored = LocalAttachmentStorage(settings=settings).save(
+            experiment_id=experiment_id,
+            filename=file.filename or "attachment",
+            data=payload,
+            mime_type=file.content_type,
+        )
+        attachment = _general_experiment_service().record_uploaded_attachment(
+            _request_user_id(request),
+            experiment_id,
+            stored.__dict__,
+            display_name=display_name,
+            description=description,
+            attachment_type=attachment_type,
+        )
+        return {"attachment": attachment}
+    except AttachmentStorageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.get("/experiment-attachments/{attachment_id}", tags=["experiments"])
+def experiment_attachment_metadata(attachment_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"attachment": _general_experiment_service().get_attachment(_request_user_id(request), attachment_id)}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.get("/experiment-attachments/{attachment_id}/download", tags=["experiments"])
+def download_experiment_attachment(attachment_id: str, request: Request) -> FileResponse:
+    try:
+        attachment = _general_experiment_service().get_attachment(_request_user_id(request), attachment_id)
+        if attachment.get("source_type") != "uploaded_file":
+            raise HTTPException(status_code=400, detail="Only uploaded files can be downloaded.")
+        storage_path = str(attachment.get("storage_path") or attachment.get("storage_reference") or "")
+        path = LocalAttachmentStorage(settings=settings).path_for(storage_path)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Attachment file not found.")
+        return FileResponse(
+            path,
+            media_type=str(attachment.get("mime_type") or "application/octet-stream"),
+            filename=str(attachment.get("original_filename") or attachment.get("display_name") or path.name),
+        )
+    except AttachmentStorageError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.put("/experiment-attachments/{attachment_id}", tags=["experiments"])
+def update_experiment_attachment(attachment_id: str, request_body: ExperimentAttachmentUpdateRequest, request: Request) -> dict[str, object]:
+    try:
+        attachment = _general_experiment_service().update_attachment(_request_user_id(request), attachment_id, request_body.model_dump())
+        return {"attachment": attachment}
+    except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
+        raise _general_experiment_http_error(exc)
+
+
+@app.delete("/experiment-attachments/{attachment_id}", tags=["experiments"])
+def delete_experiment_attachment(attachment_id: str, request: Request) -> dict[str, object]:
+    try:
+        result = _general_experiment_service().delete_attachment(_request_user_id(request), attachment_id)
+        LocalAttachmentStorage(settings=settings).delete(str(result.get("storage_path") or ""))
+        return result
     except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
         raise _general_experiment_http_error(exc)
 

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -352,6 +353,82 @@ class ResearchOsApi {
       'document_format': documentFormat,
       if (title != null && title.trim().isNotEmpty) 'title': title.trim(),
     });
+  }
+
+  Future<List<Map<String, dynamic>>> experimentAttachments(
+      String experimentId) async {
+    final json = await _getMap(
+        '/experiments/${Uri.encodeComponent(experimentId)}/attachments');
+    final attachments = json['attachments'];
+    if (attachments is List) {
+      return attachments.whereType<Map<String, dynamic>>().toList();
+    }
+    return const [];
+  }
+
+  Future<Map<String, dynamic>> createExperimentLinkAttachment({
+    required String experimentId,
+    required String url,
+    String? displayName,
+    String? description,
+    String? attachmentType,
+  }) {
+    return _postMap(
+      '/experiments/${Uri.encodeComponent(experimentId)}/attachments/link',
+      {
+        'external_url': url.trim(),
+        if (displayName != null && displayName.trim().isNotEmpty)
+          'display_name': displayName.trim(),
+        if (description != null && description.trim().isNotEmpty)
+          'description': description.trim(),
+        if (attachmentType != null && attachmentType.trim().isNotEmpty)
+          'attachment_type': attachmentType.trim(),
+      },
+    );
+  }
+
+  Future<Map<String, dynamic>> uploadExperimentAttachment({
+    required String experimentId,
+    required File file,
+    String? attachmentType,
+    String? displayName,
+    String? description,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse(
+          '$baseUrl/experiments/${Uri.encodeComponent(experimentId)}/attachments/upload'),
+    );
+    if (attachmentType != null && attachmentType.trim().isNotEmpty) {
+      request.fields['attachment_type'] = attachmentType.trim();
+    }
+    if (displayName != null && displayName.trim().isNotEmpty) {
+      request.fields['display_name'] = displayName.trim();
+    }
+    if (description != null && description.trim().isNotEmpty) {
+      request.fields['description'] = description.trim();
+    }
+    request.files.add(await http.MultipartFile.fromPath('file', file.path));
+    final streamed = await _client.send(request);
+    final response = await http.Response.fromStream(streamed);
+    return _decodeMapResponse(response);
+  }
+
+  Future<Map<String, dynamic>> updateExperimentAttachment({
+    required String attachmentId,
+    String? displayName,
+    String? description,
+  }) {
+    return _putMap(
+        '/experiment-attachments/${Uri.encodeComponent(attachmentId)}', {
+      if (displayName != null) 'display_name': displayName.trim(),
+      'description': description,
+    });
+  }
+
+  Future<void> deleteExperimentAttachment(String attachmentId) {
+    return _delete(
+        '/experiment-attachments/${Uri.encodeComponent(attachmentId)}');
   }
 
   Future<Map<String, dynamic>> experimentDesignDueToday() {
@@ -866,15 +943,7 @@ class ResearchOsApi {
       headers: const {'Content-Type': 'application/json'},
       body: jsonEncode(body),
     );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ResearchOsApiException(
-          'Request failed (${response.statusCode}): $path');
-    }
-    final decoded = jsonDecode(response.body);
-    if (decoded is! Map<String, dynamic>) {
-      throw const ResearchOsApiException('Unexpected API response shape.');
-    }
-    return decoded;
+    return _decodeMapResponse(response, path: path);
   }
 
   Future<List<dynamic>> _postList(
@@ -904,15 +973,7 @@ class ResearchOsApi {
       headers: const {'Content-Type': 'application/json'},
       body: jsonEncode(body),
     );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ResearchOsApiException(
-          'Request failed (${response.statusCode}): $path');
-    }
-    final decoded = jsonDecode(response.body);
-    if (decoded is! Map<String, dynamic>) {
-      throw const ResearchOsApiException('Unexpected API response shape.');
-    }
-    return decoded;
+    return _decodeMapResponse(response, path: path);
   }
 
   Future<void> _delete(String path) async {
@@ -922,5 +983,29 @@ class ResearchOsApi {
       throw ResearchOsApiException(
           'Request failed (${response.statusCode}): $path');
     }
+  }
+
+  Map<String, dynamic> _decodeMapResponse(http.Response response,
+      {String? path}) {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      var detail = path ?? response.reasonPhrase ?? '';
+      try {
+        final decoded = jsonDecode(response.body);
+        if (decoded is Map && decoded['detail'] != null) {
+          detail = decoded['detail'].toString();
+        }
+      } catch (_) {
+        if (response.body.trim().isNotEmpty) {
+          detail = response.body.trim();
+        }
+      }
+      throw ResearchOsApiException(
+          'Request failed (${response.statusCode}): $detail');
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const ResearchOsApiException('Unexpected API response shape.');
+    }
+    return decoded;
   }
 }

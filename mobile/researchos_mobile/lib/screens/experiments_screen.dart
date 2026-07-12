@@ -5,6 +5,7 @@ import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import '../widgets/state_views.dart';
 import 'experiment_detail_screen.dart';
+import 'general_experiment_workspace_screen.dart';
 import 'notebook_first_experiment_screen.dart';
 
 class ExperimentsScreen extends StatefulWidget {
@@ -54,13 +55,14 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
                     'Create an empty scientific workspace and start in the notebook.',
                 icon: Icons.science_outlined,
                 action: FilledButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
+                  onPressed: () async {
+                    await Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) =>
                             NotebookFirstExperimentScreen(api: widget.api),
                       ),
                     );
+                    if (mounted) _reload();
                   },
                   icon: const Icon(Icons.add),
                   label: const Text('New Experiment'),
@@ -77,13 +79,14 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
             itemBuilder: (context, index) {
               if (index == 0) {
                 return ResearchOsCard(
-                  onTap: () {
-                    Navigator.of(context).push(
+                  onTap: () async {
+                    await Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) =>
                             NotebookFirstExperimentScreen(api: widget.api),
                       ),
                     );
+                    if (mounted) _reload();
                   },
                   child: Row(
                     children: [
@@ -107,7 +110,7 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
               }
               final experiment = experiments[index - 1];
               return ResearchOsExperimentCard(
-                title: experiment.humanExperimentId ?? experiment.title,
+                title: experiment.title,
                 subtitle: [
                   experiment.date,
                 ]
@@ -117,13 +120,23 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
                 stage: experiment.workflowStage ?? 'Planning',
                 compounds: experiment.keyCompounds,
                 markers: experiment.keyMarkers,
-                onTap: () {
-                  Navigator.of(context).push(
+                onTap: () async {
+                  final isNotebookFirst =
+                      experiment.route?.contains('general-workspace') == true ||
+                          experiment.id.startsWith('experiment:') ||
+                          experiment.id == 'NK_Expt_26';
+                  await Navigator.of(context).push(
                     MaterialPageRoute(
-                      builder: (_) => ExperimentDetailScreen(
-                          api: widget.api, experiment: experiment),
+                      builder: (_) => isNotebookFirst
+                          ? GeneralExperimentWorkspaceScreen(
+                              api: widget.api,
+                              experimentId: experiment.id,
+                            )
+                          : ExperimentDetailScreen(
+                              api: widget.api, experiment: experiment),
                     ),
                   );
+                  if (mounted) _reload();
                 },
               );
             },
