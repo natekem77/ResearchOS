@@ -33,7 +33,7 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ResearchOS connects to a local lab server during development and demos.</string>
-<key>UIApplicationSceneManifest</key>
+	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
