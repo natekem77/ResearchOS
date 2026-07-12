@@ -167,6 +167,7 @@ class _RichScientificNotebookEditorState
         });
         return;
       }
+      _showClipboardDiagnostics(image.metadata);
       final confirmation = await showModalBottomSheet<_PasteImageConfirmation>(
         context: context,
         showDragHandle: true,
@@ -196,6 +197,20 @@ class _RichScientificNotebookEditorState
     } finally {
       if (mounted) setState(() => _pastingImage = false);
     }
+  }
+
+  void _showClipboardDiagnostics(Map<String, Object?> metadata) {
+    if (!_showDevImageProbe) return;
+    final typeIdentifiers = metadata['type_identifiers'];
+    final typeText = typeIdentifiers is List
+        ? typeIdentifiers.map((type) => type.toString()).join(', ')
+        : 'unavailable';
+    setState(() {
+      _devDiagnostics = [
+        'clipboard_type_identifiers=$typeText',
+        'selected_representation=${metadata['selected_representation'] ?? 'unknown'}',
+      ].join('\n');
+    });
   }
 
   void _insertAttachmentEmbed(Map<String, dynamic> attachment) {
@@ -763,8 +778,14 @@ abstract class ClipboardImageReader {
 class QuillClipboardImageReader extends ClipboardImageReader {
   const QuillClipboardImageReader();
 
+  static const MethodChannel _clipboardChannel = MethodChannel(
+    'mundi/clipboard',
+  );
+
   @override
   Future<PastedNotebookImage?> readImage() async {
+    final platformImage = await _readFromPlatformPasteboard();
+    if (platformImage != null) return platformImage;
     final bridge = QuillNativeBridge();
     final supported = await bridge.isSupported(
       QuillNativeBridgeFeature.getClipboardImage,
@@ -784,10 +805,212 @@ class QuillClipboardImageReader extends ClipboardImageReader {
       metadata: {
         'source': 'clipboard',
         'detected_mime_type': mimeType,
+        'selected_representation': 'quill_native_bridge_image',
         if (aspectRatio != null) 'aspect_ratio': aspectRatio,
       },
     );
   }
+
+  Future<PastedNotebookImage?> _readFromPlatformPasteboard() async {
+    try {
+      final result = await _clipboardChannel.invokeMapMethod<String, Object?>(
+        'readImageClipboard',
+      );
+      if (result == null) return null;
+      final bytes = result['bytes'];
+      if (bytes is! Uint8List || bytes.isEmpty) return null;
+      final mimeType =
+          result['mime_type']?.toString() ?? _detectImageMimeType(bytes);
+      final extension = result['file_extension']?.toString() ??
+          _extensionForMimeType(mimeType);
+      final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
+      final typeIdentifiers = result['type_identifiers'];
+      return PastedNotebookImage(
+        bytes: bytes,
+        mimeType: mimeType,
+        fileExtension: extension,
+        suggestedFilename: 'pasted-image-$timestamp$extension',
+        metadata: {
+          'source': 'ios_pasteboard',
+          'selected_representation':
+              result['selected_representation']?.toString(),
+          if (typeIdentifiers is List)
+            'type_identifiers': typeIdentifiers
+                .map((identifier) => identifier.toString())
+                .toList(growable: false),
+        },
+      );
+    } on MissingPluginException {
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+}
+
+class ClipboardPayloadRepresentation {
+  const ClipboardPayloadRepresentation({
+    required this.typeIdentifier,
+    this.bytes,
+    this.text,
+    this.html,
+  });
+
+  final String typeIdentifier;
+  final Uint8List? bytes;
+  final String? text;
+  final String? html;
+}
+
+class ClipboardPayloadSelection {
+  const ClipboardPayloadSelection({
+    required this.selectedRepresentation,
+    this.bytes,
+    this.mimeType,
+    this.remoteImageUrl,
+    this.webpageUrl,
+  });
+
+  final String selectedRepresentation;
+  final Uint8List? bytes;
+  final String? mimeType;
+  final String? remoteImageUrl;
+  final String? webpageUrl;
+}
+
+class ClipboardPayloadResolver {
+  const ClipboardPayloadResolver._();
+
+  static ClipboardPayloadSelection resolve(
+    List<ClipboardPayloadRepresentation> representations,
+  ) {
+    for (final mimeType in const [
+      'image/png',
+      'image/jpeg',
+      'image/heic',
+      'image/heif',
+      'image/tiff',
+    ]) {
+      for (final representation in representations) {
+        if (_identifierMatchesMime(representation.typeIdentifier, mimeType) &&
+            representation.bytes != null &&
+            representation.bytes!.isNotEmpty) {
+          return ClipboardPayloadSelection(
+            selectedRepresentation: representation.typeIdentifier,
+            bytes: representation.bytes,
+            mimeType: mimeType,
+          );
+        }
+      }
+    }
+    for (final representation in representations) {
+      final html = representation.html;
+      if (html == null || html.trim().isEmpty) continue;
+      final src = _extractImageSourceFromHtml(html);
+      if (src == null) continue;
+      final dataImage = _decodeSafeDataImage(src);
+      if (dataImage != null) {
+        return ClipboardPayloadSelection(
+          selectedRepresentation: '${representation.typeIdentifier}:data-image',
+          bytes: dataImage.bytes,
+          mimeType: dataImage.mimeType,
+        );
+      }
+      final uri = Uri.tryParse(src);
+      if (uri != null && uri.scheme == 'https') {
+        return ClipboardPayloadSelection(
+          selectedRepresentation: '${representation.typeIdentifier}:html-img',
+          remoteImageUrl: src,
+        );
+      }
+    }
+    for (final representation in representations) {
+      final text = representation.text?.trim();
+      if (text == null || text.isEmpty) continue;
+      final uri = Uri.tryParse(text);
+      if (uri == null || uri.scheme != 'https') continue;
+      if (_looksLikeDirectImageUrl(uri)) {
+        return ClipboardPayloadSelection(
+          selectedRepresentation: '${representation.typeIdentifier}:image-url',
+          remoteImageUrl: text,
+        );
+      }
+      return ClipboardPayloadSelection(
+        selectedRepresentation: '${representation.typeIdentifier}:webpage-url',
+        webpageUrl: text,
+      );
+    }
+    return const ClipboardPayloadSelection(
+      selectedRepresentation: 'unsupported',
+    );
+  }
+
+  static bool _identifierMatchesMime(String identifier, String mimeType) {
+    final normalized = identifier.toLowerCase();
+    switch (mimeType) {
+      case 'image/png':
+        return normalized.contains('png');
+      case 'image/jpeg':
+        return normalized.contains('jpeg') || normalized.contains('jpg');
+      case 'image/heic':
+        return normalized.contains('heic');
+      case 'image/heif':
+        return normalized.contains('heif');
+      case 'image/tiff':
+        return normalized.contains('tiff') || normalized.contains('tif');
+      default:
+        return false;
+    }
+  }
+
+  static String? _extractImageSourceFromHtml(String html) {
+    final match = RegExp(
+      r'''<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']''',
+      caseSensitive: false,
+    ).firstMatch(html);
+    return match?.group(1);
+  }
+
+  static _DecodedDataImage? _decodeSafeDataImage(String source) {
+    final match = RegExp(
+      r'^data:(image/(?:png|jpeg|jpg|heic|heif|tiff));base64,([A-Za-z0-9+/=\r\n]+)$',
+      caseSensitive: false,
+    ).firstMatch(source.trim());
+    if (match == null) return null;
+    final mimeType = match.group(1)!.toLowerCase().replaceAll('jpg', 'jpeg');
+    final base64Text = match.group(2)!.replaceAll(RegExp(r'\s+'), '');
+    if (base64Text.length > 70 * 1024 * 1024) return null;
+    try {
+      return _DecodedDataImage(
+        mimeType: mimeType,
+        bytes: Uint8List.fromList(base64Decode(base64Text)),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static bool _looksLikeDirectImageUrl(Uri uri) {
+    final path = uri.path.toLowerCase();
+    return path.endsWith('.png') ||
+        path.endsWith('.jpg') ||
+        path.endsWith('.jpeg') ||
+        path.endsWith('.heic') ||
+        path.endsWith('.heif') ||
+        path.endsWith('.tif') ||
+        path.endsWith('.tiff') ||
+        path.endsWith('.webp');
+  }
+}
+
+class _DecodedDataImage {
+  const _DecodedDataImage({
+    required this.mimeType,
+    required this.bytes,
+  });
+
+  final String mimeType;
+  final Uint8List bytes;
 }
 
 class _PasteImageConfirmation {

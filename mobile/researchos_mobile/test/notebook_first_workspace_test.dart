@@ -200,6 +200,96 @@ void main() {
     expect(normalized.content, contains('Typed beneath broken JSON'));
   });
 
+  test('clipboard resolver chooses image bytes over URL text', () {
+    final selection = ClipboardPayloadResolver.resolve([
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.url',
+        text: 'https://example.com/page',
+      ),
+      ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.png',
+        bytes: Uint8List.fromList(_pngBytes),
+      ),
+    ]);
+
+    expect(selection.selectedRepresentation, 'public.png');
+    expect(selection.mimeType, 'image/png');
+    expect(selection.bytes, isNotNull);
+  });
+
+  test('clipboard resolver handles image bytes only', () {
+    final selection = ClipboardPayloadResolver.resolve([
+      ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.jpeg',
+        bytes: Uint8List.fromList([0xFF, 0xD8, 0xFF]),
+      ),
+    ]);
+
+    expect(selection.selectedRepresentation, 'public.jpeg');
+    expect(selection.mimeType, 'image/jpeg');
+  });
+
+  test('clipboard resolver handles HTML img before webpage URL', () {
+    final selection = ClipboardPayloadResolver.resolve([
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.url',
+        text: 'https://example.com/page',
+      ),
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.html',
+        html:
+            '<html><body><img src="https://images.example.com/cat.png"></body></html>',
+      ),
+    ]);
+
+    expect(selection.selectedRepresentation, 'public.html:html-img');
+    expect(selection.remoteImageUrl, 'https://images.example.com/cat.png');
+    expect(selection.webpageUrl, isNull);
+  });
+
+  test('clipboard resolver decodes data image HTML', () {
+    final selection = ClipboardPayloadResolver.resolve([
+      ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.html',
+        html: '<img src="data:image/png;base64,${base64Encode(_pngBytes)}">',
+      ),
+    ]);
+
+    expect(selection.selectedRepresentation, 'public.html:data-image');
+    expect(selection.mimeType, 'image/png');
+    expect(selection.bytes, isNotNull);
+  });
+
+  test('clipboard resolver handles direct image URL', () {
+    final selection = ClipboardPayloadResolver.resolve([
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.url',
+        text: 'https://images.example.com/cat.jpeg',
+      ),
+    ]);
+
+    expect(selection.selectedRepresentation, 'public.url:image-url');
+    expect(selection.remoteImageUrl, 'https://images.example.com/cat.jpeg');
+  });
+
+  test('clipboard resolver distinguishes webpage URL and unsupported payload',
+      () {
+    final webpageSelection = ClipboardPayloadResolver.resolve([
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.url',
+        text: 'https://example.com/cats',
+      ),
+    ]);
+    final unsupportedSelection = ClipboardPayloadResolver.resolve([
+      const ClipboardPayloadRepresentation(
+          typeIdentifier: 'com.example.unknown'),
+    ]);
+
+    expect(webpageSelection.selectedRepresentation, 'public.url:webpage-url');
+    expect(webpageSelection.webpageUrl, 'https://example.com/cats');
+    expect(unsupportedSelection.selectedRepresentation, 'unsupported');
+  });
+
   testWidgets('rich notebook saves Quill delta JSON', (tester) async {
     final requests = <http.Request>[];
     final api = _api(onRequest: requests.add);
