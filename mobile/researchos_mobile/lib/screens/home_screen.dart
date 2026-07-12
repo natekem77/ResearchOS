@@ -334,9 +334,15 @@ class _HeroCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const ScientificBadge(
-                label: 'Demo Mode',
-                icon: Icons.verified_outlined,
+              const Flexible(
+                fit: FlexFit.loose,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: ScientificBadge(
+                    label: 'Demo Mode',
+                    icon: Icons.verified_outlined,
+                  ),
+                ),
               ),
             ],
           ),

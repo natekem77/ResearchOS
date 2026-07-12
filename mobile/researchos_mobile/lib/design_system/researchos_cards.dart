@@ -656,6 +656,44 @@ class ResearchOsLoadingSkeleton extends StatelessWidget {
     return ResearchOsShimmer(
       child: ListView.separated(
         padding: ResearchOsSpacing.screen,
+        primary: false,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        itemCount: rows,
+        separatorBuilder: (_, __) =>
+            const SizedBox(height: ResearchOsSpacing.md),
+        itemBuilder: (context, index) {
+          return ResearchOsCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _SkeletonBlock(widthFactor: index.isEven ? 0.72 : 0.52),
+                const SizedBox(height: ResearchOsSpacing.md),
+                const _SkeletonBlock(widthFactor: 1, height: 14),
+                const SizedBox(height: ResearchOsSpacing.sm),
+                const _SkeletonBlock(widthFactor: 0.64, height: 14),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class ResearchOsScrollableLoadingSkeleton extends StatelessWidget {
+  const ResearchOsScrollableLoadingSkeleton({
+    super.key,
+    this.rows = 4,
+  });
+
+  final int rows;
+
+  @override
+  Widget build(BuildContext context) {
+    return ResearchOsShimmer(
+      child: ListView.separated(
+        padding: ResearchOsSpacing.screen,
         itemCount: rows,
         separatorBuilder: (_, __) =>
             const SizedBox(height: ResearchOsSpacing.md),
@@ -811,11 +849,20 @@ class ScientificBadge extends StatelessWidget {
         : (colorOverride!.withValues(alpha: 0.14), colorOverride!);
     return Semantics(
       label: label,
-      child: Chip(
-        avatar: icon == null ? null : Icon(icon, size: 16, color: colors.$2),
-        label: Text(label),
-        backgroundColor: colors.$1,
-        labelStyle: TextStyle(color: colors.$2, fontWeight: FontWeight.w700),
+      child: Material(
+        color: Colors.transparent,
+        child: Chip(
+          avatar: icon == null ? null : Icon(icon, size: 16, color: colors.$2),
+          label: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          backgroundColor: colors.$1,
+          labelStyle: TextStyle(color: colors.$2, fontWeight: FontWeight.w700),
+          visualDensity: VisualDensity.compact,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
       ),
     );
   }

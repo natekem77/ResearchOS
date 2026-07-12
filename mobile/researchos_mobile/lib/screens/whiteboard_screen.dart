@@ -37,7 +37,8 @@ class _WhiteboardScreenState extends State<WhiteboardScreen> {
           return const LoadingView(message: 'Loading Laboratory Whiteboard...');
         }
         if (snapshot.hasError) {
-          return ErrorView(message: snapshot.error.toString(), onRetry: _reload);
+          return ErrorView(
+              message: snapshot.error.toString(), onRetry: _reload);
         }
         final whiteboard = snapshot.data ?? const {};
         final sections = _list(whiteboard['sections']);
