@@ -18,10 +18,12 @@ class ResearchOsApi {
   ResearchOsApi({
     required this.baseUrl,
     http.Client? client,
+    this.requestTimeout = const Duration(seconds: 10),
   }) : _client = client ?? http.Client();
 
   String baseUrl;
   final http.Client _client;
+  final Duration requestTimeout;
 
   Future<MobileStatus> status() async {
     return MobileStatus.fromJson(await _getMap('/mobile/status'));
@@ -409,8 +411,9 @@ class ResearchOsApi {
       request.fields['description'] = description.trim();
     }
     request.files.add(await http.MultipartFile.fromPath('file', file.path));
-    final streamed = await _client.send(request);
-    final response = await http.Response.fromStream(streamed);
+    final streamed = await _client.send(request).timeout(requestTimeout);
+    final response =
+        await http.Response.fromStream(streamed).timeout(requestTimeout);
     return _decodeMapResponse(response);
   }
 
@@ -909,7 +912,7 @@ class ResearchOsApi {
 
   Future<Map<String, dynamic>> _getMap(String path) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
-    final response = await _client.get(uri);
+    final response = await _client.get(uri).timeout(requestTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ResearchOsApiException(
           'Request failed (${response.statusCode}): $path');
@@ -923,7 +926,7 @@ class ResearchOsApi {
 
   Future<List<dynamic>> _getList(String path) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
-    final response = await _client.get(uri);
+    final response = await _client.get(uri).timeout(requestTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ResearchOsApiException(
           'Request failed (${response.statusCode}): $path');
@@ -938,22 +941,26 @@ class ResearchOsApi {
   Future<Map<String, dynamic>> _postMap(
       String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
-    final response = await _client.post(
-      uri,
-      headers: const {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
+    final response = await _client
+        .post(
+          uri,
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(requestTimeout);
     return _decodeMapResponse(response, path: path);
   }
 
   Future<List<dynamic>> _postList(
       String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
-    final response = await _client.post(
-      uri,
-      headers: const {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
+    final response = await _client
+        .post(
+          uri,
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(requestTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ResearchOsApiException(
           'Request failed (${response.statusCode}): $path');
@@ -968,17 +975,19 @@ class ResearchOsApi {
   Future<Map<String, dynamic>> _putMap(
       String path, Map<String, dynamic> body) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
-    final response = await _client.put(
-      uri,
-      headers: const {'Content-Type': 'application/json'},
-      body: jsonEncode(body),
-    );
+    final response = await _client
+        .put(
+          uri,
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(requestTimeout);
     return _decodeMapResponse(response, path: path);
   }
 
   Future<void> _delete(String path) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
-    final response = await _client.delete(uri);
+    final response = await _client.delete(uri).timeout(requestTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw ResearchOsApiException(
           'Request failed (${response.statusCode}): $path');

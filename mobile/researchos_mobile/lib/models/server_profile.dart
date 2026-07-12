@@ -125,13 +125,18 @@ class MobileServerProfile {
 
   static List<MobileServerProfile> decodeList(String? value) {
     if (value == null || value.trim().isEmpty) return const [];
-    final decoded = jsonDecode(value);
-    if (decoded is! List) return const [];
-    return decoded
-        .whereType<Map<String, dynamic>>()
-        .map(MobileServerProfile.fromJson)
-        .where((profile) => profile.profileId.isNotEmpty)
-        .toList();
+    try {
+      final decoded = jsonDecode(value);
+      if (decoded is! List) return const [];
+      return decoded
+          .whereType<Map<String, dynamic>>()
+          .map(MobileServerProfile.fromJson)
+          .where((profile) =>
+              profile.profileId.isNotEmpty && profile.baseUrl.isNotEmpty)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
   }
 }
 

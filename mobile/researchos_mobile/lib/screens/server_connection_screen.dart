@@ -43,14 +43,22 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
   }
 
   Future<void> _loadProfiles() async {
-    final profiles = await _connectionService.loadProfiles();
-    if (!mounted) return;
-    setState(() {
-      _profiles = profiles;
-      if (profiles.isNotEmpty) {
-        _controller.text = profiles.first.baseUrl;
-      }
-    });
+    try {
+      final profiles = await _connectionService.loadProfiles();
+      if (!mounted) return;
+      setState(() {
+        _profiles = profiles;
+        if (profiles.isNotEmpty) {
+          _controller.text = profiles.first.baseUrl;
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _profiles = [MobileServerProfile.localDemo()];
+        _error = 'Could not load saved servers. You can enter a server URL.';
+      });
+    }
   }
 
   Future<bool> _testConnection({MobileServerProfile? profile}) async {
@@ -59,27 +67,37 @@ class _ServerConnectionScreenState extends State<ServerConnectionScreen> {
       _error = null;
       _connectionInfo = null;
     });
-    final target = profile ?? _profileFromManualEntry();
-    final result = await _connectionService.connectProfile(target);
-    if (result.connected && result.profile != null) {
-      final api = ResearchOsApi(baseUrl: result.profile!.baseUrl);
-      final status = await api.status();
+    try {
+      final target = profile ?? _profileFromManualEntry();
+      final result = await _connectionService.connectProfile(target);
+      if (result.connected && result.profile != null) {
+        final api = ResearchOsApi(baseUrl: result.profile!.baseUrl);
+        final status = await api.status();
+        if (!mounted) return false;
+        setState(() {
+          _status = status;
+          _connectionInfo = result.connectionInfo;
+          _profiles = result.profiles;
+          _failures = const {};
+          _loading = false;
+        });
+        return true;
+      }
+      if (!mounted) return false;
       setState(() {
-        _status = status;
-        _connectionInfo = result.connectionInfo;
         _profiles = result.profiles;
-        _failures = const {};
+        _failures = result.failures;
+        _error = result.failures[target.profileId] ??
+            'Server unreachable. Check Wi-Fi, VPN/Tailscale, and the URL.';
         _loading = false;
       });
-      return true;
+    } catch (error) {
+      if (!mounted) return false;
+      setState(() {
+        _error = 'Connection check failed: ${error.toString()}';
+        _loading = false;
+      });
     }
-    setState(() {
-      _profiles = result.profiles;
-      _failures = result.failures;
-      _error = result.failures[target.profileId] ??
-          'Server unreachable. Check Wi-Fi, VPN/Tailscale, and the URL.';
-      _loading = false;
-    });
     return false;
   }
 
