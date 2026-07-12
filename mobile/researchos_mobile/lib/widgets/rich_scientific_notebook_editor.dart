@@ -636,6 +636,44 @@ class RichNotebookEdit {
   final String plainText;
 }
 
+class RichNotebookContentSnapshot {
+  const RichNotebookContentSnapshot({
+    required this.content,
+    required this.documentFormat,
+  });
+
+  final String content;
+  final String documentFormat;
+}
+
+RichNotebookContentSnapshot normalizeRichNotebookContent({
+  String? content,
+  String? structuredContent,
+  String documentFormat = 'markdown',
+}) {
+  final structured = structuredContent?.trim();
+  final rawContent = content?.trim();
+  for (final candidate in [structured, rawContent]) {
+    if (candidate == null || candidate.isEmpty) continue;
+    final normalizedDelta = _normalizedDeltaJsonFromText(candidate);
+    if (normalizedDelta != null) {
+      return RichNotebookContentSnapshot(
+        content: normalizedDelta,
+        documentFormat: 'rich_text_delta_json',
+      );
+    }
+  }
+  final fallback = content?.isNotEmpty == true
+      ? content!
+      : structuredContent?.isNotEmpty == true
+          ? structuredContent!
+          : '[{"insert":"\\n"}]';
+  return RichNotebookContentSnapshot(
+    content: fallback,
+    documentFormat: documentFormat,
+  );
+}
+
 typedef PastedImageUploader = Future<Map<String, dynamic>> Function(
   PastedNotebookImage image, {
   String? displayName,
@@ -1442,6 +1480,15 @@ bool _insertReferencesAttachment(Object? insert, String attachmentId) {
 }
 
 Document _documentFromContent(String content, String documentFormat) {
+  final normalizedDelta = _normalizedDeltaJsonFromText(content);
+  if (normalizedDelta != null) {
+    try {
+      final decoded = jsonDecode(normalizedDelta);
+      if (decoded is List) return Document.fromJson(decoded);
+    } catch (_) {
+      return Document()..insert(0, content);
+    }
+  }
   final normalized = documentFormat.toLowerCase();
   if (normalized.contains('rich_text') || normalized.contains('delta')) {
     try {
@@ -1457,6 +1504,99 @@ Document _documentFromContent(String content, String documentFormat) {
     }
   }
   return _markdownLikeDocument(content);
+}
+
+String? _normalizedDeltaJsonFromText(String content) {
+  final trimmed = content.trim();
+  if (trimmed.isEmpty) return '[{"insert":"\\n"}]';
+  final direct = _deltaOpsFromJsonText(trimmed);
+  if (direct != null) return jsonEncode(direct);
+  final split = _extractLeadingJson(trimmed);
+  if (split == null) return null;
+  final ops = _deltaOpsFromJsonText(split.jsonText);
+  if (ops == null) return null;
+  final trailing = split.trailing.trim();
+  if (trailing.isNotEmpty) {
+    ops.add({'insert': '\n$trailing\n'});
+  }
+  return jsonEncode(ops);
+}
+
+List<dynamic>? _deltaOpsFromJsonText(String text) {
+  Object? decoded;
+  var current = text;
+  for (var depth = 0; depth < 3; depth++) {
+    try {
+      decoded = jsonDecode(current);
+    } catch (_) {
+      return null;
+    }
+    if (decoded is String) {
+      current = decoded;
+      continue;
+    }
+    break;
+  }
+  final ops = _deltaOpsFromDecoded(decoded);
+  if (ops == null || ops.isEmpty) return null;
+  return ops;
+}
+
+List<dynamic>? _deltaOpsFromDecoded(Object? decoded) {
+  Object? candidate = decoded;
+  if (candidate is Map && candidate['ops'] is List) {
+    candidate = candidate['ops'];
+  }
+  if (candidate is! List) return null;
+  final ops = <dynamic>[];
+  for (final op in candidate) {
+    if (op is! Map || !op.containsKey('insert')) return null;
+    ops.add(Map<String, dynamic>.from(op));
+  }
+  return ops;
+}
+
+_JsonPrefix? _extractLeadingJson(String text) {
+  final trimmed = text.trimLeft();
+  if (trimmed.isEmpty || (trimmed[0] != '[' && trimmed[0] != '{')) return null;
+  var depth = 0;
+  var inString = false;
+  var escaped = false;
+  for (var index = 0; index < trimmed.length; index++) {
+    final char = trimmed[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char == r'\') {
+      escaped = true;
+      continue;
+    }
+    if (char == '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char == '[' || char == '{') depth++;
+    if (char == ']' || char == '}') depth--;
+    if (depth == 0) {
+      return _JsonPrefix(
+        jsonText: trimmed.substring(0, index + 1),
+        trailing: trimmed.substring(index + 1),
+      );
+    }
+  }
+  return null;
+}
+
+class _JsonPrefix {
+  const _JsonPrefix({
+    required this.jsonText,
+    required this.trailing,
+  });
+
+  final String jsonText;
+  final String trailing;
 }
 
 Document _markdownLikeDocument(String content) {

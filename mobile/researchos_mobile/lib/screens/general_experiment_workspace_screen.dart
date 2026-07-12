@@ -76,12 +76,13 @@ class _GeneralExperimentWorkspaceScreenState
         _text(experiment['title'], fallback: 'Untitled Experiment');
     _documentId = notebook['document_id']?.toString();
     _notebookVersion = int.tryParse('${notebook['version'] ?? 1}');
-    _documentFormat = notebook['document_format']?.toString() ?? 'markdown';
-    _notebookContent = _documentFormat.contains('rich_text')
-        ? (notebook['content']?.toString() ?? '')
-        : (notebook['structured_content']?.toString() ??
-            notebook['content']?.toString() ??
-            '');
+    final normalizedNotebook = normalizeRichNotebookContent(
+      content: notebook['content']?.toString(),
+      structuredContent: notebook['structured_content']?.toString(),
+      documentFormat: notebook['document_format']?.toString() ?? 'markdown',
+    );
+    _documentFormat = normalizedNotebook.documentFormat;
+    _notebookContent = normalizedNotebook.content;
     _lastSavedContent = _notebookContent;
   }
 

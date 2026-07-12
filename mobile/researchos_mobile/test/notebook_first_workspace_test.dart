@@ -147,6 +147,59 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('structured Delta renders as notebook content, not raw JSON',
+      (tester) async {
+    final requests = <http.Request>[];
+    await pumpWorkspace(
+      tester,
+      api: _api(onRequest: requests.add),
+      workspace: _workspace(
+        title: 'Delta Workspace',
+        notebookContent: '[{"insert":"Formatted Delta note\\n"}]',
+        documentFormat: 'markdown',
+      ),
+    );
+
+    expect(find.textContaining('[{"insert"'), findsNothing);
+    final saveButton = find.byKey(const ValueKey('rich-notebook-save-button'));
+    await tester.ensureVisible(saveButton);
+    await tester.pumpAndSettle();
+    await tester.tap(saveButton);
+    await tester.pumpAndSettle();
+
+    final saveRequest = requests.firstWhere(
+      (request) =>
+          request.method == 'PUT' &&
+          request.url.path.contains('/experiment-notebooks/'),
+    );
+    final body = jsonDecode(saveRequest.body) as Map<String, dynamic>;
+    expect(body['document_format'], 'rich_text_delta_json');
+    expect(body['content'], contains('Formatted Delta note'));
+    expect(tester.takeException(), isNull);
+  });
+
+  test('double encoded Delta is repaired before rendering', () {
+    final normalized = normalizeRichNotebookContent(
+      content: jsonEncode('[{"insert":"Double encoded note\\n"}]'),
+      documentFormat: 'markdown',
+    );
+
+    expect(normalized.documentFormat, 'rich_text_delta_json');
+    expect(normalized.content, contains('Double encoded note'));
+    expect(normalized.content, isNot(contains(r'[{\"insert\"')));
+  });
+
+  test('Delta JSON accidentally stored as text preserves trailing notes', () {
+    final normalized = normalizeRichNotebookContent(
+      content: '[{"insert":"Recovered note\\n"}]\nTyped beneath broken JSON',
+      documentFormat: 'markdown',
+    );
+
+    expect(normalized.documentFormat, 'rich_text_delta_json');
+    expect(normalized.content, contains('Recovered note'));
+    expect(normalized.content, contains('Typed beneath broken JSON'));
+  });
+
   testWidgets('rich notebook saves Quill delta JSON', (tester) async {
     final requests = <http.Request>[];
     final api = _api(onRequest: requests.add);
@@ -316,6 +369,28 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('uploaded image embed appears inline immediately after insert',
+      (tester) async {
+    await pumpRichEditor(
+      tester,
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      onPasteImage: (image, {displayName, description}) async =>
+          _imageAttachment(displayName: 'Inline upload'),
+    );
+
+    await tester.tap(find.byTooltip('Paste image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Insert'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('Inline upload'), findsOneWidget);
+    expect(find.byKey(const ValueKey('notebook-image-attachment:pasted-image')),
+        findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('unsupported clipboard content shows feedback', (tester) async {
     await pumpRichEditor(
       tester,
@@ -461,6 +536,7 @@ Future<void> pumpRichEditor(
   WidgetTester tester, {
   ClipboardImageReader reader = const _FakeClipboardImageReader(null),
   String initialContent = '[{"insert":"\\n"}]',
+  String documentFormat = 'rich_text_delta_json',
   Size size = const Size(430, 932),
   ValueChanged<RichNotebookEdit>? onChanged,
   PastedImageUploader? onPasteImage,
@@ -477,7 +553,7 @@ Future<void> pumpRichEditor(
             padding: const EdgeInsets.all(16),
             child: RichScientificNotebookEditor(
               initialContent: initialContent,
-              documentFormat: 'rich_text_delta_json',
+              documentFormat: documentFormat,
               clipboardImageReader: reader,
               downloadUrlForAttachment: (_) => '',
               onPasteImage: onPasteImage,
