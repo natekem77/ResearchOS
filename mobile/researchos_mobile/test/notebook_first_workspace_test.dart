@@ -410,6 +410,7 @@ void main() {
           'native-quill-image-asset://assets/dev/notebook_test_image.png')),
       findsOneWidget,
     );
+    expect(find.text('Native image asset failed'), findsNothing);
     expect(find.byKey(const ValueKey('rich-notebook-dev-diagnostics')),
         findsOneWidget);
     expect(find.textContaining('controller='), findsOneWidget);
