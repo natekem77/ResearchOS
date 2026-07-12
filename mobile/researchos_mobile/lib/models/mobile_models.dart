@@ -3,6 +3,9 @@ class MobileStatus {
     required this.status,
     required this.project,
     required this.appVersion,
+    required this.gitCommit,
+    required this.buildDate,
+    required this.environment,
     required this.warnings,
   });
 
@@ -11,6 +14,9 @@ class MobileStatus {
       status: json['status']?.toString() ?? 'unknown',
       project: json['project']?.toString() ?? 'Mundi',
       appVersion: json['app_version']?.toString() ?? 'unknown',
+      gitCommit: json['git_commit']?.toString() ?? 'unknown',
+      buildDate: json['build_date']?.toString() ?? 'unknown',
+      environment: json['environment']?.toString() ?? 'unknown',
       warnings: _stringList(json['warnings']),
     );
   }
@@ -18,6 +24,9 @@ class MobileStatus {
   final String status;
   final String project;
   final String appVersion;
+  final String gitCommit;
+  final String buildDate;
+  final String environment;
   final List<String> warnings;
 }
 
@@ -163,6 +172,10 @@ class MobileSettings {
     required this.authMode,
     required this.oneNoteStatus,
     required this.productionStatus,
+    required this.gitCommit,
+    required this.buildDate,
+    required this.environment,
+    required this.bundleIdentifier,
     this.workspaceName,
   });
 
@@ -174,6 +187,10 @@ class MobileSettings {
       appVersion: json['app_version']?.toString() ?? 'Mundi',
       serverUrl: json['server_url']?.toString() ?? '',
       authMode: json['auth_mode']?.toString() ?? 'dev',
+      gitCommit: json['git_commit']?.toString() ?? 'unknown',
+      buildDate: json['build_date']?.toString() ?? 'unknown',
+      environment: json['environment']?.toString() ?? 'unknown',
+      bundleIdentifier: json['bundle_identifier']?.toString() ?? 'unknown',
       workspaceName: workspace is Map<String, dynamic>
           ? workspace['name']?.toString()
           : null,
@@ -191,6 +208,10 @@ class MobileSettings {
   final String authMode;
   final String oneNoteStatus;
   final String productionStatus;
+  final String gitCommit;
+  final String buildDate;
+  final String environment;
+  final String bundleIdentifier;
   final String? workspaceName;
 }
 

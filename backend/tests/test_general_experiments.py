@@ -11,11 +11,13 @@ from pathlib import Path
 from app.attachment_storage import AttachmentStorageError, LocalAttachmentStorage
 from app.config import Settings
 from app.general_experiments import (
+    CANONICAL_BLANK_DELTA_JSON,
     ExperimentAuthorizationError,
     ExperimentConflictError,
     GeneralExperimentService,
     RichNotebookContextService,
     SamplePlanningService,
+    canonical_notebook_delta_json,
 )
 from app.storage import SQLiteStore
 
@@ -268,7 +270,7 @@ class GeneralExperimentTests(unittest.TestCase):
 
         self.assertEqual(updated["document_format"], "rich_text_delta_json")
         self.assertIn("BRN3B", updated["plain_text_cache"])
-        self.assertEqual(reopened["content"], delta)
+        self.assertEqual(json.loads(reopened["content"]), json.loads(delta))
         self.assertEqual(reopened["document_version"], updated["version"])
 
     def test_markdown_notebook_exposes_idempotent_structured_migration(self) -> None:
@@ -295,7 +297,7 @@ class GeneralExperimentTests(unittest.TestCase):
             first = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
             second = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
 
-        self.assertEqual(first["content"], legacy)
+        self.assertEqual(json.loads(first["content"])[0]["insert"], "Legacy heading")
         self.assertIn("Existing line one.", first["plain_text_cache"])
         self.assertEqual(first["structured_content"], second["structured_content"])
         self.assertTrue(first["migration"]["idempotent"])
@@ -390,6 +392,41 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertEqual(ops[1]["insert"], "World\n")
         self.assertNotIn('[{"insert"', updated["plain_text_cache"])
 
+    def test_payload_repairs_corrupted_existing_structured_content(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Payload repair")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            nested = json.dumps([
+                {"insert": json.dumps([{"insert": "Recovered from stored structured content\n"}])},
+                {"insert": "\n"},
+            ])
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    """
+                    UPDATE experiment_notebook_documents
+                    SET document_format = 'rich_text_delta_json',
+                        content = ?,
+                        structured_content = ?,
+                        plain_text_cache = ?
+                    WHERE document_id = ?
+                    """,
+                    (nested, nested, nested, notebook["document_id"]),
+                )
+            repaired = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                stored = connection.execute(
+                    "SELECT content, structured_content, plain_text_cache FROM experiment_notebook_documents WHERE document_id = ?",
+                    (notebook["document_id"],),
+                ).fetchone()
+
+        self.assertEqual(json.loads(repaired["structured_content"])[0]["insert"], "Recovered from stored structured content\n")
+        self.assertNotIn('[{"insert"', repaired["plain_text_cache"])
+        assert stored is not None
+        self.assertEqual(json.loads(stored[0])[0]["insert"], "Recovered from stored structured content\n")
+        self.assertEqual(stored[0], stored[1])
+        self.assertNotIn('[{"insert"', stored[2])
+
     def test_nested_delta_preserves_later_text_and_embed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)
@@ -444,6 +481,56 @@ class GeneralExperimentTests(unittest.TestCase):
             )
 
         self.assertIn(prose, updated["plain_text_cache"])
+
+    def test_canonical_delta_normalization_cases_are_idempotent(self) -> None:
+        direct = [{"insert": "Direct\n"}]
+        wrapped = json.dumps({"ops": [{"insert": "Wrapped\n"}]})
+        double_encoded = json.dumps(json.dumps([{"insert": "Double\n"}]))
+        nested_insert = json.dumps([{"insert": json.dumps([{"insert": "Nested\n"}])}, {"insert": "\n"}])
+        arbitrary_json = '{"not":"delta"}'
+
+        self.assertEqual(json.loads(canonical_notebook_delta_json(direct))[0]["insert"], "Direct\n")
+        self.assertEqual(json.loads(canonical_notebook_delta_json(wrapped))[0]["insert"], "Wrapped\n")
+        self.assertEqual(json.loads(canonical_notebook_delta_json(double_encoded))[0]["insert"], "Double\n")
+        self.assertEqual(json.loads(canonical_notebook_delta_json(nested_insert))[0]["insert"], "Nested\n")
+        self.assertEqual(json.loads(canonical_notebook_delta_json(arbitrary_json))[0]["insert"], arbitrary_json)
+        once = canonical_notebook_delta_json(nested_insert)
+        twice = canonical_notebook_delta_json(once)
+        self.assertEqual(once, twice)
+        self.assertEqual(canonical_notebook_delta_json(""), CANONICAL_BLANK_DELTA_JSON)
+
+    def test_notebook_delta_repair_dry_run_and_apply(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Repair command")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            nested = json.dumps([
+                {"insert": json.dumps([{"insert": "Repair me\n"}])},
+                {"insert": "\n"},
+            ])
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    """
+                    UPDATE experiment_notebook_documents
+                    SET document_format = 'rich_text_delta_json',
+                        content = ?,
+                        structured_content = ?,
+                        plain_text_cache = ?
+                    WHERE document_id = ?
+                    """,
+                    (nested, nested, nested, notebook["document_id"]),
+                )
+
+            dry_run = service.repair_notebook_delta_records(dry_run=True)
+            self.assertEqual(dry_run["records_needing_repair"], [notebook["document_id"]])
+            self.assertEqual(dry_run["repaired_count"], 0)
+            self.assertIsNone(dry_run["backup_path"])
+
+            applied = service.repair_notebook_delta_records(dry_run=False)
+            self.assertEqual(applied["repaired_count"], 1)
+            self.assertTrue(Path(str(applied["backup_path"])).exists())
+            second = service.repair_notebook_delta_records(dry_run=True)
+            self.assertEqual(second["records_needing_repair"], [])
 
     def test_malformed_rich_notebook_generates_safe_plain_text_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

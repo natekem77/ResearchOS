@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../api/researchos_api.dart';
 import '../brand/mundi_brand.dart';
 import '../config/app_config.dart';
+import '../config/build_info.dart';
 import '../design_system/researchos_design_system.dart';
 import '../models/mobile_models.dart';
 import '../models/server_profile.dart';
@@ -69,9 +70,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         Text(MundiBrand.appName,
                             style: Theme.of(context).textTheme.titleLarge),
                         const Text(MundiBrand.poweredBy),
-                        Text('Version ${data.settings.appVersion}'),
-                        const Text('Build 1'),
-                        const Text('Git commit: not configured'),
+                        const Text('App version ${MundiBuildInfo.appVersion}'),
+                        const Text('App commit ${MundiBuildInfo.gitCommit}'),
+                        const Text('App build ${MundiBuildInfo.buildDate}'),
+                        const Text('Bundle ${MundiBuildInfo.bundleIdentifier}'),
+                        const SizedBox(height: ResearchOsSpacing.xs),
+                        Text('Server ${data.settings.appVersion}'),
+                        Text('Server commit ${data.settings.gitCommit}'),
+                        Text('Server build ${data.settings.buildDate}'),
                       ],
                     ),
                   ),

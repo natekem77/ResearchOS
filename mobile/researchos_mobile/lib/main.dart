@@ -6,6 +6,7 @@ import 'package:flutter_quill/flutter_quill.dart';
 
 import 'api/researchos_api.dart';
 import 'brand/mundi_brand.dart';
+import 'config/build_info.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
 import 'screens/chats_screen.dart';
@@ -27,6 +28,7 @@ import 'services/mobile_connection_service.dart';
 import 'widgets/app_scaffold.dart';
 
 void main() {
+  MundiBuildInfo.logStartup();
   runApp(const ResearchOsMobileApp());
 }
 

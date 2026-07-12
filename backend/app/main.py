@@ -1,7 +1,9 @@
 """FastAPI entrypoint for the ResearchOS backend."""
 
 import logging
+import os
 import re
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,6 +76,7 @@ from app.general_experiments import (
     ExperimentValidationError,
     GeneralExperimentService,
     SamplePlanningService,
+    append_markdown_to_notebook_delta,
 )
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.inventory import (
@@ -165,6 +168,44 @@ agent_manager = create_default_agent_manager(
 )
 agent_manager.start()
 extension_manager = create_default_extension_manager()
+
+
+def _build_identity() -> dict[str, object]:
+    git_commit = (
+        os.getenv("RESEARCHOS_GIT_COMMIT")
+        or os.getenv("GIT_COMMIT")
+        or _git_commit_from_repo()
+        or "unknown"
+    )
+    build_date = (
+        os.getenv("RESEARCHOS_BUILD_DATE")
+        or os.getenv("BUILD_DATE")
+        or "not configured"
+    )
+    app_version = os.getenv("RESEARCHOS_APP_VERSION") or "ResearchOS v0.2 preview"
+    return {
+        "git_commit": git_commit,
+        "build_date": build_date,
+        "app_version": app_version,
+        "bundle_identifier": os.getenv("RESEARCHOS_BUNDLE_IDENTIFIER") or None,
+        "environment": settings.environment,
+    }
+
+
+def _git_commit_from_repo() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return None
+    commit = completed.stdout.strip()
+    return commit or None
 
 app = FastAPI(
     title=settings.project_name,
@@ -6446,11 +6487,16 @@ def mobile_status() -> dict[str, object]:
     """Return compact mobile API status."""
 
     production = _production_readiness()
+    build = _build_identity()
     return {
         "status": "ok",
         "project": "ResearchOS",
-        "app_version": "v0.2 preview",
+        "app_version": build["app_version"],
+        "git_commit": build["git_commit"],
+        "build_date": build["build_date"],
+        "bundle_identifier": build["bundle_identifier"],
         "app_env": production["app_env"],
+        "environment": build["environment"],
         "data_classification": production["data_classification"],
         "server_time": datetime.now(timezone.utc).isoformat(),
         "warnings": list(production.get("warnings") or [])[:3],
@@ -6462,6 +6508,7 @@ def mobile_connection_info(request: Request) -> dict[str, object]:
     """Return mobile client connection guidance without exposing secrets."""
 
     deployment = _deployment_status()
+    build = _build_identity()
     request_host = request.url.hostname or ""
     request_port = request.url.port
     public_base_url = str(deployment.get("public_base_url") or "").strip().rstrip("/")
@@ -6474,7 +6521,10 @@ def mobile_connection_info(request: Request) -> dict[str, object]:
         warnings.append("Set PUBLIC_BASE_URL to the URL iPhones should use, such as http://192.168.1.25:8001 or a Tailscale HTTPS URL.")
     return {
         "server_name": settings.project_name,
-        "version": "ResearchOS v0.2 preview",
+        "version": build["app_version"],
+        "git_commit": build["git_commit"],
+        "build_date": build["build_date"],
+        "bundle_identifier": build["bundle_identifier"],
         "environment": deployment.get("mode"),
         "app_env": settings.environment,
         "data_classification": settings.data_classification,
@@ -7023,8 +7073,13 @@ def mobile_settings() -> dict[str, object]:
     onenote = _onenote_readiness()
     production = _production_readiness()
     workspace = current_workspace(settings, SQLiteStore(settings=settings))
+    build = _build_identity()
     return {
-        "app_version": "ResearchOS v0.2 preview",
+        "app_version": build["app_version"],
+        "git_commit": build["git_commit"],
+        "build_date": build["build_date"],
+        "bundle_identifier": build["bundle_identifier"],
+        "environment": build["environment"],
         "server_url": deployment.get("public_base_url") or f"http://{deployment.get('host')}:{deployment.get('port')}",
         "workspace": {"workspace_id": workspace.get("workspace_id"), "name": workspace.get("name")},
         "auth_mode": auth_mode(settings),
@@ -9665,13 +9720,13 @@ def create_notebook_first_experiment(request_body: NotebookFirstExperimentCreate
         workspace = service.get_workspace(str(experiment["experiment_id"]), user_id)
         if request_body.initial_note and workspace:
             notebook = workspace.get("notebook") if isinstance(workspace.get("notebook"), dict) else {}
-            content = str(notebook.get("content") or "")
-            appended = f"{content.rstrip()}\n\n{request_body.initial_note.strip()}\n"
+            appended = append_markdown_to_notebook_delta(notebook.get("structured_content") or notebook.get("content"), request_body.initial_note)
             service.save_notebook(
                 user_id=user_id,
                 document_id=str(notebook.get("document_id")),
                 current_version=int(notebook.get("version") or 1),
                 content=appended,
+                document_format="rich_text_delta_json",
             )
             workspace = service.get_workspace(str(experiment["experiment_id"]), user_id)
         return {
@@ -9730,7 +9785,8 @@ def attach_protocol_to_experiment(experiment_id: str, request_body: GeneralProto
                 user_id=user_id,
                 document_id=str(notebook["document_id"]),
                 current_version=int(notebook["version"]),
-                content=f"{str(notebook.get('content') or '').rstrip()}{summary}",
+                content=append_markdown_to_notebook_delta(notebook.get("structured_content") or notebook.get("content"), summary),
+                document_format="rich_text_delta_json",
             )
         workspace = service.get_workspace(experiment_id, user_id)
         return {"link": link, "workspace": workspace}
@@ -9829,7 +9885,7 @@ def save_general_experiment_notebook(document_id: str, request_body: NotebookSav
                 user_id=user_id,
                 source_object_id=document_id,
                 source_object_type="Notebook Entry",
-                text=request_body.content,
+                text=str(notebook.get("plain_text_cache") or ""),
             )
         except Exception:
             logger.debug("Experiment notebook object reference sync failed.", exc_info=True)

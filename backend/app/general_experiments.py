@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ from app.config import Settings
 from app.storage import SQLiteStore
 
 EXPERIMENT_ACCESS_ORDER = {"view": 1, "comment": 2, "edit": 3, "manage": 4}
+CANONICAL_BLANK_DELTA_JSON = json.dumps([{"insert": "\n"}], separators=(",", ":"))
+NOTEBOOK_SCHEMA_VERSION = 1
+NOTEBOOK_MIGRATION_VERSION = 2
 logger = logging.getLogger(__name__)
 
 
@@ -847,13 +851,13 @@ class GeneralExperimentService:
             document_id = f"experiment-notebook:{experiment_id}"
             experiment = self._experiment(experiment_id) or {}
             title = str(experiment.get("title") or experiment_id)
-            content = '[{"insert":"\\n"}]'
+            content = canonical_notebook_delta_json("")
             connection.execute(
                 """
                 INSERT INTO experiment_notebook_documents
                     (document_id, experiment_id, title, document_format, content, structured_content,
                      plain_text_cache, original_format, original_content, migration_version, updated_by)
-                VALUES (?, ?, ?, 'rich_text_delta_json', ?, ?, ?, '', '', 0, ?)
+                VALUES (?, ?, ?, 'rich_text_delta_json', ?, ?, ?, '', '', ?, ?)
                 """,
                 (
                     document_id,
@@ -862,6 +866,7 @@ class GeneralExperimentService:
                     content,
                     content,
                     "",
+                    NOTEBOOK_MIGRATION_VERSION,
                     user_id,
                 ),
             )
@@ -881,11 +886,7 @@ class GeneralExperimentService:
             if len(content.encode("utf-8")) > 2_000_000:
                 raise ExperimentValidationError("Notebook document is too large for this preview build.")
             normalized_format = _normalize_document_format(document_format)
-            structured_content = (
-                _structured_delta_json_from_legacy(content, normalized_format)
-                if normalized_format == "rich_text_delta_json"
-                else _markdown_to_delta_json(content)
-            )
+            structured_content = canonical_notebook_delta_json(content=content, document_format=normalized_format)
             content_to_store = structured_content
             plain_text = _plain_text_from_document(structured_content, "rich_text_delta_json")
             connection.execute(
@@ -911,12 +912,23 @@ class GeneralExperimentService:
                 """
                 UPDATE experiment_notebook_documents
                 SET title = COALESCE(?, title), document_format = ?, content = ?,
-                    structured_content = ?, plain_text_cache = ?, schema_version = 1,
+                    structured_content = ?, plain_text_cache = ?, schema_version = ?,
+                    migration_version = ?,
                     document_version = version + 1, version = version + 1,
                     updated_at = CURRENT_TIMESTAMP, updated_by = ?
                 WHERE document_id = ?
                 """,
-                (title, "rich_text_delta_json", content_to_store, structured_content, plain_text, user_id, document_id),
+                (
+                    title,
+                    "rich_text_delta_json",
+                    content_to_store,
+                    structured_content,
+                    plain_text,
+                    NOTEBOOK_SCHEMA_VERSION,
+                    NOTEBOOK_MIGRATION_VERSION,
+                    user_id,
+                    document_id,
+                ),
             )
             self._history(connection, str(document["experiment_id"]), user_id, "notebook.edited", {"document_id": document_id, "new_version": current_version + 1})
             updated = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
@@ -1229,28 +1241,73 @@ class GeneralExperimentService:
     def _notebook_payload(self, connection: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
         attachments = [_decode(item) for item in connection.execute("SELECT * FROM experiment_notebook_attachments WHERE document_id = ? AND COALESCE(upload_status, 'complete') != 'deleted' ORDER BY created_at", (row["document_id"],)).fetchall()]
         payload = _decode(row)
+        original_content = str(payload.get("content") or "")
+        original_structured_content = payload.get("structured_content")
+        original_plain_text = str(payload.get("plain_text_cache") or "")
         document_format = _normalize_document_format(str(payload.get("document_format") or "markdown"))
-        content = str(payload.get("content") or "")
-        structured_content = payload.get("structured_content")
-        if not structured_content:
-            structured_content = _structured_delta_json_from_legacy(content, document_format)
-        if _delta_json_from_text(content) is not None:
-            content = str(structured_content)
-            document_format = "rich_text_delta_json"
-            payload["content"] = content
-            payload["document_format"] = document_format
+        structured_content = canonical_notebook_delta_json(
+            content=original_content,
+            structured_content=original_structured_content,
+            document_format=document_format,
+        )
+        content = structured_content
+        plain_text_cache = _plain_text_from_document(structured_content, "rich_text_delta_json")
+        if (
+            payload.get("document_format") != "rich_text_delta_json"
+            or original_content != content
+            or original_structured_content != structured_content
+            or original_plain_text != plain_text_cache
+            or int(payload.get("schema_version") or 0) < NOTEBOOK_SCHEMA_VERSION
+            or int(payload.get("migration_version") or 0) < NOTEBOOK_MIGRATION_VERSION
+        ):
+            connection.execute(
+                """
+                UPDATE experiment_notebook_documents
+                SET document_format = 'rich_text_delta_json',
+                    content = ?,
+                    structured_content = ?,
+                    plain_text_cache = ?,
+                    schema_version = ?,
+                    migration_version = ?,
+                    original_format = COALESCE(original_format, ?),
+                    original_content = COALESCE(original_content, ?)
+                WHERE document_id = ?
+                """,
+                (
+                    content,
+                    structured_content,
+                    plain_text_cache,
+                    NOTEBOOK_SCHEMA_VERSION,
+                    NOTEBOOK_MIGRATION_VERSION,
+                    document_format,
+                    original_content,
+                    payload["document_id"],
+                ),
+            )
+            payload.update(
+                {
+                    "document_format": "rich_text_delta_json",
+                    "content": content,
+                    "structured_content": structured_content,
+                    "plain_text_cache": plain_text_cache,
+                    "schema_version": NOTEBOOK_SCHEMA_VERSION,
+                    "migration_version": NOTEBOOK_MIGRATION_VERSION,
+                }
+            )
+        document_format = "rich_text_delta_json"
         migration = {
-            "source_format": "markdown_legacy" if document_format in {"markdown", "html"} else document_format,
-            "migration_version": int(payload.get("migration_version") or 0),
+            "source_format": "markdown_legacy" if _normalize_document_format(str(row.get("document_format") or "markdown")) in {"markdown", "html"} else document_format,
+            "migration_version": int(payload.get("migration_version") or NOTEBOOK_MIGRATION_VERSION),
             "idempotent": True,
-            "original_source_preserved": bool(payload.get("original_content") or content),
+            "original_source_preserved": bool(payload.get("original_content") or original_content),
         }
         return payload | {
             "document_format": document_format,
+            "content": content,
             "structured_content": structured_content,
-            "schema_version": int(payload.get("schema_version") or 1),
+            "schema_version": int(payload.get("schema_version") or NOTEBOOK_SCHEMA_VERSION),
             "document_version": int(payload.get("document_version") or payload.get("version") or 1),
-            "plain_text_cache": _plain_text_from_document(str(structured_content), "rich_text_delta_json"),
+            "plain_text_cache": plain_text_cache,
             "migration": migration,
             "attachments": attachments,
             "editor_capabilities": [
@@ -1269,6 +1326,74 @@ class GeneralExperimentService:
                 "zoom",
             ],
         }
+
+    def repair_notebook_delta_records(self, dry_run: bool = True, create_backup: bool = True) -> dict[str, Any]:
+        """Repair locally stored notebook Delta records without exposing content."""
+
+        repaired_ids: list[str] = []
+        backup_path: str | None = None
+        with self._connect() as connection:
+            rows = [dict(row) for row in connection.execute("SELECT * FROM experiment_notebook_documents").fetchall()]
+            repairs: list[tuple[dict[str, Any], str, str]] = []
+            for row in rows:
+                original_content = str(row.get("content") or "")
+                original_structured = row.get("structured_content")
+                canonical = canonical_notebook_delta_json(
+                    content=original_content,
+                    structured_content=original_structured,
+                    document_format=str(row.get("document_format") or "markdown"),
+                )
+                plain_text = _plain_text_from_document(canonical, "rich_text_delta_json")
+                needs_repair = (
+                    row.get("document_format") != "rich_text_delta_json"
+                    or original_content != canonical
+                    or original_structured != canonical
+                    or str(row.get("plain_text_cache") or "") != plain_text
+                    or int(row.get("migration_version") or 0) < NOTEBOOK_MIGRATION_VERSION
+                )
+                if needs_repair:
+                    repairs.append((row, canonical, plain_text))
+                    repaired_ids.append(str(row["document_id"]))
+            if repairs and not dry_run:
+                if create_backup:
+                    backup_path = self._backup_database_for_notebook_repair()
+                for row, canonical, plain_text in repairs:
+                    connection.execute(
+                        """
+                        UPDATE experiment_notebook_documents
+                        SET document_format = 'rich_text_delta_json',
+                            content = ?,
+                            structured_content = ?,
+                            plain_text_cache = ?,
+                            schema_version = ?,
+                            migration_version = ?,
+                            original_format = COALESCE(original_format, ?),
+                            original_content = COALESCE(original_content, ?)
+                        WHERE document_id = ?
+                        """,
+                        (
+                            canonical,
+                            canonical,
+                            plain_text,
+                            NOTEBOOK_SCHEMA_VERSION,
+                            NOTEBOOK_MIGRATION_VERSION,
+                            str(row.get("document_format") or "markdown"),
+                            str(row.get("content") or ""),
+                            row["document_id"],
+                        ),
+                    )
+        return {
+            "dry_run": dry_run,
+            "records_needing_repair": repaired_ids,
+            "repaired_count": 0 if dry_run else len(repaired_ids),
+            "backup_path": backup_path,
+        }
+
+    def _backup_database_for_notebook_repair(self) -> str:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = self.store.path.with_name(f"{self.store.path.stem}.notebook-repair-{timestamp}{self.store.path.suffix}.bak")
+        shutil.copy2(self.store.path, backup_path)
+        return str(backup_path)
 
     def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -1364,7 +1489,7 @@ def _markdown_to_delta_json(markdown: str) -> str:
     ops: list[dict[str, Any]] = []
     lines = markdown.splitlines()
     if not lines:
-        return json.dumps([{"insert": "\n"}])
+        return CANONICAL_BLANK_DELTA_JSON
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("### "):
@@ -1382,7 +1507,7 @@ def _markdown_to_delta_json(markdown: str) -> str:
         else:
             ops.extend(_line_to_delta_ops(line))
             ops.append({"insert": "\n"})
-    return json.dumps(ops)
+    return _canonical_delta_json_from_ops(ops)
 
 
 def _line_to_delta_ops(line: str) -> list[dict[str, Any]]:
@@ -1428,19 +1553,69 @@ def _plain_text_from_document(content: str, document_format: str) -> str:
 
 
 def _structured_delta_json_from_legacy(content: str, document_format: str) -> str:
-    repaired = _delta_json_from_text(content)
-    if repaired is not None:
-        return repaired
-    return _markdown_to_delta_json(content)
+    return canonical_notebook_delta_json(content=content, document_format=document_format)
+
+
+def canonical_notebook_delta_json(
+    content: Any = "",
+    document_format: str = "markdown",
+    structured_content: Any | None = None,
+) -> str:
+    """Return one canonical Quill Delta JSON document for notebook storage.
+
+    The function is intentionally conservative: it unwraps nested JSON only when
+    the complete value validates as a Quill Delta document. Ordinary JSON prose
+    remains prose and is converted to a plain paragraph.
+    """
+
+    candidates: list[Any] = []
+    if structured_content not in (None, ""):
+        candidates.append(structured_content)
+    if content not in (None, ""):
+        candidates.append(content)
+    if not candidates:
+        return CANONICAL_BLANK_DELTA_JSON
+    for candidate in candidates:
+        ops = _delta_ops_from_value(candidate, depth=0)
+        if ops is not None:
+            return _canonical_delta_json_from_ops(ops)
+        if isinstance(candidate, str):
+            repaired = _delta_json_from_text(candidate)
+            if repaired is not None:
+                return _canonical_delta_json_from_ops(json.loads(repaired))
+    fallback = content if content not in (None, "") else structured_content
+    normalized_format = _normalize_document_format(document_format)
+    if normalized_format in {"markdown", "html"}:
+        return _markdown_to_delta_json(str(fallback or ""))
+    return _markdown_to_delta_json(str(fallback or ""))
+
+
+def append_markdown_to_notebook_delta(existing_content: Any, markdown: str) -> str:
+    """Append readable Markdown/plain text to an existing canonical Delta."""
+
+    append_text = (markdown or "").strip()
+    if not append_text:
+        return canonical_notebook_delta_json(existing_content, "rich_text_delta_json")
+    existing_ops = json.loads(canonical_notebook_delta_json(existing_content, "rich_text_delta_json"))
+    append_ops = json.loads(_markdown_to_delta_json(append_text))
+    if existing_ops == [{"insert": "\n"}]:
+        merged = append_ops
+    else:
+        merged = list(existing_ops)
+        last_insert = merged[-1].get("insert") if merged else None
+        if isinstance(last_insert, str) and not last_insert.endswith("\n"):
+            merged.append({"insert": "\n"})
+        merged.extend(append_ops)
+    return _canonical_delta_json_from_ops(merged)
 
 
 def _delta_json_from_text(content: str) -> str | None:
     stripped = (content or "").strip()
     if not stripped:
-        return json.dumps([{"insert": "\n"}])
+        return CANONICAL_BLANK_DELTA_JSON
     ops = _delta_ops_from_json_text(stripped)
     if ops is not None:
-        return json.dumps(ops)
+        return _canonical_delta_json_from_ops(ops)
     split = _extract_json_prefix(stripped)
     if split is None:
         return None
@@ -1450,7 +1625,7 @@ def _delta_json_from_text(content: str) -> str | None:
         return None
     if trailing.strip():
         ops.append({"insert": f"\n{trailing.strip()}\n"})
-    return json.dumps(ops)
+    return _canonical_delta_json_from_ops(ops)
 
 
 def _delta_ops_from_json_text(content: str) -> list[dict[str, Any]] | None:
@@ -1471,6 +1646,15 @@ def _delta_ops_from_json_text_at_depth(content: str, depth: int) -> list[dict[st
             current = decoded
             continue
         break
+    return _delta_ops_from_value(decoded, depth)
+
+
+def _delta_ops_from_value(value: Any, depth: int) -> list[dict[str, Any]] | None:
+    if depth > 4:
+        return None
+    decoded = value
+    if isinstance(decoded, str):
+        return _delta_ops_from_json_text_at_depth(decoded, depth)
     if isinstance(decoded, dict) and isinstance(decoded.get("ops"), list):
         decoded = decoded["ops"]
     if not isinstance(decoded, list):
@@ -1503,6 +1687,15 @@ def _normalize_delta_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not ops:
         return [{"insert": "\n"}]
     normalized = [dict(op) for op in ops]
+    while len(normalized) > 1:
+        last = normalized[-1]
+        previous = normalized[-2]
+        if set(last.keys()) == {"insert"} and last.get("insert") == "\n":
+            previous_insert = previous.get("insert")
+            if isinstance(previous_insert, str) and previous_insert.endswith("\n"):
+                normalized.pop()
+                continue
+        break
     last_insert = normalized[-1].get("insert")
     if isinstance(last_insert, str):
         if not last_insert.endswith("\n"):
@@ -1510,6 +1703,10 @@ def _normalize_delta_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
     else:
         normalized.append({"insert": "\n"})
     return normalized
+
+
+def _canonical_delta_json_from_ops(ops: list[dict[str, Any]]) -> str:
+    return json.dumps(_normalize_delta_ops(ops), ensure_ascii=False, separators=(",", ":"))
 
 
 def _extract_json_prefix(content: str) -> tuple[str, str] | None:
