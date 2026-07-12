@@ -391,6 +391,34 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('Insert Test Image mutates visible Quill editor controller',
+      (tester) async {
+    var delta = '';
+    await pumpRichEditor(
+      tester,
+      onChanged: (edit) => delta = edit.deltaJson,
+    );
+
+    await tester.tap(find.byKey(const ValueKey('insert-test-image-button')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(delta, contains('"image"'));
+    expect(delta, contains('asset://assets/dev/notebook_test_image.png'));
+    expect(
+      find.byKey(const ValueKey(
+          'native-quill-image-asset://assets/dev/notebook_test_image.png')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('rich-notebook-dev-diagnostics')),
+        findsOneWidget);
+    expect(find.textContaining('controller='), findsOneWidget);
+    expect(find.textContaining('selection_before='), findsOneWidget);
+    expect(find.textContaining('length_before='), findsOneWidget);
+    expect(find.textContaining('length_after='), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('unsupported clipboard content shows feedback', (tester) async {
     await pumpRichEditor(
       tester,
@@ -520,6 +548,8 @@ void main() {
       initialContent: _imageEmbedContent(displayName: 'Small phone image'),
     );
 
+    await tester.ensureVisible(find.text('Small phone image'));
+    await tester.pump();
     await tester.tap(find.text('Small phone image'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));

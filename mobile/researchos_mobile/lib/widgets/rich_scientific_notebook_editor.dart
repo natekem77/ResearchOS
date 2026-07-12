@@ -42,16 +42,24 @@ class RichScientificNotebookEditor extends StatefulWidget {
 class _RichScientificNotebookEditorState
     extends State<RichScientificNotebookEditor> {
   static const _zoomPreferenceKey = 'mundi.rich_notebook.zoom';
+  static const _testImageAssetPath = 'assets/dev/notebook_test_image.png';
+  static const _testImageEmbedSource = 'asset://$_testImageAssetPath';
   late final QuillController _controller;
   final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   double _zoom = 1.0;
   String? _pasteMessage;
+  String? _devDiagnostics;
   bool _pastingImage = false;
+  bool _showDevImageProbe = false;
 
   @override
   void initState() {
     super.initState();
+    assert(() {
+      _showDevImageProbe = true;
+      return true;
+    }());
     _controller = QuillController(
       document: _documentFromContent(
         widget.initialContent,
@@ -106,6 +114,38 @@ class _RichScientificNotebookEditorState
         plainText: _controller.document.toPlainText(),
       ),
     );
+  }
+
+  void _insertTestImage() {
+    final selection = _controller.selection;
+    final beforeSelection = selection.baseOffset < 0 ? -1 : selection.start;
+    final beforeLength = _controller.document.length;
+    final index = beforeSelection < 0 ? beforeLength - 1 : beforeSelection;
+    final length = selection.isCollapsed || selection.baseOffset < 0
+        ? 0
+        : selection.end - selection.start;
+    _controller.replaceText(
+      index,
+      length,
+      BlockEmbed.image(_testImageEmbedSource),
+      TextSelection.collapsed(offset: index + 1),
+    );
+    _controller.replaceText(
+      index + 1,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: index + 2),
+    );
+    final afterLength = _controller.document.length;
+    setState(() {
+      _devDiagnostics = [
+        'controller=${identityHashCode(_controller)}',
+        'selection_before=$beforeSelection',
+        'length_before=$beforeLength',
+        'length_after=$afterLength',
+        'delta=${_currentDeltaJson()}',
+      ].join('\n');
+    });
   }
 
   String _currentDeltaJson() {
@@ -215,6 +255,23 @@ class _RichScientificNotebookEditorState
           onPasteImage:
               widget.onPasteImage == null ? null : _pasteImageFromClipboard,
         ),
+        if (_showDevImageProbe) ...[
+          const SizedBox(height: ResearchOsSpacing.sm),
+          OutlinedButton.icon(
+            key: const ValueKey('insert-test-image-button'),
+            onPressed: _insertTestImage,
+            icon: const Icon(Icons.bug_report_outlined),
+            label: const Text('Insert Test Image'),
+          ),
+          if (_devDiagnostics != null) ...[
+            const SizedBox(height: ResearchOsSpacing.xs),
+            SelectableText(
+              _devDiagnostics!,
+              key: const ValueKey('rich-notebook-dev-diagnostics'),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ],
         const SizedBox(height: ResearchOsSpacing.sm),
         Row(
           children: [
@@ -269,6 +326,7 @@ class _RichScientificNotebookEditorState
                   ),
                 ),
                 embedBuilders: [
+                  const NativeQuillImageEmbedBuilder(),
                   ExperimentAttachmentImageEmbedBuilder(
                     downloadUrlForAttachment:
                         widget.downloadUrlForAttachment ?? (_) => '',
@@ -892,6 +950,68 @@ class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {
       url: url,
       controller: embedContext.controller,
       documentOffset: embedContext.node.documentOffset,
+    );
+  }
+}
+
+class NativeQuillImageEmbedBuilder extends EmbedBuilder {
+  const NativeQuillImageEmbedBuilder();
+
+  @override
+  String get key => BlockEmbed.imageType;
+
+  @override
+  String toPlainText(Embed node) => '[Image: ${node.value.data}]';
+
+  @override
+  Widget build(BuildContext context, EmbedContext embedContext) {
+    final source = embedContext.node.value.data.toString();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final maxWidth = constraints.maxWidth.isFinite
+              ? constraints.maxWidth
+              : MediaQuery.sizeOf(context).width;
+          return ConstrainedBox(
+            key: ValueKey('native-quill-image-$source'),
+            constraints: BoxConstraints(maxWidth: maxWidth, maxHeight: 420),
+            child: _nativeImageForSource(source),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _nativeImageForSource(String source) {
+    if (source.startsWith('asset://')) {
+      return Image.asset(
+        source.substring('asset://'.length),
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stackTrace) => const _ImagePlaceholder(
+          icon: Icons.broken_image_outlined,
+          label: 'Native image asset failed',
+        ),
+      );
+    }
+    final uri = Uri.tryParse(source);
+    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      return Image.network(
+        source,
+        fit: BoxFit.contain,
+        errorBuilder: (context, error, stackTrace) => const _ImagePlaceholder(
+          icon: Icons.broken_image_outlined,
+          label: 'Native image preview failed',
+        ),
+      );
+    }
+    return Image.asset(
+      source,
+      fit: BoxFit.contain,
+      errorBuilder: (context, error, stackTrace) => const _ImagePlaceholder(
+        icon: Icons.broken_image_outlined,
+        label: 'Native image source unavailable',
+      ),
     );
   }
 }
