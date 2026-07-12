@@ -311,11 +311,30 @@ class GeneralExperimentService:
                     title TEXT NOT NULL,
                     document_format TEXT NOT NULL DEFAULT 'markdown',
                     content TEXT NOT NULL,
+                    structured_content TEXT,
+                    schema_version INTEGER NOT NULL DEFAULT 1,
+                    document_version INTEGER NOT NULL DEFAULT 1,
+                    original_format TEXT,
+                    original_content TEXT,
+                    migration_version INTEGER NOT NULL DEFAULT 0,
                     plain_text_cache TEXT NOT NULL,
                     version INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_by TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS experiment_notebook_document_versions (
+                    history_id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    experiment_id TEXT NOT NULL,
+                    document_version INTEGER NOT NULL,
+                    document_format TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    structured_content TEXT,
+                    plain_text_cache TEXT NOT NULL,
+                    saved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    saved_by TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS experiment_notebook_attachments (
@@ -360,6 +379,15 @@ class GeneralExperimentService:
                 );
                 """
             )
+            for column, definition in {
+                "structured_content": "TEXT",
+                "schema_version": "INTEGER NOT NULL DEFAULT 1",
+                "document_version": "INTEGER NOT NULL DEFAULT 1",
+                "original_format": "TEXT",
+                "original_content": "TEXT",
+                "migration_version": "INTEGER NOT NULL DEFAULT 0",
+            }.items():
+                self._ensure_column(connection, "experiment_notebook_documents", column, definition)
             for column, definition in {
                 "experiment_id": "TEXT",
                 "source_type": "TEXT NOT NULL DEFAULT 'uploaded_file'",
@@ -819,14 +847,23 @@ class GeneralExperimentService:
             document_id = f"experiment-notebook:{experiment_id}"
             experiment = self._experiment(experiment_id) or {}
             title = str(experiment.get("title") or experiment_id)
-            content = f"# {title}\n\nStart writing experimental notes here. Structured plan data will not overwrite this narrative workspace.\n"
+            content = '[{"insert":"\\n"}]'
             connection.execute(
                 """
                 INSERT INTO experiment_notebook_documents
-                    (document_id, experiment_id, title, document_format, content, plain_text_cache, updated_by)
-                VALUES (?, ?, ?, 'markdown', ?, ?, ?)
+                    (document_id, experiment_id, title, document_format, content, structured_content,
+                     plain_text_cache, original_format, original_content, migration_version, updated_by)
+                VALUES (?, ?, ?, 'rich_text_delta_json', ?, ?, ?, '', '', 0, ?)
                 """,
-                (document_id, experiment_id, title, content, _plain_text(content), user_id),
+                (
+                    document_id,
+                    experiment_id,
+                    title,
+                    content,
+                    content,
+                    "",
+                    user_id,
+                ),
             )
             row = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
             assert row is not None
@@ -841,14 +878,40 @@ class GeneralExperimentService:
             self._require_access(user_id, str(document["experiment_id"]), "edit")
             if int(document["version"]) != current_version:
                 raise ExperimentConflictError("Notebook has changed since it was loaded.")
+            if len(content.encode("utf-8")) > 2_000_000:
+                raise ExperimentValidationError("Notebook document is too large for this preview build.")
+            normalized_format = _normalize_document_format(document_format)
+            structured_content = content if normalized_format == "rich_text_delta_json" else _markdown_to_delta_json(content)
+            plain_text = _plain_text_from_document(content, normalized_format)
+            connection.execute(
+                """
+                INSERT INTO experiment_notebook_document_versions
+                    (history_id, document_id, experiment_id, document_version, document_format,
+                     content, structured_content, plain_text_cache, saved_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"notebook-version:{uuid.uuid4().hex[:16]}",
+                    document_id,
+                    str(document["experiment_id"]),
+                    int(document.get("version") or 1),
+                    str(document.get("document_format") or "markdown"),
+                    str(document.get("content") or ""),
+                    document.get("structured_content"),
+                    str(document.get("plain_text_cache") or ""),
+                    user_id,
+                ),
+            )
             connection.execute(
                 """
                 UPDATE experiment_notebook_documents
-                SET title = COALESCE(?, title), document_format = ?, content = ?, plain_text_cache = ?,
-                    version = version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ?
+                SET title = COALESCE(?, title), document_format = ?, content = ?,
+                    structured_content = ?, plain_text_cache = ?, schema_version = 1,
+                    document_version = version + 1, version = version + 1,
+                    updated_at = CURRENT_TIMESTAMP, updated_by = ?
                 WHERE document_id = ?
                 """,
-                (title, document_format, content, _plain_text(content), user_id, document_id),
+                (title, normalized_format, content, structured_content, plain_text, user_id, document_id),
             )
             self._history(connection, str(document["experiment_id"]), user_id, "notebook.edited", {"document_id": document_id, "new_version": current_version + 1})
             updated = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
@@ -1160,7 +1223,42 @@ class GeneralExperimentService:
 
     def _notebook_payload(self, connection: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
         attachments = [_decode(item) for item in connection.execute("SELECT * FROM experiment_notebook_attachments WHERE document_id = ? AND COALESCE(upload_status, 'complete') != 'deleted' ORDER BY created_at", (row["document_id"],)).fetchall()]
-        return _decode(row) | {"attachments": attachments, "editor_capabilities": ["headings", "paragraphs", "bold", "italic", "lists", "checklists", "tables", "links", "attachments", "resource_links"]}
+        payload = _decode(row)
+        document_format = _normalize_document_format(str(payload.get("document_format") or "markdown"))
+        content = str(payload.get("content") or "")
+        structured_content = payload.get("structured_content")
+        if not structured_content:
+            structured_content = _markdown_to_delta_json(content)
+        migration = {
+            "source_format": "markdown_legacy" if document_format in {"markdown", "html"} else document_format,
+            "migration_version": int(payload.get("migration_version") or 0),
+            "idempotent": True,
+            "original_source_preserved": bool(payload.get("original_content") or content),
+        }
+        return payload | {
+            "document_format": document_format,
+            "structured_content": structured_content,
+            "schema_version": int(payload.get("schema_version") or 1),
+            "document_version": int(payload.get("document_version") or payload.get("version") or 1),
+            "plain_text_cache": payload.get("plain_text_cache") or _plain_text_from_document(content, document_format),
+            "migration": migration,
+            "attachments": attachments,
+            "editor_capabilities": [
+                "headings",
+                "paragraphs",
+                "bold",
+                "italic",
+                "underline",
+                "strikethrough",
+                "lists",
+                "checklists",
+                "quotes",
+                "links",
+                "attachments",
+                "resource_links",
+                "zoom",
+            ],
+        }
 
     def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -1238,6 +1336,147 @@ def _decode(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
 
 def _plain_text(content: str) -> str:
     return content.replace("#", "").replace("*", "").replace("|", " ")
+
+
+def _normalize_document_format(value: str) -> str:
+    normalized = (value or "markdown").strip().lower()
+    if normalized in {"rich_text_json", "quill_delta", "delta", "rich_text_delta_json"}:
+        return "rich_text_delta_json"
+    if normalized == "html":
+        return "html"
+    return "markdown"
+
+
+def _markdown_to_delta_json(markdown: str) -> str:
+    ops: list[dict[str, Any]] = []
+    lines = markdown.splitlines()
+    if not lines:
+        return json.dumps([{"insert": "\n"}])
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("### "):
+            ops.append({"insert": stripped[4:]})
+            ops.append({"insert": "\n", "attributes": {"header": 3}})
+        elif stripped.startswith("## "):
+            ops.append({"insert": stripped[3:]})
+            ops.append({"insert": "\n", "attributes": {"header": 2}})
+        elif stripped.startswith("# "):
+            ops.append({"insert": stripped[2:]})
+            ops.append({"insert": "\n", "attributes": {"header": 1}})
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            ops.append({"insert": stripped[2:]})
+            ops.append({"insert": "\n", "attributes": {"list": "bullet"}})
+        else:
+            ops.extend(_line_to_delta_ops(line))
+            ops.append({"insert": "\n"})
+    return json.dumps(ops)
+
+
+def _line_to_delta_ops(line: str) -> list[dict[str, Any]]:
+    ops: list[dict[str, Any]] = []
+    remaining = line
+    while remaining:
+        starts = [idx for idx in [remaining.find("http://"), remaining.find("https://")] if idx >= 0]
+        if not starts:
+            ops.append({"insert": remaining})
+            break
+        url_start = min(starts)
+        if url_start:
+            ops.append({"insert": remaining[:url_start]})
+        tail = remaining[url_start:]
+        parts = tail.split(maxsplit=1)
+        url = parts[0]
+        ops.append({"insert": url, "attributes": {"link": url}})
+        remaining = parts[1] if len(parts) > 1 else ""
+    return ops
+
+
+def _plain_text_from_document(content: str, document_format: str) -> str:
+    if _normalize_document_format(document_format) != "rich_text_delta_json":
+        return _plain_text(content)
+    try:
+        decoded = json.loads(content)
+    except json.JSONDecodeError:
+        return _plain_text(content)
+    if isinstance(decoded, dict):
+        decoded = decoded.get("ops") or []
+    pieces: list[str] = []
+    if isinstance(decoded, list):
+        for op in decoded:
+            if not isinstance(op, dict):
+                continue
+            inserted = op.get("insert")
+            if isinstance(inserted, str):
+                pieces.append(inserted)
+            elif isinstance(inserted, dict):
+                label = inserted.get("display_label") or inserted.get("source") or inserted.get("embed_type")
+                if label:
+                    pieces.append(str(label))
+    return " ".join("".join(pieces).split())
+
+
+class RichNotebookContextService:
+    """Convert rich notebooks into backend-safe context for search and AI."""
+
+    def extract_plain_text(self, document: dict[str, Any]) -> str:
+        return _plain_text_from_document(
+            str(document.get("content") or document.get("structured_content") or ""),
+            str(document.get("document_format") or "markdown"),
+        )
+
+    def enumerate_references(self, document: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._enumerate_embeds(document, embed_type="research_object")
+
+    def enumerate_attachments(self, document: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._enumerate_embeds(document, embed_type="attachment")
+
+    def build_authorized_ai_context(self, document: dict[str, Any], user: str) -> dict[str, Any]:
+        return {
+            "user_id": user,
+            "plain_text": self.extract_plain_text(document),
+            "references": self.enumerate_references(document),
+            "attachments": self.enumerate_attachments(document),
+            "structure": self.summarize_document_structure(document),
+        }
+
+    def summarize_document_structure(self, document: dict[str, Any]) -> dict[str, Any]:
+        content = str(document.get("content") or document.get("structured_content") or "")
+        try:
+            decoded = json.loads(content)
+        except json.JSONDecodeError:
+            decoded = []
+        if isinstance(decoded, dict):
+            decoded = decoded.get("ops") or []
+        headings = 0
+        embeds = 0
+        if isinstance(decoded, list):
+            for op in decoded:
+                if not isinstance(op, dict):
+                    continue
+                attrs = op.get("attributes") if isinstance(op.get("attributes"), dict) else {}
+                if "header" in attrs:
+                    headings += 1
+                if isinstance(op.get("insert"), dict):
+                    embeds += 1
+        return {"headings": headings, "embeds": embeds, "schema_version": document.get("schema_version") or 1}
+
+    def _enumerate_embeds(self, document: dict[str, Any], embed_type: str) -> list[dict[str, Any]]:
+        content = str(document.get("content") or document.get("structured_content") or "")
+        try:
+            decoded = json.loads(content)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(decoded, dict):
+            decoded = decoded.get("ops") or []
+        embeds: list[dict[str, Any]] = []
+        if isinstance(decoded, list):
+            for op in decoded:
+                if not isinstance(op, dict):
+                    continue
+                inserted = op.get("insert")
+                if isinstance(inserted, dict) and inserted.get("embed_type") == embed_type:
+                    embeds.append(inserted)
+        return embeds
 
 
 def _link_provider(url: str) -> dict[str, str]:

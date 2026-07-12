@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 
 import 'api/researchos_api.dart';
 import 'brand/mundi_brand.dart';
@@ -155,6 +157,12 @@ class _ResearchOsMobileAppState extends State<ResearchOsMobileApp> {
     return MaterialApp(
       title: MundiBrand.appName,
       debugShowCheckedModeBanner: false,
+      localizationsDelegates: const [
+        FlutterQuillLocalizations.delegate,
+        GlobalMaterialLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+      ],
       theme: ResearchOsTheme.light(),
       darkTheme: ResearchOsTheme.dark(),
       themeMode: ThemeMode.system,

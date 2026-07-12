@@ -439,7 +439,7 @@ class GeneralExperimentUpdateRequest(BaseModel):
 class NotebookSaveRequest(BaseModel):
     current_version: int
     content: str
-    document_format: Literal["rich_text_json", "markdown", "html"] = "markdown"
+    document_format: Literal["rich_text_delta_json", "rich_text_json", "markdown", "html"] = "markdown"
     title: str | None = None
 
 
@@ -9599,7 +9599,7 @@ def save_protocol_hub_notebook(document_id: str, request_body: ProtocolNotebookS
                 user_id=user_id,
                 source_object_id=document_id,
                 source_object_type="Notebook Entry",
-                text=request_body.content,
+                text=str(notebook.get("plain_text_cache") or request_body.content),
             )
         except Exception:
             logger.debug("Protocol notebook object reference sync failed.", exc_info=True)

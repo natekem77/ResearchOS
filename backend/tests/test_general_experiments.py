@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from app.general_experiments import (
     ExperimentAuthorizationError,
     ExperimentConflictError,
     GeneralExperimentService,
+    RichNotebookContextService,
     SamplePlanningService,
 )
 from app.storage import SQLiteStore
@@ -54,6 +56,20 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertTrue(workspace["layout"]["notebook_remains_visible"])
         self.assertTrue(workspace["notebook"]["document_id"])
         self.assertTrue(any(tool["tool_id"] == "protocols" for tool in workspace["tool_palette"]))
+
+    def test_new_notebook_starts_as_blank_rich_document_without_title_duplication(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment(
+                "user:researcher-a",
+                "lab:demo",
+                "No duplicated title",
+            )
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+
+        self.assertEqual(notebook["document_format"], "rich_text_delta_json")
+        self.assertEqual(notebook["plain_text_cache"], "")
+        self.assertNotIn("No duplicated title", notebook["content"])
 
     def test_protocol_tool_attach_preserves_notebook_content(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -229,6 +245,100 @@ class GeneralExperimentTests(unittest.TestCase):
             service.save_notebook("user:researcher-a", notebook["document_id"], notebook["version"], "first save")
             with self.assertRaises(ExperimentConflictError):
                 service.save_notebook("user:researcher-a", notebook["document_id"], notebook["version"], "stale save")
+
+    def test_rich_notebook_save_retrieve_and_plain_text_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Rich notebook")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            delta = json.dumps([
+                {"insert": "Retinal differentiation notes"},
+                {"insert": "\n", "attributes": {"header": 1}},
+                {"insert": "SAG increased BRN3B in this draft note."},
+                {"insert": "\n"},
+            ])
+            updated = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                delta,
+                document_format="rich_text_delta_json",
+            )
+            reopened = self._service(tmpdir).get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+
+        self.assertEqual(updated["document_format"], "rich_text_delta_json")
+        self.assertIn("BRN3B", updated["plain_text_cache"])
+        self.assertEqual(reopened["content"], delta)
+        self.assertEqual(reopened["document_version"], updated["version"])
+
+    def test_markdown_notebook_exposes_idempotent_structured_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Markdown migration")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            legacy = "# Legacy heading\n\nExisting line one.\nExisting line two."
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    """
+                    UPDATE experiment_notebook_documents
+                    SET document_format = 'markdown',
+                        content = ?,
+                        structured_content = NULL,
+                        plain_text_cache = ?,
+                        original_format = 'markdown',
+                        original_content = ?,
+                        migration_version = 1
+                    WHERE document_id = ?
+                    """,
+                    (legacy, legacy, legacy, notebook["document_id"]),
+                )
+            first = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            second = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+
+        self.assertEqual(first["content"], legacy)
+        self.assertIn("Existing line one.", first["plain_text_cache"])
+        self.assertEqual(first["structured_content"], second["structured_content"])
+        self.assertTrue(first["migration"]["idempotent"])
+        self.assertTrue(first["migration"]["original_source_preserved"])
+
+    def test_malformed_rich_notebook_generates_safe_plain_text_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Malformed rich")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            updated = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                "{not valid delta json",
+                document_format="rich_text_delta_json",
+            )
+
+        self.assertIn("not valid delta json", updated["plain_text_cache"])
+
+    def test_rich_notebook_context_enumerates_embeds(self) -> None:
+        delta = json.dumps([
+            {"insert": "Notes before embed\n"},
+            {"insert": {
+                "embed_type": "research_object",
+                "object_type": "protocol",
+                "object_id": "protocol:test",
+                "display_label": "Protocol Test",
+            }},
+            {"insert": "\n"},
+            {"insert": {
+                "embed_type": "attachment",
+                "attachment_id": "attachment:test",
+                "display_label": "results.xlsx",
+            }},
+            {"insert": "\n"},
+        ])
+        document = {"document_format": "rich_text_delta_json", "content": delta, "schema_version": 1}
+        context = RichNotebookContextService()
+
+        self.assertIn("Protocol Test", context.extract_plain_text(document))
+        self.assertEqual(context.enumerate_references(document)[0]["object_id"], "protocol:test")
+        self.assertEqual(context.enumerate_attachments(document)[0]["attachment_id"], "attachment:test")
 
     def test_attachment_enforces_underlying_resource_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -71,7 +71,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.enterText(
         find.byKey(const ValueKey('experiment-title-field')), 'Focus Save');
-    await tester.tap(find.byType(TextField).last);
+    FocusManager.instance.primaryFocus?.unfocus();
     await tester.pumpAndSettle();
 
     expect(find.text('Focus Save'), findsOneWidget);
@@ -127,6 +127,51 @@ void main() {
     );
 
     expect(find.text('Saved Persistent Title'), findsOneWidget);
+  });
+
+  testWidgets('blank rich notebook does not duplicate title in body',
+      (tester) async {
+    await pumpWorkspace(
+      tester,
+      api: _api(),
+      workspace: _workspace(
+        title: 'No Duplicated Heading',
+        notebookContent: '[{"insert":"\\n"}]',
+        documentFormat: 'rich_text_delta_json',
+      ),
+    );
+
+    expect(find.text('No Duplicated Heading'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('rich notebook saves Quill delta JSON', (tester) async {
+    final requests = <http.Request>[];
+    final api = _api(onRequest: requests.add);
+    await pumpWorkspace(
+      tester,
+      api: api,
+      workspace: _workspace(
+        title: 'Rich Notebook',
+        notebookContent: '[{"insert":"Formatted note\\n"}]',
+        documentFormat: 'rich_text_delta_json',
+      ),
+    );
+
+    final saveButton = find.byKey(const ValueKey('rich-notebook-save-button'));
+    await tester.ensureVisible(saveButton);
+    await tester.pumpAndSettle();
+    await tester.tap(saveButton);
+    await tester.pumpAndSettle();
+
+    final saveRequest = requests.firstWhere(
+      (request) =>
+          request.method == 'PUT' &&
+          request.url.path.contains('/experiment-notebooks/'),
+    );
+    final body = jsonDecode(saveRequest.body) as Map<String, dynamic>;
+    expect(body['document_format'], 'rich_text_delta_json');
+    expect(body['content'], contains('Formatted note'));
   });
 
   testWidgets('iPhone protocols sheet opens scrolls closes without exception',
@@ -235,6 +280,24 @@ ResearchOsApi _api({
           headers: {'Content-Type': 'application/json'},
         );
       }
+      if (request.method == 'PUT' &&
+          request.url.path.contains('/experiment-notebooks/')) {
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        return http.Response(
+          jsonEncode({
+            'document_id': 'experiment-notebook:test',
+            'version': 2,
+            'document_version': 2,
+            'document_format': body['document_format'],
+            'content': body['content'],
+            'structured_content': body['content'],
+            'plain_text_cache': 'Formatted note',
+            'attachments': [],
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
       if (request.method == 'GET' && request.url.path == '/general-protocols') {
         return http.Response(
           jsonEncode([
@@ -296,6 +359,8 @@ ResearchOsApi _api({
 Map<String, dynamic> _workspace({
   required String title,
   List<Map<String, dynamic>> attachments = const [],
+  String notebookContent = '[{"insert":"Start writing here.\\n"}]',
+  String documentFormat = 'markdown',
 }) {
   return {
     'experiment': {'experiment_id': 'experiment:test', 'title': title},
@@ -307,7 +372,13 @@ Map<String, dynamic> _workspace({
     'notebook': {
       'document_id': 'experiment-notebook:test',
       'version': 1,
-      'content': 'Start writing here.',
+      'document_version': 1,
+      'document_format': documentFormat,
+      'content': documentFormat == 'rich_text_delta_json'
+          ? notebookContent
+          : 'Start writing here.',
+      'structured_content': notebookContent,
+      'plain_text_cache': 'Start writing here.',
       'attachments': attachments,
     },
     'attachments': attachments,

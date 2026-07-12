@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -7,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
+import '../widgets/rich_scientific_notebook_editor.dart';
 
 class GeneralExperimentWorkspaceScreen extends StatefulWidget {
   const GeneralExperimentWorkspaceScreen({
@@ -28,9 +30,10 @@ class GeneralExperimentWorkspaceScreen extends StatefulWidget {
 class _GeneralExperimentWorkspaceScreenState
     extends State<GeneralExperimentWorkspaceScreen> {
   late Future<Map<String, dynamic>> _future;
-  final TextEditingController _notebookController = TextEditingController();
   int? _notebookVersion;
   String? _documentId;
+  String _documentFormat = 'markdown';
+  String _notebookContent = '';
   String? _selectedTool;
   String? _saveMessage;
   String _experimentTitle = 'Untitled Experiment';
@@ -44,7 +47,6 @@ class _GeneralExperimentWorkspaceScreenState
   @override
   void initState() {
     super.initState();
-    _notebookController.addListener(_scheduleAutosave);
     final initialWorkspace = widget.initialWorkspace;
     if (initialWorkspace == null) {
       _future = _load();
@@ -57,7 +59,6 @@ class _GeneralExperimentWorkspaceScreenState
   @override
   void dispose() {
     _autosaveTimer?.cancel();
-    _notebookController.dispose();
     super.dispose();
   }
 
@@ -75,8 +76,13 @@ class _GeneralExperimentWorkspaceScreenState
         _text(experiment['title'], fallback: 'Untitled Experiment');
     _documentId = notebook['document_id']?.toString();
     _notebookVersion = int.tryParse('${notebook['version'] ?? 1}');
-    _notebookController.text = notebook['content']?.toString() ?? '';
-    _lastSavedContent = _notebookController.text;
+    _documentFormat = notebook['document_format']?.toString() ?? 'markdown';
+    _notebookContent = _documentFormat.contains('rich_text')
+        ? (notebook['content']?.toString() ?? '')
+        : (notebook['structured_content']?.toString() ??
+            notebook['content']?.toString() ??
+            '');
+    _lastSavedContent = _notebookContent;
   }
 
   Future<void> _reload() async {
@@ -85,30 +91,35 @@ class _GeneralExperimentWorkspaceScreenState
     });
   }
 
-  Future<void> _saveNotebook() async {
+  Future<void> _saveNotebook({bool force = false}) async {
     if (_documentId == null || _notebookVersion == null || _saving) return;
-    if (_notebookController.text == _lastSavedContent) return;
+    if (!force && _notebookContent == _lastSavedContent) return;
     setState(() {
       _saving = true;
-      _saveMessage = null;
+      _saveMessage = 'Saving...';
     });
     try {
       final notebook = await widget.api.saveGeneralExperimentNotebook(
         documentId: _documentId!,
         currentVersion: _notebookVersion!,
-        content: _notebookController.text,
+        content: _notebookContent,
+        documentFormat: 'rich_text_delta_json',
       );
       if (!mounted) return;
       setState(() {
         _notebookVersion = int.tryParse('${notebook['version']}');
-        _lastSavedContent = _notebookController.text;
-        _saveMessage = 'Autosaved version $_notebookVersion';
+        _documentFormat =
+            notebook['document_format']?.toString() ?? 'rich_text_delta_json';
+        _lastSavedContent = _notebookContent;
+        _saveMessage = force
+            ? 'Saved version $_notebookVersion'
+            : 'Autosaved version $_notebookVersion';
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
         _saveMessage =
-            'Save conflict or permission issue. Reload before overwriting. $error';
+            'Save failed. Local edits are still here. Reload before overwriting if this was a conflict. $error';
       });
     } finally {
       if (mounted) setState(() => _saving = false);
@@ -117,8 +128,8 @@ class _GeneralExperimentWorkspaceScreenState
 
   void _scheduleAutosave() {
     _autosaveTimer?.cancel();
-    if (mounted) setState(() {});
-    if (_notebookController.text == _lastSavedContent) return;
+    if (_notebookContent == _lastSavedContent) return;
+    if (mounted) setState(() => _saveMessage = 'Unsaved');
     _autosaveTimer = Timer(const Duration(milliseconds: 1400), () {
       if (mounted) _saveNotebook();
     });
@@ -164,11 +175,21 @@ class _GeneralExperimentWorkspaceScreenState
   }
 
   void _insertIntoNotebook(String text) {
-    final current = _notebookController.text.trimRight();
-    _notebookController.text = current.isEmpty ? text : '$current\n\n$text';
-    _notebookController.selection = TextSelection.fromPosition(
-      TextPosition(offset: _notebookController.text.length),
-    );
+    final insertion = jsonEncode({
+      'insert': '\n$text\n',
+      'attributes': {'blockquote': true},
+    });
+    setState(() {
+      final trimmed = _notebookContent.trimRight();
+      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        _notebookContent =
+            '${trimmed.substring(0, trimmed.length - 1)},$insertion]';
+      } else {
+        _notebookContent = '[$insertion]';
+      }
+      _documentFormat = 'rich_text_delta_json';
+    });
+    _scheduleAutosave();
   }
 
   Future<void> _pickAndUploadAttachment({String? attachmentType}) async {
@@ -331,7 +352,7 @@ class _GeneralExperimentWorkspaceScreenState
   }
 
   Future<bool> _confirmDiscardUnsavedChanges() async {
-    if (_notebookController.text == _lastSavedContent) return true;
+    if (_notebookContent == _lastSavedContent) return true;
     final choice = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
@@ -355,8 +376,8 @@ class _GeneralExperimentWorkspaceScreenState
       ),
     );
     if (choice == 'save') {
-      await _saveNotebook();
-      return _notebookController.text == _lastSavedContent;
+      await _saveNotebook(force: true);
+      return _notebookContent == _lastSavedContent;
     }
     return choice == 'leave';
   }
@@ -404,7 +425,7 @@ class _GeneralExperimentWorkspaceScreenState
   @override
   Widget build(BuildContext context) {
     return PopScope<Object?>(
-      canPop: _notebookController.text == _lastSavedContent,
+      canPop: _notebookContent == _lastSavedContent,
       onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
         if (await _confirmDiscardUnsavedChanges() && context.mounted) {
@@ -441,13 +462,19 @@ class _GeneralExperimentWorkspaceScreenState
                     titleStatus: _titleStatus,
                     savingTitle: _savingTitle,
                     tools: tools,
-                    controller: _notebookController,
+                    notebookContent: _notebookContent,
+                    documentFormat: _documentFormat,
                     saving: _saving,
                     saveMessage: _saveMessage,
                     attachments: attachments,
                     attachmentWorking: _attachmentWorking,
-                    onSave: _saveNotebook,
+                    onSave: () => _saveNotebook(force: true),
                     onTitleSubmitted: _saveTitle,
+                    onNotebookChanged: (edit) {
+                      _notebookContent = edit.deltaJson;
+                      _documentFormat = 'rich_text_delta_json';
+                      _scheduleAutosave();
+                    },
                     onToolSelected: (toolId) => _openTool(toolId, workspace),
                     onUploadAttachment: _pickAndUploadAttachment,
                     onAddLink: _showAddLinkDialog,
@@ -505,13 +532,15 @@ class _NotebookSurface extends StatelessWidget {
     required this.titleStatus,
     required this.savingTitle,
     required this.tools,
-    required this.controller,
+    required this.notebookContent,
+    required this.documentFormat,
     required this.saving,
     required this.saveMessage,
     required this.attachments,
     required this.attachmentWorking,
     required this.onSave,
     required this.onTitleSubmitted,
+    required this.onNotebookChanged,
     required this.onToolSelected,
     required this.onUploadAttachment,
     required this.onAddLink,
@@ -524,13 +553,15 @@ class _NotebookSurface extends StatelessWidget {
   final String titleStatus;
   final bool savingTitle;
   final List<Map<String, dynamic>> tools;
-  final TextEditingController controller;
+  final String notebookContent;
+  final String documentFormat;
   final bool saving;
   final String? saveMessage;
   final List<Map<String, dynamic>> attachments;
   final bool attachmentWorking;
   final VoidCallback onSave;
   final Future<bool> Function(String title) onTitleSubmitted;
+  final ValueChanged<RichNotebookEdit> onNotebookChanged;
   final ValueChanged<String> onToolSelected;
   final Future<void> Function({String? attachmentType}) onUploadAttachment;
   final VoidCallback onAddLink;
@@ -604,21 +635,14 @@ class _NotebookSurface extends StatelessWidget {
                 'Start with free scientific notes. Tools can read, attach, preview, or propose structure without replacing the notebook.',
               ),
               const SizedBox(height: ResearchOsSpacing.md),
-              TextField(
-                controller: controller,
-                minLines: 18,
-                maxLines: 36,
-                keyboardType: TextInputType.multiline,
-                decoration: const InputDecoration(
-                  labelText: 'Scientific notebook',
-                  alignLabelWithHint: true,
-                  border: OutlineInputBorder(),
-                ),
+              RichScientificNotebookEditor(
+                initialContent: notebookContent,
+                documentFormat: documentFormat,
+                saving: saving,
+                saveMessage: saveMessage,
+                onSave: onSave,
+                onChanged: onNotebookChanged,
               ),
-              if (saveMessage != null) ...[
-                const SizedBox(height: ResearchOsSpacing.sm),
-                Text(saveMessage!),
-              ],
             ],
           ),
         ),
