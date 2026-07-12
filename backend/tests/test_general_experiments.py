@@ -301,6 +301,150 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertTrue(first["migration"]["idempotent"])
         self.assertTrue(first["migration"]["original_source_preserved"])
 
+    def test_visible_delta_json_legacy_notebook_is_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Visible JSON repair")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            visible_json = json.dumps([{"insert": "Recovered Delta note\n"}])
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    """
+                    UPDATE experiment_notebook_documents
+                    SET document_format = 'markdown',
+                        content = ?,
+                        structured_content = NULL,
+                        plain_text_cache = ?,
+                        original_format = 'markdown',
+                        original_content = ?,
+                        migration_version = 1
+                    WHERE document_id = ?
+                    """,
+                    (visible_json, visible_json, visible_json, notebook["document_id"]),
+                )
+            repaired = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+
+        self.assertIn("Recovered Delta note", repaired["plain_text_cache"])
+        self.assertNotIn('[{"insert"', repaired["plain_text_cache"])
+        self.assertEqual(json.loads(repaired["structured_content"])[0]["insert"], "Recovered Delta note\n")
+
+    def test_double_encoded_delta_notebook_is_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Double JSON repair")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            double_encoded = json.dumps(json.dumps([{"insert": "Double encoded note\n"}]))
+            updated = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                double_encoded,
+                document_format="rich_text_delta_json",
+            )
+
+        self.assertIn("Double encoded note", updated["plain_text_cache"])
+        self.assertEqual(json.loads(updated["content"])[0]["insert"], "Double encoded note\n")
+
+    def test_corrupted_delta_prefix_preserves_later_user_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Mixed JSON repair")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            mixed = '[{"insert":"Recovered note\\n"}]\nTyped beneath broken JSON'
+            updated = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                mixed,
+                document_format="rich_text_delta_json",
+            )
+
+        self.assertIn("Recovered note", updated["plain_text_cache"])
+        self.assertIn("Typed beneath broken JSON", updated["plain_text_cache"])
+        self.assertNotIn('[{"insert"', updated["plain_text_cache"])
+
+    def test_nested_delta_inside_text_insert_is_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Nested Delta repair")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            nested = json.dumps([
+                {
+                    "insert": json.dumps([
+                        {"insert": "Hello\n"},
+                        {"insert": "World\n"},
+                    ])
+                },
+                {"insert": "\n"},
+            ])
+            updated = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                nested,
+                document_format="rich_text_delta_json",
+            )
+
+        ops = json.loads(updated["content"])
+        self.assertEqual(ops[0]["insert"], "Hello\n")
+        self.assertEqual(ops[1]["insert"], "World\n")
+        self.assertNotIn('[{"insert"', updated["plain_text_cache"])
+
+    def test_nested_delta_preserves_later_text_and_embed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Nested Delta embed")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            nested = json.dumps([
+                {"insert": json.dumps([{"insert": "Recovered text\n"}])},
+                {"insert": "Later prose\n"},
+                {
+                    "insert": {
+                        "custom": json.dumps(
+                            {
+                                "experiment_attachment": json.dumps(
+                                    {
+                                        "embed_type": "experiment_attachment",
+                                        "attachment_type": "image",
+                                        "attachment_id": "attachment:test",
+                                        "display_name": "Recovered image",
+                                    }
+                                )
+                            }
+                        )
+                    }
+                },
+                {"insert": "\n"},
+            ])
+            updated = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                nested,
+                document_format="rich_text_delta_json",
+            )
+
+        self.assertIn("Recovered text", updated["plain_text_cache"])
+        self.assertIn("Later prose", updated["plain_text_cache"])
+        self.assertIn("attachment:test", updated["content"])
+        self.assertNotIn('[{"insert"', updated["plain_text_cache"])
+
+    def test_arbitrary_json_text_is_not_unwrapped_as_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "JSON prose")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            prose = '{"not":"a delta document"}'
+            updated = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                prose,
+                document_format="rich_text_delta_json",
+            )
+
+        self.assertIn(prose, updated["plain_text_cache"])
+
     def test_malformed_rich_notebook_generates_safe_plain_text_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

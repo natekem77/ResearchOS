@@ -881,8 +881,13 @@ class GeneralExperimentService:
             if len(content.encode("utf-8")) > 2_000_000:
                 raise ExperimentValidationError("Notebook document is too large for this preview build.")
             normalized_format = _normalize_document_format(document_format)
-            structured_content = content if normalized_format == "rich_text_delta_json" else _markdown_to_delta_json(content)
-            plain_text = _plain_text_from_document(content, normalized_format)
+            structured_content = (
+                _structured_delta_json_from_legacy(content, normalized_format)
+                if normalized_format == "rich_text_delta_json"
+                else _markdown_to_delta_json(content)
+            )
+            content_to_store = structured_content
+            plain_text = _plain_text_from_document(structured_content, "rich_text_delta_json")
             connection.execute(
                 """
                 INSERT INTO experiment_notebook_document_versions
@@ -911,7 +916,7 @@ class GeneralExperimentService:
                     updated_at = CURRENT_TIMESTAMP, updated_by = ?
                 WHERE document_id = ?
                 """,
-                (title, normalized_format, content, structured_content, plain_text, user_id, document_id),
+                (title, "rich_text_delta_json", content_to_store, structured_content, plain_text, user_id, document_id),
             )
             self._history(connection, str(document["experiment_id"]), user_id, "notebook.edited", {"document_id": document_id, "new_version": current_version + 1})
             updated = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
@@ -1228,7 +1233,12 @@ class GeneralExperimentService:
         content = str(payload.get("content") or "")
         structured_content = payload.get("structured_content")
         if not structured_content:
-            structured_content = _markdown_to_delta_json(content)
+            structured_content = _structured_delta_json_from_legacy(content, document_format)
+        if _delta_json_from_text(content) is not None:
+            content = str(structured_content)
+            document_format = "rich_text_delta_json"
+            payload["content"] = content
+            payload["document_format"] = document_format
         migration = {
             "source_format": "markdown_legacy" if document_format in {"markdown", "html"} else document_format,
             "migration_version": int(payload.get("migration_version") or 0),
@@ -1240,7 +1250,7 @@ class GeneralExperimentService:
             "structured_content": structured_content,
             "schema_version": int(payload.get("schema_version") or 1),
             "document_version": int(payload.get("document_version") or payload.get("version") or 1),
-            "plain_text_cache": payload.get("plain_text_cache") or _plain_text_from_document(content, document_format),
+            "plain_text_cache": _plain_text_from_document(str(structured_content), "rich_text_delta_json"),
             "migration": migration,
             "attachments": attachments,
             "editor_capabilities": [
@@ -1348,6 +1358,9 @@ def _normalize_document_format(value: str) -> str:
 
 
 def _markdown_to_delta_json(markdown: str) -> str:
+    repaired = _delta_json_from_text(markdown)
+    if repaired is not None:
+        return repaired
     ops: list[dict[str, Any]] = []
     lines = markdown.splitlines()
     if not lines:
@@ -1393,26 +1406,138 @@ def _line_to_delta_ops(line: str) -> list[dict[str, Any]]:
 
 def _plain_text_from_document(content: str, document_format: str) -> str:
     if _normalize_document_format(document_format) != "rich_text_delta_json":
+        repaired = _delta_json_from_text(content)
+        if repaired is None:
+            return _plain_text(content)
+        content = repaired
+    decoded = _delta_ops_from_json_text(content)
+    if decoded is None:
         return _plain_text(content)
-    try:
-        decoded = json.loads(content)
-    except json.JSONDecodeError:
-        return _plain_text(content)
-    if isinstance(decoded, dict):
-        decoded = decoded.get("ops") or []
     pieces: list[str] = []
-    if isinstance(decoded, list):
-        for op in decoded:
-            if not isinstance(op, dict):
-                continue
-            inserted = op.get("insert")
-            if isinstance(inserted, str):
-                pieces.append(inserted)
-            elif isinstance(inserted, dict):
-                label = inserted.get("display_label") or inserted.get("source") or inserted.get("embed_type")
-                if label:
-                    pieces.append(str(label))
+    for op in decoded:
+        if not isinstance(op, dict):
+            continue
+        inserted = op.get("insert")
+        if isinstance(inserted, str):
+            pieces.append(inserted)
+        elif isinstance(inserted, dict):
+            label = inserted.get("display_label") or inserted.get("source") or inserted.get("embed_type")
+            if label:
+                pieces.append(str(label))
     return " ".join("".join(pieces).split())
+
+
+def _structured_delta_json_from_legacy(content: str, document_format: str) -> str:
+    repaired = _delta_json_from_text(content)
+    if repaired is not None:
+        return repaired
+    return _markdown_to_delta_json(content)
+
+
+def _delta_json_from_text(content: str) -> str | None:
+    stripped = (content or "").strip()
+    if not stripped:
+        return json.dumps([{"insert": "\n"}])
+    ops = _delta_ops_from_json_text(stripped)
+    if ops is not None:
+        return json.dumps(ops)
+    split = _extract_json_prefix(stripped)
+    if split is None:
+        return None
+    prefix, trailing = split
+    ops = _delta_ops_from_json_text(prefix)
+    if ops is None:
+        return None
+    if trailing.strip():
+        ops.append({"insert": f"\n{trailing.strip()}\n"})
+    return json.dumps(ops)
+
+
+def _delta_ops_from_json_text(content: str) -> list[dict[str, Any]] | None:
+    return _delta_ops_from_json_text_at_depth(content, 0)
+
+
+def _delta_ops_from_json_text_at_depth(content: str, depth: int) -> list[dict[str, Any]] | None:
+    if depth > 4:
+        return None
+    current: Any = content
+    decoded: Any = None
+    for _ in range(4):
+        try:
+            decoded = json.loads(current)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(decoded, str):
+            current = decoded
+            continue
+        break
+    if isinstance(decoded, dict) and isinstance(decoded.get("ops"), list):
+        decoded = decoded["ops"]
+    if not isinstance(decoded, list):
+        return None
+    ops: list[dict[str, Any]] = []
+    for op in decoded:
+        if not isinstance(op, dict) or "insert" not in op:
+            return None
+        normalized_op = dict(op)
+        inserted = normalized_op.get("insert")
+        if isinstance(inserted, str):
+            nested = _nested_delta_ops_from_insert(inserted, depth + 1)
+            if nested is not None:
+                ops.extend(nested)
+                continue
+        ops.append(normalized_op)
+    return _normalize_delta_ops(ops)
+
+
+def _nested_delta_ops_from_insert(inserted: str, depth: int) -> list[dict[str, Any]] | None:
+    if depth > 4:
+        return None
+    trimmed = inserted.strip()
+    if not trimmed or trimmed[0] not in "[{":
+        return None
+    return _delta_ops_from_json_text_at_depth(trimmed, depth)
+
+
+def _normalize_delta_ops(ops: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not ops:
+        return [{"insert": "\n"}]
+    normalized = [dict(op) for op in ops]
+    last_insert = normalized[-1].get("insert")
+    if isinstance(last_insert, str):
+        if not last_insert.endswith("\n"):
+            normalized.append({"insert": "\n"})
+    else:
+        normalized.append({"insert": "\n"})
+    return normalized
+
+
+def _extract_json_prefix(content: str) -> tuple[str, str] | None:
+    stripped = content.lstrip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(stripped):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        if depth == 0:
+            return stripped[: index + 1], stripped[index + 1 :]
+    return None
 
 
 class RichNotebookContextService:

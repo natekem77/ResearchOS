@@ -42,24 +42,16 @@ class RichScientificNotebookEditor extends StatefulWidget {
 class _RichScientificNotebookEditorState
     extends State<RichScientificNotebookEditor> {
   static const _zoomPreferenceKey = 'mundi.rich_notebook.zoom';
-  static const _testImageAssetPath = 'assets/dev/notebook_test_image.png';
-  static const _testImageEmbedSource = 'asset://$_testImageAssetPath';
   late final QuillController _controller;
   final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   double _zoom = 1.0;
   String? _pasteMessage;
-  String? _devDiagnostics;
   bool _pastingImage = false;
-  bool _showDevImageProbe = false;
 
   @override
   void initState() {
     super.initState();
-    assert(() {
-      _showDevImageProbe = true;
-      return true;
-    }());
     _controller = QuillController(
       document: _documentFromContent(
         widget.initialContent,
@@ -74,11 +66,16 @@ class _RichScientificNotebookEditorState
   @override
   void didUpdateWidget(covariant RichScientificNotebookEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final nextCanonical = canonicalRichNotebookDeltaJson(
+          widget.initialContent,
+          documentFormat: widget.documentFormat,
+        ) ??
+        '[{"insert":"\\n"}]';
     if (oldWidget.initialContent != widget.initialContent &&
-        _currentDeltaJson() != widget.initialContent) {
+        _currentDeltaJson() != nextCanonical) {
       _controller.document = _documentFromContent(
-        widget.initialContent,
-        widget.documentFormat,
+        nextCanonical,
+        'rich_text_delta_json',
       );
       _emitChange();
     }
@@ -116,40 +113,12 @@ class _RichScientificNotebookEditorState
     );
   }
 
-  void _insertTestImage() {
-    final selection = _controller.selection;
-    final beforeSelection = selection.baseOffset < 0 ? -1 : selection.start;
-    final beforeLength = _controller.document.length;
-    final index = beforeSelection < 0 ? beforeLength - 1 : beforeSelection;
-    final length = selection.isCollapsed || selection.baseOffset < 0
-        ? 0
-        : selection.end - selection.start;
-    _controller.replaceText(
-      index,
-      length,
-      BlockEmbed.image(_testImageEmbedSource),
-      TextSelection.collapsed(offset: index + 1),
-    );
-    _controller.replaceText(
-      index + 1,
-      0,
-      '\n',
-      TextSelection.collapsed(offset: index + 2),
-    );
-    final afterLength = _controller.document.length;
-    setState(() {
-      _devDiagnostics = [
-        'controller=${identityHashCode(_controller)}',
-        'selection_before=$beforeSelection',
-        'length_before=$beforeLength',
-        'length_after=$afterLength',
-        'delta=${_currentDeltaJson()}',
-      ].join('\n');
-    });
-  }
-
   String _currentDeltaJson() {
-    return jsonEncode(_controller.document.toDelta().toJson());
+    return canonicalRichNotebookDeltaJson(
+          jsonEncode(_controller.document.toDelta().toJson()),
+          documentFormat: 'rich_text_delta_json',
+        ) ??
+        '[{"insert":"\\n"}]';
   }
 
   Future<void> _pasteImageFromClipboard() async {
@@ -200,17 +169,17 @@ class _RichScientificNotebookEditorState
   }
 
   void _showClipboardDiagnostics(Map<String, Object?> metadata) {
-    if (!_showDevImageProbe) return;
-    final typeIdentifiers = metadata['type_identifiers'];
-    final typeText = typeIdentifiers is List
-        ? typeIdentifiers.map((type) => type.toString()).join(', ')
-        : 'unavailable';
-    setState(() {
-      _devDiagnostics = [
-        'clipboard_type_identifiers=$typeText',
+    assert(() {
+      final typeIdentifiers = metadata['type_identifiers'];
+      final typeText = typeIdentifiers is List
+          ? typeIdentifiers.map((type) => type.toString()).join(', ')
+          : 'unavailable';
+      debugPrint(
+        'mundi_clipboard clipboard_type_identifiers=$typeText '
         'selected_representation=${metadata['selected_representation'] ?? 'unknown'}',
-      ].join('\n');
-    });
+      );
+      return true;
+    }());
   }
 
   void _insertAttachmentEmbed(Map<String, dynamic> attachment) {
@@ -270,23 +239,6 @@ class _RichScientificNotebookEditorState
           onPasteImage:
               widget.onPasteImage == null ? null : _pasteImageFromClipboard,
         ),
-        if (_showDevImageProbe) ...[
-          const SizedBox(height: ResearchOsSpacing.sm),
-          OutlinedButton.icon(
-            key: const ValueKey('insert-test-image-button'),
-            onPressed: _insertTestImage,
-            icon: const Icon(Icons.bug_report_outlined),
-            label: const Text('Insert Test Image'),
-          ),
-          if (_devDiagnostics != null) ...[
-            const SizedBox(height: ResearchOsSpacing.xs),
-            SelectableText(
-              _devDiagnostics!,
-              key: const ValueKey('rich-notebook-dev-diagnostics'),
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ],
-        ],
         const SizedBox(height: ResearchOsSpacing.sm),
         Row(
           children: [
@@ -728,7 +680,10 @@ RichNotebookContentSnapshot normalizeRichNotebookContent({
   final rawContent = content?.trim();
   for (final candidate in [structured, rawContent]) {
     if (candidate == null || candidate.isEmpty) continue;
-    final normalizedDelta = _normalizedDeltaJsonFromText(candidate);
+    final normalizedDelta = canonicalRichNotebookDeltaJson(
+      candidate,
+      documentFormat: documentFormat,
+    );
     if (normalizedDelta != null) {
       return RichNotebookContentSnapshot(
         content: normalizedDelta,
@@ -741,10 +696,24 @@ RichNotebookContentSnapshot normalizeRichNotebookContent({
       : structuredContent?.isNotEmpty == true
           ? structuredContent!
           : '[{"insert":"\\n"}]';
+  final fallbackDelta = _deltaJsonFromMarkdownLike(fallback);
   return RichNotebookContentSnapshot(
-    content: fallback,
-    documentFormat: documentFormat,
+    content: fallbackDelta,
+    documentFormat: 'rich_text_delta_json',
   );
+}
+
+String? canonicalRichNotebookDeltaJson(
+  String content, {
+  String documentFormat = 'markdown',
+}) {
+  final normalizedDelta = _normalizedDeltaJsonFromText(content);
+  if (normalizedDelta != null) return normalizedDelta;
+  if (documentFormat.toLowerCase().contains('rich_text') ||
+      documentFormat.toLowerCase().contains('delta')) {
+    return _deltaJsonFromMarkdownLike(content);
+  }
+  return null;
 }
 
 typedef PastedImageUploader = Future<Map<String, dynamic>> Function(
@@ -1829,7 +1798,7 @@ Document _documentFromContent(String content, String documentFormat) {
       final decoded = jsonDecode(normalizedDelta);
       if (decoded is List) return Document.fromJson(decoded);
     } catch (_) {
-      return Document()..insert(0, content);
+      return _markdownLikeDocument(content);
     }
   }
   final normalized = documentFormat.toLowerCase();
@@ -1843,7 +1812,7 @@ Document _documentFromContent(String content, String documentFormat) {
         return Document.fromJson(decoded['ops'] as List);
       }
     } catch (_) {
-      return Document()..insert(0, content);
+      return _markdownLikeDocument(content);
     }
   }
   return _markdownLikeDocument(content);
@@ -1866,9 +1835,14 @@ String? _normalizedDeltaJsonFromText(String content) {
 }
 
 List<dynamic>? _deltaOpsFromJsonText(String text) {
+  return _deltaOpsFromJsonTextAtDepth(text, 0);
+}
+
+List<dynamic>? _deltaOpsFromJsonTextAtDepth(String text, int depth) {
+  if (depth > 4) return null;
   Object? decoded;
   var current = text;
-  for (var depth = 0; depth < 3; depth++) {
+  for (var decodeDepth = 0; decodeDepth < 4; decodeDepth++) {
     try {
       decoded = jsonDecode(current);
     } catch (_) {
@@ -1880,12 +1854,12 @@ List<dynamic>? _deltaOpsFromJsonText(String text) {
     }
     break;
   }
-  final ops = _deltaOpsFromDecoded(decoded);
+  final ops = _deltaOpsFromDecoded(decoded, depth);
   if (ops == null || ops.isEmpty) return null;
-  return ops;
+  return _normalizeDeltaOps(ops);
 }
 
-List<dynamic>? _deltaOpsFromDecoded(Object? decoded) {
+List<dynamic>? _deltaOpsFromDecoded(Object? decoded, int depth) {
   Object? candidate = decoded;
   if (candidate is Map && candidate['ops'] is List) {
     candidate = candidate['ops'];
@@ -1894,9 +1868,46 @@ List<dynamic>? _deltaOpsFromDecoded(Object? decoded) {
   final ops = <dynamic>[];
   for (final op in candidate) {
     if (op is! Map || !op.containsKey('insert')) return null;
-    ops.add(Map<String, dynamic>.from(op));
+    final normalizedOp = Map<String, dynamic>.from(op);
+    final insert = normalizedOp['insert'];
+    if (insert is String) {
+      final nested = _nestedDeltaOpsFromInsert(insert, depth + 1);
+      if (nested != null) {
+        ops.addAll(nested);
+        continue;
+      }
+    }
+    ops.add(normalizedOp);
   }
   return ops;
+}
+
+List<dynamic>? _nestedDeltaOpsFromInsert(String insert, int depth) {
+  if (depth > 4) return null;
+  final trimmed = insert.trim();
+  if (trimmed.isEmpty || (trimmed[0] != '[' && trimmed[0] != '{')) {
+    return null;
+  }
+  return _deltaOpsFromJsonTextAtDepth(trimmed, depth);
+}
+
+List<dynamic> _normalizeDeltaOps(List<dynamic> ops) {
+  final normalized =
+      ops.whereType<Map>().map((op) => Map<String, dynamic>.from(op)).toList();
+  if (normalized.isEmpty) {
+    return [
+      {'insert': '\n'}
+    ];
+  }
+  final lastInsert = normalized.last['insert'];
+  if (lastInsert is String) {
+    if (!lastInsert.endsWith('\n')) {
+      normalized.add({'insert': '\n'});
+    }
+  } else {
+    normalized.add({'insert': '\n'});
+  }
+  return normalized;
 }
 
 _JsonPrefix? _extractLeadingJson(String text) {
@@ -1966,4 +1977,8 @@ Document _markdownLikeDocument(String content) {
     }
   }
   return document;
+}
+
+String _deltaJsonFromMarkdownLike(String content) {
+  return jsonEncode(_markdownLikeDocument(content).toDelta().toJson());
 }

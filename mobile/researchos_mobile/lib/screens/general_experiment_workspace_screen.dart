@@ -77,8 +77,8 @@ class _GeneralExperimentWorkspaceScreenState
     _documentId = notebook['document_id']?.toString();
     _notebookVersion = int.tryParse('${notebook['version'] ?? 1}');
     final normalizedNotebook = normalizeRichNotebookContent(
-      content: notebook['content']?.toString(),
-      structuredContent: notebook['structured_content']?.toString(),
+      content: _contentValueToString(notebook['content']),
+      structuredContent: _contentValueToString(notebook['structured_content']),
       documentFormat: notebook['document_format']?.toString() ?? 'markdown',
     );
     _documentFormat = normalizedNotebook.documentFormat;
@@ -173,24 +173,6 @@ class _GeneralExperimentWorkspaceScreenState
       );
       return false;
     }
-  }
-
-  void _insertIntoNotebook(String text) {
-    final insertion = jsonEncode({
-      'insert': '\n$text\n',
-      'attributes': {'blockquote': true},
-    });
-    setState(() {
-      final trimmed = _notebookContent.trimRight();
-      if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-        _notebookContent =
-            '${trimmed.substring(0, trimmed.length - 1)},$insertion]';
-      } else {
-        _notebookContent = '[$insertion]';
-      }
-      _documentFormat = 'rich_text_delta_json';
-    });
-    _scheduleAutosave();
   }
 
   Future<void> _pickAndUploadAttachment({String? attachmentType}) async {
@@ -450,7 +432,6 @@ class _GeneralExperimentWorkspaceScreenState
                 experimentId: widget.experimentId,
                 toolId: toolId,
                 workspace: workspace,
-                onInsertText: _insertIntoNotebook,
                 onUploadAttachment: _pickAndUploadAttachment,
                 onAddLink: _showAddLinkDialog,
                 onWorkspaceChanged: () {
@@ -549,7 +530,6 @@ class _GeneralExperimentWorkspaceScreenState
                                     experimentId: widget.experimentId,
                                     toolId: _selectedTool!,
                                     workspace: workspace,
-                                    onInsertText: _insertIntoNotebook,
                                     onUploadAttachment:
                                         _pickAndUploadAttachment,
                                     onAddLink: _showAddLinkDialog,
@@ -1261,7 +1241,6 @@ class _WorkspaceToolPanel extends StatefulWidget {
     required this.experimentId,
     required this.toolId,
     required this.workspace,
-    required this.onInsertText,
     required this.onUploadAttachment,
     required this.onAddLink,
     required this.onWorkspaceChanged,
@@ -1271,7 +1250,6 @@ class _WorkspaceToolPanel extends StatefulWidget {
   final String experimentId;
   final String toolId;
   final Map<String, dynamic> workspace;
-  final ValueChanged<String> onInsertText;
   final Future<void> Function({String? attachmentType}) onUploadAttachment;
   final VoidCallback onAddLink;
   final VoidCallback onWorkspaceChanged;
@@ -1281,14 +1259,7 @@ class _WorkspaceToolPanel extends StatefulWidget {
 }
 
 class _WorkspaceToolPanelState extends State<_WorkspaceToolPanel> {
-  final _scratch = TextEditingController();
   bool _working = false;
-
-  @override
-  void dispose() {
-    _scratch.dispose();
-    super.dispose();
-  }
 
   Future<void> _attachProtocol(Map<String, dynamic> protocol) async {
     final versions = _maps(protocol['versions']);
@@ -1333,14 +1304,12 @@ class _WorkspaceToolPanelState extends State<_WorkspaceToolPanel> {
           onAttach: _attachProtocol,
         );
       case 'voice':
-        return _TextInsertTool(
+        return const _ToolShell(
           title: 'Voice',
           icon: Icons.mic_none_outlined,
-          controller: _scratch,
-          helper:
-              'Paste or type a transcript. It is inserted into the notebook first; extraction remains optional.',
-          buttonLabel: 'Insert Transcript',
-          onInsert: widget.onInsertText,
+          child: Text(
+            'Voice transcripts now belong in the main rich notebook editor. Tap the notebook body, use Paste or dictation, and the Quill document remains the only editable notebook source.',
+          ),
         );
       case 'spreadsheet':
         return _AttachmentTool(
@@ -1497,63 +1466,6 @@ class _AttachmentTool extends StatelessWidget {
               onPressed: onAddLink,
               icon: const Icon(Icons.link),
               label: const Text('Add External Link'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TextInsertTool extends StatelessWidget {
-  const _TextInsertTool({
-    required this.title,
-    required this.icon,
-    required this.controller,
-    required this.helper,
-    required this.buttonLabel,
-    required this.onInsert,
-  });
-
-  final String title;
-  final IconData icon;
-  final TextEditingController controller;
-  final String helper;
-  final String buttonLabel;
-  final ValueChanged<String> onInsert;
-
-  @override
-  Widget build(BuildContext context) {
-    return _ToolShell(
-      title: title,
-      icon: icon,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(helper),
-          const SizedBox(height: ResearchOsSpacing.md),
-          TextField(
-            controller: controller,
-            minLines: 6,
-            maxLines: 12,
-            decoration: const InputDecoration(
-              labelText: 'Insert into notebook',
-              alignLabelWithHint: true,
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: ResearchOsSpacing.md),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: () {
-                if (controller.text.trim().isNotEmpty) {
-                  onInsert(controller.text.trim());
-                  controller.clear();
-                }
-              },
-              icon: const Icon(Icons.add),
-              label: Text(buttonLabel),
             ),
           ),
         ],
@@ -1799,4 +1711,11 @@ String _text(Object? value, {String fallback = ''}) {
   if (value == null) return fallback;
   final text = value.toString().trim();
   return text.isEmpty ? fallback : text;
+}
+
+String? _contentValueToString(Object? value) {
+  if (value == null) return null;
+  if (value is String) return value;
+  if (value is List || value is Map) return jsonEncode(value);
+  return value.toString();
 }

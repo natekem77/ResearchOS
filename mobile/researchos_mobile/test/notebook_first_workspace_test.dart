@@ -178,6 +178,93 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('workspace mounts one rich editor and no legacy notebook field',
+      (tester) async {
+    await pumpWorkspace(
+      tester,
+      api: _api(),
+      workspace: _workspace(
+        title: 'Single Source',
+        notebookContent: '[{"insert":"Only Quill body\\n"}]',
+        documentFormat: 'rich_text_delta_json',
+      ),
+    );
+
+    expect(find.byType(RichScientificNotebookEditor), findsOneWidget);
+    expect(
+        find.widgetWithText(TextField, 'Insert into notebook'), findsNothing);
+    expect(
+        find.byKey(const ValueKey('insert-test-image-button')), findsNothing);
+    expect(find.byKey(const ValueKey('rich-notebook-dev-diagnostics')),
+        findsNothing);
+    expect(find.textContaining('[{"insert"'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('decoded structured content list renders without raw JSON',
+      (tester) async {
+    await pumpWorkspace(
+      tester,
+      api: _api(),
+      workspace: _workspace(
+        title: 'Decoded List',
+        notebookContent: [
+          {'insert': 'Decoded operation note\n'}
+        ],
+        documentFormat: 'rich_text_delta_json',
+      ),
+    );
+
+    expect(find.textContaining('[{insert'), findsNothing);
+    expect(find.textContaining('[{"insert"'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('nested Delta text corruption renders repaired Quill content',
+      (tester) async {
+    final payload = {
+      'embed_type': 'experiment_attachment',
+      'attachment_type': 'image',
+      'attachment_id': 'attachment:pasted-image',
+      'display_name': 'Recovered inline image',
+    };
+    final corrupted = jsonEncode([
+      {
+        'insert': jsonEncode([
+          {'insert': 'Recovered visible note\n'},
+        ]),
+      },
+      {'insert': 'Later legitimate prose\n'},
+      {
+        'insert': {
+          'custom': jsonEncode({
+            'experiment_attachment': jsonEncode(payload),
+          }),
+        },
+      },
+      {'insert': '\n'},
+    ]);
+
+    await pumpWorkspace(
+      tester,
+      api: _api(),
+      workspace: _workspace(
+        title: 'Corrupted Delta',
+        attachments: [_imageAttachment(displayName: 'Recovered inline image')],
+        notebookContent: corrupted,
+        documentFormat: 'rich_text_delta_json',
+      ),
+    );
+
+    expect(find.textContaining('[{"insert"'), findsNothing);
+    expect(find.text('Recovered inline image'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('notebook-image-attachment:pasted-image')),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   test('double encoded Delta is repaired before rendering', () {
     final normalized = normalizeRichNotebookContent(
       content: jsonEncode('[{"insert":"Double encoded note\\n"}]'),
@@ -198,6 +285,116 @@ void main() {
     expect(normalized.documentFormat, 'rich_text_delta_json');
     expect(normalized.content, contains('Recovered note'));
     expect(normalized.content, contains('Typed beneath broken JSON'));
+  });
+
+  test('Delta embedded inside a text insert is unwrapped', () {
+    final nested = jsonEncode([
+      {
+        'insert': jsonEncode([
+          {'insert': 'Hello\n'},
+          {'insert': 'World\n'},
+        ]),
+      },
+      {'insert': '\n'},
+    ]);
+    final normalized = normalizeRichNotebookContent(
+      content: nested,
+      documentFormat: 'rich_text_delta_json',
+    );
+    final ops = jsonDecode(normalized.content) as List<dynamic>;
+
+    expect(ops[0]['insert'], 'Hello\n');
+    expect(ops[1]['insert'], 'World\n');
+    expect(normalized.content, isNot(contains(r'[{\"insert\"')));
+  });
+
+  test('nested Delta plus later prose preserves order', () {
+    final nested = jsonEncode([
+      {
+        'insert': jsonEncode([
+          {'insert': 'Recovered note\n'},
+        ]),
+      },
+      {'insert': 'Typed later\n'},
+    ]);
+    final normalized = normalizeRichNotebookContent(
+      content: nested,
+      documentFormat: 'rich_text_delta_json',
+    );
+    final text = (jsonDecode(normalized.content) as List<dynamic>)
+        .map((op) => op['insert'])
+        .whereType<String>()
+        .join();
+
+    expect(text, contains('Recovered note'));
+    expect(text, contains('Typed later'));
+    expect(normalized.content, isNot(contains(r'[{\"insert\"')));
+  });
+
+  test('nested Delta preserves following image embed', () {
+    final payload = {
+      'embed_type': 'experiment_attachment',
+      'attachment_type': 'image',
+      'attachment_id': 'attachment:pasted-image',
+      'display_name': 'Recovered image',
+    };
+    final nested = jsonEncode([
+      {
+        'insert': jsonEncode([
+          {'insert': 'Text before image\n'},
+        ]),
+      },
+      {
+        'insert': {
+          'custom': jsonEncode({
+            'experiment_attachment': jsonEncode(payload),
+          }),
+        },
+      },
+      {'insert': '\n'},
+    ]);
+    final normalized = normalizeRichNotebookContent(
+      content: nested,
+      documentFormat: 'rich_text_delta_json',
+    );
+
+    expect(normalized.content, contains('Text before image'));
+    expect(normalized.content, contains('attachment:pasted-image'));
+    expect(normalized.content, isNot(contains(r'[{\"insert\"')));
+  });
+
+  test('arbitrary JSON prose remains prose', () {
+    const prose = '{"not":"a delta document"}';
+    final normalized = normalizeRichNotebookContent(
+      content: prose,
+      documentFormat: 'markdown',
+    );
+    final text = (jsonDecode(normalized.content) as List<dynamic>)
+        .map((op) => op['insert'])
+        .whereType<String>()
+        .join();
+
+    expect(text, contains(prose));
+  });
+
+  test('canonical normalization is idempotent', () {
+    final nested = jsonEncode([
+      {
+        'insert': jsonEncode([
+          {'insert': 'Stable note\n'},
+        ]),
+      },
+    ]);
+    final first = canonicalRichNotebookDeltaJson(
+      nested,
+      documentFormat: 'rich_text_delta_json',
+    );
+    final second = canonicalRichNotebookDeltaJson(
+      first!,
+      documentFormat: 'rich_text_delta_json',
+    );
+
+    expect(second, first);
   });
 
   test('clipboard resolver chooses image bytes over URL text', () {
@@ -478,35 +675,6 @@ void main() {
     expect(find.text('Inline upload'), findsOneWidget);
     expect(find.byKey(const ValueKey('notebook-image-attachment:pasted-image')),
         findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('Insert Test Image mutates visible Quill editor controller',
-      (tester) async {
-    var delta = '';
-    await pumpRichEditor(
-      tester,
-      onChanged: (edit) => delta = edit.deltaJson,
-    );
-
-    await tester.tap(find.byKey(const ValueKey('insert-test-image-button')));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
-
-    expect(delta, contains('"image"'));
-    expect(delta, contains('asset://assets/dev/notebook_test_image.png'));
-    expect(
-      find.byKey(const ValueKey(
-          'native-quill-image-asset://assets/dev/notebook_test_image.png')),
-      findsOneWidget,
-    );
-    expect(find.text('Native image asset failed'), findsNothing);
-    expect(find.byKey(const ValueKey('rich-notebook-dev-diagnostics')),
-        findsOneWidget);
-    expect(find.textContaining('controller='), findsOneWidget);
-    expect(find.textContaining('selection_before='), findsOneWidget);
-    expect(find.textContaining('length_before='), findsOneWidget);
-    expect(find.textContaining('length_after='), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -795,7 +963,7 @@ ResearchOsApi _api({
 Map<String, dynamic> _workspace({
   required String title,
   List<Map<String, dynamic>> attachments = const [],
-  String notebookContent = '[{"insert":"Start writing here.\\n"}]',
+  Object notebookContent = '[{"insert":"Start writing here.\\n"}]',
   String documentFormat = 'markdown',
 }) {
   return {
