@@ -259,6 +259,48 @@ class _GeneralExperimentWorkspaceScreenState
     }
   }
 
+  Future<Map<String, dynamic>> _uploadPastedImage(
+    PastedNotebookImage image, {
+    String? displayName,
+    String? description,
+  }) async {
+    if (_attachmentWorking) {
+      throw StateError('Another attachment operation is already running.');
+    }
+    setState(() {
+      _attachmentWorking = true;
+      _saveMessage = 'Uploading pasted image...';
+    });
+    try {
+      final response = await widget.api.uploadExperimentAttachmentBytes(
+        experimentId: widget.experimentId,
+        bytes: image.bytes,
+        filename: image.suggestedFilename,
+        mimeType: image.mimeType,
+        attachmentType: 'image',
+        displayName: displayName ?? image.suggestedFilename,
+        description: description,
+      );
+      final attachment = _map(response['attachment']);
+      if (mounted) {
+        setState(() => _saveMessage = 'Pasted image uploaded.');
+        _reload();
+      }
+      return attachment;
+    } catch (error) {
+      if (mounted) {
+        setState(() => _saveMessage = 'Image upload failed: $error');
+      }
+      rethrow;
+    } finally {
+      if (mounted) setState(() => _attachmentWorking = false);
+    }
+  }
+
+  String _attachmentDownloadUrl(String attachmentId) {
+    return '${widget.api.baseUrl.replaceAll(RegExp(r'/$'), '')}/experiment-attachments/${Uri.encodeComponent(attachmentId)}/download';
+  }
+
   Future<void> _showAddLinkDialog() async {
     final link = await showDialog<_AttachmentLinkDraft>(
       context: context,
@@ -476,6 +518,8 @@ class _GeneralExperimentWorkspaceScreenState
                       _scheduleAutosave();
                     },
                     onToolSelected: (toolId) => _openTool(toolId, workspace),
+                    onPasteImage: _uploadPastedImage,
+                    downloadUrlForAttachment: _attachmentDownloadUrl,
                     onUploadAttachment: _pickAndUploadAttachment,
                     onAddLink: _showAddLinkDialog,
                     onOpenAttachment: _openAttachment,
@@ -542,6 +586,8 @@ class _NotebookSurface extends StatelessWidget {
     required this.onTitleSubmitted,
     required this.onNotebookChanged,
     required this.onToolSelected,
+    required this.onPasteImage,
+    required this.downloadUrlForAttachment,
     required this.onUploadAttachment,
     required this.onAddLink,
     required this.onOpenAttachment,
@@ -563,6 +609,8 @@ class _NotebookSurface extends StatelessWidget {
   final Future<bool> Function(String title) onTitleSubmitted;
   final ValueChanged<RichNotebookEdit> onNotebookChanged;
   final ValueChanged<String> onToolSelected;
+  final PastedImageUploader onPasteImage;
+  final String Function(String attachmentId) downloadUrlForAttachment;
   final Future<void> Function({String? attachmentType}) onUploadAttachment;
   final VoidCallback onAddLink;
   final ValueChanged<Map<String, dynamic>> onOpenAttachment;
@@ -641,6 +689,8 @@ class _NotebookSurface extends StatelessWidget {
                 saving: saving,
                 saveMessage: saveMessage,
                 onSave: onSave,
+                onPasteImage: onPasteImage,
+                downloadUrlForAttachment: downloadUrlForAttachment,
                 onChanged: onNotebookChanged,
               ),
             ],

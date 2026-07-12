@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -148,4 +149,62 @@ void main() {
     expect(body['display_name'], 'Google Sheet');
     expect((response['attachment'] as Map)['source_type'], 'external_link');
   });
+
+  test('uploadExperimentAttachmentBytes posts pasted image multipart data',
+      () async {
+    late http.BaseRequest captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: _CapturingClient((request) async {
+        captured = request;
+        return http.StreamedResponse(
+          Stream.value(utf8.encode(jsonEncode({
+            'attachment': {
+              'attachment_id': 'attachment:image',
+              'source_type': 'uploaded_file',
+              'attachment_type': 'image',
+              'display_name': 'Pasted image',
+            }
+          }))),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final response = await api.uploadExperimentAttachmentBytes(
+      experimentId: 'experiment:test',
+      bytes: Uint8List.fromList([1, 2, 3]),
+      filename: 'clipboard-image.png',
+      mimeType: 'image/png',
+      attachmentType: 'image',
+      displayName: 'Pasted image',
+      description: 'clipboard',
+    );
+
+    expect(captured, isA<http.MultipartRequest>());
+    final multipart = captured as http.MultipartRequest;
+    expect(multipart.method, 'POST');
+    expect(multipart.url.path,
+        '/experiments/experiment%3Atest/attachments/upload');
+    expect(multipart.fields['attachment_type'], 'image');
+    expect(multipart.fields['display_name'], 'Pasted image');
+    expect(multipart.fields['description'], 'clipboard');
+    expect(multipart.files.single.filename, 'clipboard-image.png');
+    expect(multipart.files.single.contentType.mimeType, 'image/png');
+    expect(
+        (response['attachment'] as Map)['attachment_id'], 'attachment:image');
+  });
+}
+
+class _CapturingClient extends http.BaseClient {
+  _CapturingClient(this._handler);
+
+  final Future<http.StreamedResponse> Function(http.BaseRequest request)
+      _handler;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    return _handler(request);
+  }
 }

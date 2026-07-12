@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -6,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:researchos_mobile/api/researchos_api.dart';
 import 'package:researchos_mobile/screens/general_experiment_workspace_screen.dart';
+import 'package:researchos_mobile/widgets/rich_scientific_notebook_editor.dart';
 
 void main() {
   Future<void> pumpWorkspace(
@@ -252,6 +254,151 @@ void main() {
     );
     expect(find.text('Link attachment added'), findsOneWidget);
   });
+
+  testWidgets('image clipboard preview cancel leaves document unchanged',
+      (tester) async {
+    var uploadCalled = false;
+    var delta = '[{"insert":"\\n"}]';
+    await pumpRichEditor(
+      tester,
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      onChanged: (edit) => delta = edit.deltaJson,
+      onPasteImage: (_, {displayName, description}) async {
+        uploadCalled = true;
+        return _imageAttachment();
+      },
+    );
+
+    await tester.tap(find.byTooltip('Paste image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('Paste image?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(uploadCalled, isFalse);
+    expect(delta, '[{"insert":"\\n"}]');
+    expect(find.textContaining('cancelled'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('image clipboard insert uploads and inserts attachment embed',
+      (tester) async {
+    var uploadedName = '';
+    var delta = '';
+    await pumpRichEditor(
+      tester,
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      onChanged: (edit) => delta = edit.deltaJson,
+      onPasteImage: (image, {displayName, description}) async {
+        uploadedName = displayName ?? '';
+        return _imageAttachment(displayName: displayName ?? 'Pasted image');
+      },
+    );
+
+    await tester.tap(find.byTooltip('Paste image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Display name'),
+      'OneNote paste',
+    );
+    await tester.tap(find.text('Insert'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(uploadedName, 'OneNote paste');
+    expect(delta, contains('experiment_attachment'));
+    expect(delta, contains('attachment:pasted-image'));
+    expect(delta, contains('OneNote paste'));
+    expect(find.text('OneNote paste'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('unsupported clipboard content shows feedback', (tester) async {
+    await pumpRichEditor(
+      tester,
+      reader: const _FakeClipboardImageReader(null),
+      onPasteImage: (_, {displayName, description}) async => _imageAttachment(),
+    );
+
+    await tester.tap(find.byTooltip('Paste image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.text('This clipboard content cannot be pasted yet.'),
+        findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('reopen restores image embed and remove does not delete storage',
+      (tester) async {
+    var delta = '';
+    final payload = jsonEncode({
+      'embed_type': 'experiment_attachment',
+      'attachment_type': 'image',
+      'attachment_id': 'attachment:pasted-image',
+      'display_name': 'Restored image',
+      'alt_text': null,
+    });
+    final content = jsonEncode([
+      {
+        'insert': {
+          'custom': jsonEncode({'experiment_attachment': payload})
+        }
+      },
+      {'insert': '\n'}
+    ]);
+    await pumpRichEditor(
+      tester,
+      initialContent: content,
+      onChanged: (edit) => delta = edit.deltaJson,
+    );
+
+    expect(find.text('Restored image'), findsOneWidget);
+    await tester.tap(find.byTooltip('Remove from document'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(delta, isNot(contains('attachment:pasted-image')));
+    expect(tester.takeException(), isNull);
+  });
+}
+
+Future<void> pumpRichEditor(
+  WidgetTester tester, {
+  ClipboardImageReader reader = const _FakeClipboardImageReader(null),
+  String initialContent = '[{"insert":"\\n"}]',
+  ValueChanged<RichNotebookEdit>? onChanged,
+  PastedImageUploader? onPasteImage,
+}) async {
+  tester.view.physicalSize = const Size(430, 932);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: RichScientificNotebookEditor(
+              initialContent: initialContent,
+              documentFormat: 'rich_text_delta_json',
+              clipboardImageReader: reader,
+              downloadUrlForAttachment: (_) => '',
+              onPasteImage: onPasteImage,
+              onChanged: onChanged ?? (_) {},
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 400));
+  await tester.ensureVisible(find.byTooltip('Paste image'));
 }
 
 ResearchOsApi _api({
@@ -393,3 +540,104 @@ Map<String, dynamic> _workspace({
     ],
   };
 }
+
+Map<String, dynamic> _imageAttachment({String displayName = 'Pasted image'}) {
+  return {
+    'attachment_id': 'attachment:pasted-image',
+    'source_type': 'uploaded_file',
+    'attachment_type': 'image',
+    'display_name': displayName,
+    'original_filename': 'pasted-image.png',
+    'mime_type': 'image/png',
+    'upload_status': 'complete',
+    'processing_status': 'not_started',
+  };
+}
+
+class _FakeClipboardImageReader extends ClipboardImageReader {
+  const _FakeClipboardImageReader(this.bytes);
+
+  final List<int>? bytes;
+
+  @override
+  Future<PastedNotebookImage?> readImage() async {
+    final data = bytes;
+    if (data == null) return null;
+    return PastedNotebookImage(
+      bytes: Uint8List.fromList(data),
+      mimeType: 'image/png',
+      fileExtension: '.png',
+      suggestedFilename: 'clipboard-image.png',
+    );
+  }
+}
+
+const _pngBytes = <int>[
+  0x89,
+  0x50,
+  0x4E,
+  0x47,
+  0x0D,
+  0x0A,
+  0x1A,
+  0x0A,
+  0x00,
+  0x00,
+  0x00,
+  0x0D,
+  0x49,
+  0x48,
+  0x44,
+  0x52,
+  0x00,
+  0x00,
+  0x00,
+  0x01,
+  0x00,
+  0x00,
+  0x00,
+  0x01,
+  0x08,
+  0x06,
+  0x00,
+  0x00,
+  0x00,
+  0x1F,
+  0x15,
+  0xC4,
+  0x89,
+  0x00,
+  0x00,
+  0x00,
+  0x0A,
+  0x49,
+  0x44,
+  0x41,
+  0x54,
+  0x78,
+  0x9C,
+  0x63,
+  0x00,
+  0x01,
+  0x00,
+  0x00,
+  0x05,
+  0x00,
+  0x01,
+  0x0D,
+  0x0A,
+  0x2D,
+  0xB4,
+  0x00,
+  0x00,
+  0x00,
+  0x00,
+  0x49,
+  0x45,
+  0x4E,
+  0x44,
+  0xAE,
+  0x42,
+  0x60,
+  0x82,
+];

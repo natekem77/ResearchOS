@@ -1,7 +1,9 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
+import 'package:quill_native_bridge/quill_native_bridge.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../design_system/researchos_design_system.dart';
@@ -14,14 +16,21 @@ class RichScientificNotebookEditor extends StatefulWidget {
     required this.onChanged,
     this.saveMessage,
     this.onSave,
+    this.onPasteImage,
+    this.downloadUrlForAttachment,
+    ClipboardImageReader? clipboardImageReader,
     this.saving = false,
-  });
+  }) : clipboardImageReader =
+            clipboardImageReader ?? const QuillClipboardImageReader();
 
   final String initialContent;
   final String documentFormat;
   final ValueChanged<RichNotebookEdit> onChanged;
   final String? saveMessage;
   final VoidCallback? onSave;
+  final PastedImageUploader? onPasteImage;
+  final String Function(String attachmentId)? downloadUrlForAttachment;
+  final ClipboardImageReader clipboardImageReader;
   final bool saving;
 
   @override
@@ -36,6 +45,8 @@ class _RichScientificNotebookEditorState
   final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
   double _zoom = 1.0;
+  String? _pasteMessage;
+  bool _pastingImage = false;
 
   @override
   void initState() {
@@ -100,6 +111,89 @@ class _RichScientificNotebookEditorState
     return jsonEncode(_controller.document.toDelta().toJson());
   }
 
+  Future<void> _pasteImageFromClipboard() async {
+    if (_pastingImage || widget.onPasteImage == null) return;
+    setState(() {
+      _pastingImage = true;
+      _pasteMessage = 'Preparing image...';
+    });
+    try {
+      final image = await widget.clipboardImageReader.readImage();
+      if (!mounted) return;
+      if (image == null) {
+        setState(() {
+          _pasteMessage = 'This clipboard content cannot be pasted yet.';
+        });
+        return;
+      }
+      final confirmation = await showModalBottomSheet<_PasteImageConfirmation>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (context) => _PasteImageSheet(image: image),
+      );
+      if (!mounted) return;
+      if (confirmation == null) {
+        setState(() => _pasteMessage = 'Image paste cancelled.');
+        return;
+      }
+      setState(() => _pasteMessage = 'Uploading image...');
+      final attachment = await widget.onPasteImage!(
+        image,
+        displayName: confirmation.displayName,
+        description: confirmation.description,
+      );
+      if (!mounted) return;
+      _insertAttachmentEmbed(attachment);
+      setState(() => _pasteMessage = 'Image inserted. Autosave pending.');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _pasteMessage =
+            'Could not paste image. Your notebook was not changed. $error';
+      });
+    } finally {
+      if (mounted) setState(() => _pastingImage = false);
+    }
+  }
+
+  void _insertAttachmentEmbed(Map<String, dynamic> attachment) {
+    final attachmentId = attachment['attachment_id']?.toString() ?? '';
+    if (attachmentId.isEmpty) {
+      throw const FormatException('Attachment upload did not return an ID.');
+    }
+    final payload = {
+      'embed_type': 'experiment_attachment',
+      'attachment_type': attachment['attachment_type']?.toString() ?? 'image',
+      'attachment_id': attachmentId,
+      'display_name':
+          attachment['display_name']?.toString().trim().isNotEmpty == true
+              ? attachment['display_name'].toString()
+              : attachment['original_filename']?.toString() ?? 'Pasted image',
+      'alt_text': null,
+    };
+    final selection = _controller.selection;
+    final index = selection.baseOffset < 0
+        ? _controller.document.length - 1
+        : selection.start;
+    final length = selection.isCollapsed ? 0 : selection.end - selection.start;
+    final embed = BlockEmbed.custom(
+      CustomBlockEmbed('experiment_attachment', jsonEncode(payload)),
+    );
+    _controller.replaceText(
+      index,
+      length,
+      embed,
+      TextSelection.collapsed(offset: index + 1),
+    );
+    _controller.replaceText(
+      index + 1,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: index + 2),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -109,8 +203,11 @@ class _RichScientificNotebookEditorState
         _MobileNotebookToolbar(
           controller: _controller,
           saving: widget.saving,
+          pastingImage: _pastingImage,
           onSave: widget.onSave,
           onDone: () => _focusNode.unfocus(),
+          onPasteImage:
+              widget.onPasteImage == null ? null : _pasteImageFromClipboard,
         ),
         const SizedBox(height: ResearchOsSpacing.sm),
         Row(
@@ -165,10 +262,20 @@ class _RichScientificNotebookEditorState
                     null,
                   ),
                 ),
+                embedBuilders: [
+                  ExperimentAttachmentImageEmbedBuilder(
+                    downloadUrlForAttachment:
+                        widget.downloadUrlForAttachment ?? (_) => '',
+                  ),
+                ],
               ),
             ),
           ),
         ),
+        if (_pasteMessage != null) ...[
+          const SizedBox(height: ResearchOsSpacing.sm),
+          Text(_pasteMessage!),
+        ],
         if (widget.saveMessage != null) ...[
           const SizedBox(height: ResearchOsSpacing.sm),
           Text(widget.saveMessage!),
@@ -182,14 +289,18 @@ class _MobileNotebookToolbar extends StatelessWidget {
   const _MobileNotebookToolbar({
     required this.controller,
     required this.saving,
+    required this.pastingImage,
     required this.onSave,
     required this.onDone,
+    required this.onPasteImage,
   });
 
   final QuillController controller;
   final bool saving;
+  final bool pastingImage;
   final VoidCallback? onSave;
   final VoidCallback onDone;
+  final VoidCallback? onPasteImage;
 
   @override
   Widget build(BuildContext context) {
@@ -359,6 +470,16 @@ class _MobileNotebookToolbar extends StatelessWidget {
               onPressed: () => _clearInlineFormatting(controller),
               icon: const Icon(Icons.format_clear),
             ),
+            IconButton(
+              tooltip: 'Paste image',
+              onPressed: pastingImage ? null : onPasteImage,
+              icon: pastingImage
+                  ? const SizedBox.square(
+                      dimension: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.image_outlined),
+            ),
             const SizedBox(width: ResearchOsSpacing.xs),
             FilledButton.icon(
               key: const ValueKey('rich-notebook-save-button'),
@@ -507,6 +628,378 @@ class RichNotebookEdit {
 
   final String deltaJson;
   final String plainText;
+}
+
+typedef PastedImageUploader = Future<Map<String, dynamic>> Function(
+  PastedNotebookImage image, {
+  String? displayName,
+  String? description,
+});
+
+class PastedNotebookImage {
+  const PastedNotebookImage({
+    required this.bytes,
+    required this.mimeType,
+    required this.fileExtension,
+    required this.suggestedFilename,
+    this.metadata = const {},
+  });
+
+  final Uint8List bytes;
+  final String mimeType;
+  final String fileExtension;
+  final String suggestedFilename;
+  final Map<String, Object?> metadata;
+}
+
+abstract class ClipboardImageReader {
+  const ClipboardImageReader();
+
+  Future<PastedNotebookImage?> readImage();
+}
+
+class QuillClipboardImageReader extends ClipboardImageReader {
+  const QuillClipboardImageReader();
+
+  @override
+  Future<PastedNotebookImage?> readImage() async {
+    final bridge = QuillNativeBridge();
+    final supported = await bridge.isSupported(
+      QuillNativeBridgeFeature.getClipboardImage,
+    );
+    if (!supported) return null;
+    final bytes = await bridge.getClipboardImage();
+    if (bytes == null || bytes.isEmpty) return null;
+    final mimeType = _detectImageMimeType(bytes);
+    final extension = _extensionForMimeType(mimeType);
+    final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
+    return PastedNotebookImage(
+      bytes: bytes,
+      mimeType: mimeType,
+      fileExtension: extension,
+      suggestedFilename: 'pasted-image-$timestamp$extension',
+      metadata: {
+        'source': 'clipboard',
+        'detected_mime_type': mimeType,
+      },
+    );
+  }
+}
+
+class _PasteImageConfirmation {
+  const _PasteImageConfirmation({
+    this.displayName,
+    this.description,
+  });
+
+  final String? displayName;
+  final String? description;
+}
+
+class _PasteImageSheet extends StatefulWidget {
+  const _PasteImageSheet({required this.image});
+
+  final PastedNotebookImage image;
+
+  @override
+  State<_PasteImageSheet> createState() => _PasteImageSheetState();
+}
+
+class _PasteImageSheetState extends State<_PasteImageSheet> {
+  final _displayName = TextEditingController();
+  final _description = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _displayName.text = widget.image.suggestedFilename;
+  }
+
+  @override
+  void dispose() {
+    _displayName.dispose();
+    _description.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final viewInsets = MediaQuery.viewInsetsOf(context);
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: EdgeInsets.fromLTRB(
+          ResearchOsSpacing.lg,
+          ResearchOsSpacing.sm,
+          ResearchOsSpacing.lg,
+          ResearchOsSpacing.lg + viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Paste image?',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 260),
+                child: Image.memory(
+                  widget.image.bytes,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) =>
+                      const _ImagePlaceholder(
+                    icon: Icons.broken_image_outlined,
+                    label: 'Image preview unavailable',
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            TextField(
+              controller: _displayName,
+              decoration: const InputDecoration(
+                labelText: 'Display name',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            TextField(
+              controller: _description,
+              minLines: 2,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Description optional',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: FilledButton.icon(
+                    onPressed: () => Navigator.pop(
+                      context,
+                      _PasteImageConfirmation(
+                        displayName: _displayName.text.trim().isEmpty
+                            ? null
+                            : _displayName.text.trim(),
+                        description: _description.text.trim().isEmpty
+                            ? null
+                            : _description.text.trim(),
+                      ),
+                    ),
+                    icon: const Icon(Icons.add_photo_alternate_outlined),
+                    label: const Text('Insert'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {
+  const ExperimentAttachmentImageEmbedBuilder({
+    required this.downloadUrlForAttachment,
+  });
+
+  final String Function(String attachmentId) downloadUrlForAttachment;
+
+  @override
+  String get key => 'experiment_attachment';
+
+  @override
+  String toPlainText(Embed node) {
+    final payload = _decodeAttachmentEmbed(node.value.data);
+    return '[Image: ${payload['display_name'] ?? 'experiment attachment'}]';
+  }
+
+  @override
+  Widget build(BuildContext context, EmbedContext embedContext) {
+    final payload = _decodeAttachmentEmbed(embedContext.node.value.data);
+    final attachmentId = payload['attachment_id']?.toString() ?? '';
+    final attachmentType = payload['attachment_type']?.toString() ?? '';
+    final label = payload['display_name']?.toString() ?? 'Pasted image';
+    if (attachmentType != 'image' || attachmentId.isEmpty) {
+      return _ImagePlaceholder(
+        icon: Icons.insert_drive_file_outlined,
+        label: label,
+      );
+    }
+    final url = downloadUrlForAttachment(attachmentId);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Material(
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+            clipBehavior: Clip.antiAlias,
+            child: InkWell(
+              onTap: url.isEmpty
+                  ? null
+                  : () => showDialog<void>(
+                        context: context,
+                        builder: (context) => Dialog(
+                          child: InteractiveViewer(
+                            child: Image.network(
+                              url,
+                              fit: BoxFit.contain,
+                              errorBuilder: (context, error, stackTrace) =>
+                                  const _ImagePlaceholder(
+                                icon: Icons.broken_image_outlined,
+                                label: 'Image preview failed',
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 360),
+                    child: url.isEmpty
+                        ? const _ImagePlaceholder(
+                            icon: Icons.image_not_supported_outlined,
+                            label: 'Image reference unavailable',
+                          )
+                        : Image.network(
+                            url,
+                            fit: BoxFit.contain,
+                            loadingBuilder: (context, child, progress) {
+                              if (progress == null) return child;
+                              return const _ImagePlaceholder(
+                                icon: Icons.image_outlined,
+                                label: 'Loading image...',
+                              );
+                            },
+                            errorBuilder: (context, error, stackTrace) =>
+                                const _ImagePlaceholder(
+                              icon: Icons.broken_image_outlined,
+                              label: 'Image preview failed',
+                            ),
+                          ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(ResearchOsSpacing.sm),
+                    child: Row(
+                      children: [
+                        Expanded(child: Text(label)),
+                        IconButton(
+                          tooltip: 'Remove from document',
+                          onPressed: () {
+                            embedContext.controller.replaceText(
+                              embedContext.node.documentOffset,
+                              1,
+                              '',
+                              TextSelection.collapsed(
+                                offset: embedContext.node.documentOffset,
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ImagePlaceholder extends StatelessWidget {
+  const _ImagePlaceholder({
+    required this.icon,
+    required this.label,
+  });
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 120),
+      alignment: Alignment.center,
+      padding: const EdgeInsets.all(ResearchOsSpacing.lg),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon),
+          const SizedBox(height: ResearchOsSpacing.sm),
+          Text(label, textAlign: TextAlign.center),
+        ],
+      ),
+    );
+  }
+}
+
+Map<String, dynamic> _decodeAttachmentEmbed(Object? data) {
+  try {
+    if (data is String) {
+      final decoded = jsonDecode(data);
+      if (decoded is Map<String, dynamic>) return decoded;
+    }
+    if (data is Map<String, dynamic>) return data;
+  } catch (_) {
+    return const {};
+  }
+  return const {};
+}
+
+String _detectImageMimeType(Uint8List bytes) {
+  if (bytes.length >= 8 &&
+      bytes[0] == 0x89 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x4E &&
+      bytes[3] == 0x47) {
+    return 'image/png';
+  }
+  if (bytes.length >= 3 &&
+      bytes[0] == 0xFF &&
+      bytes[1] == 0xD8 &&
+      bytes[2] == 0xFF) {
+    return 'image/jpeg';
+  }
+  if (bytes.length >= 12 &&
+      String.fromCharCodes(bytes.sublist(4, 8)) == 'ftyp') {
+    final brand = String.fromCharCodes(bytes.sublist(8, 12)).toLowerCase();
+    if (brand.contains('heic') || brand.contains('heix')) {
+      return 'image/heic';
+    }
+  }
+  return 'image/png';
+}
+
+String _extensionForMimeType(String mimeType) {
+  switch (mimeType) {
+    case 'image/jpeg':
+      return '.jpg';
+    case 'image/heic':
+      return '.heic';
+    default:
+      return '.png';
+  }
 }
 
 Document _documentFromContent(String content, String documentFormat) {

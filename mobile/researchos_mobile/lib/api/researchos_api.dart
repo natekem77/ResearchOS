@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 
 import '../models/mobile_models.dart';
 
@@ -411,6 +413,41 @@ class ResearchOsApi {
       request.fields['description'] = description.trim();
     }
     request.files.add(await http.MultipartFile.fromPath('file', file.path));
+    final streamed = await _client.send(request).timeout(requestTimeout);
+    final response =
+        await http.Response.fromStream(streamed).timeout(requestTimeout);
+    return _decodeMapResponse(response);
+  }
+
+  Future<Map<String, dynamic>> uploadExperimentAttachmentBytes({
+    required String experimentId,
+    required Uint8List bytes,
+    required String filename,
+    String? mimeType,
+    String? attachmentType,
+    String? displayName,
+    String? description,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse(
+          '$baseUrl/experiments/${Uri.encodeComponent(experimentId)}/attachments/upload'),
+    );
+    if (attachmentType != null && attachmentType.trim().isNotEmpty) {
+      request.fields['attachment_type'] = attachmentType.trim();
+    }
+    if (displayName != null && displayName.trim().isNotEmpty) {
+      request.fields['display_name'] = displayName.trim();
+    }
+    if (description != null && description.trim().isNotEmpty) {
+      request.fields['description'] = description.trim();
+    }
+    request.files.add(http.MultipartFile.fromBytes(
+      'file',
+      bytes,
+      filename: filename,
+      contentType: mimeType == null ? null : _mediaType(mimeType),
+    ));
     final streamed = await _client.send(request).timeout(requestTimeout);
     final response =
         await http.Response.fromStream(streamed).timeout(requestTimeout);
@@ -1017,4 +1054,12 @@ class ResearchOsApi {
     }
     return decoded;
   }
+}
+
+MediaType _mediaType(String mimeType) {
+  final parts = mimeType.split('/');
+  if (parts.length == 2 && parts.every((part) => part.trim().isNotEmpty)) {
+    return MediaType(parts[0].trim(), parts[1].trim());
+  }
+  return MediaType('application', 'octet-stream');
 }

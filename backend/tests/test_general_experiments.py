@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.attachment_storage import LocalAttachmentStorage
+from app.attachment_storage import AttachmentStorageError, LocalAttachmentStorage
 from app.config import Settings
 from app.general_experiments import (
     ExperimentAuthorizationError,
@@ -406,6 +406,92 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertTrue(any(item["attachment_id"] == attachment["attachment_id"] for item in listed))
         self.assertTrue(deleted["deleted"])
         self.assertFalse(any(item["attachment_id"] == attachment["attachment_id"] for item in after_delete))
+
+    def test_pasted_image_attachment_and_document_reference_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(tmpdir)
+            service = GeneralExperimentService(settings=settings)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Paste image")
+            notebook = service.get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+            stored = LocalAttachmentStorage(settings).save(
+                experiment_id=experiment["experiment_id"],
+                filename="clipboard-image.png",
+                data=b"\x89PNG\r\n\x1a\npasted",
+                mime_type="image/png",
+            )
+            attachment = service.record_uploaded_attachment(
+                "user:researcher-a",
+                experiment["experiment_id"],
+                stored.__dict__,
+                display_name="OneNote paste",
+                attachment_type="image",
+            )
+            delta = json.dumps([
+                {
+                    "insert": {
+                        "custom": json.dumps(
+                            {
+                                "experiment_attachment": json.dumps(
+                                    {
+                                        "embed_type": "experiment_attachment",
+                                        "attachment_type": "image",
+                                        "attachment_id": attachment["attachment_id"],
+                                        "display_name": "OneNote paste",
+                                        "alt_text": None,
+                                    }
+                                )
+                            }
+                        )
+                    }
+                },
+                {"insert": "\n"},
+            ])
+            service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                delta,
+                document_format="rich_text_delta_json",
+            )
+            reopened = self._service(tmpdir).get_or_create_notebook("user:researcher-a", experiment["experiment_id"])
+
+        self.assertEqual(attachment["attachment_type"], "image")
+        self.assertEqual(attachment["mime_type"], "image/png")
+        self.assertIn(attachment["attachment_id"], reopened["content"])
+
+    def test_pasted_image_storage_validation_and_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            settings = self._settings(tmpdir)
+            service = GeneralExperimentService(settings=settings)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Paste image validation")
+            storage = LocalAttachmentStorage(settings)
+            with self.assertRaises(AttachmentStorageError):
+                storage.save(
+                    experiment_id=experiment["experiment_id"],
+                    filename="clipboard-image.bmp",
+                    data=b"not supported",
+                    mime_type="image/bmp",
+                )
+            with self.assertRaises(AttachmentStorageError):
+                storage.save(
+                    experiment_id=experiment["experiment_id"],
+                    filename="too-large.png",
+                    data=b"0" * (51 * 1024 * 1024),
+                    mime_type="image/png",
+                )
+            stored = storage.save(
+                experiment_id=experiment["experiment_id"],
+                filename="clipboard-image.jpg",
+                data=b"\xff\xd8\xffpasted",
+                mime_type="image/jpeg",
+            )
+            with self.assertRaises(ExperimentAuthorizationError):
+                service.record_uploaded_attachment(
+                    "user:guest",
+                    experiment["experiment_id"],
+                    stored.__dict__,
+                    attachment_type="image",
+                )
 
     def test_legacy_organoid_experiment_migrates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
