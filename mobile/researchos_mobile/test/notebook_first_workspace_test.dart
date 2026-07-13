@@ -549,6 +549,36 @@ void main() {
     expect(table.toPlainText(), contains('IMR90\tUse fewer cells'));
   });
 
+  test('rich paste parser extracts CF_HTML fragment before parsing table', () {
+    const fragment =
+        '<p>Before</p><table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table><p>After</p>';
+    const prefix =
+        'Version:1.0\r\nStartHTML:0000000000\r\nEndHTML:0000000000\r\n';
+    const start = prefix.length +
+        'StartFragment:0000000000\r\nEndFragment:0000000000\r\n'
+                '<html><body><!--StartFragment-->'
+            .length;
+    const end = start + fragment.length;
+    final cfHtml =
+        '${prefix}StartFragment:${start.toString().padLeft(10, '0')}\r\n'
+        'EndFragment:${end.toString().padLeft(10, '0')}\r\n'
+        '<html><body><!--StartFragment-->$fragment<!--EndFragment--></body></html>';
+
+    expect(NotebookRichPasteParser.extractHtmlFragment(cfHtml), fragment);
+    final result = NotebookRichPasteParser.parse(
+      RichClipboardContent(
+        typeIdentifiers: const ['public.html'],
+        selectedRepresentation: 'public.html',
+        html: cfHtml,
+      ),
+    );
+
+    expect(result.hasStructuredTable, isTrue);
+    expect((result.blocks[0] as NotebookPasteTextBlock).text, 'Before');
+    expect((result.blocks[1] as NotebookPasteTableBlock).table.rows, 2);
+    expect((result.blocks[2] as NotebookPasteTextBlock).text, 'After');
+  });
+
   test('rich paste parser preserves mixed paragraphs and multiple tables', () {
     final result = NotebookRichPasteParser.parse(
       const RichClipboardContent(
@@ -606,6 +636,32 @@ void main() {
     final table = (result.blocks.single as NotebookPasteTableBlock).table;
     expect(table.sourceMetadata['merged_cells_degraded'], isTrue);
     expect(table.cells[0][0].colspan, 2);
+  });
+
+  test('rich paste parser refuses malformed empty HTML table', () {
+    final result = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.html'],
+        selectedRepresentation: 'public.html',
+        html: '<table><tr><td></td></tr></table>',
+      ),
+    );
+
+    expect(result.hasStructuredTable, isFalse);
+    expect(result.warning, 'Table formatting could not be preserved.');
+  });
+
+  test('rich paste parser falls back cleanly for RTF-only table data', () {
+    final result = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.rtf'],
+        selectedRepresentation: 'public.rtf',
+        rtf: r'{\rtf1\trowd\cellx1000 Cell\cell\row}',
+      ),
+    );
+
+    expect(result.hasStructuredTable, isFalse);
+    expect(result.warning, contains('RTF table data was detected'));
   });
 
   testWidgets('rich notebook saves Quill delta JSON', (tester) async {
@@ -1129,7 +1185,8 @@ void main() {
         findsOneWidget);
     expect(find.text('Cell line'), findsOneWidget);
     expect(find.text('IMR90'), findsOneWidget);
-    expect(find.byType(DataTable), findsOneWidget);
+    expect(find.byType(Table), findsOneWidget);
+    expect(find.byType(DataTable), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -1175,7 +1232,7 @@ void main() {
     expect(delta, contains('experiment_table'));
     expect(delta, contains('A2'));
     expect(delta, contains('rows'));
-    expect(delta, contains('columns'));
+    expect(delta, contains('column_count'));
     expect(plainText, contains('Header A\tHeader B'));
     expect(plainText, contains('A2\tB1'));
     expect(tester.takeException(), isNull);

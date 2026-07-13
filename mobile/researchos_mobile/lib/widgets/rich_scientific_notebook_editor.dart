@@ -199,7 +199,12 @@ class _RichScientificNotebookEditorState
       final content = await widget.clipboardRichContentReader.readRichContent();
       if (content == null) return false;
       final parsed = NotebookRichPasteParser.parse(content);
-      if (!parsed.hasStructuredTable) return false;
+      if (!parsed.hasStructuredTable) {
+        if (parsed.warning != null && mounted) {
+          setState(() => _pasteMessage = parsed.warning);
+        }
+        return false;
+      }
       if (parsed.requiresConfirmation) {
         if (!mounted) return true;
         final decision = await showModalBottomSheet<_TsvPasteDecision>(
@@ -1573,11 +1578,15 @@ class NotebookTable {
 
   Map<String, dynamic> toJson() {
     return {
+      'embed_type': 'notebook_table',
       'table_id': tableId,
-      'rows': rows,
-      'columns': columns,
-      'cells': [
-        for (final row in cells) [for (final cell in row) cell.toJson()],
+      'row_count': rows,
+      'column_count': columns,
+      'rows': [
+        for (final row in cells)
+          {
+            'cells': [for (final cell in row) cell.toJson()],
+          },
       ],
       if (caption?.trim().isNotEmpty == true) 'caption': caption,
       'source_metadata': sourceMetadata,
@@ -1627,7 +1636,14 @@ class NotebookTable {
     }
     if (raw is! Map) return null;
     final map = Map<String, dynamic>.from(raw);
-    final rawCells = map['cells'];
+    final rawRows = map['rows'];
+    Object? rawCells = map['cells'];
+    if (rawRows is List && rawRows.isNotEmpty && rawRows.first is Map) {
+      rawCells = [
+        for (final row in rawRows)
+          if (row is Map) row['cells'],
+      ];
+    }
     if (rawCells is! List) return null;
     final cells = <List<NotebookTableCell>>[];
     for (final rawRow in rawCells) {
@@ -1754,9 +1770,15 @@ class NotebookRichPasteParser {
   static NotebookRichPasteResult parse(RichClipboardContent content) {
     final html = content.html;
     if (html != null && html.trim().isNotEmpty) {
-      final blocks = _blocksFromHtml(html);
+      final blocks = _blocksFromHtml(extractHtmlFragment(html));
       if (blocks.whereType<NotebookPasteTableBlock>().isNotEmpty) {
         return NotebookRichPasteResult(blocks: blocks);
+      }
+      if (RegExp(r'<\s*table\b', caseSensitive: false).hasMatch(html)) {
+        return const NotebookRichPasteResult(
+          blocks: [],
+          warning: 'Table formatting could not be preserved.',
+        );
       }
     }
     final text = content.text;
@@ -1775,6 +1797,36 @@ class NotebookRichPasteParser {
       );
     }
     return const NotebookRichPasteResult(blocks: []);
+  }
+
+  static String extractHtmlFragment(String source) {
+    final startFragment = RegExp(
+      r'StartFragment\s*:\s*(\d+)',
+      caseSensitive: false,
+    ).firstMatch(source);
+    final endFragment = RegExp(
+      r'EndFragment\s*:\s*(\d+)',
+      caseSensitive: false,
+    ).firstMatch(source);
+    if (startFragment != null && endFragment != null) {
+      final start = int.tryParse(startFragment.group(1)!);
+      final end = int.tryParse(endFragment.group(1)!);
+      if (start != null && end != null && start >= 0 && end > start) {
+        final units = source.codeUnits;
+        if (end <= units.length) {
+          return String.fromCharCodes(units.sublist(start, end));
+        }
+      }
+    }
+    final markerStart = source.indexOf('<!--StartFragment-->');
+    final markerEnd = source.indexOf('<!--EndFragment-->');
+    if (markerStart >= 0 && markerEnd > markerStart) {
+      return source.substring(
+        markerStart + '<!--StartFragment-->'.length,
+        markerEnd,
+      );
+    }
+    return source;
   }
 
   static List<NotebookPasteBlock> _blocksFromHtml(String source) {
@@ -1869,6 +1921,10 @@ class NotebookRichPasteParser {
     if (rows.isEmpty) return null;
     final columns =
         rows.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    if (columns == 0) return null;
+    final hasReadableText =
+        rows.any((row) => row.any((cell) => cell.text.trim().isNotEmpty));
+    if (!hasReadableText) return null;
     return NotebookTable(
       tableId: 'table-${DateTime.now().toUtc().microsecondsSinceEpoch}',
       rows: rows.length,
@@ -1962,7 +2018,11 @@ class NotebookRichPasteParser {
     if (node is html_dom.Text) return node.text;
     if (node is html_dom.Element) {
       if (node.localName == 'br') return '\n';
-      return node.nodes.map(_textFromHtmlNode).join();
+      final text = node.nodes.map(_textFromHtmlNode).join();
+      if (const {'p', 'div', 'li'}.contains(node.localName)) {
+        return text.endsWith('\n') ? text : '$text\n';
+      }
+      return text;
     }
     return '';
   }
@@ -2198,26 +2258,20 @@ class _NotebookTableEmbed extends StatelessWidget {
             children: [
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
-                child: DataTable(
-                  headingRowColor: WidgetStatePropertyAll(
-                    colorScheme.surfaceContainerHighest,
-                  ),
+                child: Table(
+                  defaultColumnWidth: const IntrinsicColumnWidth(),
                   border: TableBorder.all(color: colorScheme.outlineVariant),
-                  columns: [
-                    for (var column = 0; column < table.columns; column++)
-                      DataColumn(label: Text('Column ${column + 1}')),
-                  ],
-                  rows: [
+                  children: [
                     for (var row = 0; row < table.rows; row++)
-                      DataRow(
-                        cells: [
+                      TableRow(
+                        children: [
                           for (var column = 0; column < table.columns; column++)
-                            DataCell(
-                              _NotebookTableCellView(
-                                cell: table.cells[row][column],
-                              ),
+                            InkWell(
                               onTap: () =>
                                   _editCell(context, row: row, column: column),
+                              child: _NotebookTableCellView(
+                                cell: table.cells[row][column],
+                              ),
                             ),
                         ],
                       ),
