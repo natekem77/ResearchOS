@@ -529,6 +529,85 @@ void main() {
     expect(unsupportedSelection.selectedRepresentation, 'unsupported');
   });
 
+  test('rich paste parser preserves HTML table headers and links', () {
+    final result = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.html', 'public.utf8-plain-text'],
+        selectedRepresentation: 'public.html',
+        html:
+            '<table><tr><th>Cell line</th><th>Notes</th></tr><tr><td><b>IMR90</b></td><td><a href="https://example.com">Use fewer cells</a></td></tr></table>',
+      ),
+    );
+
+    expect(result.hasStructuredTable, isTrue);
+    final table = (result.blocks.single as NotebookPasteTableBlock).table;
+    expect(table.rows, 2);
+    expect(table.columns, 2);
+    expect(table.cells[0][0].header, isTrue);
+    expect(table.cells[1][0].bold, isTrue);
+    expect(table.cells[1][1].link, 'https://example.com');
+    expect(table.toPlainText(), contains('IMR90\tUse fewer cells'));
+  });
+
+  test('rich paste parser preserves mixed paragraphs and multiple tables', () {
+    final result = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.html'],
+        selectedRepresentation: 'public.html',
+        html:
+            '<p>Before</p><table><tr><td>A</td></tr></table><p>Between</p><table><tr><td>B</td></tr></table><p>After</p>',
+      ),
+    );
+
+    expect(result.hasStructuredTable, isTrue);
+    expect(result.blocks, hasLength(5));
+    expect((result.blocks[0] as NotebookPasteTextBlock).text, 'Before');
+    expect((result.blocks[1] as NotebookPasteTableBlock).table.cells[0][0].text,
+        'A');
+    expect((result.blocks[2] as NotebookPasteTextBlock).text, 'Between');
+    expect((result.blocks[3] as NotebookPasteTableBlock).table.cells[0][0].text,
+        'B');
+    expect((result.blocks[4] as NotebookPasteTextBlock).text, 'After');
+  });
+
+  test('rich paste parser detects TSV fallback and ignores prose', () {
+    final tsv = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.utf8-plain-text'],
+        selectedRepresentation: 'public.utf8-plain-text',
+        text: 'Cell line\t# cells/well\tNotes\nIMR90\t1500\tUse fewer cells',
+      ),
+    );
+    expect(tsv.hasStructuredTable, isTrue);
+    expect(tsv.requiresConfirmation, isTrue);
+    final table = (tsv.blocks.single as NotebookPasteTableBlock).table;
+    expect(table.cells[0][0].header, isTrue);
+    expect(table.cells[1][1].text, '1500');
+
+    final prose = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.utf8-plain-text'],
+        selectedRepresentation: 'public.utf8-plain-text',
+        text: 'A sentence with\ta tab but no consistent table.',
+      ),
+    );
+    expect(prose.hasStructuredTable, isFalse);
+  });
+
+  test('rich paste parser marks merged cells as degraded metadata', () {
+    final result = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.html'],
+        selectedRepresentation: 'public.html',
+        html: '<table><tr><td colspan="2">Merged</td></tr></table>',
+      ),
+    );
+
+    final table = (result.blocks.single as NotebookPasteTableBlock).table;
+    expect(table.sourceMetadata['merged_cells_degraded'], isTrue);
+    expect(table.cells[0][0].colspan, 2);
+  });
+
   testWidgets('rich notebook saves Quill delta JSON', (tester) async {
     final requests = <http.Request>[];
     final api = _api(onRequest: requests.add);
@@ -1019,6 +1098,131 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('HTML table embed renders inline on iPhone viewport',
+      (tester) async {
+    await pumpRichEditor(
+      tester,
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:test',
+          rows: 2,
+          columns: 3,
+          cells: [
+            [
+              NotebookTableCell(text: 'Cell line', header: true, bold: true),
+              NotebookTableCell(text: '# cells/well', header: true, bold: true),
+              NotebookTableCell(text: 'Notes', header: true, bold: true),
+            ],
+            [
+              NotebookTableCell(text: 'IMR90', bold: true),
+              NotebookTableCell(text: '1500'),
+              NotebookTableCell(text: 'Use fewer cells'),
+            ],
+          ],
+          sourceMetadata: {'pasted_from': 'OneNote'},
+        ),
+      ),
+      size: const Size(375, 667),
+    );
+
+    expect(find.byKey(const ValueKey('notebook-table-table:test')),
+        findsOneWidget);
+    expect(find.text('Cell line'), findsOneWidget);
+    expect(find.text('IMR90'), findsOneWidget);
+    expect(find.byType(DataTable), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('table cell edits and row column controls persist in Delta',
+      (tester) async {
+    String? delta;
+    String? plainText;
+    await pumpRichEditor(
+      tester,
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:edit',
+          rows: 2,
+          columns: 2,
+          cells: [
+            [
+              NotebookTableCell(text: 'Header A', header: true, bold: true),
+              NotebookTableCell(text: 'Header B', header: true, bold: true),
+            ],
+            [
+              NotebookTableCell(text: 'A1'),
+              NotebookTableCell(text: 'B1'),
+            ],
+          ],
+        ),
+      ),
+      onChanged: (edit) {
+        delta = edit.deltaJson;
+        plainText = edit.plainText;
+      },
+    );
+
+    await tester.tap(find.text('A1'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Cell text'), 'A2');
+    await tester.tap(find.text('Save').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add row'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add column'));
+    await tester.pumpAndSettle();
+
+    expect(delta, contains('experiment_table'));
+    expect(delta, contains('A2'));
+    expect(delta, contains('rows'));
+    expect(delta, contains('columns'));
+    expect(plainText, contains('Header A\tHeader B'));
+    expect(plainText, contains('A2\tB1'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('table structure survives save and reopen', (tester) async {
+    final initial = _tableEmbedContent(
+      const NotebookTable(
+        tableId: 'table:reopen',
+        rows: 2,
+        columns: 2,
+        cells: [
+          [
+            NotebookTableCell(text: 'Condition', header: true, bold: true),
+            NotebookTableCell(text: 'Dose', header: true, bold: true),
+          ],
+          [
+            NotebookTableCell(text: 'SAG'),
+            NotebookTableCell(text: '300 nM'),
+          ],
+        ],
+      ),
+    );
+    String? saved;
+    await pumpRichEditor(
+      tester,
+      initialContent: initial,
+      onChanged: (edit) => saved = edit.deltaJson,
+    );
+    expect(find.text('SAG'), findsOneWidget);
+    await tester.tap(find.text('Add row'));
+    await tester.pumpAndSettle();
+    final reopened = saved!;
+
+    await pumpRichEditor(
+      tester,
+      initialContent: reopened,
+      documentId: 'document:reopened-table',
+    );
+
+    expect(find.byKey(const ValueKey('notebook-table-table:reopen')),
+        findsOneWidget);
+    expect(find.text('Condition'), findsOneWidget);
+    expect(find.text('300 nM'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('tapping image selects it and shows inline controls',
       (tester) async {
     await pumpRichEditor(
@@ -1132,6 +1336,8 @@ void main() {
 Future<void> pumpRichEditor(
   WidgetTester tester, {
   ClipboardImageReader reader = const _FakeClipboardImageReader(null),
+  ClipboardRichContentReader richReader =
+      const _FakeClipboardRichContentReader(null),
   String initialContent = '[{"insert":"\\n"}]',
   String documentFormat = 'rich_text_delta_json',
   Size size = const Size(430, 932),
@@ -1158,6 +1364,7 @@ Future<void> pumpRichEditor(
               documentFormat: documentFormat,
               documentId: documentId,
               clipboardImageReader: reader,
+              clipboardRichContentReader: richReader,
               imageCache: resolvedCache,
               downloadAttachmentBytes: downloadAttachmentBytes,
               onPasteImage: onPasteImage,
@@ -1430,6 +1637,17 @@ String _imageEmbedContent({
   ]);
 }
 
+String _tableEmbedContent(NotebookTable table) {
+  return jsonEncode([
+    {
+      'insert': {
+        'custom': jsonEncode({'experiment_table': jsonEncode(table.toJson())})
+      }
+    },
+    {'insert': '\n'},
+  ]);
+}
+
 class _FakeClipboardImageReader extends ClipboardImageReader {
   const _FakeClipboardImageReader(this.bytes);
 
@@ -1446,6 +1664,15 @@ class _FakeClipboardImageReader extends ClipboardImageReader {
       suggestedFilename: 'clipboard-image.png',
     );
   }
+}
+
+class _FakeClipboardRichContentReader extends ClipboardRichContentReader {
+  const _FakeClipboardRichContentReader(this.content);
+
+  final RichClipboardContent? content;
+
+  @override
+  Future<RichClipboardContent?> readRichContent() async => content;
 }
 
 const _pngBytes = <int>[

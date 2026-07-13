@@ -6,6 +6,8 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
+import 'package:html/dom.dart' as html_dom;
+import 'package:html/parser.dart' as html_parser;
 import 'package:path_provider/path_provider.dart';
 import 'package:quill_native_bridge/quill_native_bridge.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -25,9 +27,12 @@ class RichScientificNotebookEditor extends StatefulWidget {
     this.downloadAttachmentBytes,
     NotebookImageCache? imageCache,
     ClipboardImageReader? clipboardImageReader,
+    ClipboardRichContentReader? clipboardRichContentReader,
     this.saving = false,
   })  : clipboardImageReader =
             clipboardImageReader ?? const QuillClipboardImageReader(),
+        clipboardRichContentReader = clipboardRichContentReader ??
+            const QuillClipboardRichContentReader(),
         imageCache = imageCache ?? const NotebookImageCache();
 
   final String initialContent;
@@ -40,6 +45,7 @@ class RichScientificNotebookEditor extends StatefulWidget {
   final AttachmentBytesDownloader? downloadAttachmentBytes;
   final NotebookImageCache imageCache;
   final ClipboardImageReader clipboardImageReader;
+  final ClipboardRichContentReader clipboardRichContentReader;
   final bool saving;
 
   @override
@@ -146,9 +152,32 @@ class _RichScientificNotebookEditorState
     widget.onChanged(
       RichNotebookEdit(
         deltaJson: _currentDeltaJson(),
-        plainText: _controller.document.toPlainText(),
+        plainText: _plainTextFromCurrentDocument(),
       ),
     );
+  }
+
+  String _plainTextFromCurrentDocument() {
+    final buffer = StringBuffer();
+    for (final rawOp in _controller.document.toDelta().toJson()) {
+      final insert = rawOp['insert'];
+      if (insert is String) {
+        buffer.write(insert);
+        continue;
+      }
+      final table = _tableFromInsert(insert);
+      if (table != null) {
+        buffer
+          ..write(table.toPlainText())
+          ..write('\n');
+        continue;
+      }
+      if (insert is Map && insert.containsKey('image')) {
+        final payload = _decodeAttachmentEmbed(insert['image']);
+        buffer.write(payload['display_name']?.toString() ?? 'Image');
+      }
+    }
+    return buffer.toString();
   }
 
   String _currentDeltaJson() {
@@ -159,8 +188,95 @@ class _RichScientificNotebookEditorState
         '[{"insert":"\\n"}]';
   }
 
-  Future<bool> _handleClipboardPaste() {
+  Future<bool> _handleClipboardPaste() async {
+    final richHandled = await _pasteRichContentFromClipboard();
+    if (richHandled) return true;
     return _pasteImageFromClipboard(showUnsupportedMessage: false);
+  }
+
+  Future<bool> _pasteRichContentFromClipboard() async {
+    try {
+      final content = await widget.clipboardRichContentReader.readRichContent();
+      if (content == null) return false;
+      final parsed = NotebookRichPasteParser.parse(content);
+      if (!parsed.hasStructuredTable) return false;
+      if (parsed.requiresConfirmation) {
+        if (!mounted) return true;
+        final decision = await showModalBottomSheet<_TsvPasteDecision>(
+          context: context,
+          showDragHandle: true,
+          builder: (context) => const _PasteTableSheet(),
+        );
+        if (decision == _TsvPasteDecision.cancel) return true;
+        if (decision != _TsvPasteDecision.table) return false;
+      }
+      _insertRichPasteBlocks(parsed.blocks);
+      if (mounted) {
+        setState(() {
+          _pasteMessage = parsed.warning ??
+              'Pasted ${parsed.tableCount == 1 ? 'a table' : '${parsed.tableCount} tables'}.';
+        });
+      }
+      return true;
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _pasteMessage =
+              'Could not preserve table structure. Pasting as text.';
+        });
+      }
+      return false;
+    }
+  }
+
+  void _insertRichPasteBlocks(List<NotebookPasteBlock> blocks) {
+    final selection = _controller.selection;
+    var index = selection.baseOffset < 0
+        ? _controller.document.length - 1
+        : selection.start;
+    final length = selection.isCollapsed ? 0 : selection.end - selection.start;
+    if (length > 0) {
+      _controller.replaceText(
+        index,
+        length,
+        '',
+        TextSelection.collapsed(offset: index),
+      );
+    }
+    for (final block in blocks) {
+      switch (block) {
+        case NotebookPasteTextBlock(:final text):
+          final cleanText = text.trim();
+          if (cleanText.isEmpty) continue;
+          final insert = cleanText.endsWith('\n') ? cleanText : '$cleanText\n';
+          _controller.replaceText(
+            index,
+            0,
+            insert,
+            TextSelection.collapsed(offset: index + insert.length),
+          );
+          index += insert.length;
+        case NotebookPasteTableBlock(:final table):
+          final embed = BlockEmbed.custom(
+            CustomBlockEmbed('experiment_table', jsonEncode(table.toJson())),
+          );
+          _controller.replaceText(
+            index,
+            0,
+            embed,
+            TextSelection.collapsed(offset: index + 1),
+          );
+          index += 1;
+          _controller.replaceText(
+            index,
+            0,
+            '\n',
+            TextSelection.collapsed(offset: index + 1),
+          );
+          index += 1;
+      }
+    }
+    _emitChange();
   }
 
   Future<bool> _pasteImageFromClipboard({
@@ -445,6 +561,7 @@ class _RichScientificNotebookEditorState
                   ),
                 ),
                 embedBuilders: [
+                  const ExperimentTableEmbedBuilder(),
                   NativeQuillImageEmbedBuilder(
                     imageCache: widget.imageCache,
                     downloadAttachmentBytes: widget.downloadAttachmentBytes,
@@ -986,6 +1103,79 @@ abstract class ClipboardImageReader {
   Future<PastedNotebookImage?> readImage();
 }
 
+abstract class ClipboardRichContentReader {
+  const ClipboardRichContentReader();
+
+  Future<RichClipboardContent?> readRichContent();
+}
+
+class RichClipboardContent {
+  const RichClipboardContent({
+    required this.typeIdentifiers,
+    required this.selectedRepresentation,
+    this.html,
+    this.rtf,
+    this.text,
+  });
+
+  final List<String> typeIdentifiers;
+  final String selectedRepresentation;
+  final String? html;
+  final String? rtf;
+  final String? text;
+}
+
+class QuillClipboardRichContentReader extends ClipboardRichContentReader {
+  const QuillClipboardRichContentReader();
+
+  static const MethodChannel _clipboardChannel = MethodChannel(
+    'mundi/clipboard',
+  );
+
+  @override
+  Future<RichClipboardContent?> readRichContent() async {
+    try {
+      final result = await _clipboardChannel.invokeMapMethod<String, Object?>(
+        'readRichClipboard',
+      );
+      if (result == null) return null;
+      _debugRichClipboardSelection(result);
+      final identifiers = result['type_identifiers'];
+      final typeIdentifiers = identifiers is List
+          ? identifiers.map((identifier) => identifier.toString()).toList()
+          : <String>[];
+      return RichClipboardContent(
+        typeIdentifiers: typeIdentifiers,
+        selectedRepresentation:
+            result['selected_representation']?.toString() ?? 'unknown',
+        html: result['html']?.toString(),
+        rtf: result['rtf']?.toString(),
+        text: result['text']?.toString(),
+      );
+    } on MissingPluginException {
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void _debugRichClipboardSelection(Map<String, Object?> result) {
+    assert(() {
+      final typeIdentifiers = result['type_identifiers'];
+      final identifiers = typeIdentifiers is List
+          ? typeIdentifiers
+              .map((identifier) => identifier.toString())
+              .join(', ')
+          : 'unavailable';
+      debugPrint(
+        'mundi_rich_clipboard type_identifiers=$identifiers '
+        'selected_representation=${result['selected_representation'] ?? 'unknown'}',
+      );
+      return true;
+    }());
+  }
+}
+
 class QuillClipboardImageReader extends ClipboardImageReader {
   const QuillClipboardImageReader();
 
@@ -1280,6 +1470,533 @@ class _DecodedDataImage {
   final Uint8List bytes;
 }
 
+enum _TsvPasteDecision { table, text, cancel }
+
+class _PasteTableSheet extends StatelessWidget {
+  const _PasteTableSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Paste as table?',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            const Text(
+              'The clipboard looks like rows and columns. You can preserve it as a structured notebook table or paste the plain text instead.',
+            ),
+            const SizedBox(height: ResearchOsSpacing.lg),
+            Wrap(
+              spacing: ResearchOsSpacing.sm,
+              runSpacing: ResearchOsSpacing.sm,
+              children: [
+                FilledButton(
+                  onPressed: () =>
+                      Navigator.pop(context, _TsvPasteDecision.table),
+                  child: const Text('Paste as table'),
+                ),
+                OutlinedButton(
+                  onPressed: () =>
+                      Navigator.pop(context, _TsvPasteDecision.text),
+                  child: const Text('Paste as plain text'),
+                ),
+                TextButton(
+                  onPressed: () =>
+                      Navigator.pop(context, _TsvPasteDecision.cancel),
+                  child: const Text('Cancel'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+sealed class NotebookPasteBlock {
+  const NotebookPasteBlock();
+}
+
+class NotebookPasteTextBlock extends NotebookPasteBlock {
+  const NotebookPasteTextBlock(this.text);
+
+  final String text;
+}
+
+class NotebookPasteTableBlock extends NotebookPasteBlock {
+  const NotebookPasteTableBlock(this.table);
+
+  final NotebookTable table;
+}
+
+class NotebookRichPasteResult {
+  const NotebookRichPasteResult({
+    required this.blocks,
+    this.requiresConfirmation = false,
+    this.warning,
+  });
+
+  final List<NotebookPasteBlock> blocks;
+  final bool requiresConfirmation;
+  final String? warning;
+
+  bool get hasStructuredTable =>
+      blocks.whereType<NotebookPasteTableBlock>().isNotEmpty;
+
+  int get tableCount => blocks.whereType<NotebookPasteTableBlock>().length;
+}
+
+class NotebookTable {
+  const NotebookTable({
+    required this.tableId,
+    required this.rows,
+    required this.columns,
+    required this.cells,
+    this.caption,
+    this.sourceMetadata = const {},
+  });
+
+  final String tableId;
+  final int rows;
+  final int columns;
+  final List<List<NotebookTableCell>> cells;
+  final String? caption;
+  final Map<String, Object?> sourceMetadata;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'table_id': tableId,
+      'rows': rows,
+      'columns': columns,
+      'cells': [
+        for (final row in cells) [for (final cell in row) cell.toJson()],
+      ],
+      if (caption?.trim().isNotEmpty == true) 'caption': caption,
+      'source_metadata': sourceMetadata,
+    };
+  }
+
+  String toPlainText() {
+    return cells
+        .map((row) => row.map((cell) => cell.text).join('\t'))
+        .join('\n');
+  }
+
+  NotebookTable copyWith({
+    List<List<NotebookTableCell>>? cells,
+    String? caption,
+  }) {
+    final nextCells = cells ?? this.cells;
+    final nextRows = nextCells.length;
+    final nextColumns = nextCells.isEmpty
+        ? 0
+        : nextCells.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    return NotebookTable(
+      tableId: tableId,
+      rows: nextRows,
+      columns: nextColumns,
+      cells: [
+        for (final row in nextCells)
+          [
+            for (var column = 0; column < nextColumns; column++)
+              column < row.length
+                  ? row[column]
+                  : const NotebookTableCell(text: '')
+          ],
+      ],
+      caption: caption ?? this.caption,
+      sourceMetadata: sourceMetadata,
+    );
+  }
+
+  static NotebookTable? fromJson(Object? raw) {
+    if (raw is String) {
+      try {
+        return fromJson(jsonDecode(raw));
+      } catch (_) {
+        return null;
+      }
+    }
+    if (raw is! Map) return null;
+    final map = Map<String, dynamic>.from(raw);
+    final rawCells = map['cells'];
+    if (rawCells is! List) return null;
+    final cells = <List<NotebookTableCell>>[];
+    for (final rawRow in rawCells) {
+      if (rawRow is! List) continue;
+      cells.add([
+        for (final rawCell in rawRow)
+          NotebookTableCell.fromJson(rawCell) ??
+              NotebookTableCell(text: rawCell?.toString() ?? ''),
+      ]);
+    }
+    final columns = cells.isEmpty
+        ? 0
+        : cells.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    return NotebookTable(
+      tableId: map['table_id']?.toString() ??
+          'table-${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      rows: cells.length,
+      columns: columns,
+      cells: [
+        for (final row in cells)
+          [
+            for (var column = 0; column < columns; column++)
+              column < row.length
+                  ? row[column]
+                  : const NotebookTableCell(text: '')
+          ],
+      ],
+      caption: map['caption']?.toString(),
+      sourceMetadata: map['source_metadata'] is Map
+          ? Map<String, Object?>.from(map['source_metadata'] as Map)
+          : const {},
+    );
+  }
+}
+
+class NotebookTableCell {
+  const NotebookTableCell({
+    required this.text,
+    this.header = false,
+    this.bold = false,
+    this.italic = false,
+    this.underline = false,
+    this.textColor,
+    this.backgroundColor,
+    this.link,
+    this.colspan = 1,
+    this.rowspan = 1,
+  });
+
+  final String text;
+  final bool header;
+  final bool bold;
+  final bool italic;
+  final bool underline;
+  final String? textColor;
+  final String? backgroundColor;
+  final String? link;
+  final int colspan;
+  final int rowspan;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'text': text,
+      if (header) 'header': true,
+      if (bold) 'bold': true,
+      if (italic) 'italic': true,
+      if (underline) 'underline': true,
+      if (textColor?.trim().isNotEmpty == true) 'text_color': textColor,
+      if (backgroundColor?.trim().isNotEmpty == true)
+        'background_color': backgroundColor,
+      if (link?.trim().isNotEmpty == true) 'link': link,
+      if (colspan > 1) 'colspan': colspan,
+      if (rowspan > 1) 'rowspan': rowspan,
+    };
+  }
+
+  NotebookTableCell copyWith({
+    String? text,
+    bool? header,
+    bool? bold,
+    bool? italic,
+    bool? underline,
+    String? textColor,
+    String? backgroundColor,
+    String? link,
+    int? colspan,
+    int? rowspan,
+  }) {
+    return NotebookTableCell(
+      text: text ?? this.text,
+      header: header ?? this.header,
+      bold: bold ?? this.bold,
+      italic: italic ?? this.italic,
+      underline: underline ?? this.underline,
+      textColor: textColor ?? this.textColor,
+      backgroundColor: backgroundColor ?? this.backgroundColor,
+      link: link ?? this.link,
+      colspan: colspan ?? this.colspan,
+      rowspan: rowspan ?? this.rowspan,
+    );
+  }
+
+  static NotebookTableCell? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final map = Map<String, dynamic>.from(raw);
+    return NotebookTableCell(
+      text: map['text']?.toString() ?? '',
+      header: map['header'] == true,
+      bold: map['bold'] == true,
+      italic: map['italic'] == true,
+      underline: map['underline'] == true,
+      textColor: map['text_color']?.toString(),
+      backgroundColor: map['background_color']?.toString(),
+      link: map['link']?.toString(),
+      colspan: int.tryParse(map['colspan']?.toString() ?? '') ?? 1,
+      rowspan: int.tryParse(map['rowspan']?.toString() ?? '') ?? 1,
+    );
+  }
+}
+
+class NotebookRichPasteParser {
+  const NotebookRichPasteParser._();
+
+  static NotebookRichPasteResult parse(RichClipboardContent content) {
+    final html = content.html;
+    if (html != null && html.trim().isNotEmpty) {
+      final blocks = _blocksFromHtml(html);
+      if (blocks.whereType<NotebookPasteTableBlock>().isNotEmpty) {
+        return NotebookRichPasteResult(blocks: blocks);
+      }
+    }
+    final text = content.text;
+    if (text != null && _looksLikeTsvTable(text)) {
+      return NotebookRichPasteResult(
+        blocks: [NotebookPasteTableBlock(_tableFromTsv(text))],
+        requiresConfirmation: true,
+      );
+    }
+    final rtf = content.rtf;
+    if (rtf != null && rtf.contains(r'\trowd')) {
+      return const NotebookRichPasteResult(
+        blocks: [],
+        warning:
+            'RTF table data was detected, but this version preserves tables from HTML or TSV only.',
+      );
+    }
+    return const NotebookRichPasteResult(blocks: []);
+  }
+
+  static List<NotebookPasteBlock> _blocksFromHtml(String source) {
+    final fragment = html_parser.parseFragment(source);
+    final blocks = <NotebookPasteBlock>[];
+    for (final node in fragment.nodes) {
+      _appendHtmlNodeBlocks(node, blocks);
+    }
+    return _coalesceTextBlocks(blocks);
+  }
+
+  static void _appendHtmlNodeBlocks(
+    html_dom.Node node,
+    List<NotebookPasteBlock> blocks,
+  ) {
+    if (node is html_dom.Element && node.localName == 'table') {
+      final table = _tableFromHtml(node);
+      if (table != null) blocks.add(NotebookPasteTableBlock(table));
+      return;
+    }
+    if (node is html_dom.Element &&
+        const {'p', 'div', 'section', 'article', 'li', 'h1', 'h2', 'h3'}
+            .contains(node.localName)) {
+      if (node.querySelector('table') != null) {
+        for (final child in node.nodes) {
+          _appendHtmlNodeBlocks(child, blocks);
+        }
+        return;
+      }
+      final text = _textFromHtmlNode(node).trim();
+      if (text.isNotEmpty) {
+        blocks.add(NotebookPasteTextBlock(text));
+      }
+      return;
+    }
+    if (node is html_dom.Element) {
+      for (final child in node.nodes) {
+        _appendHtmlNodeBlocks(child, blocks);
+      }
+      return;
+    }
+    if (node is html_dom.Text) {
+      final text = node.text.trim();
+      if (text.isNotEmpty) blocks.add(NotebookPasteTextBlock(text));
+    }
+  }
+
+  static List<NotebookPasteBlock> _coalesceTextBlocks(
+    List<NotebookPasteBlock> blocks,
+  ) {
+    final result = <NotebookPasteBlock>[];
+    final buffer = StringBuffer();
+    void flush() {
+      final text = buffer.toString().trim();
+      if (text.isNotEmpty) result.add(NotebookPasteTextBlock(text));
+      buffer.clear();
+    }
+
+    for (final block in blocks) {
+      switch (block) {
+        case NotebookPasteTextBlock(:final text):
+          if (buffer.isNotEmpty) buffer.write('\n');
+          buffer.write(text);
+        case NotebookPasteTableBlock():
+          flush();
+          result.add(block);
+      }
+    }
+    flush();
+    return result;
+  }
+
+  static NotebookTable? _tableFromHtml(html_dom.Element tableElement) {
+    final rowElements = tableElement.querySelectorAll('tr');
+    if (rowElements.isEmpty) return null;
+    final rows = <List<NotebookTableCell>>[];
+    var unsupportedMerge = false;
+    for (final rowElement in rowElements) {
+      final cells = <NotebookTableCell>[];
+      for (final cellElement in rowElement.children.where(
+        (element) => element.localName == 'td' || element.localName == 'th',
+      )) {
+        final colspan =
+            int.tryParse(cellElement.attributes['colspan'] ?? '') ?? 1;
+        final rowspan =
+            int.tryParse(cellElement.attributes['rowspan'] ?? '') ?? 1;
+        unsupportedMerge = unsupportedMerge || colspan > 1 || rowspan > 1;
+        cells.add(_cellFromHtml(cellElement, colspan, rowspan));
+      }
+      if (cells.isNotEmpty) rows.add(cells);
+    }
+    if (rows.isEmpty) return null;
+    final columns =
+        rows.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    return NotebookTable(
+      tableId: 'table-${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      rows: rows.length,
+      columns: columns,
+      cells: [
+        for (final row in rows)
+          [
+            for (var column = 0; column < columns; column++)
+              column < row.length
+                  ? row[column]
+                  : const NotebookTableCell(text: '')
+          ],
+      ],
+      sourceMetadata: {
+        'pasted_from': 'rich_clipboard',
+        if (unsupportedMerge) 'merged_cells_degraded': true,
+      },
+    );
+  }
+
+  static NotebookTableCell _cellFromHtml(
+    html_dom.Element cell,
+    int colspan,
+    int rowspan,
+  ) {
+    final style = cell.attributes['style'] ?? '';
+    final link = cell.querySelector('a[href]')?.attributes['href'];
+    return NotebookTableCell(
+      text: _textFromHtmlNode(cell).trim(),
+      header: cell.localName == 'th',
+      bold: cell.localName == 'th' || cell.querySelector('b,strong') != null,
+      italic: cell.querySelector('i,em') != null,
+      underline: cell.querySelector('u') != null,
+      textColor: _cssValue(style, 'color'),
+      backgroundColor: _cssValue(style, 'background-color') ??
+          _cssValue(style, 'background'),
+      link: link,
+      colspan: colspan,
+      rowspan: rowspan,
+    );
+  }
+
+  static NotebookTable _tableFromTsv(String text) {
+    final lines = text
+        .split(RegExp(r'\r?\n'))
+        .where((line) => line.trim().isNotEmpty)
+        .toList();
+    final rows = [
+      for (var rowIndex = 0; rowIndex < lines.length; rowIndex++)
+        [
+          for (final cell in lines[rowIndex].split('\t'))
+            NotebookTableCell(
+              text: cell.trim(),
+              header: rowIndex == 0,
+              bold: rowIndex == 0,
+            )
+        ],
+    ];
+    final columns =
+        rows.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    return NotebookTable(
+      tableId: 'table-${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      rows: rows.length,
+      columns: columns,
+      cells: [
+        for (final row in rows)
+          [
+            for (var column = 0; column < columns; column++)
+              column < row.length
+                  ? row[column]
+                  : const NotebookTableCell(text: '')
+          ],
+      ],
+      sourceMetadata: const {'pasted_from': 'tsv_clipboard'},
+    );
+  }
+
+  static bool _looksLikeTsvTable(String text) {
+    final lines = text
+        .split(RegExp(r'\r?\n'))
+        .where((line) => line.trim().isNotEmpty)
+        .toList();
+    if (lines.length < 2) return false;
+    final counts = [for (final line in lines) line.split('\t').length];
+    if (counts.any((count) => count < 2)) return false;
+    final first = counts.first;
+    return counts.every((count) => count == first);
+  }
+
+  static String _textFromHtmlNode(html_dom.Node node) {
+    if (node is html_dom.Text) return node.text;
+    if (node is html_dom.Element) {
+      if (node.localName == 'br') return '\n';
+      return node.nodes.map(_textFromHtmlNode).join();
+    }
+    return '';
+  }
+
+  static String? _cssValue(String style, String key) {
+    for (final declaration in style.split(';')) {
+      final parts = declaration.split(':');
+      if (parts.length < 2) continue;
+      if (parts.first.trim().toLowerCase() == key) {
+        return parts.sublist(1).join(':').trim();
+      }
+    }
+    return null;
+  }
+}
+
+NotebookTable? _tableFromInsert(Object? insert) {
+  if (insert is Map && insert.containsKey('custom')) {
+    try {
+      final custom =
+          CustomBlockEmbed.fromJsonString(insert['custom'].toString());
+      if (custom.type == 'experiment_table') {
+        return NotebookTable.fromJson(custom.data);
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+  if (insert is Map && insert.containsKey('experiment_table')) {
+    return NotebookTable.fromJson(insert['experiment_table']);
+  }
+  return null;
+}
+
 class _PasteImageConfirmation {
   const _PasteImageConfirmation({
     this.displayName,
@@ -1405,6 +2122,298 @@ class _PasteImageSheetState extends State<_PasteImageSheet> {
       ),
     );
   }
+}
+
+class ExperimentTableEmbedBuilder extends EmbedBuilder {
+  const ExperimentTableEmbedBuilder();
+
+  @override
+  String get key => 'experiment_table';
+
+  @override
+  String toPlainText(Embed node) {
+    final table = NotebookTable.fromJson(node.value.data);
+    return table?.toPlainText() ?? '';
+  }
+
+  @override
+  Widget build(BuildContext context, EmbedContext embedContext) {
+    final table = NotebookTable.fromJson(embedContext.node.value.data);
+    if (table == null) {
+      return const _BrokenNotebookTable();
+    }
+    return _NotebookTableEmbed(
+      table: table,
+      controller: embedContext.controller,
+      documentOffset: embedContext.node.documentOffset,
+    );
+  }
+}
+
+class _BrokenNotebookTable extends StatelessWidget {
+  const _BrokenNotebookTable();
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.errorContainer,
+      borderRadius: BorderRadius.circular(ResearchOsTokens.radiusSm),
+      child: const Padding(
+        padding: EdgeInsets.all(ResearchOsSpacing.md),
+        child: Text('This table could not be displayed.'),
+      ),
+    );
+  }
+}
+
+class _NotebookTableEmbed extends StatelessWidget {
+  const _NotebookTableEmbed({
+    required this.table,
+    required this.controller,
+    required this.documentOffset,
+  });
+
+  final NotebookTable table;
+  final QuillController controller;
+  final int documentOffset;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
+      child: Material(
+        key: ValueKey('notebook-table-${table.tableId}'),
+        color: colorScheme.surface,
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+        clipBehavior: Clip.antiAlias,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(color: colorScheme.outlineVariant),
+            borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: DataTable(
+                  headingRowColor: WidgetStatePropertyAll(
+                    colorScheme.surfaceContainerHighest,
+                  ),
+                  border: TableBorder.all(color: colorScheme.outlineVariant),
+                  columns: [
+                    for (var column = 0; column < table.columns; column++)
+                      DataColumn(label: Text('Column ${column + 1}')),
+                  ],
+                  rows: [
+                    for (var row = 0; row < table.rows; row++)
+                      DataRow(
+                        cells: [
+                          for (var column = 0; column < table.columns; column++)
+                            DataCell(
+                              _NotebookTableCellView(
+                                cell: table.cells[row][column],
+                              ),
+                              onTap: () =>
+                                  _editCell(context, row: row, column: column),
+                            ),
+                        ],
+                      ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(ResearchOsSpacing.xs),
+                child: Wrap(
+                  spacing: ResearchOsSpacing.xs,
+                  runSpacing: ResearchOsSpacing.xs,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () => _addRow(),
+                      icon: const Icon(Icons.table_rows_outlined),
+                      label: const Text('Add row'),
+                    ),
+                    TextButton.icon(
+                      onPressed: table.rows > 1 ? () => _deleteLastRow() : null,
+                      icon: const Icon(Icons.delete_outline),
+                      label: const Text('Delete row'),
+                    ),
+                    TextButton.icon(
+                      onPressed: () => _addColumn(),
+                      icon: const Icon(Icons.view_column_outlined),
+                      label: const Text('Add column'),
+                    ),
+                    TextButton.icon(
+                      onPressed:
+                          table.columns > 1 ? () => _deleteLastColumn() : null,
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      label: const Text('Delete column'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _removeTable,
+                      icon: const Icon(Icons.close),
+                      label: const Text('Remove table'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _editCell(
+    BuildContext context, {
+    required int row,
+    required int column,
+  }) async {
+    final controller =
+        TextEditingController(text: table.cells[row][column].text);
+    final nextText = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Edit cell ${row + 1}, ${column + 1}'),
+        content: TextField(
+          controller: controller,
+          minLines: 2,
+          maxLines: 6,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Cell text'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (nextText == null) return;
+    final cells = _cloneCells();
+    cells[row][column] = cells[row][column].copyWith(text: nextText);
+    _replaceTable(table.copyWith(cells: cells));
+  }
+
+  void _addRow() {
+    final cells = _cloneCells()
+      ..add([
+        for (var column = 0; column < table.columns; column++)
+          const NotebookTableCell(text: ''),
+      ]);
+    _replaceTable(table.copyWith(cells: cells));
+  }
+
+  void _deleteLastRow() {
+    final cells = _cloneCells();
+    if (cells.length <= 1) return;
+    cells.removeLast();
+    _replaceTable(table.copyWith(cells: cells));
+  }
+
+  void _addColumn() {
+    final cells = _cloneCells();
+    for (final row in cells) {
+      row.add(const NotebookTableCell(text: ''));
+    }
+    _replaceTable(table.copyWith(cells: cells));
+  }
+
+  void _deleteLastColumn() {
+    final cells = _cloneCells();
+    if (cells.isEmpty || cells.first.length <= 1) return;
+    for (final row in cells) {
+      row.removeLast();
+    }
+    _replaceTable(table.copyWith(cells: cells));
+  }
+
+  void _removeTable() {
+    controller.replaceText(
+      documentOffset,
+      1,
+      '',
+      TextSelection.collapsed(offset: documentOffset),
+    );
+  }
+
+  void _replaceTable(NotebookTable nextTable) {
+    final embed = BlockEmbed.custom(
+      CustomBlockEmbed('experiment_table', jsonEncode(nextTable.toJson())),
+    );
+    controller.replaceText(
+      documentOffset,
+      1,
+      embed,
+      TextSelection.collapsed(offset: documentOffset + 1),
+    );
+  }
+
+  List<List<NotebookTableCell>> _cloneCells() {
+    return [
+      for (final row in table.cells) [for (final cell in row) cell],
+    ];
+  }
+}
+
+class _NotebookTableCellView extends StatelessWidget {
+  const _NotebookTableCellView({required this.cell});
+
+  final NotebookTableCell cell;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    var style = Theme.of(context).textTheme.bodyMedium!;
+    if (cell.header || cell.bold) {
+      style = style.copyWith(fontWeight: FontWeight.w700);
+    }
+    if (cell.italic) {
+      style = style.copyWith(fontStyle: FontStyle.italic);
+    }
+    if (cell.underline) {
+      style = style.copyWith(decoration: TextDecoration.underline);
+    }
+    final foreground = _parseCssColor(cell.textColor);
+    if (foreground != null) style = style.copyWith(color: foreground);
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 96, maxWidth: 260),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: _parseCssColor(cell.backgroundColor) ??
+              (cell.header ? colorScheme.surfaceContainerHighest : null),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: ResearchOsSpacing.xs,
+            vertical: ResearchOsSpacing.xs,
+          ),
+          child: Text(
+            cell.text,
+            style: style,
+            softWrap: true,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Color? _parseCssColor(String? value) {
+  if (value == null || value.trim().isEmpty) return null;
+  final trimmed = value.trim();
+  final hex = RegExp(r'^#([0-9a-fA-F]{6})$').firstMatch(trimmed);
+  if (hex != null) {
+    return Color(int.parse('ff${hex.group(1)}', radix: 16));
+  }
+  return null;
 }
 
 class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {

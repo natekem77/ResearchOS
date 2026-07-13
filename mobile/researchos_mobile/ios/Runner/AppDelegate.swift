@@ -25,11 +25,126 @@ import UIKit
       binaryMessenger: controller.binaryMessenger
     )
     channel.setMethodCallHandler { call, result in
-      guard call.method == "readImageClipboard" else {
+      switch call.method {
+      case "readImageClipboard":
+        self.readImageClipboard(result: result)
+      case "readRichClipboard":
+        self.readRichClipboard(result: result)
+      default:
         result(FlutterMethodNotImplemented)
-        return
       }
-      self.readImageClipboard(result: result)
+    }
+  }
+
+  private func readRichClipboard(result: @escaping FlutterResult) {
+    let pasteboard = UIPasteboard.general
+    let providers = pasteboard.itemProviders
+    let typeIdentifiers = providers.first?.registeredTypeIdentifiers.sorted() ?? []
+    let richTypes = [
+      "public.html",
+      "public.rtf",
+      "com.apple.flat-rtfd",
+      "public.utf8-plain-text",
+      "public.plain-text",
+      "public.text"
+    ]
+    loadFirstRichClipboardText(
+      providers: providers,
+      richTypes: richTypes,
+      providerIndex: 0,
+      typeIndex: 0,
+      typeIdentifiers: typeIdentifiers,
+      result: result
+    )
+  }
+
+  private func loadFirstRichClipboardText(
+    providers: [NSItemProvider],
+    richTypes: [String],
+    providerIndex: Int,
+    typeIndex: Int,
+    typeIdentifiers: [String],
+    result: @escaping FlutterResult
+  ) {
+    if typeIndex >= richTypes.count {
+      result([
+        "type_identifiers": typeIdentifiers,
+        "selected_representation": "unsupported"
+      ])
+      debugClipboardSelection(typeIdentifiers: typeIdentifiers, selectedRepresentation: "rich:unsupported")
+      return
+    }
+    if providerIndex >= providers.count {
+      loadFirstRichClipboardText(
+        providers: providers,
+        richTypes: richTypes,
+        providerIndex: 0,
+        typeIndex: typeIndex + 1,
+        typeIdentifiers: typeIdentifiers,
+        result: result
+      )
+      return
+    }
+
+    let provider = providers[providerIndex]
+    let typeIdentifier = richTypes[typeIndex]
+    guard provider.hasItemConformingToTypeIdentifier(typeIdentifier) else {
+      loadFirstRichClipboardText(
+        providers: providers,
+        richTypes: richTypes,
+        providerIndex: providerIndex + 1,
+        typeIndex: typeIndex,
+        typeIdentifiers: typeIdentifiers,
+        result: result
+      )
+      return
+    }
+
+    provider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+      DispatchQueue.main.async {
+        guard let data = data, !data.isEmpty else {
+          self.loadFirstRichClipboardText(
+            providers: providers,
+            richTypes: richTypes,
+            providerIndex: providerIndex + 1,
+            typeIndex: typeIndex,
+            typeIdentifiers: typeIdentifiers,
+            result: result
+          )
+          return
+        }
+        let encoding: String.Encoding = typeIdentifier == "public.rtf" ||
+          typeIdentifier == "com.apple.flat-rtfd" ? .ascii : .utf8
+        guard let text = String(data: data, encoding: encoding) ??
+          String(data: data, encoding: .utf8) ??
+          String(data: data, encoding: .ascii) else {
+          self.loadFirstRichClipboardText(
+            providers: providers,
+            richTypes: richTypes,
+            providerIndex: providerIndex + 1,
+            typeIndex: typeIndex,
+            typeIdentifiers: typeIdentifiers,
+            result: result
+          )
+          return
+        }
+        self.debugClipboardSelection(
+          typeIdentifiers: typeIdentifiers,
+          selectedRepresentation: "rich:\(typeIdentifier)"
+        )
+        var payload: [String: Any] = [
+          "type_identifiers": typeIdentifiers,
+          "selected_representation": typeIdentifier
+        ]
+        if typeIdentifier == "public.html" {
+          payload["html"] = text
+        } else if typeIdentifier == "public.rtf" || typeIdentifier == "com.apple.flat-rtfd" {
+          payload["rtf"] = text
+        } else {
+          payload["text"] = text
+        }
+        result(payload)
+      }
     }
   }
 
