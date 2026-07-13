@@ -30,6 +30,8 @@ import UIKit
         self.readImageClipboard(result: result)
       case "readRichClipboard":
         self.readRichClipboard(result: result)
+      case "writeTableClipboard":
+        self.writeTableClipboard(call: call, result: result)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -41,9 +43,11 @@ import UIKit
     let providers = pasteboard.itemProviders
     let typeIdentifiers = providers.first?.registeredTypeIdentifiers.sorted() ?? []
     let richTypes = [
+      "com.mundi.notebook-table+json",
       "public.html",
       "public.rtf",
       "com.apple.flat-rtfd",
+      "public.tab-separated-values-text",
       "public.utf8-plain-text",
       "public.plain-text",
       "public.text"
@@ -113,8 +117,8 @@ import UIKit
           )
           return
         }
-        let encoding: String.Encoding = typeIdentifier == "public.rtf" ||
-          typeIdentifier == "com.apple.flat-rtfd" ? .ascii : .utf8
+        let isRichText = typeIdentifier == "public.rtf" || typeIdentifier == "com.apple.flat-rtfd"
+        let encoding: String.Encoding = isRichText ? .ascii : .utf8
         guard let text = String(data: data, encoding: encoding) ??
           String(data: data, encoding: .utf8) ??
           String(data: data, encoding: .ascii) else {
@@ -136,16 +140,68 @@ import UIKit
           "type_identifiers": typeIdentifiers,
           "selected_representation": typeIdentifier
         ]
-        if typeIdentifier == "public.html" {
+        if typeIdentifier == "com.mundi.notebook-table+json" {
+          payload["mundi_json"] = text
+        } else if typeIdentifier == "public.html" {
           payload["html"] = text
-        } else if typeIdentifier == "public.rtf" || typeIdentifier == "com.apple.flat-rtfd" {
-          payload["rtf"] = text
+        } else if isRichText {
+          if let html = self.htmlFromRichTextData(data, typeIdentifier: typeIdentifier) {
+            payload["html"] = html
+          } else {
+            payload["rtf"] = text
+          }
+        } else if typeIdentifier == "public.tab-separated-values-text" {
+          payload["tsv"] = text
         } else {
           payload["text"] = text
         }
         result(payload)
       }
     }
+  }
+
+  private func htmlFromRichTextData(_ data: Data, typeIdentifier: String) -> String? {
+    let documentType: NSAttributedString.DocumentType =
+      typeIdentifier == "public.rtf" ? .rtf : .rtfd
+    var readAttributes: NSDictionary?
+    guard let attributed = try? NSAttributedString(
+      data: data,
+      options: [.documentType: documentType],
+      documentAttributes: &readAttributes
+    ) else {
+      return nil
+    }
+    let range = NSRange(location: 0, length: attributed.length)
+    guard let htmlData = try? attributed.data(
+      from: range,
+      documentAttributes: [.documentType: NSAttributedString.DocumentType.html]
+    ) else {
+      return nil
+    }
+    return String(data: htmlData, encoding: .utf8)
+  }
+
+  private func writeTableClipboard(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard let args = call.arguments as? [String: Any] else {
+      result(FlutterError(code: "bad_args", message: "Missing table clipboard payload", details: nil))
+      return
+    }
+    var item: [String: Any] = [:]
+    if let mundiJson = args["mundi_json"] as? String, !mundiJson.isEmpty {
+      item["com.mundi.notebook-table+json"] = mundiJson
+    }
+    if let html = args["html"] as? String, !html.isEmpty {
+      item["public.html"] = html
+    }
+    if let tsv = args["tsv"] as? String, !tsv.isEmpty {
+      item["public.tab-separated-values-text"] = tsv
+    }
+    if let text = args["text"] as? String, !text.isEmpty {
+      item["public.utf8-plain-text"] = text
+      item["public.text"] = text
+    }
+    UIPasteboard.general.items = [item]
+    result(nil)
   }
 
   private func readImageClipboard(result: @escaping FlutterResult) {

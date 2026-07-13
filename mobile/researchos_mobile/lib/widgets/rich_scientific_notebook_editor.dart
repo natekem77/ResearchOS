@@ -1271,15 +1271,19 @@ class RichClipboardContent {
   const RichClipboardContent({
     required this.typeIdentifiers,
     required this.selectedRepresentation,
+    this.mundiJson,
     this.html,
     this.rtf,
+    this.tsv,
     this.text,
   });
 
   final List<String> typeIdentifiers;
   final String selectedRepresentation;
+  final String? mundiJson;
   final String? html;
   final String? rtf;
+  final String? tsv;
   final String? text;
 }
 
@@ -1306,8 +1310,10 @@ class QuillClipboardRichContentReader extends ClipboardRichContentReader {
         typeIdentifiers: typeIdentifiers,
         selectedRepresentation:
             result['selected_representation']?.toString() ?? 'unknown',
+        mundiJson: result['mundi_json']?.toString(),
         html: result['html']?.toString(),
         rtf: result['rtf']?.toString(),
+        tsv: result['tsv']?.toString(),
         text: result['text']?.toString(),
       );
     } on MissingPluginException {
@@ -1327,7 +1333,11 @@ class QuillClipboardRichContentReader extends ClipboardRichContentReader {
           : 'unavailable';
       debugPrint(
         'mundi_rich_clipboard type_identifiers=$identifiers '
-        'selected_representation=${result['selected_representation'] ?? 'unknown'}',
+        'selected_representation=${result['selected_representation'] ?? 'unknown'} '
+        'html_length=${result['html']?.toString().length ?? 0} '
+        'rtf_length=${result['rtf']?.toString().length ?? 0} '
+        'tsv_length=${result['tsv']?.toString().length ?? 0} '
+        'text_length=${result['text']?.toString().length ?? 0}',
       );
       return true;
     }());
@@ -2218,10 +2228,93 @@ class NotebookTableData {
   }
 }
 
+class NotebookTableClipboardPayload {
+  const NotebookTableClipboardPayload({
+    required this.mundiJson,
+    required this.html,
+    required this.tsv,
+    required this.plainText,
+  });
+
+  final String mundiJson;
+  final String html;
+  final String tsv;
+  final String plainText;
+
+  static NotebookTableClipboardPayload fromTable(NotebookTable table) {
+    final tsv = table.toPlainText();
+    return NotebookTableClipboardPayload(
+      mundiJson: jsonEncode({'table': table.toJson()}),
+      html: _htmlFromTable(table),
+      tsv: tsv,
+      plainText: tsv,
+    );
+  }
+
+  static String _htmlFromTable(NotebookTable table) {
+    final buffer = StringBuffer()..write('<table><tbody>');
+    for (var row = 0; row < table.rows; row++) {
+      buffer.write('<tr>');
+      for (var column = 0; column < table.columns; column++) {
+        final cell = table.cells[row][column];
+        final tag = cell.header ? 'th' : 'td';
+        buffer
+          ..write('<$tag>')
+          ..write(_escapeHtml(cell.plainText))
+          ..write('</$tag>');
+      }
+      buffer.write('</tr>');
+    }
+    buffer.write('</tbody></table>');
+    return buffer.toString();
+  }
+
+  static String _escapeHtml(String value) {
+    return value
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+  }
+}
+
+class NotebookTableClipboardWriter {
+  const NotebookTableClipboardWriter._();
+
+  static const MethodChannel _clipboardChannel = MethodChannel(
+    'mundi/clipboard',
+  );
+
+  static Future<void> write(NotebookTable table) async {
+    final payload = NotebookTableClipboardPayload.fromTable(table);
+    try {
+      await _clipboardChannel.invokeMethod<void>('writeTableClipboard', {
+        'mundi_json': payload.mundiJson,
+        'html': payload.html,
+        'tsv': payload.tsv,
+        'text': payload.plainText,
+      });
+    } on MissingPluginException {
+      await Clipboard.setData(ClipboardData(text: payload.tsv));
+    } catch (_) {
+      await Clipboard.setData(ClipboardData(text: payload.tsv));
+    }
+  }
+}
+
 class NotebookRichPasteParser {
   const NotebookRichPasteParser._();
 
   static NotebookRichPasteResult parse(RichClipboardContent content) {
+    final mundiJson = content.mundiJson;
+    if (mundiJson != null && mundiJson.trim().isNotEmpty) {
+      final table = _tableFromMundiJson(mundiJson);
+      if (table != null) {
+        return NotebookRichPasteResult(
+          blocks: [NotebookPasteTableBlock(table)],
+        );
+      }
+    }
     final html = content.html;
     if (html != null && html.trim().isNotEmpty) {
       final blocks = _blocksFromHtml(extractHtmlFragment(html));
@@ -2235,10 +2328,17 @@ class NotebookRichPasteParser {
         );
       }
     }
-    final text = content.text;
-    if (text != null && _looksLikeTsvTable(text)) {
+    final tabularText = content.tsv ?? content.text;
+    if (tabularText != null && _looksLikeTsvTable(tabularText)) {
       return NotebookRichPasteResult(
-        blocks: [NotebookPasteTableBlock(_tableFromTsv(text))],
+        blocks: [NotebookPasteTableBlock(_tableFromTsv(tabularText))],
+        requiresConfirmation: true,
+      );
+    }
+    final text = content.text;
+    if (text != null && _looksLikeCsvTable(text)) {
+      return NotebookRichPasteResult(
+        blocks: [NotebookPasteTableBlock(_tableFromCsv(text))],
         requiresConfirmation: true,
       );
     }
@@ -2251,6 +2351,21 @@ class NotebookRichPasteParser {
       );
     }
     return const NotebookRichPasteResult(blocks: []);
+  }
+
+  static NotebookTable? _tableFromMundiJson(String source) {
+    try {
+      final decoded = jsonDecode(source);
+      if (decoded is Map && decoded['embed_type'] == 'notebook_table') {
+        return NotebookTable.fromJson(decoded);
+      }
+      if (decoded is Map && decoded['table'] != null) {
+        return NotebookTable.fromJson(decoded['table']);
+      }
+    } catch (_) {
+      return null;
+    }
+    return null;
   }
 
   static String extractHtmlFragment(String source) {
@@ -2457,6 +2572,72 @@ class NotebookRichPasteParser {
       hasHeaderRow: true,
       sourceMetadata: const {'pasted_from': 'tsv_clipboard'},
     );
+  }
+
+  static NotebookTable _tableFromCsv(String text) {
+    final parsed = _parseCsvRows(text);
+    final columns =
+        parsed.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    return NotebookTableData(
+      rows: parsed.length,
+      columns: columns,
+      cells: parsed,
+      headerRows: const {0},
+      sourceType: 'csv_clipboard',
+    ).toNotebookTable();
+  }
+
+  static bool _looksLikeCsvTable(String text) {
+    final rows = _parseCsvRows(text)
+        .where((row) => row.any((cell) => cell.trim().isNotEmpty))
+        .toList();
+    if (rows.length < 2) return false;
+    final counts = [for (final row in rows) row.length];
+    if (counts.any((count) => count < 2)) return false;
+    final first = counts.first;
+    return counts.every((count) => count == first);
+  }
+
+  static List<List<String>> _parseCsvRows(String text) {
+    final rows = <List<String>>[];
+    final currentRow = <String>[];
+    final currentCell = StringBuffer();
+    var inQuotes = false;
+    for (var i = 0; i < text.length; i++) {
+      final char = text[i];
+      if (char == '"') {
+        if (inQuotes && i + 1 < text.length && text[i + 1] == '"') {
+          currentCell.write('"');
+          i += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+      if (char == ',' && !inQuotes) {
+        currentRow.add(currentCell.toString().trim());
+        currentCell.clear();
+        continue;
+      }
+      if ((char == '\n' || char == '\r') && !inQuotes) {
+        if (char == '\r' && i + 1 < text.length && text[i + 1] == '\n') {
+          i += 1;
+        }
+        currentRow.add(currentCell.toString().trim());
+        currentCell.clear();
+        if (currentRow.any((cell) => cell.trim().isNotEmpty)) {
+          rows.add([...currentRow]);
+        }
+        currentRow.clear();
+        continue;
+      }
+      currentCell.write(char);
+    }
+    currentRow.add(currentCell.toString().trim());
+    if (currentRow.any((cell) => cell.trim().isNotEmpty)) {
+      rows.add(currentRow);
+    }
+    return rows;
   }
 
   static bool _looksLikeTsvTable(String text) {
@@ -3345,7 +3526,7 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
   }
 
   Future<void> _copyTable() async {
-    await Clipboard.setData(ClipboardData(text: table.toPlainText()));
+    await NotebookTableClipboardWriter.write(table);
   }
 
   Future<void> _cutTable() async {

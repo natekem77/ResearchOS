@@ -624,6 +624,84 @@ void main() {
     expect(prose.hasStructuredTable, isFalse);
   });
 
+  test('rich paste parser detects CSV fallback with quoted fields', () {
+    final result = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.utf8-plain-text'],
+        selectedRepresentation: 'public.utf8-plain-text',
+        text:
+            'Cell line,"# cells, per well",Notes\nIMR90,1500,"Use fewer, not more"\nH9,2000,"Line one\nline two"',
+      ),
+    );
+
+    expect(result.hasStructuredTable, isTrue);
+    expect(result.requiresConfirmation, isTrue);
+    final table = (result.blocks.single as NotebookPasteTableBlock).table;
+    expect(table.rows, 3);
+    expect(table.columns, 3);
+    expect(table.cells[0][1].text, '# cells, per well');
+    expect(table.cells[1][2].text, 'Use fewer, not more');
+    expect(table.cells[2][2].text, 'Line one\nline two');
+  });
+
+  test('rich paste parser prefers Mundi structured table JSON', () {
+    const sourceTable = NotebookTable(
+      tableId: 'table:mundi-copy',
+      rows: 1,
+      columns: 2,
+      cells: [
+        [
+          NotebookTableCell(text: 'A'),
+          NotebookTableCell(text: 'B'),
+        ],
+      ],
+    );
+    final result = NotebookRichPasteParser.parse(
+      RichClipboardContent(
+        typeIdentifiers: const [
+          'com.mundi.notebook-table+json',
+          'public.html',
+          'public.utf8-plain-text',
+        ],
+        selectedRepresentation: 'com.mundi.notebook-table+json',
+        mundiJson:
+            NotebookTableClipboardPayload.fromTable(sourceTable).mundiJson,
+        html: '<table><tr><td>Wrong</td></tr></table>',
+        text: 'Wrong',
+      ),
+    );
+
+    final table = (result.blocks.single as NotebookPasteTableBlock).table;
+    expect(table.cells[0][0].text, 'A');
+    expect(table.cells[0][1].text, 'B');
+  });
+
+  test('Mundi table copy exports HTML TSV plain text and JSON', () {
+    const table = NotebookTable(
+      tableId: 'table:export',
+      rows: 2,
+      columns: 2,
+      cells: [
+        [
+          NotebookTableCell(text: 'Cell line', header: true),
+          NotebookTableCell(text: 'Notes', header: true),
+        ],
+        [
+          NotebookTableCell(text: 'IMR90'),
+          NotebookTableCell(text: 'Use fewer cells'),
+        ],
+      ],
+    );
+
+    final payload = NotebookTableClipboardPayload.fromTable(table);
+
+    expect(payload.mundiJson, contains('notebook_table'));
+    expect(payload.html, contains('<table>'));
+    expect(payload.html, contains('<th>Cell line</th>'));
+    expect(payload.tsv, contains('Cell line\tNotes'));
+    expect(payload.plainText, payload.tsv);
+  });
+
   test('rich paste parser marks merged cells as degraded metadata', () {
     final result = NotebookRichPasteParser.parse(
       const RichClipboardContent(
