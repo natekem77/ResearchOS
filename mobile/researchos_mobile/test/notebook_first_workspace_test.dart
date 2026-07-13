@@ -1081,6 +1081,117 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('missing cache downloads by attachment id after app restart',
+      (tester) async {
+    var requestedAttachment = '';
+    final cache = _TestNotebookImageCache();
+    await pumpRichEditor(
+      tester,
+      imageCache: cache,
+      downloadAttachmentBytes: (attachmentId) async {
+        requestedAttachment = attachmentId;
+        return Uint8List.fromList(_pngBytes);
+      },
+      initialContent: _imageEmbedContent(displayName: 'Restart restored image'),
+      documentId: 'document:restart',
+    );
+
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(requestedAttachment, 'attachment:pasted-image');
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'changing server downloader still restores image by attachment id',
+      (tester) async {
+    var currentServer = 'http://hotspot-one.test';
+    var usedServer = '';
+    final gate = Completer<void>();
+    await pumpRichEditor(
+      tester,
+      imageCache: _TestNotebookImageCache(),
+      downloadAttachmentBytes: (attachmentId) async {
+        await gate.future;
+        usedServer = currentServer;
+        return Uint8List.fromList(_pngBytes);
+      },
+      initialContent: _imageEmbedContent(displayName: 'Network moved image'),
+    );
+    currentServer = 'http://hotspot-two.test';
+    gate.complete();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(usedServer, 'http://hotspot-two.test');
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('backend unavailable shows Retry and recovery renders image',
+      (tester) async {
+    var fail = true;
+    await pumpRichEditor(
+      tester,
+      imageCache: _TestNotebookImageCache(),
+      downloadAttachmentBytes: (attachmentId) async {
+        if (fail) throw TimeoutException('backend unreachable');
+        return Uint8List.fromList(_pngBytes);
+      },
+      initialContent: _imageEmbedContent(displayName: 'Retry image'),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.text('Server unavailable — Retry'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+
+    fail = false;
+    await tester.tap(find.text('Retry'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(find.text('Server unavailable — Retry'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('unauthorized and missing attachment show distinct states',
+      (tester) async {
+    await pumpRichEditor(
+      tester,
+      imageCache: _TestNotebookImageCache(),
+      downloadAttachmentBytes: (attachmentId) async {
+        throw const ResearchOsApiException(
+          'Request failed (403): /experiment-attachments/attachment:pasted-image/download',
+        );
+      },
+      initialContent: _imageEmbedContent(displayName: 'Unauthorized image'),
+      documentId: 'document:unauthorized',
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('You do not have access to this image'), findsOneWidget);
+
+    await pumpRichEditor(
+      tester,
+      imageCache: _TestNotebookImageCache(),
+      downloadAttachmentBytes: (attachmentId) async {
+        throw const ResearchOsApiException(
+          'Request failed (404): /experiment-attachments/attachment:pasted-image/download',
+        );
+      },
+      initialContent: _imageEmbedContent(displayName: 'Missing image'),
+      documentId: 'document:missing',
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Attachment no longer exists'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('unsupported clipboard content shows feedback', (tester) async {
     var delta = '';
     await pumpRichEditor(
@@ -1190,6 +1301,30 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('insert table toolbar creates a structured 2x2 table',
+      (tester) async {
+    String? delta;
+    await pumpRichEditor(
+      tester,
+      onChanged: (edit) => delta = edit.deltaJson,
+      size: const Size(375, 667),
+    );
+
+    await tester.ensureVisible(find.byTooltip('Insert table'));
+    await tester.tap(find.byTooltip('Insert table'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Insert 2x2 table'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(Table), findsOneWidget);
+    expect(delta, contains('experiment_table'));
+    expect(delta, contains('notebook_table'));
+    expect(delta, contains('row_id'));
+    expect(delta, contains('cell_id'));
+    expect(delta, contains('column_widths'));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('table cell edits and row column controls persist in Delta',
       (tester) async {
     String? delta;
@@ -1224,17 +1359,78 @@ void main() {
     await tester.enterText(find.widgetWithText(TextField, 'Cell text'), 'A2');
     await tester.tap(find.text('Save').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Add row'));
+    await tester.tap(find.text('Add row below'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Add column'));
+    await tester.tap(find.text('Add column right'));
     await tester.pumpAndSettle();
 
     expect(delta, contains('experiment_table'));
     expect(delta, contains('A2'));
     expect(delta, contains('rows'));
     expect(delta, contains('column_count'));
-    expect(plainText, contains('Header A\tHeader B'));
-    expect(plainText, contains('A2\tB1'));
+    expect(delta, contains('row_id'));
+    expect(delta, contains('cell_id'));
+    expect(plainText, contains('Header A\t\tHeader B'));
+    expect(plainText, contains('A2\t\tB1'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('table operations update rows columns header widths and caption',
+      (tester) async {
+    String? delta;
+    await pumpRichEditor(
+      tester,
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:ops',
+          rows: 2,
+          columns: 2,
+          cells: [
+            [
+              NotebookTableCell(text: 'A'),
+              NotebookTableCell(text: 'B'),
+            ],
+            [
+              NotebookTableCell(text: 'C'),
+              NotebookTableCell(text: 'D'),
+            ],
+          ],
+        ),
+      ),
+      onChanged: (edit) => delta = edit.deltaJson,
+      size: const Size(393, 852),
+    );
+
+    await tester.tap(find.byKey(
+      const ValueKey('notebook-table-cell-table:ops-1-1'),
+    ));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Cell text'),
+      'D line 1\nD line 2',
+    );
+    await tester.tap(find.text('Save').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add row above'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add column left'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Toggle header row'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Wide columns'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Edit caption'));
+    await tester.tap(find.text('Edit caption'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'Caption'), 'Plan A');
+    await tester.tap(find.text('Save').last);
+    await tester.pumpAndSettle();
+
+    expect(delta, contains('D line 1'));
+    expect(delta, contains('has_header_row'));
+    expect(delta, contains('1.35'));
+    expect(delta, contains('Plan A'));
+    expect(find.text('Plan A'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -1263,7 +1459,7 @@ void main() {
       onChanged: (edit) => saved = edit.deltaJson,
     );
     expect(find.text('SAG'), findsOneWidget);
-    await tester.tap(find.text('Add row'));
+    await tester.tap(find.text('Add row below'));
     await tester.pumpAndSettle();
     final reopened = saved!;
 
@@ -1277,6 +1473,46 @@ void main() {
         findsOneWidget);
     expect(find.text('Condition'), findsOneWidget);
     expect(find.text('300 nM'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('table movement and delete keep document structured',
+      (tester) async {
+    String? saved;
+    await pumpRichEditor(
+      tester,
+      initialContent: jsonEncode([
+        {'insert': 'Before\n'},
+        {
+          'insert': {
+            'custom': jsonEncode({
+              'experiment_table': jsonEncode(
+                const NotebookTable(
+                  tableId: 'table:move',
+                  rows: 1,
+                  columns: 1,
+                  cells: [
+                    [NotebookTableCell(text: 'Move me')]
+                  ],
+                ).toJson(),
+              )
+            })
+          }
+        },
+        {'insert': '\nAfter\n'},
+      ]),
+      onChanged: (edit) => saved = edit.deltaJson,
+    );
+
+    await tester.tap(find.text('Move Down'));
+    await tester.pumpAndSettle();
+    expect(saved, contains('Move me'));
+    expect(saved, contains('Before'));
+    await tester.ensureVisible(find.text('Delete table'));
+    await tester.tap(find.text('Delete table'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(saved, isNot(contains('Move me')));
     expect(tester.takeException(), isNull);
   });
 
@@ -1307,6 +1543,7 @@ void main() {
       initialContent: _imageEmbedContent(
         displayName: 'Editable image',
         aspectRatio: 1.777,
+        localCacheKey: 'editable-cache',
       ),
       onChanged: (edit) => delta = edit.deltaJson,
     );
@@ -1337,6 +1574,9 @@ void main() {
     expect(delta, contains('Brightfield organoid'));
     expect(delta, contains('aspect_ratio'));
     expect(delta, contains('1.777'));
+    expect(delta, contains('attachment:pasted-image'));
+    expect(delta, contains('editable-cache'));
+    expect(delta, contains('upload_status'));
     expect(tester.takeException(), isNull);
   });
 
@@ -1347,6 +1587,7 @@ void main() {
       initialContent: _imageEmbedContent(
         before: 'Before paragraph\n',
         displayName: 'Movable image',
+        localCacheKey: 'movable-cache',
         after: 'After paragraph\n',
       ),
       onChanged: (edit) => delta = edit.deltaJson,
@@ -1361,6 +1602,8 @@ void main() {
 
     expect(delta.indexOf('After paragraph'),
         lessThan(delta.indexOf('attachment:pasted-image')));
+    expect(delta, contains('movable-cache'));
+    expect(delta, contains('upload_status'));
     expect(tester.takeException(), isNull);
   });
 

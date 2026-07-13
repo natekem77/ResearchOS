@@ -284,6 +284,43 @@ class _RichScientificNotebookEditorState
     _emitChange();
   }
 
+  Future<void> _showInsertTableSheet() async {
+    final selection = await showModalBottomSheet<_TableSizeSelection>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => const _InsertTableSheet(),
+    );
+    if (selection == null) return;
+    _insertTable(NotebookTable.create(
+      rows: selection.rows,
+      columns: selection.columns,
+    ));
+  }
+
+  void _insertTable(NotebookTable table) {
+    final selection = _controller.selection;
+    final index = selection.baseOffset < 0
+        ? _controller.document.length - 1
+        : selection.start;
+    final length = selection.isCollapsed ? 0 : selection.end - selection.start;
+    final embed = BlockEmbed.custom(
+      CustomBlockEmbed('experiment_table', jsonEncode(table.toJson())),
+    );
+    _controller.replaceText(
+      index,
+      length,
+      embed,
+      TextSelection.collapsed(offset: index + 1),
+    );
+    _controller.replaceText(
+      index + 1,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: index + 2),
+    );
+    _emitChange();
+  }
+
   Future<bool> _pasteImageFromClipboard({
     bool showUnsupportedMessage = true,
   }) async {
@@ -511,6 +548,7 @@ class _RichScientificNotebookEditorState
           onDone: () => _focusNode.unfocus(),
           onPasteImage:
               widget.onPasteImage == null ? null : _pasteImageFromClipboard,
+          onInsertTable: _showInsertTableSheet,
         ),
         const SizedBox(height: ResearchOsSpacing.sm),
         Row(
@@ -603,6 +641,7 @@ class _MobileNotebookToolbar extends StatelessWidget {
     required this.onSave,
     required this.onDone,
     required this.onPasteImage,
+    required this.onInsertTable,
   });
 
   final QuillController controller;
@@ -611,6 +650,7 @@ class _MobileNotebookToolbar extends StatelessWidget {
   final VoidCallback? onSave;
   final VoidCallback onDone;
   final VoidCallback? onPasteImage;
+  final VoidCallback onInsertTable;
 
   @override
   Widget build(BuildContext context) {
@@ -790,6 +830,11 @@ class _MobileNotebookToolbar extends StatelessWidget {
                     )
                   : const Icon(Icons.image_outlined),
             ),
+            IconButton(
+              tooltip: 'Insert table',
+              onPressed: onInsertTable,
+              icon: const Icon(Icons.table_chart_outlined),
+            ),
             const SizedBox(width: ResearchOsSpacing.xs),
             FilledButton.icon(
               key: const ValueKey('rich-notebook-save-button'),
@@ -893,6 +938,109 @@ class _AttributeMenu extends StatelessWidget {
             value: option.attribute,
             child: Text(option.label),
           ),
+      ],
+    );
+  }
+}
+
+class _TableSizeSelection {
+  const _TableSizeSelection({required this.rows, required this.columns});
+
+  final int rows;
+  final int columns;
+}
+
+class _InsertTableSheet extends StatefulWidget {
+  const _InsertTableSheet();
+
+  @override
+  State<_InsertTableSheet> createState() => _InsertTableSheetState();
+}
+
+class _InsertTableSheetState extends State<_InsertTableSheet> {
+  int _rows = 2;
+  int _columns = 2;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.lg),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Insert table', style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: ResearchOsSpacing.md),
+            _TableStepper(
+              label: 'Rows',
+              value: _rows,
+              min: 1,
+              max: 10,
+              onChanged: (value) => setState(() => _rows = value),
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            _TableStepper(
+              label: 'Columns',
+              value: _columns,
+              min: 1,
+              max: 8,
+              onChanged: (value) => setState(() => _columns = value),
+            ),
+            const SizedBox(height: ResearchOsSpacing.lg),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(
+                context,
+                _TableSizeSelection(rows: _rows, columns: _columns),
+              ),
+              icon: const Icon(Icons.table_chart_outlined),
+              label: Text('Insert ${_rows}x$_columns table'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TableStepper extends StatelessWidget {
+  const _TableStepper({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  final String label;
+  final int value;
+  final int min;
+  final int max;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: Text(label)),
+        IconButton(
+          tooltip: 'Decrease $label',
+          onPressed: value <= min ? null : () => onChanged(value - 1),
+          icon: const Icon(Icons.remove),
+        ),
+        SizedBox(
+          width: 40,
+          child: Text(
+            value.toString(),
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+        ),
+        IconButton(
+          tooltip: 'Increase $label',
+          onPressed: value >= max ? null : () => onChanged(value + 1),
+          icon: const Icon(Icons.add),
+        ),
       ],
     );
   }
@@ -1562,30 +1710,84 @@ class NotebookRichPasteResult {
 class NotebookTable {
   const NotebookTable({
     required this.tableId,
-    required this.rows,
-    required this.columns,
+    this.version = 1,
+    this.rowIds = const [],
+    int? rows,
+    int? columns,
     required this.cells,
+    this.columnWidths = const [],
+    this.hasHeaderRow = false,
     this.caption,
     this.sourceMetadata = const {},
   });
 
   final String tableId;
-  final int rows;
-  final int columns;
+  final int version;
+  final List<String> rowIds;
   final List<List<NotebookTableCell>> cells;
+  final List<double> columnWidths;
+  final bool hasHeaderRow;
   final String? caption;
   final Map<String, Object?> sourceMetadata;
+
+  int get rows => cells.length;
+
+  int get columns => columnWidths.isNotEmpty
+      ? columnWidths.length
+      : cells.isEmpty
+          ? 0
+          : cells.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+
+  factory NotebookTable.create({
+    required int rows,
+    required int columns,
+    bool hasHeaderRow = false,
+    Map<String, Object?> sourceMetadata = const {'source_type': 'manual'},
+  }) {
+    final safeRows = rows.clamp(1, 10);
+    final safeColumns = columns.clamp(1, 8);
+    return NotebookTable(
+      tableId: _newNotebookTableId('table'),
+      version: 1,
+      rowIds: [
+        for (var row = 0; row < safeRows; row++) _newNotebookTableId('row'),
+      ],
+      cells: [
+        for (var row = 0; row < safeRows; row++)
+          [
+            for (var column = 0; column < safeColumns; column++)
+              NotebookTableCell.empty(header: hasHeaderRow && row == 0),
+          ],
+      ],
+      columnWidths: [for (var i = 0; i < safeColumns; i++) 1.0],
+      hasHeaderRow: hasHeaderRow,
+      sourceMetadata: sourceMetadata,
+    );
+  }
 
   Map<String, dynamic> toJson() {
     return {
       'embed_type': 'notebook_table',
       'table_id': tableId,
+      'version': version,
       'row_count': rows,
       'column_count': columns,
+      'column_widths': columnWidths,
+      'has_header_row': hasHeaderRow,
       'rows': [
-        for (final row in cells)
+        for (var rowIndex = 0; rowIndex < cells.length; rowIndex++)
           {
-            'cells': [for (final cell in row) cell.toJson()],
+            'row_id': rowIds.length > rowIndex
+                ? rowIds[rowIndex]
+                : _newNotebookTableId('row'),
+            'cells': [
+              for (var column = 0; column < columns; column++)
+                column < cells[rowIndex].length
+                    ? cells[rowIndex][column].toJson()
+                    : NotebookTableCell.empty(
+                        header: hasHeaderRow && rowIndex == 0,
+                      ).toJson(),
+            ],
           },
       ],
       if (caption?.trim().isNotEmpty == true) 'caption': caption,
@@ -1600,27 +1802,49 @@ class NotebookTable {
   }
 
   NotebookTable copyWith({
+    List<String>? rowIds,
     List<List<NotebookTableCell>>? cells,
+    List<double>? columnWidths,
+    bool? hasHeaderRow,
     String? caption,
   }) {
-    final nextCells = cells ?? this.cells;
+    final nextHasHeaderRow = hasHeaderRow ?? this.hasHeaderRow;
+    final nextCells = _normalizeCells(
+      cells ?? this.cells,
+      headerFirstRow: nextHasHeaderRow,
+    );
     final nextRows = nextCells.length;
     final nextColumns = nextCells.isEmpty
         ? 0
         : nextCells.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    final nextRowIds = <String>[
+      for (var row = 0; row < nextRows; row++)
+        if ((rowIds ?? this.rowIds).length > row)
+          (rowIds ?? this.rowIds)[row]
+        else
+          _newNotebookTableId('row'),
+    ];
+    final rawWidths = columnWidths ?? this.columnWidths;
+    final nextWidths = [
+      for (var column = 0; column < nextColumns; column++)
+        if (rawWidths.length > column && rawWidths[column] > 0)
+          rawWidths[column]
+        else
+          1.0,
+    ];
     return NotebookTable(
       tableId: tableId,
-      rows: nextRows,
-      columns: nextColumns,
+      version: version,
+      rowIds: nextRowIds,
       cells: [
         for (final row in nextCells)
           [
             for (var column = 0; column < nextColumns; column++)
-              column < row.length
-                  ? row[column]
-                  : const NotebookTableCell(text: '')
+              column < row.length ? row[column] : NotebookTableCell.empty()
           ],
       ],
+      columnWidths: nextWidths,
+      hasHeaderRow: nextHasHeaderRow,
       caption: caption ?? this.caption,
       sourceMetadata: sourceMetadata,
     );
@@ -1639,17 +1863,21 @@ class NotebookTable {
     final rawRows = map['rows'];
     Object? rawCells = map['cells'];
     if (rawRows is List && rawRows.isNotEmpty && rawRows.first is Map) {
-      rawCells = [
-        for (final row in rawRows)
-          if (row is Map) row['cells'],
-      ];
+      rawCells = rawRows;
     }
     if (rawCells is! List) return null;
     final cells = <List<NotebookTableCell>>[];
+    final rowIds = <String>[];
     for (final rawRow in rawCells) {
-      if (rawRow is! List) continue;
+      if (rawRow is Map) {
+        rowIds.add(rawRow['row_id']?.toString() ?? _newNotebookTableId('row'));
+      } else {
+        rowIds.add(_newNotebookTableId('row'));
+      }
+      final rowCells = rawRow is Map ? rawRow['cells'] : rawRow;
+      if (rowCells is! List) continue;
       cells.add([
-        for (final rawCell in rawRow)
+        for (final rawCell in rowCells)
           NotebookTableCell.fromJson(rawCell) ??
               NotebookTableCell(text: rawCell?.toString() ?? ''),
       ]);
@@ -1657,35 +1885,69 @@ class NotebookTable {
     final columns = cells.isEmpty
         ? 0
         : cells.map((row) => row.length).reduce((a, b) => a > b ? a : b);
+    final hasHeaderRow = map['has_header_row'] == true ||
+        (cells.isNotEmpty && cells.first.any((c) => c.header));
+    final normalizedCells =
+        _normalizeCells(cells, headerFirstRow: hasHeaderRow);
+    final widths = _columnWidthsFromJson(map['column_widths'], columns);
     return NotebookTable(
-      tableId: map['table_id']?.toString() ??
-          'table-${DateTime.now().toUtc().microsecondsSinceEpoch}',
-      rows: cells.length,
-      columns: columns,
+      tableId: map['table_id']?.toString() ?? _newNotebookTableId('table'),
+      version: int.tryParse(map['version']?.toString() ?? '') ?? 1,
+      rowIds: [
+        for (var row = 0; row < normalizedCells.length; row++)
+          rowIds.length > row ? rowIds[row] : _newNotebookTableId('row'),
+      ],
       cells: [
-        for (final row in cells)
+        for (final row in normalizedCells)
           [
             for (var column = 0; column < columns; column++)
-              column < row.length
-                  ? row[column]
-                  : const NotebookTableCell(text: '')
+              column < row.length ? row[column] : NotebookTableCell.empty()
           ],
       ],
+      columnWidths: widths,
+      hasHeaderRow: hasHeaderRow,
       caption: map['caption']?.toString(),
       sourceMetadata: map['source_metadata'] is Map
           ? Map<String, Object?>.from(map['source_metadata'] as Map)
           : const {},
     );
   }
+
+  static List<List<NotebookTableCell>> _normalizeCells(
+    List<List<NotebookTableCell>> cells, {
+    required bool headerFirstRow,
+  }) {
+    return [
+      for (var row = 0; row < cells.length; row++)
+        [
+          for (final cell in cells[row])
+            cell.copyWith(header: headerFirstRow && row == 0),
+        ],
+    ];
+  }
+
+  static List<double> _columnWidthsFromJson(Object? raw, int columns) {
+    if (raw is! List) return [for (var i = 0; i < columns; i++) 1.0];
+    return [
+      for (var column = 0; column < columns; column++)
+        if (raw.length > column)
+          double.tryParse(raw[column].toString())?.clamp(0.25, 4.0) ?? 1.0
+        else
+          1.0,
+    ];
+  }
 }
 
 class NotebookTableCell {
   const NotebookTableCell({
+    this.cellId = '',
     required this.text,
     this.header = false,
     this.bold = false,
     this.italic = false,
     this.underline = false,
+    this.horizontalAlignment = 'left',
+    this.verticalAlignment = 'top',
     this.textColor,
     this.backgroundColor,
     this.link,
@@ -1693,11 +1955,23 @@ class NotebookTableCell {
     this.rowspan = 1,
   });
 
+  factory NotebookTableCell.empty({bool header = false}) {
+    return NotebookTableCell(
+      cellId: _newNotebookTableId('cell'),
+      text: '',
+      header: header,
+      bold: header,
+    );
+  }
+
   final String text;
+  final String cellId;
   final bool header;
   final bool bold;
   final bool italic;
   final bool underline;
+  final String horizontalAlignment;
+  final String verticalAlignment;
   final String? textColor;
   final String? backgroundColor;
   final String? link;
@@ -1706,8 +1980,12 @@ class NotebookTableCell {
 
   Map<String, dynamic> toJson() {
     return {
+      'cell_id': cellId.isEmpty ? _newNotebookTableId('cell') : cellId,
       'text': text,
+      'is_header': header,
       if (header) 'header': true,
+      'horizontal_alignment': horizontalAlignment,
+      'vertical_alignment': verticalAlignment,
       if (bold) 'bold': true,
       if (italic) 'italic': true,
       if (underline) 'underline': true,
@@ -1721,11 +1999,14 @@ class NotebookTableCell {
   }
 
   NotebookTableCell copyWith({
+    String? cellId,
     String? text,
     bool? header,
     bool? bold,
     bool? italic,
     bool? underline,
+    String? horizontalAlignment,
+    String? verticalAlignment,
     String? textColor,
     String? backgroundColor,
     String? link,
@@ -1733,11 +2014,14 @@ class NotebookTableCell {
     int? rowspan,
   }) {
     return NotebookTableCell(
+      cellId: cellId ?? this.cellId,
       text: text ?? this.text,
       header: header ?? this.header,
       bold: bold ?? this.bold,
       italic: italic ?? this.italic,
       underline: underline ?? this.underline,
+      horizontalAlignment: horizontalAlignment ?? this.horizontalAlignment,
+      verticalAlignment: verticalAlignment ?? this.verticalAlignment,
       textColor: textColor ?? this.textColor,
       backgroundColor: backgroundColor ?? this.backgroundColor,
       link: link ?? this.link,
@@ -1750,16 +2034,82 @@ class NotebookTableCell {
     if (raw is! Map) return null;
     final map = Map<String, dynamic>.from(raw);
     return NotebookTableCell(
+      cellId: map['cell_id']?.toString() ?? _newNotebookTableId('cell'),
       text: map['text']?.toString() ?? '',
-      header: map['header'] == true,
+      header: map['is_header'] == true || map['header'] == true,
       bold: map['bold'] == true,
       italic: map['italic'] == true,
       underline: map['underline'] == true,
+      horizontalAlignment: map['horizontal_alignment']?.toString() ?? 'left',
+      verticalAlignment: map['vertical_alignment']?.toString() ?? 'top',
       textColor: map['text_color']?.toString(),
       backgroundColor: map['background_color']?.toString(),
       link: map['link']?.toString(),
       colspan: int.tryParse(map['colspan']?.toString() ?? '') ?? 1,
       rowspan: int.tryParse(map['rowspan']?.toString() ?? '') ?? 1,
+    );
+  }
+}
+
+int _notebookTableIdCounter = 0;
+
+String _newNotebookTableId(String prefix) {
+  final now = DateTime.now().toUtc().microsecondsSinceEpoch;
+  _notebookTableIdCounter += 1;
+  return '$prefix:$now:$_notebookTableIdCounter';
+}
+
+class NotebookTableData {
+  /// Shared adapter input for future table import paths.
+  ///
+  /// HTML, TSV, CSV, OneNote, Word, spreadsheet-range, and AI-generated table
+  /// adapters should convert their source into this neutral shape, then call
+  /// [toNotebookTable] so every path creates the same first-class
+  /// `notebook_table` embed model used by manually inserted tables.
+  const NotebookTableData({
+    required this.rows,
+    required this.columns,
+    required this.cells,
+    this.headerRows = const <int>{},
+    this.sourceType = 'manual',
+    this.sourceMetadata = const {},
+  });
+
+  final int rows;
+  final int columns;
+  final List<List<String>> cells;
+  final Set<int> headerRows;
+  final String sourceType;
+  final Map<String, Object?> sourceMetadata;
+
+  NotebookTable toNotebookTable() {
+    final safeRows = rows.clamp(1, 500);
+    final safeColumns = columns.clamp(1, 100);
+    return NotebookTable(
+      tableId: _newNotebookTableId('table'),
+      rowIds: [
+        for (var row = 0; row < safeRows; row++) _newNotebookTableId('row'),
+      ],
+      cells: [
+        for (var row = 0; row < safeRows; row++)
+          [
+            for (var column = 0; column < safeColumns; column++)
+              NotebookTableCell(
+                cellId: _newNotebookTableId('cell'),
+                text: row < cells.length && column < cells[row].length
+                    ? cells[row][column]
+                    : '',
+                header: headerRows.contains(row),
+                bold: headerRows.contains(row),
+              ),
+          ],
+      ],
+      columnWidths: [for (var i = 0; i < safeColumns; i++) 1.0],
+      hasHeaderRow: headerRows.contains(0),
+      sourceMetadata: {
+        'source_type': sourceType,
+        ...sourceMetadata,
+      },
     );
   }
 }
@@ -1925,19 +2275,21 @@ class NotebookRichPasteParser {
     final hasReadableText =
         rows.any((row) => row.any((cell) => cell.text.trim().isNotEmpty));
     if (!hasReadableText) return null;
+    final hasHeaderRow = rows.first.any((cell) => cell.header);
     return NotebookTable(
-      tableId: 'table-${DateTime.now().toUtc().microsecondsSinceEpoch}',
-      rows: rows.length,
-      columns: columns,
+      tableId: _newNotebookTableId('table'),
+      rowIds: [
+        for (var row = 0; row < rows.length; row++) _newNotebookTableId('row'),
+      ],
       cells: [
         for (final row in rows)
           [
             for (var column = 0; column < columns; column++)
-              column < row.length
-                  ? row[column]
-                  : const NotebookTableCell(text: '')
+              column < row.length ? row[column] : NotebookTableCell.empty()
           ],
       ],
+      columnWidths: [for (var column = 0; column < columns; column++) 1.0],
+      hasHeaderRow: hasHeaderRow,
       sourceMetadata: {
         'pasted_from': 'rich_clipboard',
         if (unsupportedMerge) 'merged_cells_degraded': true,
@@ -1986,18 +2338,19 @@ class NotebookRichPasteParser {
     final columns =
         rows.map((row) => row.length).reduce((a, b) => a > b ? a : b);
     return NotebookTable(
-      tableId: 'table-${DateTime.now().toUtc().microsecondsSinceEpoch}',
-      rows: rows.length,
-      columns: columns,
+      tableId: _newNotebookTableId('table'),
+      rowIds: [
+        for (var row = 0; row < rows.length; row++) _newNotebookTableId('row'),
+      ],
       cells: [
         for (final row in rows)
           [
             for (var column = 0; column < columns; column++)
-              column < row.length
-                  ? row[column]
-                  : const NotebookTableCell(text: '')
+              column < row.length ? row[column] : NotebookTableCell.empty()
           ],
       ],
+      columnWidths: [for (var column = 0; column < columns; column++) 1.0],
+      hasHeaderRow: true,
       sourceMetadata: const {'pasted_from': 'tsv_clipboard'},
     );
   }
@@ -2226,7 +2579,7 @@ class _BrokenNotebookTable extends StatelessWidget {
   }
 }
 
-class _NotebookTableEmbed extends StatelessWidget {
+class _NotebookTableEmbed extends StatefulWidget {
   const _NotebookTableEmbed({
     required this.table,
     required this.controller,
@@ -2238,82 +2591,200 @@ class _NotebookTableEmbed extends StatelessWidget {
   final int documentOffset;
 
   @override
+  State<_NotebookTableEmbed> createState() => _NotebookTableEmbedState();
+}
+
+class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
+  bool _selected = false;
+  int _selectedRow = 0;
+  int _selectedColumn = 0;
+
+  NotebookTable get table => widget.table;
+
+  QuillController get controller => widget.controller;
+
+  int get documentOffset => widget.documentOffset;
+
+  @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
-      child: Material(
-        key: ValueKey('notebook-table-${table.tableId}'),
-        color: colorScheme.surface,
-        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
-        clipBehavior: Clip.antiAlias,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            border: Border.all(color: colorScheme.outlineVariant),
-            borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Table(
-                  defaultColumnWidth: const IntrinsicColumnWidth(),
-                  border: TableBorder.all(color: colorScheme.outlineVariant),
-                  children: [
-                    for (var row = 0; row < table.rows; row++)
-                      TableRow(
-                        children: [
-                          for (var column = 0; column < table.columns; column++)
-                            InkWell(
-                              onTap: () =>
-                                  _editCell(context, row: row, column: column),
-                              child: _NotebookTableCellView(
-                                cell: table.cells[row][column],
+      child: GestureDetector(
+        onTap: () => setState(() => _selected = true),
+        behavior: HitTestBehavior.opaque,
+        child: Material(
+          key: ValueKey('notebook-table-${table.tableId}'),
+          color: colorScheme.surface,
+          borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+          clipBehavior: Clip.antiAlias,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: _selected
+                    ? colorScheme.primary
+                    : colorScheme.outlineVariant,
+                width: _selected ? 2 : 1,
+              ),
+              borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (table.caption?.trim().isNotEmpty == true)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(
+                      ResearchOsSpacing.sm,
+                      ResearchOsSpacing.sm,
+                      ResearchOsSpacing.sm,
+                      0,
+                    ),
+                    child: Text(
+                      table.caption!.trim(),
+                      style: Theme.of(context).textTheme.labelLarge,
+                    ),
+                  ),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Table(
+                    defaultColumnWidth: const IntrinsicColumnWidth(),
+                    border: TableBorder.all(color: colorScheme.outlineVariant),
+                    children: [
+                      for (var row = 0; row < table.rows; row++)
+                        TableRow(
+                          children: [
+                            for (var column = 0;
+                                column < table.columns;
+                                column++)
+                              InkWell(
+                                key: ValueKey(
+                                  'notebook-table-cell-${table.tableId}-$row-$column',
+                                ),
+                                onTap: () {
+                                  setState(() {
+                                    _selected = true;
+                                    _selectedRow = row;
+                                    _selectedColumn = column;
+                                  });
+                                  _editCell(
+                                    context,
+                                    row: row,
+                                    column: column,
+                                  );
+                                },
+                                child: _NotebookTableCellView(
+                                  cell: table.cells[row][column],
+                                  widthFactor:
+                                      table.columnWidths.length > column
+                                          ? table.columnWidths[column]
+                                          : 1,
+                                  selected: _selected &&
+                                      _selectedRow == row &&
+                                      _selectedColumn == column,
+                                ),
                               ),
-                            ),
-                        ],
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.all(ResearchOsSpacing.xs),
+                  child: Wrap(
+                    spacing: ResearchOsSpacing.xs,
+                    runSpacing: ResearchOsSpacing.xs,
+                    children: [
+                      TextButton.icon(
+                        onPressed: () => _addRow(above: true),
+                        icon: const Icon(Icons.vertical_align_top_outlined),
+                        label: const Text('Add row above'),
                       ),
-                  ],
+                      TextButton.icon(
+                        onPressed: () => _addRow(above: false),
+                        icon: const Icon(Icons.table_rows_outlined),
+                        label: const Text('Add row below'),
+                      ),
+                      TextButton.icon(
+                        onPressed: table.rows > 1 ? _deleteSelectedRow : null,
+                        icon: const Icon(Icons.delete_outline),
+                        label: const Text('Delete row'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _addColumn(left: true),
+                        icon: const Icon(Icons.keyboard_double_arrow_left),
+                        label: const Text('Add column left'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _addColumn(left: false),
+                        icon: const Icon(Icons.view_column_outlined),
+                        label: const Text('Add column right'),
+                      ),
+                      TextButton.icon(
+                        onPressed:
+                            table.columns > 1 ? _deleteSelectedColumn : null,
+                        icon: const Icon(Icons.delete_sweep_outlined),
+                        label: const Text('Delete column'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _toggleHeaderRow,
+                        icon: const Icon(Icons.title),
+                        label: Text(
+                          table.hasHeaderRow
+                              ? 'Untoggle header row'
+                              : 'Toggle header row',
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: _setEqualColumnWidths,
+                        icon: const Icon(Icons.width_normal_outlined),
+                        label: const Text('Equal widths'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _setNarrowColumnWidths,
+                        icon: const Icon(Icons.compress),
+                        label: const Text('Narrow columns'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _setWideColumnWidths,
+                        icon: const Icon(Icons.width_wide_outlined),
+                        label: const Text('Wide columns'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _editCaption(context),
+                        icon: const Icon(Icons.drive_file_rename_outline),
+                        label: const Text('Edit caption'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _moveTable(up: true),
+                        icon: const Icon(Icons.arrow_upward),
+                        label: const Text('Move Up'),
+                      ),
+                      TextButton.icon(
+                        onPressed: () => _moveTable(up: false),
+                        icon: const Icon(Icons.arrow_downward),
+                        label: const Text('Move Down'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _copyTable,
+                        icon: const Icon(Icons.copy_outlined),
+                        label: const Text('Copy'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _cutTable,
+                        icon: const Icon(Icons.content_cut),
+                        label: const Text('Cut'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _removeTable,
+                        icon: const Icon(Icons.close),
+                        label: const Text('Delete table'),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.all(ResearchOsSpacing.xs),
-                child: Wrap(
-                  spacing: ResearchOsSpacing.xs,
-                  runSpacing: ResearchOsSpacing.xs,
-                  children: [
-                    TextButton.icon(
-                      onPressed: () => _addRow(),
-                      icon: const Icon(Icons.table_rows_outlined),
-                      label: const Text('Add row'),
-                    ),
-                    TextButton.icon(
-                      onPressed: table.rows > 1 ? () => _deleteLastRow() : null,
-                      icon: const Icon(Icons.delete_outline),
-                      label: const Text('Delete row'),
-                    ),
-                    TextButton.icon(
-                      onPressed: () => _addColumn(),
-                      icon: const Icon(Icons.view_column_outlined),
-                      label: const Text('Add column'),
-                    ),
-                    TextButton.icon(
-                      onPressed:
-                          table.columns > 1 ? () => _deleteLastColumn() : null,
-                      icon: const Icon(Icons.delete_sweep_outlined),
-                      label: const Text('Delete column'),
-                    ),
-                    TextButton.icon(
-                      onPressed: _removeTable,
-                      icon: const Icon(Icons.close),
-                      label: const Text('Remove table'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -2356,58 +2827,179 @@ class _NotebookTableEmbed extends StatelessWidget {
     _replaceTable(table.copyWith(cells: cells));
   }
 
-  void _addRow() {
+  void _addRow({required bool above}) {
     final cells = _cloneCells()
-      ..add([
-        for (var column = 0; column < table.columns; column++)
-          const NotebookTableCell(text: ''),
-      ]);
-    _replaceTable(table.copyWith(cells: cells));
+      ..insert(
+        above ? _selectedRow : _selectedRow + 1,
+        [
+          for (var column = 0; column < table.columns; column++)
+            NotebookTableCell.empty(),
+        ],
+      );
+    final rowIds = [...table.rowIds]..insert(
+        above ? _selectedRow : _selectedRow + 1,
+        _newNotebookTableId('row'),
+      );
+    _replaceTable(table.copyWith(cells: cells, rowIds: rowIds));
   }
 
-  void _deleteLastRow() {
+  void _deleteSelectedRow() {
     final cells = _cloneCells();
     if (cells.length <= 1) return;
-    cells.removeLast();
-    _replaceTable(table.copyWith(cells: cells));
+    final row = _selectedRow.clamp(0, cells.length - 1);
+    cells.removeAt(row);
+    final rowIds = [...table.rowIds];
+    if (rowIds.length > row) rowIds.removeAt(row);
+    _selectedRow = _selectedRow.clamp(0, cells.length - 1);
+    _replaceTable(table.copyWith(cells: cells, rowIds: rowIds));
   }
 
-  void _addColumn() {
+  void _addColumn({required bool left}) {
     final cells = _cloneCells();
+    final column = left ? _selectedColumn : _selectedColumn + 1;
     for (final row in cells) {
-      row.add(const NotebookTableCell(text: ''));
+      row.insert(column.clamp(0, row.length), NotebookTableCell.empty());
     }
-    _replaceTable(table.copyWith(cells: cells));
+    final widths = [...table.columnWidths]
+      ..insert(column.clamp(0, table.columnWidths.length), 1.0);
+    _replaceTable(table.copyWith(cells: cells, columnWidths: widths));
   }
 
-  void _deleteLastColumn() {
+  void _deleteSelectedColumn() {
     final cells = _cloneCells();
     if (cells.isEmpty || cells.first.length <= 1) return;
+    final column = _selectedColumn.clamp(0, cells.first.length - 1);
     for (final row in cells) {
-      row.removeLast();
+      if (row.length > column) row.removeAt(column);
     }
-    _replaceTable(table.copyWith(cells: cells));
+    final widths = [...table.columnWidths];
+    if (widths.length > column) widths.removeAt(column);
+    _selectedColumn = _selectedColumn.clamp(0, cells.first.length - 1);
+    _replaceTable(table.copyWith(cells: cells, columnWidths: widths));
+  }
+
+  void _toggleHeaderRow() {
+    _replaceTable(table.copyWith(hasHeaderRow: !table.hasHeaderRow));
+  }
+
+  void _setEqualColumnWidths() {
+    _replaceTable(table.copyWith(
+      columnWidths: [for (var i = 0; i < table.columns; i++) 1.0],
+    ));
+  }
+
+  void _setNarrowColumnWidths() {
+    _replaceTable(table.copyWith(
+      columnWidths: [for (var i = 0; i < table.columns; i++) 0.75],
+    ));
+  }
+
+  void _setWideColumnWidths() {
+    _replaceTable(table.copyWith(
+      columnWidths: [for (var i = 0; i < table.columns; i++) 1.35],
+    ));
+  }
+
+  Future<void> _editCaption(BuildContext context) async {
+    final captionController =
+        TextEditingController(text: table.caption?.trim() ?? '');
+    final nextCaption = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit caption'),
+        content: TextField(
+          controller: captionController,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Caption'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, captionController.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (nextCaption == null) return;
+    _replaceTable(table.copyWith(caption: nextCaption.trim()));
+  }
+
+  Future<void> _copyTable() async {
+    await Clipboard.setData(ClipboardData(text: table.toPlainText()));
+  }
+
+  Future<void> _cutTable() async {
+    await _copyTable();
+    _removeTable();
+  }
+
+  void _moveTable({required bool up}) {
+    final currentOffset = _currentTableOffset() ?? documentOffset;
+    var destination = up ? 0 : controller.document.length - 1;
+    if (destination == currentOffset) return;
+    final embed = _tableEmbed(table);
+    controller.replaceText(
+      currentOffset,
+      1,
+      '',
+      TextSelection.collapsed(offset: currentOffset),
+    );
+    if (destination > currentOffset) destination -= 1;
+    destination = destination.clamp(0, controller.document.length - 1).toInt();
+    controller.replaceText(
+      destination,
+      0,
+      embed,
+      TextSelection.collapsed(offset: destination + 1),
+    );
+    controller.replaceText(
+      destination + 1,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: destination + 2),
+    );
   }
 
   void _removeTable() {
+    final offset = _currentTableOffset() ?? documentOffset;
     controller.replaceText(
-      documentOffset,
+      offset,
       1,
       '',
-      TextSelection.collapsed(offset: documentOffset),
+      TextSelection.collapsed(offset: offset),
     );
   }
 
   void _replaceTable(NotebookTable nextTable) {
-    final embed = BlockEmbed.custom(
-      CustomBlockEmbed('experiment_table', jsonEncode(nextTable.toJson())),
-    );
+    final embed = _tableEmbed(nextTable);
+    final offset = _currentTableOffset() ?? documentOffset;
     controller.replaceText(
-      documentOffset,
+      offset,
       1,
       embed,
-      TextSelection.collapsed(offset: documentOffset + 1),
+      TextSelection.collapsed(offset: offset + 1),
     );
+  }
+
+  BlockEmbed _tableEmbed(NotebookTable nextTable) {
+    return BlockEmbed.custom(
+      CustomBlockEmbed('experiment_table', jsonEncode(nextTable.toJson())),
+    );
+  }
+
+  int? _currentTableOffset() {
+    var offset = 0;
+    for (final rawOp in controller.document.toDelta().toJson()) {
+      final insert = rawOp['insert'];
+      final candidate = _tableFromInsert(insert);
+      if (candidate?.tableId == table.tableId) return offset;
+      offset += insert is String ? insert.length : 1;
+    }
+    return null;
   }
 
   List<List<NotebookTableCell>> _cloneCells() {
@@ -2418,9 +3010,15 @@ class _NotebookTableEmbed extends StatelessWidget {
 }
 
 class _NotebookTableCellView extends StatelessWidget {
-  const _NotebookTableCellView({required this.cell});
+  const _NotebookTableCellView({
+    required this.cell,
+    required this.widthFactor,
+    required this.selected,
+  });
 
   final NotebookTableCell cell;
+  final double widthFactor;
+  final bool selected;
 
   @override
   Widget build(BuildContext context) {
@@ -2438,11 +3036,16 @@ class _NotebookTableCellView extends StatelessWidget {
     final foreground = _parseCssColor(cell.textColor);
     if (foreground != null) style = style.copyWith(color: foreground);
     return ConstrainedBox(
-      constraints: const BoxConstraints(minWidth: 96, maxWidth: 260),
+      constraints: BoxConstraints(
+        minWidth: 96 * widthFactor,
+        maxWidth: 260 * widthFactor,
+        minHeight: 44,
+      ),
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: _parseCssColor(cell.backgroundColor) ??
               (cell.header ? colorScheme.surfaceContainerHighest : null),
+          border: selected ? Border.all(color: colorScheme.primary) : null,
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(
@@ -2927,7 +3530,7 @@ class _NotebookImagePreview extends StatefulWidget {
 }
 
 class _NotebookImagePreviewState extends State<_NotebookImagePreview> {
-  late Future<File?> _future;
+  late Future<_NotebookImageResolution> _future;
 
   @override
   void initState() {
@@ -2945,27 +3548,77 @@ class _NotebookImagePreviewState extends State<_NotebookImagePreview> {
     }
   }
 
-  Future<File?> _resolveFile() async {
+  Future<_NotebookImageResolution> _resolveFile() async {
     final cacheKey = widget.payload['local_cache_key']?.toString() ?? '';
-    final cached = await widget.imageCache.fileForKey(cacheKey);
-    if (cached != null && cached.existsSync()) return cached;
     final attachmentId = widget.payload['attachment_id']?.toString() ?? '';
-    if (attachmentId.isEmpty || widget.downloadAttachmentBytes == null) {
-      return null;
+    if (cacheKey.isNotEmpty) {
+      final cached = await widget.imageCache.fileForKey(cacheKey);
+      if (cached != null && cached.existsSync()) {
+        _debugImageResolution(
+          attachmentId: attachmentId,
+          cacheKey: cacheKey,
+          state: 'cache_hit',
+          byteCount: cached.lengthSync(),
+        );
+        return _NotebookImageResolution.file(cached);
+      }
+      _debugImageResolution(
+        attachmentId: attachmentId,
+        cacheKey: cacheKey,
+        state: 'cache_miss',
+      );
     }
-    final bytes = await widget.downloadAttachmentBytes!(attachmentId);
-    return widget.imageCache.writeAttachmentBytes(
-      cacheKey:
-          cacheKey.isEmpty ? 'attachment-${attachmentId.hashCode}' : cacheKey,
-      bytes: bytes,
-      extension: widget.payload['file_extension']?.toString() ?? 'png',
-    );
+    if (attachmentId.isEmpty || widget.downloadAttachmentBytes == null) {
+      return const _NotebookImageResolution.failure(
+        label: 'Image has not finished uploading — Retry',
+        retryable: true,
+      );
+    }
+    try {
+      final bytes = await widget.downloadAttachmentBytes!(attachmentId);
+      if (!_looksLikeSupportedImageBytes(bytes)) {
+        _debugImageResolution(
+          attachmentId: attachmentId,
+          cacheKey: cacheKey,
+          state: 'unsupported_or_corrupt',
+          byteCount: bytes.length,
+        );
+        return const _NotebookImageResolution.failure(
+          label: 'Image file is corrupt or unsupported',
+        );
+      }
+      final mimeType = _detectImageMimeType(bytes);
+      final restoredCacheKey = cacheKey.isEmpty
+          ? _safeCacheKey('attachment-$attachmentId')
+          : cacheKey;
+      final file = await widget.imageCache.writeAttachmentBytes(
+        cacheKey: restoredCacheKey,
+        bytes: bytes,
+        extension: _extensionForMimeType(mimeType),
+      );
+      _debugImageResolution(
+        attachmentId: attachmentId,
+        cacheKey: restoredCacheKey,
+        state: 'download_restored_cache',
+        mimeType: mimeType,
+        byteCount: bytes.length,
+      );
+      return _NotebookImageResolution.file(file);
+    } catch (error) {
+      final failure = _imageResolutionFailureForError(error);
+      _debugImageResolution(
+        attachmentId: attachmentId,
+        cacheKey: cacheKey,
+        state: failure.label ?? 'download_failed',
+      );
+      return failure;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final uploadStatus = widget.payload['upload_status']?.toString() ?? '';
-    return FutureBuilder<File?>(
+    return FutureBuilder<_NotebookImageResolution>(
       future: _future,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
@@ -2974,13 +3627,34 @@ class _NotebookImagePreviewState extends State<_NotebookImagePreview> {
             label: 'Loading image...',
           );
         }
-        final file = snapshot.data;
-        if (snapshot.hasError || file == null) {
-          return _ImagePlaceholder(
-            icon: Icons.image_not_supported_outlined,
-            label: widget.altText.isEmpty
-                ? 'Image reference unavailable'
-                : widget.altText,
+        final resolution = snapshot.data;
+        final file = resolution?.file;
+        if (snapshot.hasError || resolution == null || file == null) {
+          final label = resolution?.label ??
+              (widget.altText.isEmpty
+                  ? 'Image reference unavailable'
+                  : widget.altText);
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ImagePlaceholder(
+                icon: Icons.image_not_supported_outlined,
+                label: label,
+              ),
+              if (resolution?.retryable ?? true)
+                Padding(
+                  padding: const EdgeInsets.only(top: ResearchOsSpacing.xs),
+                  child: OutlinedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _future = _resolveFile();
+                      });
+                    },
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('Retry'),
+                  ),
+                ),
+            ],
           );
         }
         return Column(
@@ -3211,20 +3885,116 @@ class _ImageInspectorSheetState extends State<_ImageInspectorSheet> {
 
   Future<File?> _resolvePreviewFile() async {
     final cacheKey = widget.payload['local_cache_key']?.toString() ?? '';
+    final attachmentId = widget.payload['attachment_id']?.toString() ?? '';
     final cached = await widget.imageCache.fileForKey(cacheKey);
     if (cached != null && cached.existsSync()) return cached;
-    final attachmentId = widget.payload['attachment_id']?.toString() ?? '';
     if (attachmentId.isEmpty || widget.downloadAttachmentBytes == null) {
       return null;
     }
     final bytes = await widget.downloadAttachmentBytes!(attachmentId);
+    if (!_looksLikeSupportedImageBytes(bytes)) return null;
+    final mimeType = _detectImageMimeType(bytes);
     return widget.imageCache.writeAttachmentBytes(
-      cacheKey:
-          cacheKey.isEmpty ? 'attachment-${attachmentId.hashCode}' : cacheKey,
+      cacheKey: cacheKey.isEmpty
+          ? _safeCacheKey('attachment-$attachmentId')
+          : cacheKey,
       bytes: bytes,
-      extension: widget.payload['file_extension']?.toString() ?? 'png',
+      extension: _extensionForMimeType(mimeType),
     );
   }
+}
+
+class _NotebookImageResolution {
+  const _NotebookImageResolution._({
+    this.file,
+    this.label,
+    this.retryable = false,
+  });
+
+  const _NotebookImageResolution.file(File file)
+      : this._(file: file, retryable: false);
+
+  const _NotebookImageResolution.failure({
+    required String label,
+    bool retryable = false,
+  }) : this._(label: label, retryable: retryable);
+
+  final File? file;
+  final String? label;
+  final bool retryable;
+}
+
+_NotebookImageResolution _imageResolutionFailureForError(Object error) {
+  final text = error.toString();
+  if (text.contains('(401)') || text.contains('(403)')) {
+    return const _NotebookImageResolution.failure(
+      label: 'You do not have access to this image',
+    );
+  }
+  if (text.contains('(404)')) {
+    return const _NotebookImageResolution.failure(
+      label: 'Attachment no longer exists',
+    );
+  }
+  if (text.contains('SocketException') ||
+      text.contains('TimeoutException') ||
+      text.contains('Connection refused') ||
+      text.contains('Failed host lookup')) {
+    return const _NotebookImageResolution.failure(
+      label: 'Server unavailable — Retry',
+      retryable: true,
+    );
+  }
+  return const _NotebookImageResolution.failure(
+    label: 'Image download failed — Retry',
+    retryable: true,
+  );
+}
+
+bool _looksLikeSupportedImageBytes(Uint8List bytes) {
+  if (bytes.length >= 8 &&
+      bytes[0] == 0x89 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x4E &&
+      bytes[3] == 0x47) {
+    return true;
+  }
+  if (bytes.length >= 3 &&
+      bytes[0] == 0xFF &&
+      bytes[1] == 0xD8 &&
+      bytes[2] == 0xFF) {
+    return true;
+  }
+  if (bytes.length >= 12 &&
+      String.fromCharCodes(bytes.sublist(4, 8)) == 'ftyp') {
+    final brand = String.fromCharCodes(bytes.sublist(8, 12)).toLowerCase();
+    return brand.contains('heic') ||
+        brand.contains('heif') ||
+        brand.contains('heix');
+  }
+  if (bytes.length >= 12 &&
+      String.fromCharCodes(bytes.sublist(0, 4)) == 'RIFF' &&
+      String.fromCharCodes(bytes.sublist(8, 12)) == 'WEBP') {
+    return true;
+  }
+  return false;
+}
+
+void _debugImageResolution({
+  required String attachmentId,
+  required String cacheKey,
+  required String state,
+  String? mimeType,
+  int? byteCount,
+}) {
+  assert(() {
+    debugPrint(
+      'mundi_notebook_image attachment_id=$attachmentId '
+      'cache_key=$cacheKey state=$state '
+      'mime_type=${mimeType ?? 'unknown'} bytes=${byteCount ?? 0}',
+    );
+    return true;
+  }());
 }
 
 class _ImagePlaceholder extends StatelessWidget {
