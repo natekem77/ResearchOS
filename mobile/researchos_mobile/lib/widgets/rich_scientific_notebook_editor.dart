@@ -1586,33 +1586,41 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
               .toDouble();
           return Align(
             alignment: alignment,
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: imageWidth),
-              child: Material(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
-                clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  onTap: _openInspector,
-                  child: AnimatedContainer(
-                    key: _selected
-                        ? ValueKey(
-                            'selected-image-${payload['attachment_id'] ?? ''}')
-                        : null,
-                    duration: const Duration(milliseconds: 120),
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: _selected
-                            ? Theme.of(context).colorScheme.primary
-                            : Colors.transparent,
-                        width: _selected ? 3 : 0,
-                      ),
+            child: SizedBox(
+              width: imageWidth,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Material(
+                    key: ValueKey(
+                      'notebook-image-frame-${payload['embed_id'] ?? payload['local_cache_key'] ?? payload['attachment_id'] ?? ''}',
                     ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxHeight: 420),
+                    color: Colors.transparent,
+                    borderRadius:
+                        BorderRadius.circular(ResearchOsTokens.radiusMd),
+                    clipBehavior: Clip.antiAlias,
+                    child: InkWell(
+                      onTap: () => setState(() => _selected = true),
+                      child: AnimatedContainer(
+                        key: _selected
+                            ? ValueKey(
+                                'selected-image-${payload['embed_id'] ?? payload['attachment_id'] ?? ''}')
+                            : null,
+                        duration: const Duration(milliseconds: 120),
+                        decoration: BoxDecoration(
+                          borderRadius:
+                              BorderRadius.circular(ResearchOsTokens.radiusMd),
+                          border: Border.all(
+                            color: _selected
+                                ? Theme.of(context).colorScheme.primary
+                                : Colors.transparent,
+                            width: _selected ? 3 : 0,
+                          ),
+                        ),
+                        child: ClipRRect(
+                          borderRadius:
+                              BorderRadius.circular(ResearchOsTokens.radiusMd),
                           child: _NotebookImagePreview(
                             payload: payload,
                             imageCache: widget.imageCache,
@@ -1623,39 +1631,39 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
                             altText: altText,
                           ),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.all(ResearchOsSpacing.sm),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(label),
-                              if (caption.trim().isNotEmpty) ...[
-                                const SizedBox(height: 4),
-                                Text(
-                                  caption,
-                                  style: Theme.of(context).textTheme.bodySmall,
-                                ),
-                              ],
-                              if (payload['upload_status'] ==
-                                  'not_uploaded') ...[
-                                const SizedBox(height: ResearchOsSpacing.sm),
-                                OutlinedButton.icon(
-                                  key: ValueKey(
-                                    'retry-upload-${payload['local_cache_key'] ?? payload['attachment_id'] ?? ''}',
-                                  ),
-                                  onPressed: () =>
-                                      widget.onRetryUpload(widget.payload),
-                                  icon: const Icon(Icons.cloud_upload_outlined),
-                                  label: const Text('Retry Upload'),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ],
+                      ),
                     ),
                   ),
-                ),
+                  if (caption.trim().isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      caption,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                  if (_selected) ...[
+                    const SizedBox(height: ResearchOsSpacing.xs),
+                    _ImageInlineControls(
+                      widthMode: payload['width_mode']?.toString() ?? 'full',
+                      onWidthMode: _applyWidthMode,
+                      onMoveUp: () => _moveImage(up: true),
+                      onMoveDown: () => _moveImage(up: false),
+                      onOptions: _openInspector,
+                      onDeselect: () => setState(() => _selected = false),
+                    ),
+                  ],
+                  if (payload['upload_status'] == 'not_uploaded') ...[
+                    const SizedBox(height: ResearchOsSpacing.sm),
+                    OutlinedButton.icon(
+                      key: ValueKey(
+                        'retry-upload-${payload['local_cache_key'] ?? payload['attachment_id'] ?? ''}',
+                      ),
+                      onPressed: () => widget.onRetryUpload(widget.payload),
+                      icon: const Icon(Icons.cloud_upload_outlined),
+                      label: const Text('Retry Upload'),
+                    ),
+                  ],
+                ],
               ),
             ),
           );
@@ -1686,11 +1694,16 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
     }
   }
 
+  void _applyWidthMode(String widthMode) {
+    _replacePayload({
+      ...widget.payload,
+      'width_mode': widthMode,
+    });
+  }
+
   void _replacePayload(Map<String, dynamic> payload) {
     final offset = _currentEmbedOffset() ?? widget.documentOffset;
-    final embed = BlockEmbed.custom(
-      CustomBlockEmbed('experiment_attachment', jsonEncode(payload)),
-    );
+    final embed = BlockEmbed.image(jsonEncode(payload));
     widget.controller.replaceText(
       offset,
       1,
@@ -1714,9 +1727,7 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
     final payload = Map<String, dynamic>.from(widget.payload);
     var destination = up ? 0 : widget.controller.document.length - 1;
     if (destination == currentOffset) return;
-    final embed = BlockEmbed.custom(
-      CustomBlockEmbed('experiment_attachment', jsonEncode(payload)),
-    );
+    final embed = BlockEmbed.image(jsonEncode(payload));
     widget.controller.replaceText(
       currentOffset,
       1,
@@ -1757,6 +1768,77 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
       offset += _insertLength(insert);
     }
     return null;
+  }
+}
+
+class _ImageInlineControls extends StatelessWidget {
+  const _ImageInlineControls({
+    required this.widthMode,
+    required this.onWidthMode,
+    required this.onMoveUp,
+    required this.onMoveDown,
+    required this.onOptions,
+    required this.onDeselect,
+  });
+
+  final String widthMode;
+  final ValueChanged<String> onWidthMode;
+  final VoidCallback onMoveUp;
+  final VoidCallback onMoveDown;
+  final VoidCallback onOptions;
+  final VoidCallback onDeselect;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedWidthMode =
+        {'small', 'medium', 'large', 'full'}.contains(widthMode)
+            ? widthMode
+            : 'full';
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.xs),
+        child: Wrap(
+          spacing: ResearchOsSpacing.xs,
+          runSpacing: ResearchOsSpacing.xs,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            for (final option in const [
+              ('small', 'S'),
+              ('medium', 'M'),
+              ('large', 'L'),
+              ('full', 'Full'),
+            ])
+              ChoiceChip(
+                label: Text(option.$2),
+                selected: selectedWidthMode == option.$1,
+                onSelected: (_) => onWidthMode(option.$1),
+              ),
+            IconButton(
+              tooltip: 'Move image up',
+              onPressed: onMoveUp,
+              icon: const Icon(Icons.keyboard_arrow_up),
+            ),
+            IconButton(
+              tooltip: 'Move image down',
+              onPressed: onMoveDown,
+              icon: const Icon(Icons.keyboard_arrow_down),
+            ),
+            IconButton(
+              tooltip: 'Image options',
+              onPressed: onOptions,
+              icon: const Icon(Icons.tune_outlined),
+            ),
+            IconButton(
+              tooltip: 'Deselect image',
+              onPressed: onDeselect,
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

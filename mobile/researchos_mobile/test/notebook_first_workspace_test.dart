@@ -259,7 +259,6 @@ void main() {
     );
 
     expect(find.textContaining('[{"insert"'), findsNothing);
-    expect(find.text('Recovered inline image'), findsOneWidget);
     expect(
       find.byKey(const ValueKey('notebook-image-attachment:pasted-image')),
       findsOneWidget,
@@ -695,7 +694,7 @@ void main() {
     expect(delta, contains('experiment_attachment'));
     expect(delta, contains('attachment:pasted-image'));
     expect(delta, contains('OneNote paste'));
-    expect(find.text('OneNote paste'), findsOneWidget);
+    expect(_notebookImageBlock(), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 
@@ -721,7 +720,6 @@ void main() {
     expect(delta, contains('upload_status'));
     expect(delta, contains('uploading'));
     expect(delta, isNot(contains('attachment:pasted-image')));
-    expect(find.text('clipboard-image.png'), findsOneWidget);
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     expect(_notebookImageBlock(), findsWidgets);
@@ -894,7 +892,6 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 1000));
 
-    expect(find.text('Inline upload'), findsOneWidget);
     expect(find.byKey(const ValueKey('notebook-image-attachment:pasted-image')),
         findsOneWidget);
     expect(tester.takeException(), isNull);
@@ -917,7 +914,6 @@ void main() {
       ),
     );
 
-    expect(find.text('Cached image'), findsOneWidget);
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     expect(_notebookImageBlock(), findsWidgets);
@@ -944,7 +940,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(downloaded, isTrue);
-    expect(find.text('Downloaded image'), findsOneWidget);
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
     expect(_notebookImageBlock(), findsWidgets);
@@ -984,9 +979,11 @@ void main() {
       onChanged: (edit) => delta = edit.deltaJson,
     );
 
-    expect(find.text('Restored image'), findsOneWidget);
     expect(find.text('Preserved caption'), findsOneWidget);
-    await tester.tap(find.text('Restored image'));
+    await tester.tap(_notebookImageBlock().first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byTooltip('Image options'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('Remove from document'));
@@ -997,19 +994,47 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('tapping image selects it and opens inspector', (tester) async {
+  testWidgets('inline image frame has no empty caption hit area',
+      (tester) async {
+    final cache = _TestNotebookImageCache();
+    await cache.writeAttachmentBytes(
+      cacheKey: 'bounded-image',
+      bytes: Uint8List.fromList(_pngBytes),
+      extension: 'png',
+    );
+    await pumpRichEditor(
+      tester,
+      imageCache: cache,
+      initialContent: _imageEmbedContent(
+        displayName: 'Bounded image',
+        localCacheKey: 'bounded-image',
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    final frameSize = tester.getSize(_notebookImageFrame().first);
+    expect(frameSize.height, lessThanOrEqualTo(frameSize.width + 8));
+    expect(find.text('Bounded image'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tapping image selects it and shows inline controls',
+      (tester) async {
     await pumpRichEditor(
       tester,
       initialContent: _imageEmbedContent(displayName: 'Selectable image'),
     );
 
-    await tester.tap(find.text('Selectable image'));
+    await tester.tap(_notebookImageBlock().first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.byKey(const ValueKey('selected-image-attachment:pasted-image')),
         findsOneWidget);
-    expect(find.text('Image options'), findsOneWidget);
+    expect(find.byTooltip('Move image up'), findsOneWidget);
+    expect(find.byTooltip('Move image down'), findsOneWidget);
+    expect(find.byTooltip('Image options'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -1025,11 +1050,14 @@ void main() {
       onChanged: (edit) => delta = edit.deltaJson,
     );
 
-    await tester.tap(find.text('Editable image'));
+    await tester.tap(_notebookImageBlock().first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.text('Medium'));
+    await tester.tap(find.text('M'));
     await tester.pump();
+    await tester.tap(find.byTooltip('Image options'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('Right'));
     await tester.pump();
     await tester.enterText(find.widgetWithText(TextField, 'Caption'),
@@ -1063,10 +1091,10 @@ void main() {
       onChanged: (edit) => delta = edit.deltaJson,
     );
 
-    await tester.tap(find.text('Movable image'));
+    await tester.tap(_notebookImageBlock().first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.tap(find.text('Move Down'));
+    await tester.tap(find.byTooltip('Move image down'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -1084,9 +1112,12 @@ void main() {
       initialContent: _imageEmbedContent(displayName: 'Small phone image'),
     );
 
-    await tester.ensureVisible(find.text('Small phone image'));
+    await tester.ensureVisible(_notebookImageBlock().first);
     await tester.pump();
-    await tester.tap(find.text('Small phone image'));
+    await tester.tap(_notebookImageBlock().first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byTooltip('Image options'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     await tester.drag(find.text('Image options'), const Offset(0, -180));
@@ -1156,7 +1187,16 @@ Future<void> _tapPasteImageInsert(WidgetTester tester) async {
 Finder _notebookImageBlock() {
   return find.byWidgetPredicate((widget) {
     final key = widget.key;
-    return key is ValueKey && key.toString().contains('notebook-image-');
+    return key is ValueKey &&
+        key.toString().contains('notebook-image-') &&
+        !key.toString().contains('notebook-image-frame-');
+  });
+}
+
+Finder _notebookImageFrame() {
+  return find.byWidgetPredicate((widget) {
+    final key = widget.key;
+    return key is ValueKey && key.toString().contains('notebook-image-frame-');
   });
 }
 
