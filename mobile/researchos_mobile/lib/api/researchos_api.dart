@@ -471,6 +471,21 @@ class ResearchOsApi {
         '/experiment-attachments/${Uri.encodeComponent(attachmentId)}');
   }
 
+  Future<Uint8List> downloadExperimentAttachmentBytes(
+      String attachmentId) async {
+    final response = await _client
+        .get(Uri.parse(
+          '$baseUrl/experiment-attachments/${Uri.encodeComponent(attachmentId)}/download',
+        ))
+        .timeout(requestTimeout);
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ResearchOsApiException(
+        'Request failed (${response.statusCode}): /experiment-attachments/$attachmentId/download',
+      );
+    }
+    return response.bodyBytes;
+  }
+
   Future<Map<String, dynamic>> experimentDesignDueToday() {
     return _getMap('/experiment-designs/reminders/due-today');
   }

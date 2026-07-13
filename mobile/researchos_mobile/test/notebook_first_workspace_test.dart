@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -457,6 +459,47 @@ void main() {
     expect(selection.bytes, isNotNull);
   });
 
+  test('clipboard resolver decodes webp data image before URL text', () {
+    final selection = ClipboardPayloadResolver.resolve([
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.url',
+        text: 'https://www.google.com/imgres?imgurl=cat',
+      ),
+      ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.text',
+        text: 'data:image/webp;base64,${base64Encode(_webpBytes)}',
+      ),
+    ]);
+
+    expect(selection.selectedRepresentation, 'public.text:data-image');
+    expect(selection.mimeType, 'image/webp');
+    expect(selection.bytes, orderedEquals(_webpBytes));
+    expect(selection.webpageUrl, isNull);
+  });
+
+  test('clipboard resolver prefers generic public image before URL and text',
+      () {
+    final selection = ClipboardPayloadResolver.resolve([
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.url',
+        text: 'https://example.com/page',
+      ),
+      const ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.text',
+        text: 'plain fallback',
+      ),
+      ClipboardPayloadRepresentation(
+        typeIdentifier: 'public.image',
+        bytes: Uint8List.fromList(_webpBytes),
+      ),
+    ]);
+
+    expect(selection.selectedRepresentation, 'public.image');
+    expect(selection.mimeType, 'image/webp');
+    expect(selection.bytes, isNotNull);
+    expect(selection.webpageUrl, isNull);
+  });
+
   test('clipboard resolver handles direct image URL', () {
     final selection = ClipboardPayloadResolver.resolve([
       const ClipboardPayloadRepresentation(
@@ -644,15 +687,97 @@ void main() {
       find.widgetWithText(TextField, 'Display name'),
       'OneNote paste',
     );
-    await tester.tap(find.text('Insert'));
+    await _tapPasteImageInsert(tester);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 1000));
 
     expect(uploadedName, 'OneNote paste');
     expect(delta, contains('experiment_attachment'));
     expect(delta, contains('attachment:pasted-image'));
     expect(delta, contains('OneNote paste'));
     expect(find.text('OneNote paste'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('clipboard bytes render inline before upload completes',
+      (tester) async {
+    final uploadCompleter = Completer<Map<String, dynamic>>();
+    var delta = '';
+    await pumpRichEditor(
+      tester,
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      onChanged: (edit) => delta = edit.deltaJson,
+      onPasteImage: (image, {displayName, description}) =>
+          uploadCompleter.future,
+    );
+
+    await tester.tap(find.byTooltip('Paste image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await _tapPasteImageInsert(tester);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1000));
+
+    expect(delta, contains('upload_status'));
+    expect(delta, contains('uploading'));
+    expect(delta, isNot(contains('attachment:pasted-image')));
+    expect(find.text('clipboard-image.png'), findsOneWidget);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(_notebookImageBlock(), findsWidgets);
+
+    uploadCompleter
+        .complete(_imageAttachment(displayName: 'clipboard-image.png'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(delta, contains('attachment:pasted-image'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('failed upload leaves image visible and retry associates ID',
+      (tester) async {
+    var attempts = 0;
+    var delta = '';
+    await pumpRichEditor(
+      tester,
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      onChanged: (edit) => delta = edit.deltaJson,
+      onPasteImage: (image, {displayName, description}) async {
+        attempts += 1;
+        if (attempts == 1) {
+          throw const ResearchOsApiException('upload failed');
+        }
+        return _imageAttachment(
+            displayName: displayName ?? 'clipboard-image.png');
+      },
+    );
+
+    await tester.tap(find.byTooltip('Paste image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await _tapPasteImageInsert(tester);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1000));
+
+    expect(delta, contains('upload_status'));
+    expect(delta, contains('not_uploaded'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(find.text('Retry Upload'), findsWidgets);
+
+    final retryButton = find.byWidgetPredicate((widget) {
+      final key = widget.key;
+      return key is ValueKey && key.toString().contains('retry-upload-');
+    });
+    tester.widget<OutlinedButton>(retryButton).onPressed?.call();
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(attempts, 2);
+    expect(delta, contains('attachment:pasted-image'));
+    expect(delta, contains('upload_status'));
+    expect(delta, contains('uploaded'));
     expect(tester.takeException(), isNull);
   });
 
@@ -668,9 +793,9 @@ void main() {
     await tester.tap(find.byTooltip('Paste image'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
-    await tester.tap(find.text('Insert'));
+    await _tapPasteImageInsert(tester);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump(const Duration(milliseconds: 1000));
 
     expect(find.text('Inline upload'), findsOneWidget);
     expect(find.byKey(const ValueKey('notebook-image-attachment:pasted-image')),
@@ -678,10 +803,63 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('reopen renders image from cache', (tester) async {
+    final cache = _TestNotebookImageCache();
+    await cache.writeAttachmentBytes(
+      cacheKey: 'cached-image',
+      bytes: Uint8List.fromList(_pngBytes),
+      extension: 'png',
+    );
+
+    await pumpRichEditor(
+      tester,
+      imageCache: cache,
+      initialContent: _imageEmbedContent(
+        displayName: 'Cached image',
+        localCacheKey: 'cached-image',
+      ),
+    );
+
+    expect(find.text('Cached image'), findsOneWidget);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('cache eviction downloads attachment and restores image',
+      (tester) async {
+    var downloaded = false;
+    final cache = _TestNotebookImageCache();
+    await pumpRichEditor(
+      tester,
+      imageCache: cache,
+      downloadAttachmentBytes: (attachmentId) async {
+        downloaded = true;
+        return Uint8List.fromList(_pngBytes);
+      },
+      initialContent: _imageEmbedContent(
+        displayName: 'Downloaded image',
+        localCacheKey: 'evicted-cache-key',
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(downloaded, isTrue);
+    expect(find.text('Downloaded image'), findsOneWidget);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('unsupported clipboard content shows feedback', (tester) async {
+    var delta = '';
     await pumpRichEditor(
       tester,
       reader: const _FakeClipboardImageReader(null),
+      onChanged: (edit) => delta = edit.deltaJson,
       onPasteImage: (_, {displayName, description}) async => _imageAttachment(),
     );
 
@@ -691,6 +869,8 @@ void main() {
 
     expect(find.text('This clipboard content cannot be pasted yet.'),
         findsOneWidget);
+    expect(delta, isNot(contains('https://example.com/cats')));
+    expect(delta, isNot(contains('data:image/')));
     expect(tester.takeException(), isNull);
   });
 
@@ -829,7 +1009,10 @@ Future<void> pumpRichEditor(
   Size size = const Size(430, 932),
   ValueChanged<RichNotebookEdit>? onChanged,
   PastedImageUploader? onPasteImage,
+  NotebookImageCache? imageCache,
+  AttachmentBytesDownloader? downloadAttachmentBytes,
 }) async {
+  final resolvedCache = imageCache ?? _TestNotebookImageCache();
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1.0;
   addTearDown(tester.view.resetPhysicalSize);
@@ -844,7 +1027,8 @@ Future<void> pumpRichEditor(
               initialContent: initialContent,
               documentFormat: documentFormat,
               clipboardImageReader: reader,
-              downloadUrlForAttachment: (_) => '',
+              imageCache: resolvedCache,
+              downloadAttachmentBytes: downloadAttachmentBytes,
               onPasteImage: onPasteImage,
               onChanged: onChanged ?? (_) {},
             ),
@@ -856,6 +1040,65 @@ Future<void> pumpRichEditor(
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 400));
   await tester.ensureVisible(find.byTooltip('Paste image'));
+}
+
+Future<void> _tapPasteImageInsert(WidgetTester tester) async {
+  final button = find
+      .ancestor(
+        of: find.text('Insert'),
+        matching: find.byType(FilledButton),
+      )
+      .last;
+  await tester.ensureVisible(button);
+  await tester.tap(button);
+}
+
+Finder _notebookImageBlock() {
+  return find.byWidgetPredicate((widget) {
+    final key = widget.key;
+    return key is ValueKey && key.toString().contains('notebook-image-');
+  });
+}
+
+class _TestNotebookImageCache extends NotebookImageCache {
+  _TestNotebookImageCache()
+      : directory = Directory.systemTemp.createTempSync(
+          'mundi-notebook-cache-test-',
+        ),
+        super(rootPath: '');
+
+  final Directory directory;
+
+  @override
+  Future<CachedNotebookImage> writeClipboardImage(
+    PastedNotebookImage image,
+  ) {
+    final key = 'test-${DateTime.now().microsecondsSinceEpoch}';
+    final file = File('${directory.path}/$key.png');
+    file.writeAsBytesSync(image.bytes, flush: true);
+    return SynchronousFuture(CachedNotebookImage(cacheKey: key, file: file));
+  }
+
+  @override
+  Future<File?> fileForKey(String cacheKey) {
+    final matches = directory
+        .listSync()
+        .whereType<File>()
+        .where((file) => file.uri.pathSegments.last.startsWith('$cacheKey.'))
+        .toList();
+    return SynchronousFuture(matches.isEmpty ? null : matches.first);
+  }
+
+  @override
+  Future<File> writeAttachmentBytes({
+    required String cacheKey,
+    required Uint8List bytes,
+    required String extension,
+  }) {
+    final file = File('${directory.path}/$cacheKey.png');
+    file.writeAsBytesSync(bytes, flush: true);
+    return SynchronousFuture(file);
+  }
 }
 
 ResearchOsApi _api({
@@ -1019,12 +1262,15 @@ String _imageEmbedContent({
   String widthMode = 'full',
   String alignment = 'center',
   double? aspectRatio,
+  String? localCacheKey,
   String after = '',
 }) {
   final payload = jsonEncode({
     'embed_type': 'experiment_attachment',
     'attachment_type': 'image',
     'attachment_id': 'attachment:pasted-image',
+    if (localCacheKey != null) 'local_cache_key': localCacheKey,
+    'upload_status': 'uploaded',
     'display_name': displayName,
     'width_mode': widthMode,
     'alignment': alignment,
@@ -1130,4 +1376,23 @@ const _pngBytes = <int>[
   0x42,
   0x60,
   0x82,
+];
+
+const _webpBytes = <int>[
+  0x52,
+  0x49,
+  0x46,
+  0x46,
+  0x08,
+  0x00,
+  0x00,
+  0x00,
+  0x57,
+  0x45,
+  0x42,
+  0x50,
+  0x56,
+  0x50,
+  0x38,
+  0x20,
 ];

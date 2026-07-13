@@ -280,10 +280,6 @@ class _GeneralExperimentWorkspaceScreenState
     }
   }
 
-  String _attachmentDownloadUrl(String attachmentId) {
-    return '${widget.api.baseUrl.replaceAll(RegExp(r'/$'), '')}/experiment-attachments/${Uri.encodeComponent(attachmentId)}/download';
-  }
-
   Future<void> _showAddLinkDialog() async {
     final link = await showDialog<_AttachmentLinkDraft>(
       context: context,
@@ -501,7 +497,8 @@ class _GeneralExperimentWorkspaceScreenState
                     },
                     onToolSelected: (toolId) => _openTool(toolId, workspace),
                     onPasteImage: _uploadPastedImage,
-                    downloadUrlForAttachment: _attachmentDownloadUrl,
+                    downloadAttachmentBytes:
+                        widget.api.downloadExperimentAttachmentBytes,
                     onUploadAttachment: _pickAndUploadAttachment,
                     onAddLink: _showAddLinkDialog,
                     onOpenAttachment: _openAttachment,
@@ -568,7 +565,7 @@ class _NotebookSurface extends StatelessWidget {
     required this.onNotebookChanged,
     required this.onToolSelected,
     required this.onPasteImage,
-    required this.downloadUrlForAttachment,
+    required this.downloadAttachmentBytes,
     required this.onUploadAttachment,
     required this.onAddLink,
     required this.onOpenAttachment,
@@ -591,7 +588,7 @@ class _NotebookSurface extends StatelessWidget {
   final ValueChanged<RichNotebookEdit> onNotebookChanged;
   final ValueChanged<String> onToolSelected;
   final PastedImageUploader onPasteImage;
-  final String Function(String attachmentId) downloadUrlForAttachment;
+  final AttachmentBytesDownloader downloadAttachmentBytes;
   final Future<void> Function({String? attachmentType}) onUploadAttachment;
   final VoidCallback onAddLink;
   final ValueChanged<Map<String, dynamic>> onOpenAttachment;
@@ -671,7 +668,7 @@ class _NotebookSurface extends StatelessWidget {
                 saveMessage: saveMessage,
                 onSave: onSave,
                 onPasteImage: onPasteImage,
-                downloadUrlForAttachment: downloadUrlForAttachment,
+                downloadAttachmentBytes: downloadAttachmentBytes,
                 onChanged: onNotebookChanged,
               ),
             ],

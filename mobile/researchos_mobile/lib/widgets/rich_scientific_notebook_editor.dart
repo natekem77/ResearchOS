@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:quill_native_bridge/quill_native_bridge.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -18,11 +21,13 @@ class RichScientificNotebookEditor extends StatefulWidget {
     this.saveMessage,
     this.onSave,
     this.onPasteImage,
-    this.downloadUrlForAttachment,
+    this.downloadAttachmentBytes,
+    NotebookImageCache? imageCache,
     ClipboardImageReader? clipboardImageReader,
     this.saving = false,
-  }) : clipboardImageReader =
-            clipboardImageReader ?? const QuillClipboardImageReader();
+  })  : clipboardImageReader =
+            clipboardImageReader ?? const QuillClipboardImageReader(),
+        imageCache = imageCache ?? const NotebookImageCache();
 
   final String initialContent;
   final String documentFormat;
@@ -30,7 +35,8 @@ class RichScientificNotebookEditor extends StatefulWidget {
   final String? saveMessage;
   final VoidCallback? onSave;
   final PastedImageUploader? onPasteImage;
-  final String Function(String attachmentId)? downloadUrlForAttachment;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final NotebookImageCache imageCache;
   final ClipboardImageReader clipboardImageReader;
   final bool saving;
 
@@ -58,6 +64,15 @@ class _RichScientificNotebookEditorState
         widget.documentFormat,
       ),
       selection: const TextSelection.collapsed(offset: 0),
+      config: QuillControllerConfig(
+        // Quill exposes native paste interception through this experimental API.
+        // Keep the ignore scoped so other experimental usage is still visible.
+        // ignore: experimental_member_use
+        clipboardConfig: QuillClipboardConfig(
+          // ignore: experimental_member_use
+          onClipboardPaste: _handleClipboardPaste,
+        ),
+      ),
     );
     _loadZoom();
     _controller.document.changes.listen((_) => _emitChange());
@@ -121,95 +136,108 @@ class _RichScientificNotebookEditorState
         '[{"insert":"\\n"}]';
   }
 
-  Future<void> _pasteImageFromClipboard() async {
-    if (_pastingImage || widget.onPasteImage == null) return;
+  Future<bool> _handleClipboardPaste() {
+    return _pasteImageFromClipboard(showUnsupportedMessage: false);
+  }
+
+  Future<bool> _pasteImageFromClipboard({
+    bool showUnsupportedMessage = true,
+  }) async {
+    if (_pastingImage) return true;
+    if (widget.onPasteImage == null) return false;
     setState(() {
       _pastingImage = true;
       _pasteMessage = 'Preparing image...';
     });
     try {
       final image = await widget.clipboardImageReader.readImage();
-      if (!mounted) return;
+      if (!mounted) return true;
       if (image == null) {
-        setState(() {
-          _pasteMessage = 'This clipboard content cannot be pasted yet.';
-        });
-        return;
+        if (showUnsupportedMessage) {
+          setState(() {
+            _pasteMessage = 'This clipboard content cannot be pasted yet.';
+          });
+        }
+        return false;
       }
-      _showClipboardDiagnostics(image.metadata);
       final confirmation = await showModalBottomSheet<_PasteImageConfirmation>(
         context: context,
         showDragHandle: true,
         isScrollControlled: true,
         builder: (context) => _PasteImageSheet(image: image),
       );
-      if (!mounted) return;
+      if (!mounted) return true;
       if (confirmation == null) {
         setState(() => _pasteMessage = 'Image paste cancelled.');
-        return;
+        return true;
       }
-      setState(() => _pasteMessage = 'Uploading image...');
-      final attachment = await widget.onPasteImage!(
-        image,
+      setState(() => _pasteMessage = 'Inserting image...');
+      final cached = await widget.imageCache.writeClipboardImage(image);
+      final payload = _insertLocalImageEmbed(
+        image: image,
+        cacheKey: cached.cacheKey,
         displayName: confirmation.displayName,
         description: confirmation.description,
       );
-      if (!mounted) return;
-      _insertAttachmentEmbed(attachment);
-      setState(() => _pasteMessage = 'Image inserted. Autosave pending.');
+      if (!mounted) return true;
+      setState(
+          () => _pasteMessage = 'Image inserted. Uploading in background...');
+      unawaited(
+        _uploadPastedImageInBackground(
+          image: image,
+          payload: payload,
+          displayName: confirmation.displayName,
+          description: confirmation.description,
+        ),
+      );
+      return true;
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted) return true;
       setState(() {
         _pasteMessage =
             'Could not paste image. Your notebook was not changed. $error';
       });
+      return true;
     } finally {
       if (mounted) setState(() => _pastingImage = false);
     }
   }
 
-  void _showClipboardDiagnostics(Map<String, Object?> metadata) {
-    assert(() {
-      final typeIdentifiers = metadata['type_identifiers'];
-      final typeText = typeIdentifiers is List
-          ? typeIdentifiers.map((type) => type.toString()).join(', ')
-          : 'unavailable';
-      debugPrint(
-        'mundi_clipboard clipboard_type_identifiers=$typeText '
-        'selected_representation=${metadata['selected_representation'] ?? 'unknown'}',
-      );
-      return true;
-    }());
-  }
-
-  void _insertAttachmentEmbed(Map<String, dynamic> attachment) {
-    final attachmentId = attachment['attachment_id']?.toString() ?? '';
-    if (attachmentId.isEmpty) {
-      throw const FormatException('Attachment upload did not return an ID.');
-    }
+  Map<String, dynamic> _insertLocalImageEmbed({
+    required PastedNotebookImage image,
+    required String cacheKey,
+    String? displayName,
+    String? description,
+  }) {
     final payload = {
       'embed_type': 'experiment_attachment',
-      'attachment_type': attachment['attachment_type']?.toString() ?? 'image',
-      'attachment_id': attachmentId,
-      'display_name':
-          attachment['display_name']?.toString().trim().isNotEmpty == true
-              ? attachment['display_name'].toString()
-              : attachment['original_filename']?.toString() ?? 'Pasted image',
+      'attachment_type': 'image',
+      'attachment_id': null,
+      'local_cache_key': cacheKey,
+      'upload_status': 'uploading',
+      'display_name': displayName?.trim().isNotEmpty == true
+          ? displayName!.trim()
+          : image.suggestedFilename,
+      'description': description,
+      'mime_type': image.mimeType,
+      'file_extension': image.fileExtension,
       'width_mode': 'full',
       'alignment': 'center',
       'caption': null,
       'alt_text': null,
-      'aspect_ratio': attachment['aspect_ratio'] ??
-          _mapValue(attachment['metadata'])?['aspect_ratio'],
+      'aspect_ratio': image.metadata['aspect_ratio'],
     };
+    _insertImageEmbedPayload(payload);
+    return payload;
+  }
+
+  void _insertImageEmbedPayload(Map<String, dynamic> payload) {
     final selection = _controller.selection;
     final index = selection.baseOffset < 0
         ? _controller.document.length - 1
         : selection.start;
     final length = selection.isCollapsed ? 0 : selection.end - selection.start;
-    final embed = BlockEmbed.custom(
-      CustomBlockEmbed('experiment_attachment', jsonEncode(payload)),
-    );
+    final embed = BlockEmbed.image(jsonEncode(payload));
     _controller.replaceText(
       index,
       length,
@@ -222,6 +250,104 @@ class _RichScientificNotebookEditorState
       '\n',
       TextSelection.collapsed(offset: index + 2),
     );
+    _emitChange();
+  }
+
+  Future<void> _uploadPastedImageInBackground({
+    required PastedNotebookImage image,
+    required Map<String, dynamic> payload,
+    String? displayName,
+    String? description,
+  }) async {
+    try {
+      final attachment = await widget.onPasteImage!(
+        image,
+        displayName: displayName,
+        description: description,
+      );
+      final updated = Map<String, dynamic>.from(payload)
+        ..['attachment_id'] = attachment['attachment_id']?.toString()
+        ..['upload_status'] = 'uploaded'
+        ..['display_name'] =
+            attachment['display_name']?.toString().trim().isNotEmpty == true
+                ? attachment['display_name'].toString()
+                : payload['display_name']
+        ..['server_attachment'] = {
+          'attachment_type': attachment['attachment_type']?.toString(),
+          'mime_type': attachment['mime_type']?.toString(),
+          'original_filename': attachment['original_filename']?.toString(),
+        };
+      _replaceImagePayload(updated);
+      if (mounted) setState(() => _pasteMessage = 'Image uploaded.');
+    } catch (error) {
+      final updated = Map<String, dynamic>.from(payload)
+        ..['upload_status'] = 'not_uploaded'
+        ..['upload_error'] = error.toString();
+      _replaceImagePayload(updated);
+      if (mounted) {
+        setState(() {
+          _pasteMessage =
+              'Image is visible locally but was not uploaded. Tap it to retry.';
+        });
+      }
+    }
+  }
+
+  Future<void> _retryImageUpload(Map<String, dynamic> payload) async {
+    if (widget.onPasteImage == null) return;
+    final cacheKey = payload['local_cache_key']?.toString() ?? '';
+    final file = await widget.imageCache.fileForKey(cacheKey);
+    if (file == null || !file.existsSync()) {
+      if (mounted) {
+        setState(() => _pasteMessage = 'Cached image is no longer available.');
+      }
+      return;
+    }
+    final bytes = file.readAsBytesSync();
+    final retryPayload = Map<String, dynamic>.from(payload)
+      ..['upload_status'] = 'uploading'
+      ..remove('upload_error');
+    _replaceImagePayload(retryPayload);
+    await _uploadPastedImageInBackground(
+      image: PastedNotebookImage(
+        bytes: bytes,
+        mimeType: payload['mime_type']?.toString() ?? 'image/png',
+        fileExtension: payload['file_extension']?.toString() ?? 'png',
+        suggestedFilename:
+            payload['display_name']?.toString() ?? 'pasted-notebook-image.png',
+      ),
+      payload: retryPayload,
+      displayName: payload['display_name']?.toString(),
+      description: payload['description']?.toString(),
+    );
+  }
+
+  void _replaceImagePayload(Map<String, dynamic> payload) {
+    final offset = _findImageEmbedOffset(payload);
+    if (offset == null) return;
+    final embed = BlockEmbed.image(jsonEncode(payload));
+    _controller.replaceText(
+      offset,
+      1,
+      embed,
+      TextSelection.collapsed(offset: offset + 1),
+    );
+    _emitChange();
+  }
+
+  int? _findImageEmbedOffset(Map<String, dynamic> payload) {
+    final attachmentId = payload['attachment_id']?.toString();
+    final cacheKey = payload['local_cache_key']?.toString();
+    var offset = 0;
+    for (final rawOp in _controller.document.toDelta().toJson()) {
+      final insert = rawOp['insert'];
+      if (_insertReferencesAttachment(insert, attachmentId) ||
+          _insertReferencesCacheKey(insert, cacheKey)) {
+        return offset;
+      }
+      offset += _insertLength(insert);
+    }
+    return null;
   }
 
   @override
@@ -293,10 +419,15 @@ class _RichScientificNotebookEditorState
                   ),
                 ),
                 embedBuilders: [
-                  const NativeQuillImageEmbedBuilder(),
+                  NativeQuillImageEmbedBuilder(
+                    imageCache: widget.imageCache,
+                    downloadAttachmentBytes: widget.downloadAttachmentBytes,
+                    onRetryUpload: _retryImageUpload,
+                  ),
                   ExperimentAttachmentImageEmbedBuilder(
-                    downloadUrlForAttachment:
-                        widget.downloadUrlForAttachment ?? (_) => '',
+                    imageCache: widget.imageCache,
+                    downloadAttachmentBytes: widget.downloadAttachmentBytes,
+                    onRetryUpload: _retryImageUpload,
                   ),
                 ],
               ),
@@ -722,6 +853,10 @@ typedef PastedImageUploader = Future<Map<String, dynamic>> Function(
   String? description,
 });
 
+typedef AttachmentBytesDownloader = Future<Uint8List> Function(
+  String attachmentId,
+);
+
 class PastedNotebookImage {
   const PastedNotebookImage({
     required this.bytes,
@@ -736,6 +871,87 @@ class PastedNotebookImage {
   final String fileExtension;
   final String suggestedFilename;
   final Map<String, Object?> metadata;
+}
+
+class CachedNotebookImage {
+  const CachedNotebookImage({
+    required this.cacheKey,
+    required this.file,
+  });
+
+  final String cacheKey;
+  final File file;
+}
+
+class NotebookImageCache {
+  const NotebookImageCache({this.rootPath});
+
+  final String? rootPath;
+
+  Future<CachedNotebookImage> writeClipboardImage(
+    PastedNotebookImage image,
+  ) async {
+    final key = _safeCacheKey(
+      'pasted-${DateTime.now().toUtc().microsecondsSinceEpoch}-${image.suggestedFilename}',
+    );
+    final file = await _fileForKey(key, image.fileExtension);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(image.bytes, flush: true);
+    return CachedNotebookImage(cacheKey: key, file: file);
+  }
+
+  Future<File?> fileForKey(String cacheKey) async {
+    final safeKey = _safeCacheKey(cacheKey);
+    if (safeKey.isEmpty) return null;
+    final directory = await _rootDirectory();
+    if (!directory.existsSync()) return null;
+    await for (final entity in directory.list()) {
+      if (entity is File &&
+          entity.uri.pathSegments.last.startsWith('$safeKey.')) {
+        return entity;
+      }
+    }
+    return null;
+  }
+
+  Future<File> writeAttachmentBytes({
+    required String cacheKey,
+    required Uint8List bytes,
+    required String extension,
+  }) async {
+    final file = await _fileForKey(_safeCacheKey(cacheKey), extension);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes, flush: true);
+    return file;
+  }
+
+  Future<File> _fileForKey(String cacheKey, String extension) async {
+    final directory = await _rootDirectory();
+    final cleanExtension = extension.replaceAll(RegExp(r'[^A-Za-z0-9]'), '');
+    return File(
+      '${directory.path}/$cacheKey.${cleanExtension.isEmpty ? 'png' : cleanExtension}',
+    );
+  }
+
+  Future<Directory> _rootDirectory() async {
+    if (rootPath != null && rootPath!.trim().isNotEmpty) {
+      return Directory(rootPath!);
+    }
+    try {
+      final directory = await getApplicationSupportDirectory();
+      return Directory('${directory.path}/mundi-notebook-images');
+    } catch (_) {
+      return Directory('${Directory.systemTemp.path}/mundi-notebook-images');
+    }
+  }
+}
+
+String _safeCacheKey(String value) {
+  return value
+      .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '-')
+      .replaceAll(RegExp(r'-+'), '-')
+      .replaceAll(RegExp(r'^[-.]+|[-.]+$'), '')
+      .toLowerCase();
 }
 
 abstract class ClipboardImageReader {
@@ -786,6 +1002,7 @@ class QuillClipboardImageReader extends ClipboardImageReader {
         'readImageClipboard',
       );
       if (result == null) return null;
+      _debugClipboardSelection(result);
       final bytes = result['bytes'];
       if (bytes is! Uint8List || bytes.isEmpty) return null;
       final mimeType =
@@ -794,11 +1011,14 @@ class QuillClipboardImageReader extends ClipboardImageReader {
           _extensionForMimeType(mimeType);
       final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
       final typeIdentifiers = result['type_identifiers'];
+      final suggestedFilename = result['suggested_filename']?.toString().trim();
       return PastedNotebookImage(
         bytes: bytes,
         mimeType: mimeType,
         fileExtension: extension,
-        suggestedFilename: 'pasted-image-$timestamp$extension',
+        suggestedFilename: suggestedFilename?.isNotEmpty == true
+            ? suggestedFilename!
+            : 'pasted-image-$timestamp$extension',
         metadata: {
           'source': 'ios_pasteboard',
           'selected_representation':
@@ -814,6 +1034,22 @@ class QuillClipboardImageReader extends ClipboardImageReader {
     } catch (_) {
       return null;
     }
+  }
+
+  void _debugClipboardSelection(Map<String, Object?> result) {
+    assert(() {
+      final typeIdentifiers = result['type_identifiers'];
+      final identifiers = typeIdentifiers is List
+          ? typeIdentifiers
+              .map((identifier) => identifier.toString())
+              .join(', ')
+          : 'unavailable';
+      debugPrint(
+        'mundi_clipboard type_identifiers=$identifiers '
+        'selected_representation=${result['selected_representation'] ?? 'unknown'}',
+      );
+      return true;
+    }());
   }
 }
 
@@ -859,6 +1095,7 @@ class ClipboardPayloadResolver {
       'image/heic',
       'image/heif',
       'image/tiff',
+      'image/webp',
     ]) {
       for (final representation in representations) {
         if (_identifierMatchesMime(representation.typeIdentifier, mimeType) &&
@@ -871,6 +1108,19 @@ class ClipboardPayloadResolver {
           );
         }
       }
+    }
+    for (final representation in representations) {
+      if (!_isGenericImageIdentifier(representation.typeIdentifier) ||
+          representation.bytes == null ||
+          representation.bytes!.isEmpty) {
+        continue;
+      }
+      final mimeType = _detectImageMimeType(representation.bytes!);
+      return ClipboardPayloadSelection(
+        selectedRepresentation: representation.typeIdentifier,
+        bytes: representation.bytes,
+        mimeType: mimeType,
+      );
     }
     for (final representation in representations) {
       final html = representation.html;
@@ -890,6 +1140,18 @@ class ClipboardPayloadResolver {
         return ClipboardPayloadSelection(
           selectedRepresentation: '${representation.typeIdentifier}:html-img',
           remoteImageUrl: src,
+        );
+      }
+    }
+    for (final representation in representations) {
+      final text = representation.text?.trim();
+      if (text == null || text.isEmpty) continue;
+      final dataImage = _decodeSafeDataImage(text);
+      if (dataImage != null) {
+        return ClipboardPayloadSelection(
+          selectedRepresentation: '${representation.typeIdentifier}:data-image',
+          bytes: dataImage.bytes,
+          mimeType: dataImage.mimeType,
         );
       }
     }
@@ -927,9 +1189,19 @@ class ClipboardPayloadResolver {
         return normalized.contains('heif');
       case 'image/tiff':
         return normalized.contains('tiff') || normalized.contains('tif');
+      case 'image/webp':
+        return normalized.contains('webp');
       default:
         return false;
     }
+  }
+
+  static bool _isGenericImageIdentifier(String identifier) {
+    final normalized = identifier.toLowerCase();
+    return normalized == 'public.image' ||
+        normalized == 'image' ||
+        normalized.endsWith('.image') ||
+        normalized.contains('uiimage');
   }
 
   static String? _extractImageSourceFromHtml(String html) {
@@ -942,7 +1214,7 @@ class ClipboardPayloadResolver {
 
   static _DecodedDataImage? _decodeSafeDataImage(String source) {
     final match = RegExp(
-      r'^data:(image/(?:png|jpeg|jpg|heic|heif|tiff));base64,([A-Za-z0-9+/=\r\n]+)$',
+      r'^data:(image/(?:png|jpeg|jpg|heic|heif|tiff|webp));base64,([A-Za-z0-9+/=\r\n]+)$',
       caseSensitive: false,
     ).firstMatch(source.trim());
     if (match == null) return null;
@@ -1083,17 +1355,19 @@ class _PasteImageSheetState extends State<_PasteImageSheet> {
                 const SizedBox(width: ResearchOsSpacing.sm),
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: () => Navigator.pop(
-                      context,
-                      _PasteImageConfirmation(
-                        displayName: _displayName.text.trim().isEmpty
-                            ? null
-                            : _displayName.text.trim(),
-                        description: _description.text.trim().isEmpty
-                            ? null
-                            : _description.text.trim(),
-                      ),
-                    ),
+                    onPressed: () {
+                      Navigator.pop(
+                        context,
+                        _PasteImageConfirmation(
+                          displayName: _displayName.text.trim().isEmpty
+                              ? null
+                              : _displayName.text.trim(),
+                          description: _description.text.trim().isEmpty
+                              ? null
+                              : _description.text.trim(),
+                        ),
+                      );
+                    },
                     icon: const Icon(Icons.add_photo_alternate_outlined),
                     label: const Text('Insert'),
                   ),
@@ -1109,10 +1383,14 @@ class _PasteImageSheetState extends State<_PasteImageSheet> {
 
 class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {
   const ExperimentAttachmentImageEmbedBuilder({
-    required this.downloadUrlForAttachment,
+    required this.imageCache,
+    required this.downloadAttachmentBytes,
+    required this.onRetryUpload,
   });
 
-  final String Function(String attachmentId) downloadUrlForAttachment;
+  final NotebookImageCache imageCache;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final Future<void> Function(Map<String, dynamic> payload) onRetryUpload;
 
   @override
   String get key => 'experiment_attachment';
@@ -1127,19 +1405,23 @@ class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {
   Widget build(BuildContext context, EmbedContext embedContext) {
     final payload = _decodeAttachmentEmbed(embedContext.node.value.data);
     final attachmentId = payload['attachment_id']?.toString() ?? '';
+    final cacheKey = payload['local_cache_key']?.toString() ?? '';
     final attachmentType = payload['attachment_type']?.toString() ?? '';
     final label = payload['display_name']?.toString() ?? 'Pasted image';
-    if (attachmentType != 'image' || attachmentId.isEmpty) {
+    if (attachmentType != 'image' ||
+        (attachmentId.isEmpty && cacheKey.isEmpty)) {
       return _ImagePlaceholder(
         icon: Icons.insert_drive_file_outlined,
         label: label,
       );
     }
-    final url = downloadUrlForAttachment(attachmentId);
     return _SelectableNotebookImage(
-      key: ValueKey('notebook-image-$attachmentId'),
+      key: ValueKey(
+          'notebook-image-${attachmentId.isEmpty ? cacheKey : attachmentId}'),
       payload: payload,
-      url: url,
+      imageCache: imageCache,
+      downloadAttachmentBytes: downloadAttachmentBytes,
+      onRetryUpload: onRetryUpload,
       controller: embedContext.controller,
       documentOffset: embedContext.node.documentOffset,
     );
@@ -1147,7 +1429,15 @@ class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {
 }
 
 class NativeQuillImageEmbedBuilder extends EmbedBuilder {
-  const NativeQuillImageEmbedBuilder();
+  const NativeQuillImageEmbedBuilder({
+    required this.imageCache,
+    required this.downloadAttachmentBytes,
+    required this.onRetryUpload,
+  });
+
+  final NotebookImageCache imageCache;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final Future<void> Function(Map<String, dynamic> payload) onRetryUpload;
 
   @override
   String get key => BlockEmbed.imageType;
@@ -1158,6 +1448,22 @@ class NativeQuillImageEmbedBuilder extends EmbedBuilder {
   @override
   Widget build(BuildContext context, EmbedContext embedContext) {
     final source = embedContext.node.value.data.toString();
+    final payload = _decodeAttachmentEmbed(source);
+    if (payload['embed_type'] == 'experiment_attachment' &&
+        payload['attachment_type'] == 'image') {
+      final attachmentId = payload['attachment_id']?.toString() ?? '';
+      final cacheKey = payload['local_cache_key']?.toString() ?? '';
+      return _SelectableNotebookImage(
+        key: ValueKey(
+            'notebook-image-${attachmentId.isEmpty ? cacheKey : attachmentId}'),
+        payload: payload,
+        imageCache: imageCache,
+        downloadAttachmentBytes: downloadAttachmentBytes,
+        onRetryUpload: onRetryUpload,
+        controller: embedContext.controller,
+        documentOffset: embedContext.node.documentOffset,
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
       child: LayoutBuilder(
@@ -1212,13 +1518,17 @@ class _SelectableNotebookImage extends StatefulWidget {
   const _SelectableNotebookImage({
     super.key,
     required this.payload,
-    required this.url,
+    required this.imageCache,
+    required this.downloadAttachmentBytes,
+    required this.onRetryUpload,
     required this.controller,
     required this.documentOffset,
   });
 
   final Map<String, dynamic> payload;
-  final String url;
+  final NotebookImageCache imageCache;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final Future<void> Function(Map<String, dynamic> payload) onRetryUpload;
   final QuillController controller;
   final int documentOffset;
 
@@ -1278,7 +1588,11 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
                         ConstrainedBox(
                           constraints: const BoxConstraints(maxHeight: 420),
                           child: _NotebookImagePreview(
-                            url: widget.url,
+                            payload: payload,
+                            imageCache: widget.imageCache,
+                            downloadAttachmentBytes:
+                                widget.downloadAttachmentBytes,
+                            onRetryUpload: widget.onRetryUpload,
                             label: label,
                             altText: altText,
                           ),
@@ -1294,6 +1608,19 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
                                 Text(
                                   caption,
                                   style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
+                              if (payload['upload_status'] ==
+                                  'not_uploaded') ...[
+                                const SizedBox(height: ResearchOsSpacing.sm),
+                                OutlinedButton.icon(
+                                  key: ValueKey(
+                                    'retry-upload-${payload['local_cache_key'] ?? payload['attachment_id'] ?? ''}',
+                                  ),
+                                  onPressed: () =>
+                                      widget.onRetryUpload(widget.payload),
+                                  icon: const Icon(Icons.cloud_upload_outlined),
+                                  label: const Text('Retry Upload'),
                                 ),
                               ],
                             ],
@@ -1320,7 +1647,8 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
         isScrollControlled: true,
         builder: (context) => _ImageInspectorSheet(
           payload: widget.payload,
-          imageUrl: widget.url,
+          imageCache: widget.imageCache,
+          downloadAttachmentBytes: widget.downloadAttachmentBytes,
           onUpdate: _replacePayload,
           onMoveUp: () => _moveImage(up: true),
           onMoveDown: () => _moveImage(up: false),
@@ -1388,54 +1716,130 @@ class _SelectableNotebookImageState extends State<_SelectableNotebookImage> {
 
   int? _currentEmbedOffset() {
     final targetId = widget.payload['attachment_id']?.toString();
-    if (targetId == null || targetId.isEmpty) return null;
+    final targetCacheKey = widget.payload['local_cache_key']?.toString();
+    if ((targetId == null || targetId.isEmpty) &&
+        (targetCacheKey == null || targetCacheKey.isEmpty)) {
+      return null;
+    }
     var offset = 0;
     for (final rawOp in widget.controller.document.toDelta().toJson()) {
       final insert = rawOp['insert'];
-      if (_insertReferencesAttachment(insert, targetId)) return offset;
+      if (_insertReferencesAttachment(insert, targetId) ||
+          _insertReferencesCacheKey(insert, targetCacheKey)) {
+        return offset;
+      }
       offset += _insertLength(insert);
     }
     return null;
   }
 }
 
-class _NotebookImagePreview extends StatelessWidget {
+class _NotebookImagePreview extends StatefulWidget {
   const _NotebookImagePreview({
-    required this.url,
+    required this.payload,
+    required this.imageCache,
+    required this.downloadAttachmentBytes,
+    required this.onRetryUpload,
     required this.label,
     required this.altText,
   });
 
-  final String url;
+  final Map<String, dynamic> payload;
+  final NotebookImageCache imageCache;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final Future<void> Function(Map<String, dynamic> payload) onRetryUpload;
   final String label;
   final String altText;
 
   @override
-  Widget build(BuildContext context) {
-    if (url.isEmpty) {
-      return _ImagePlaceholder(
-        icon: Icons.image_not_supported_outlined,
-        label: altText.isEmpty ? 'Image reference unavailable' : altText,
-      );
+  State<_NotebookImagePreview> createState() => _NotebookImagePreviewState();
+}
+
+class _NotebookImagePreviewState extends State<_NotebookImagePreview> {
+  late Future<File?> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _resolveFile();
+  }
+
+  @override
+  void didUpdateWidget(covariant _NotebookImagePreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.payload['local_cache_key'] !=
+            widget.payload['local_cache_key'] ||
+        oldWidget.payload['attachment_id'] != widget.payload['attachment_id']) {
+      _future = _resolveFile();
     }
-    return Semantics(
-      label: altText.isEmpty ? label : altText,
-      image: true,
-      child: Image.network(
-        url,
-        fit: BoxFit.contain,
-        loadingBuilder: (context, child, progress) {
-          if (progress == null) return child;
+  }
+
+  Future<File?> _resolveFile() async {
+    final cacheKey = widget.payload['local_cache_key']?.toString() ?? '';
+    final cached = await widget.imageCache.fileForKey(cacheKey);
+    if (cached != null && cached.existsSync()) return cached;
+    final attachmentId = widget.payload['attachment_id']?.toString() ?? '';
+    if (attachmentId.isEmpty || widget.downloadAttachmentBytes == null) {
+      return null;
+    }
+    final bytes = await widget.downloadAttachmentBytes!(attachmentId);
+    return widget.imageCache.writeAttachmentBytes(
+      cacheKey:
+          cacheKey.isEmpty ? 'attachment-${attachmentId.hashCode}' : cacheKey,
+      bytes: bytes,
+      extension: widget.payload['file_extension']?.toString() ?? 'png',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uploadStatus = widget.payload['upload_status']?.toString() ?? '';
+    return FutureBuilder<File?>(
+      future: _future,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
           return const _ImagePlaceholder(
             icon: Icons.image_outlined,
             label: 'Loading image...',
           );
-        },
-        errorBuilder: (context, error, stackTrace) => const _ImagePlaceholder(
-          icon: Icons.broken_image_outlined,
-          label: 'Image preview failed',
-        ),
-      ),
+        }
+        final file = snapshot.data;
+        if (snapshot.hasError || file == null) {
+          return _ImagePlaceholder(
+            icon: Icons.image_not_supported_outlined,
+            label: widget.altText.isEmpty
+                ? 'Image reference unavailable'
+                : widget.altText,
+          );
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Semantics(
+              label: widget.altText.isEmpty ? widget.label : widget.altText,
+              image: true,
+              child: Image.file(
+                file,
+                fit: BoxFit.contain,
+                errorBuilder: (context, error, stackTrace) =>
+                    const _ImagePlaceholder(
+                  icon: Icons.broken_image_outlined,
+                  label: 'Image preview failed',
+                ),
+              ),
+            ),
+            if (uploadStatus == 'not_uploaded')
+              Padding(
+                padding: const EdgeInsets.all(ResearchOsSpacing.sm),
+                child: OutlinedButton.icon(
+                  onPressed: () => widget.onRetryUpload(widget.payload),
+                  icon: const Icon(Icons.cloud_upload_outlined),
+                  label: const Text('Retry Upload'),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
@@ -1443,7 +1847,8 @@ class _NotebookImagePreview extends StatelessWidget {
 class _ImageInspectorSheet extends StatefulWidget {
   const _ImageInspectorSheet({
     required this.payload,
-    required this.imageUrl,
+    required this.imageCache,
+    required this.downloadAttachmentBytes,
     required this.onUpdate,
     required this.onMoveUp,
     required this.onMoveDown,
@@ -1451,7 +1856,8 @@ class _ImageInspectorSheet extends StatefulWidget {
   });
 
   final Map<String, dynamic> payload;
-  final String imageUrl;
+  final NotebookImageCache imageCache;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
   final ValueChanged<Map<String, dynamic>> onUpdate;
   final VoidCallback onMoveUp;
   final VoidCallback onMoveDown;
@@ -1553,9 +1959,7 @@ class _ImageInspectorSheetState extends State<_ImageInspectorSheet> {
               runSpacing: ResearchOsSpacing.sm,
               children: [
                 OutlinedButton.icon(
-                  onPressed: widget.imageUrl.isEmpty
-                      ? null
-                      : () => _previewOriginal(context),
+                  onPressed: () => _previewOriginal(context),
                   icon: const Icon(Icons.open_in_full),
                   label: const Text('Preview'),
                 ),
@@ -1610,17 +2014,44 @@ class _ImageInspectorSheetState extends State<_ImageInspectorSheet> {
       context: context,
       builder: (context) => Dialog(
         child: InteractiveViewer(
-          child: Image.network(
-            widget.imageUrl,
-            fit: BoxFit.contain,
-            errorBuilder: (context, error, stackTrace) =>
-                const _ImagePlaceholder(
-              icon: Icons.broken_image_outlined,
-              label: 'Image preview failed',
-            ),
+          child: FutureBuilder<File?>(
+            future: _resolvePreviewFile(),
+            builder: (context, snapshot) {
+              final file = snapshot.data;
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const _ImagePlaceholder(
+                  icon: Icons.image_outlined,
+                  label: 'Loading image...',
+                );
+              }
+              if (snapshot.hasError || file == null) {
+                return const _ImagePlaceholder(
+                  icon: Icons.broken_image_outlined,
+                  label: 'Image preview failed',
+                );
+              }
+              return Image.file(file, fit: BoxFit.contain);
+            },
           ),
         ),
       ),
+    );
+  }
+
+  Future<File?> _resolvePreviewFile() async {
+    final cacheKey = widget.payload['local_cache_key']?.toString() ?? '';
+    final cached = await widget.imageCache.fileForKey(cacheKey);
+    if (cached != null && cached.existsSync()) return cached;
+    final attachmentId = widget.payload['attachment_id']?.toString() ?? '';
+    if (attachmentId.isEmpty || widget.downloadAttachmentBytes == null) {
+      return null;
+    }
+    final bytes = await widget.downloadAttachmentBytes!(attachmentId);
+    return widget.imageCache.writeAttachmentBytes(
+      cacheKey:
+          cacheKey.isEmpty ? 'attachment-${attachmentId.hashCode}' : cacheKey,
+      bytes: bytes,
+      extension: widget.payload['file_extension']?.toString() ?? 'png',
     );
   }
 }
@@ -1656,9 +2087,17 @@ Map<String, dynamic> _decodeAttachmentEmbed(Object? data) {
   try {
     if (data is String) {
       final decoded = jsonDecode(data);
-      if (decoded is Map<String, dynamic>) return decoded;
+      if (decoded is Map<String, dynamic>) {
+        final nested = decoded['experiment_attachment'];
+        if (nested != null) return _decodeAttachmentEmbed(nested);
+        return decoded;
+      }
     }
-    if (data is Map<String, dynamic>) return data;
+    if (data is Map<String, dynamic>) {
+      final nested = data['experiment_attachment'];
+      if (nested != null) return _decodeAttachmentEmbed(nested);
+      return data;
+    }
   } catch (_) {
     return const {};
   }
@@ -1686,6 +2125,11 @@ String _detectImageMimeType(Uint8List bytes) {
       return 'image/heic';
     }
   }
+  if (bytes.length >= 12 &&
+      String.fromCharCodes(bytes.sublist(0, 4)) == 'RIFF' &&
+      String.fromCharCodes(bytes.sublist(8, 12)) == 'WEBP') {
+    return 'image/webp';
+  }
   return 'image/png';
 }
 
@@ -1695,6 +2139,12 @@ String _extensionForMimeType(String mimeType) {
       return '.jpg';
     case 'image/heic':
       return '.heic';
+    case 'image/heif':
+      return '.heif';
+    case 'image/tiff':
+      return '.tiff';
+    case 'image/webp':
+      return '.webp';
     default:
       return '.png';
   }
@@ -1713,12 +2163,6 @@ Future<double?> _readImageAspectRatio(Uint8List bytes) async {
   } catch (_) {
     return null;
   }
-}
-
-Map<String, dynamic>? _mapValue(Object? value) {
-  if (value is Map<String, dynamic>) return value;
-  if (value is Map) return Map<String, dynamic>.from(value);
-  return null;
 }
 
 String _normalizedWidthMode(String? value) {
@@ -1774,21 +2218,37 @@ int _insertLength(Object? insert) {
   return 0;
 }
 
-bool _insertReferencesAttachment(Object? insert, String attachmentId) {
-  if (insert is! Map) return false;
+bool _insertReferencesAttachment(Object? insert, String? attachmentId) {
+  if (attachmentId == null || attachmentId.isEmpty) return false;
+  final payload = _attachmentPayloadFromInsert(insert);
+  return payload['attachment_id']?.toString() == attachmentId;
+}
+
+bool _insertReferencesCacheKey(Object? insert, String? cacheKey) {
+  if (cacheKey == null || cacheKey.isEmpty) return false;
+  final payload = _attachmentPayloadFromInsert(insert);
+  return payload['local_cache_key']?.toString() == cacheKey;
+}
+
+Map<String, dynamic> _attachmentPayloadFromInsert(Object? insert) {
+  if (insert is! Map) return const {};
+  final image = insert['image'];
+  if (image != null) {
+    final payload = _decodeAttachmentEmbed(image);
+    if (payload.isNotEmpty) return payload;
+  }
   final custom = insert['custom'];
-  if (custom == null) return false;
+  if (custom == null) return const {};
   try {
     final decoded = custom is String ? jsonDecode(custom) : custom;
     if (decoded is Map) {
       final rawPayload = decoded['experiment_attachment'];
-      final payload = _decodeAttachmentEmbed(rawPayload);
-      return payload['attachment_id']?.toString() == attachmentId;
+      return _decodeAttachmentEmbed(rawPayload);
     }
   } catch (_) {
-    return false;
+    return const {};
   }
-  return false;
+  return const {};
 }
 
 Document _documentFromContent(String content, String documentFormat) {
