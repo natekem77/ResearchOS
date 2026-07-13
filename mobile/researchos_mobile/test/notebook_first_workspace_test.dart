@@ -1325,6 +1325,35 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('table menu is contextual and hidden by default', (tester) async {
+    await pumpRichEditor(
+      tester,
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:menu',
+          rows: 1,
+          columns: 1,
+          cells: [
+            [NotebookTableCell(text: 'Menu cell')]
+          ],
+        ),
+      ),
+      size: const Size(375, 667),
+    );
+
+    expect(find.byTooltip('Table options'), findsNothing);
+
+    await _selectTableCell(tester, 'table:menu', 0, 0);
+
+    expect(find.byTooltip('Table options'), findsOneWidget);
+    await _openTableMenu(tester);
+    expect(find.text('Add row above'), findsOneWidget);
+    await tester.tapAt(const Offset(8, 8));
+    await tester.pumpAndSettle();
+    expect(find.text('Add row above'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('table cell edits and row column controls persist in Delta',
       (tester) async {
     String? delta;
@@ -1357,12 +1386,10 @@ void main() {
     await tester.tap(find.text('A1'));
     await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextField, 'Cell text'), 'A2');
-    await tester.tap(find.text('Save').last);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Add row below'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Add column right'));
-    await tester.pumpAndSettle();
+    await _tapTableAction(tester, 'Add row below');
+    await _tapTableAction(tester, 'Add column right');
 
     expect(delta, contains('experiment_table'));
     expect(delta, contains('A2'));
@@ -1409,18 +1436,13 @@ void main() {
       find.widgetWithText(TextField, 'Cell text'),
       'D line 1\nD line 2',
     );
-    await tester.tap(find.text('Save').last);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save').last);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Add row above'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Add column left'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Toggle header row'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Wide columns'));
-    await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Edit caption'));
-    await tester.tap(find.text('Edit caption'));
+    await _tapTableAction(tester, 'Add row above');
+    await _tapTableAction(tester, 'Add column left');
+    await _tapTableAction(tester, 'Toggle header row');
+    await _tapTableAction(tester, 'Wide columns');
+    await _tapTableAction(tester, 'Edit caption');
     await tester.pumpAndSettle();
     await tester.enterText(find.widgetWithText(TextField, 'Caption'), 'Plan A');
     await tester.tap(find.text('Save').last);
@@ -1431,6 +1453,151 @@ void main() {
     expect(delta, contains('1.35'));
     expect(delta, contains('Plan A'));
     expect(find.text('Plan A'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('paste image into active table cell and persist block metadata',
+      (tester) async {
+    String? delta;
+    var uploaded = false;
+    await pumpRichEditor(
+      tester,
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:image-cell',
+          rows: 1,
+          columns: 1,
+          cells: [
+            [NotebookTableCell(text: 'Before image')]
+          ],
+        ),
+      ),
+      onPasteImage: (
+        PastedNotebookImage image, {
+        String? displayName,
+        String? description,
+      }) async {
+        uploaded = true;
+        return {
+          'attachment_id': 'attachment:cell-image',
+          'attachment_type': 'image',
+          'display_name': displayName ?? 'Cell image',
+          'mime_type': image.mimeType,
+          'original_filename': image.suggestedFilename,
+        };
+      },
+      onChanged: (edit) => delta = edit.deltaJson,
+      size: const Size(393, 852),
+    );
+
+    await _selectTableCell(tester, 'table:image-cell', 0, 0);
+    await _tapTableAction(tester, 'Paste image into cell');
+    await _tapPasteImageInsert(tester);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(uploaded, isTrue);
+    expect(_tableCellImageBlock(), findsOneWidget);
+    expect(delta, contains('blocks'));
+    expect(delta, contains('type'));
+    expect(delta, contains('image'));
+    expect(delta, contains('attachment:cell-image'));
+    expect(delta, contains('Before image'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('table cell image restores by attachment id after cache miss',
+      (tester) async {
+    var requestedAttachmentId = '';
+    await pumpRichEditor(
+      tester,
+      imageCache: _TestNotebookImageCache(),
+      downloadAttachmentBytes: (attachmentId) async {
+        requestedAttachmentId = attachmentId;
+        return Uint8List.fromList(_pngBytes);
+      },
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:cell-cache',
+          rows: 1,
+          columns: 1,
+          cells: [
+            [
+              NotebookTableCell(
+                text: '[Image: Cached cell image]',
+                blocks: [
+                  NotebookTableCellBlock.image({
+                    'block_id': 'cell-image-cache-miss',
+                    'attachment_id': 'attachment:cell-cache',
+                    'local_cache_key': 'missing-cell-cache',
+                    'upload_status': 'uploaded',
+                    'display_name': 'Cached cell image',
+                    'mime_type': 'image/png',
+                    'file_extension': 'png',
+                    'width_factor': 1.0,
+                  }),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+      size: const Size(393, 852),
+    );
+
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(requestedAttachmentId, 'attachment:cell-cache');
+    expect(_tableCellImageBlock(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('row and column operations preserve remaining cell images',
+      (tester) async {
+    String? delta;
+    await pumpRichEditor(
+      tester,
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:preserve-cell-image',
+          rows: 2,
+          columns: 2,
+          cells: [
+            [
+              NotebookTableCell(
+                text: '[Image: Preserved]',
+                blocks: [
+                  NotebookTableCellBlock.image({
+                    'block_id': 'cell-image-preserved',
+                    'attachment_id': 'attachment:preserved-cell-image',
+                    'local_cache_key': 'preserved-cell-cache',
+                    'upload_status': 'uploaded',
+                    'display_name': 'Preserved',
+                    'width_factor': 1.0,
+                  }),
+                ],
+              ),
+              NotebookTableCell(text: 'A2'),
+            ],
+            [
+              NotebookTableCell(text: 'B1'),
+              NotebookTableCell(text: 'B2'),
+            ],
+          ],
+        ),
+      ),
+      onChanged: (edit) => delta = edit.deltaJson,
+      size: const Size(393, 852),
+    );
+
+    await _selectTableCell(tester, 'table:preserve-cell-image', 1, 1);
+    await _tapTableAction(tester, 'Add row below');
+    await _tapTableAction(tester, 'Add column right');
+
+    expect(delta, contains('attachment:preserved-cell-image'));
+    expect(delta, contains('cell-image-preserved'));
     expect(tester.takeException(), isNull);
   });
 
@@ -1459,8 +1626,8 @@ void main() {
       onChanged: (edit) => saved = edit.deltaJson,
     );
     expect(find.text('SAG'), findsOneWidget);
-    await tester.tap(find.text('Add row below'));
-    await tester.pumpAndSettle();
+    await _selectTableCell(tester, 'table:reopen', 1, 0);
+    await _tapTableAction(tester, 'Add row below');
     final reopened = saved!;
 
     await pumpRichEditor(
@@ -1504,13 +1671,12 @@ void main() {
       onChanged: (edit) => saved = edit.deltaJson,
     );
 
-    await tester.tap(find.text('Move Down'));
-    await tester.pumpAndSettle();
+    await _selectTableCell(tester, 'table:move', 0, 0);
+    await _tapTableAction(tester, 'Move Down');
     expect(saved, contains('Move me'));
     expect(saved, contains('Before'));
-    await tester.ensureVisible(find.text('Delete table'));
-    await tester.tap(find.text('Delete table'));
-    await tester.pumpAndSettle();
+    await _selectTableCell(tester, 'table:move', 0, 0);
+    await _tapTableAction(tester, 'Delete table');
     await tester.pump(const Duration(milliseconds: 400));
     expect(saved, isNot(contains('Move me')));
     expect(tester.takeException(), isNull);
@@ -1705,6 +1871,43 @@ Finder _notebookImageFrame() {
     final key = widget.key;
     return key is ValueKey && key.toString().contains('notebook-image-frame-');
   });
+}
+
+Finder _tableCellImageBlock() {
+  return find.byWidgetPredicate((widget) {
+    final key = widget.key;
+    return key is ValueKey &&
+        key.toString().contains('notebook-table-cell-image-');
+  });
+}
+
+Future<void> _selectTableCell(
+  WidgetTester tester,
+  String tableId,
+  int row,
+  int column,
+) async {
+  await tester.tap(find.byKey(
+    ValueKey('notebook-table-cell-$tableId-$row-$column'),
+  ));
+  await tester.pumpAndSettle();
+  final cancel = find.text('Cancel');
+  if (cancel.evaluate().isNotEmpty) {
+    await tester.tap(cancel.last);
+    await tester.pumpAndSettle();
+  }
+}
+
+Future<void> _openTableMenu(WidgetTester tester) async {
+  await tester.ensureVisible(find.byTooltip('Table options'));
+  await tester.tap(find.byTooltip('Table options'));
+  await tester.pumpAndSettle();
+}
+
+Future<void> _tapTableAction(WidgetTester tester, String label) async {
+  await _openTableMenu(tester);
+  await tester.tap(find.text(label).last);
+  await tester.pumpAndSettle();
 }
 
 class _TestNotebookImageCache extends NotebookImageCache {

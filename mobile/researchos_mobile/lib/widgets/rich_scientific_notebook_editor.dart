@@ -604,7 +604,12 @@ class _RichScientificNotebookEditorState
                   ),
                 ),
                 embedBuilders: [
-                  const ExperimentTableEmbedBuilder(),
+                  ExperimentTableEmbedBuilder(
+                    imageCache: widget.imageCache,
+                    clipboardImageReader: widget.clipboardImageReader,
+                    onPasteImage: widget.onPasteImage,
+                    downloadAttachmentBytes: widget.downloadAttachmentBytes,
+                  ),
                   NativeQuillImageEmbedBuilder(
                     imageCache: widget.imageCache,
                     downloadAttachmentBytes: widget.downloadAttachmentBytes,
@@ -1797,7 +1802,7 @@ class NotebookTable {
 
   String toPlainText() {
     return cells
-        .map((row) => row.map((cell) => cell.text).join('\t'))
+        .map((row) => row.map((cell) => cell.plainText).join('\t'))
         .join('\n');
   }
 
@@ -1942,6 +1947,7 @@ class NotebookTableCell {
   const NotebookTableCell({
     this.cellId = '',
     required this.text,
+    this.blocks = const [],
     this.header = false,
     this.bold = false,
     this.italic = false,
@@ -1965,6 +1971,7 @@ class NotebookTableCell {
   }
 
   final String text;
+  final List<NotebookTableCellBlock> blocks;
   final String cellId;
   final bool header;
   final bool bold;
@@ -1978,10 +1985,22 @@ class NotebookTableCell {
   final int colspan;
   final int rowspan;
 
+  List<NotebookTableCellBlock> get effectiveBlocks {
+    if (blocks.isNotEmpty) return blocks;
+    if (text.isEmpty) return const [];
+    return [NotebookTableCellBlock.text(text)];
+  }
+
+  String get plainText {
+    if (blocks.isEmpty) return text;
+    return blocks.map((block) => block.plainText).join('\n');
+  }
+
   Map<String, dynamic> toJson() {
     return {
       'cell_id': cellId.isEmpty ? _newNotebookTableId('cell') : cellId,
-      'text': text,
+      'text': plainText,
+      'blocks': [for (final block in effectiveBlocks) block.toJson()],
       'is_header': header,
       if (header) 'header': true,
       'horizontal_alignment': horizontalAlignment,
@@ -2001,6 +2020,7 @@ class NotebookTableCell {
   NotebookTableCell copyWith({
     String? cellId,
     String? text,
+    List<NotebookTableCellBlock>? blocks,
     bool? header,
     bool? bold,
     bool? italic,
@@ -2013,9 +2033,16 @@ class NotebookTableCell {
     int? colspan,
     int? rowspan,
   }) {
+    final nextText = text ?? this.text;
     return NotebookTableCell(
       cellId: cellId ?? this.cellId,
-      text: text ?? this.text,
+      text: nextText,
+      blocks: blocks ??
+          (text == null
+              ? this.blocks
+              : nextText.isEmpty
+                  ? const []
+                  : [NotebookTableCellBlock.text(nextText)]),
       header: header ?? this.header,
       bold: bold ?? this.bold,
       italic: italic ?? this.italic,
@@ -2033,9 +2060,17 @@ class NotebookTableCell {
   static NotebookTableCell? fromJson(Object? raw) {
     if (raw is! Map) return null;
     final map = Map<String, dynamic>.from(raw);
+    final blocks = map['blocks'] is List
+        ? [
+            for (final rawBlock in map['blocks'] as List)
+              if (NotebookTableCellBlock.fromJson(rawBlock) != null)
+                NotebookTableCellBlock.fromJson(rawBlock)!,
+          ]
+        : const <NotebookTableCellBlock>[];
     return NotebookTableCell(
       cellId: map['cell_id']?.toString() ?? _newNotebookTableId('cell'),
       text: map['text']?.toString() ?? '',
+      blocks: blocks,
       header: map['is_header'] == true || map['header'] == true,
       bold: map['bold'] == true,
       italic: map['italic'] == true,
@@ -2048,6 +2083,75 @@ class NotebookTableCell {
       colspan: int.tryParse(map['colspan']?.toString() ?? '') ?? 1,
       rowspan: int.tryParse(map['rowspan']?.toString() ?? '') ?? 1,
     );
+  }
+}
+
+class NotebookTableCellBlock {
+  const NotebookTableCellBlock._({
+    required this.type,
+    this.text,
+    this.imagePayload,
+  });
+
+  const NotebookTableCellBlock.text(String text)
+      : this._(type: 'text', text: text);
+
+  const NotebookTableCellBlock.image(Map<String, dynamic> payload)
+      : this._(type: 'image', imagePayload: payload);
+
+  final String type;
+  final String? text;
+  final Map<String, dynamic>? imagePayload;
+
+  String get plainText {
+    if (type == 'image') {
+      final name = imagePayload?['display_name']?.toString();
+      return '[Image: ${name?.trim().isNotEmpty == true ? name : 'table cell image'}]';
+    }
+    return text ?? '';
+  }
+
+  Map<String, dynamic> toJson() {
+    if (type == 'image') {
+      return {
+        'type': 'image',
+        ...?imagePayload,
+      };
+    }
+    return {
+      'type': 'text',
+      'text': text ?? '',
+      'delta': [
+        {'insert': text ?? ''},
+      ],
+    };
+  }
+
+  static NotebookTableCellBlock? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final map = Map<String, dynamic>.from(raw);
+    final type = map['type']?.toString();
+    if (type == 'image') {
+      final payload = Map<String, dynamic>.from(map)..remove('type');
+      return NotebookTableCellBlock.image(payload);
+    }
+    if (type == 'text') {
+      if (map['text'] != null) {
+        return NotebookTableCellBlock.text(map['text'].toString());
+      }
+      final delta = map['delta'];
+      if (delta is List) {
+        final buffer = StringBuffer();
+        for (final op in delta) {
+          if (op is Map && op['insert'] is String) {
+            buffer.write(op['insert']);
+          }
+        }
+        return NotebookTableCellBlock.text(buffer.toString());
+      }
+      return const NotebookTableCellBlock.text('');
+    }
+    return null;
   }
 }
 
@@ -2538,7 +2642,17 @@ class _PasteImageSheetState extends State<_PasteImageSheet> {
 }
 
 class ExperimentTableEmbedBuilder extends EmbedBuilder {
-  const ExperimentTableEmbedBuilder();
+  const ExperimentTableEmbedBuilder({
+    required this.imageCache,
+    required this.clipboardImageReader,
+    required this.onPasteImage,
+    required this.downloadAttachmentBytes,
+  });
+
+  final NotebookImageCache imageCache;
+  final ClipboardImageReader clipboardImageReader;
+  final PastedImageUploader? onPasteImage;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
 
   @override
   String get key => 'experiment_table';
@@ -2559,6 +2673,10 @@ class ExperimentTableEmbedBuilder extends EmbedBuilder {
       table: table,
       controller: embedContext.controller,
       documentOffset: embedContext.node.documentOffset,
+      imageCache: imageCache,
+      clipboardImageReader: clipboardImageReader,
+      onPasteImage: onPasteImage,
+      downloadAttachmentBytes: downloadAttachmentBytes,
     );
   }
 }
@@ -2579,31 +2697,318 @@ class _BrokenNotebookTable extends StatelessWidget {
   }
 }
 
+enum _TableAction {
+  editCell,
+  pasteImage,
+  showTableMenu,
+  addRowAbove,
+  addRowBelow,
+  deleteRow,
+  addColumnLeft,
+  addColumnRight,
+  deleteColumn,
+  toggleHeader,
+  equalWidths,
+  narrowWidths,
+  wideWidths,
+  editCaption,
+  moveUp,
+  moveDown,
+  copy,
+  cut,
+  deleteTable,
+}
+
 class _NotebookTableEmbed extends StatefulWidget {
   const _NotebookTableEmbed({
     required this.table,
     required this.controller,
     required this.documentOffset,
+    required this.imageCache,
+    required this.clipboardImageReader,
+    required this.onPasteImage,
+    required this.downloadAttachmentBytes,
   });
 
   final NotebookTable table;
   final QuillController controller;
   final int documentOffset;
+  final NotebookImageCache imageCache;
+  final ClipboardImageReader clipboardImageReader;
+  final PastedImageUploader? onPasteImage;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
 
   @override
   State<_NotebookTableEmbed> createState() => _NotebookTableEmbedState();
 }
 
 class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
+  late NotebookTable _activeTable;
   bool _selected = false;
   int _selectedRow = 0;
   int _selectedColumn = 0;
 
-  NotebookTable get table => widget.table;
+  NotebookTable get table => _activeTable;
 
   QuillController get controller => widget.controller;
 
   int get documentOffset => widget.documentOffset;
+
+  @override
+  void initState() {
+    super.initState();
+    _activeTable = widget.table;
+  }
+
+  @override
+  void didUpdateWidget(covariant _NotebookTableEmbed oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.table.tableId != widget.table.tableId) {
+      _activeTable = widget.table;
+    }
+  }
+
+  Future<void> _handleTableAction(
+    BuildContext context,
+    _TableAction action,
+  ) async {
+    switch (action) {
+      case _TableAction.editCell:
+        await _editCell(context, row: _selectedRow, column: _selectedColumn);
+      case _TableAction.showTableMenu:
+        return;
+      case _TableAction.pasteImage:
+        await _pasteImageIntoSelectedCell(context);
+      case _TableAction.addRowAbove:
+        _addRow(above: true);
+      case _TableAction.addRowBelow:
+        _addRow(above: false);
+      case _TableAction.deleteRow:
+        _deleteSelectedRow();
+      case _TableAction.addColumnLeft:
+        _addColumn(left: true);
+      case _TableAction.addColumnRight:
+        _addColumn(left: false);
+      case _TableAction.deleteColumn:
+        _deleteSelectedColumn();
+      case _TableAction.toggleHeader:
+        _toggleHeaderRow();
+      case _TableAction.equalWidths:
+        _setEqualColumnWidths();
+      case _TableAction.narrowWidths:
+        _setNarrowColumnWidths();
+      case _TableAction.wideWidths:
+        _setWideColumnWidths();
+      case _TableAction.editCaption:
+        await _editCaption(context);
+      case _TableAction.moveUp:
+        _moveTable(up: true);
+      case _TableAction.moveDown:
+        _moveTable(up: false);
+      case _TableAction.copy:
+        await _copyTable();
+      case _TableAction.cut:
+        await _cutTable();
+      case _TableAction.deleteTable:
+        _removeTable();
+    }
+  }
+
+  Future<void> _showCellActions(BuildContext context) async {
+    final action = await showModalBottomSheet<_TableAction>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('Edit cell text'),
+              onTap: () => Navigator.pop(context, _TableAction.editCell),
+            ),
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('Paste image into cell'),
+              onTap: () => Navigator.pop(context, _TableAction.pasteImage),
+            ),
+            ListTile(
+              leading: const Icon(Icons.more_horiz),
+              title: const Text('Table options'),
+              onTap: () => Navigator.pop(context, _TableAction.showTableMenu),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted || action == null) return;
+    if (action == _TableAction.editCell) {
+      await _editCell(context, row: _selectedRow, column: _selectedColumn);
+      return;
+    }
+    if (action == _TableAction.showTableMenu) return;
+    await _handleTableAction(context, action);
+  }
+
+  Future<void> _pasteImageIntoSelectedCell(BuildContext context) async {
+    if (widget.onPasteImage == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Image upload is unavailable.')),
+      );
+      return;
+    }
+    final image = await widget.clipboardImageReader.readImage();
+    if (!context.mounted) return;
+    if (image == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No image was available to paste.')),
+      );
+      return;
+    }
+    final confirmation = await showModalBottomSheet<_PasteImageConfirmation>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => _PasteImageSheet(image: image),
+    );
+    if (!context.mounted || confirmation == null) return;
+    final cached = await widget.imageCache.writeClipboardImage(image);
+    final payload = _cellImagePayload(
+      image: image,
+      cacheKey: cached.cacheKey,
+      displayName: confirmation.displayName,
+      description: confirmation.description,
+    );
+    _insertCellImagePayload(payload);
+    unawaited(_uploadCellImageInBackground(
+      image: image,
+      payload: payload,
+      displayName: confirmation.displayName,
+      description: confirmation.description,
+    ));
+  }
+
+  Map<String, dynamic> _cellImagePayload({
+    required PastedNotebookImage image,
+    required String cacheKey,
+    String? displayName,
+    String? description,
+  }) {
+    return {
+      'block_id': 'cell-image-${DateTime.now().toUtc().microsecondsSinceEpoch}',
+      'attachment_id': null,
+      'local_cache_key': cacheKey,
+      'upload_status': 'uploading',
+      'display_name': displayName?.trim().isNotEmpty == true
+          ? displayName!.trim()
+          : image.suggestedFilename,
+      'description': description,
+      'mime_type': image.mimeType,
+      'file_extension': image.fileExtension,
+      'width_factor': 1.0,
+      'caption': null,
+      'alt_text': null,
+      'aspect_ratio': image.metadata['aspect_ratio'],
+    };
+  }
+
+  void _insertCellImagePayload(Map<String, dynamic> payload) {
+    final cells = _cloneCells();
+    final cell = cells[_selectedRow][_selectedColumn];
+    final blocks = [
+      ...cell.effectiveBlocks,
+      NotebookTableCellBlock.image(payload),
+    ];
+    cells[_selectedRow][_selectedColumn] = cell.copyWith(
+      blocks: blocks,
+      text: blocks.map((block) => block.plainText).join('\n'),
+    );
+    _replaceTable(table.copyWith(cells: cells));
+  }
+
+  Future<void> _uploadCellImageInBackground({
+    required PastedNotebookImage image,
+    required Map<String, dynamic> payload,
+    String? displayName,
+    String? description,
+  }) async {
+    try {
+      final attachment = await widget.onPasteImage!(
+        image,
+        displayName: displayName,
+        description: description,
+      );
+      final updated = Map<String, dynamic>.from(payload)
+        ..['attachment_id'] = attachment['attachment_id']?.toString()
+        ..['upload_status'] = 'uploaded'
+        ..['display_name'] =
+            attachment['display_name']?.toString().trim().isNotEmpty == true
+                ? attachment['display_name'].toString()
+                : payload['display_name'];
+      _replaceCellImagePayload(payload, updated);
+    } catch (error) {
+      final updated = Map<String, dynamic>.from(payload)
+        ..['upload_status'] = 'not_uploaded'
+        ..['upload_error'] = error.toString();
+      _replaceCellImagePayload(payload, updated);
+    }
+  }
+
+  Future<void> _retryCellImageUpload(Map<String, dynamic> payload) async {
+    if (widget.onPasteImage == null) return;
+    final cacheKey = payload['local_cache_key']?.toString() ?? '';
+    final file = await widget.imageCache.fileForKey(cacheKey);
+    if (file == null || !file.existsSync()) return;
+    final retryPayload = Map<String, dynamic>.from(payload)
+      ..['upload_status'] = 'uploading'
+      ..remove('upload_error');
+    _replaceCellImagePayload(payload, retryPayload);
+    await _uploadCellImageInBackground(
+      image: PastedNotebookImage(
+        bytes: file.readAsBytesSync(),
+        mimeType: payload['mime_type']?.toString() ?? 'image/png',
+        fileExtension: payload['file_extension']?.toString() ?? 'png',
+        suggestedFilename:
+            payload['display_name']?.toString() ?? 'table-cell-image.png',
+      ),
+      payload: retryPayload,
+      displayName: retryPayload['display_name']?.toString(),
+      description: retryPayload['description']?.toString(),
+    );
+  }
+
+  void _replaceCellImagePayload(
+    Map<String, dynamic> previous,
+    Map<String, dynamic> next,
+  ) {
+    final previousId = previous['block_id']?.toString();
+    if (previousId == null || previousId.isEmpty) return;
+    final cells = _cloneCells();
+    for (var row = 0; row < cells.length; row++) {
+      for (var column = 0; column < cells[row].length; column++) {
+        final cell = cells[row][column];
+        final blocks = <NotebookTableCellBlock>[];
+        var changed = false;
+        for (final block in cell.effectiveBlocks) {
+          if (block.type == 'image' &&
+              block.imagePayload?['block_id']?.toString() == previousId) {
+            blocks.add(NotebookTableCellBlock.image(next));
+            changed = true;
+          } else {
+            blocks.add(block);
+          }
+        }
+        if (changed) {
+          cells[row][column] = cell.copyWith(
+            blocks: blocks,
+            text: blocks.map((block) => block.plainText).join('\n'),
+          );
+          _replaceTable(table.copyWith(cells: cells));
+          return;
+        }
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -2673,6 +3078,14 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
                                     column: column,
                                   );
                                 },
+                                onLongPress: () {
+                                  setState(() {
+                                    _selected = true;
+                                    _selectedRow = row;
+                                    _selectedColumn = column;
+                                  });
+                                  _showCellActions(context);
+                                },
                                 child: _NotebookTableCellView(
                                   cell: table.cells[row][column],
                                   widthFactor:
@@ -2682,6 +3095,10 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
                                   selected: _selected &&
                                       _selectedRow == row &&
                                       _selectedColumn == column,
+                                  imageCache: widget.imageCache,
+                                  downloadAttachmentBytes:
+                                      widget.downloadAttachmentBytes,
+                                  onRetryUpload: _retryCellImageUpload,
                                 ),
                               ),
                           ],
@@ -2689,100 +3106,99 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
                     ],
                   ),
                 ),
-                Padding(
-                  padding: const EdgeInsets.all(ResearchOsSpacing.xs),
-                  child: Wrap(
-                    spacing: ResearchOsSpacing.xs,
-                    runSpacing: ResearchOsSpacing.xs,
-                    children: [
-                      TextButton.icon(
-                        onPressed: () => _addRow(above: true),
-                        icon: const Icon(Icons.vertical_align_top_outlined),
-                        label: const Text('Add row above'),
-                      ),
-                      TextButton.icon(
-                        onPressed: () => _addRow(above: false),
-                        icon: const Icon(Icons.table_rows_outlined),
-                        label: const Text('Add row below'),
-                      ),
-                      TextButton.icon(
-                        onPressed: table.rows > 1 ? _deleteSelectedRow : null,
-                        icon: const Icon(Icons.delete_outline),
-                        label: const Text('Delete row'),
-                      ),
-                      TextButton.icon(
-                        onPressed: () => _addColumn(left: true),
-                        icon: const Icon(Icons.keyboard_double_arrow_left),
-                        label: const Text('Add column left'),
-                      ),
-                      TextButton.icon(
-                        onPressed: () => _addColumn(left: false),
-                        icon: const Icon(Icons.view_column_outlined),
-                        label: const Text('Add column right'),
-                      ),
-                      TextButton.icon(
-                        onPressed:
-                            table.columns > 1 ? _deleteSelectedColumn : null,
-                        icon: const Icon(Icons.delete_sweep_outlined),
-                        label: const Text('Delete column'),
-                      ),
-                      TextButton.icon(
-                        onPressed: _toggleHeaderRow,
-                        icon: const Icon(Icons.title),
-                        label: Text(
-                          table.hasHeaderRow
-                              ? 'Untoggle header row'
-                              : 'Toggle header row',
+                if (_selected)
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Padding(
+                      padding: const EdgeInsets.all(ResearchOsSpacing.xs),
+                      child: PopupMenuButton<_TableAction>(
+                        tooltip: 'Table options',
+                        icon: const Icon(Icons.more_horiz),
+                        onSelected: (action) => _handleTableAction(
+                          context,
+                          action,
                         ),
+                        itemBuilder: (context) => [
+                          const PopupMenuItem(
+                            value: _TableAction.pasteImage,
+                            child: Text('Paste image into cell'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.addRowAbove,
+                            child: Text('Add row above'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.addRowBelow,
+                            child: Text('Add row below'),
+                          ),
+                          PopupMenuItem(
+                            value: _TableAction.deleteRow,
+                            enabled: table.rows > 1,
+                            child: const Text('Delete row'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.addColumnLeft,
+                            child: Text('Add column left'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.addColumnRight,
+                            child: Text('Add column right'),
+                          ),
+                          PopupMenuItem(
+                            value: _TableAction.deleteColumn,
+                            enabled: table.columns > 1,
+                            child: const Text('Delete column'),
+                          ),
+                          const PopupMenuDivider(),
+                          PopupMenuItem(
+                            value: _TableAction.toggleHeader,
+                            child: Text(
+                              table.hasHeaderRow
+                                  ? 'Untoggle header row'
+                                  : 'Toggle header row',
+                            ),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.equalWidths,
+                            child: Text('Equal widths'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.narrowWidths,
+                            child: Text('Narrow columns'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.wideWidths,
+                            child: Text('Wide columns'),
+                          ),
+                          const PopupMenuDivider(),
+                          const PopupMenuItem(
+                            value: _TableAction.editCaption,
+                            child: Text('Edit caption'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.moveUp,
+                            child: Text('Move Up'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.moveDown,
+                            child: Text('Move Down'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.copy,
+                            child: Text('Copy'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.cut,
+                            child: Text('Cut'),
+                          ),
+                          const PopupMenuItem(
+                            value: _TableAction.deleteTable,
+                            child: Text('Delete table'),
+                          ),
+                        ],
                       ),
-                      TextButton.icon(
-                        onPressed: _setEqualColumnWidths,
-                        icon: const Icon(Icons.width_normal_outlined),
-                        label: const Text('Equal widths'),
-                      ),
-                      TextButton.icon(
-                        onPressed: _setNarrowColumnWidths,
-                        icon: const Icon(Icons.compress),
-                        label: const Text('Narrow columns'),
-                      ),
-                      TextButton.icon(
-                        onPressed: _setWideColumnWidths,
-                        icon: const Icon(Icons.width_wide_outlined),
-                        label: const Text('Wide columns'),
-                      ),
-                      TextButton.icon(
-                        onPressed: () => _editCaption(context),
-                        icon: const Icon(Icons.drive_file_rename_outline),
-                        label: const Text('Edit caption'),
-                      ),
-                      TextButton.icon(
-                        onPressed: () => _moveTable(up: true),
-                        icon: const Icon(Icons.arrow_upward),
-                        label: const Text('Move Up'),
-                      ),
-                      TextButton.icon(
-                        onPressed: () => _moveTable(up: false),
-                        icon: const Icon(Icons.arrow_downward),
-                        label: const Text('Move Down'),
-                      ),
-                      TextButton.icon(
-                        onPressed: _copyTable,
-                        icon: const Icon(Icons.copy_outlined),
-                        label: const Text('Copy'),
-                      ),
-                      TextButton.icon(
-                        onPressed: _cutTable,
-                        icon: const Icon(Icons.content_cut),
-                        label: const Text('Cut'),
-                      ),
-                      TextButton.icon(
-                        onPressed: _removeTable,
-                        icon: const Icon(Icons.close),
-                        label: const Text('Delete table'),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
               ],
             ),
           ),
@@ -2977,6 +3393,9 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
   void _replaceTable(NotebookTable nextTable) {
     final embed = _tableEmbed(nextTable);
     final offset = _currentTableOffset() ?? documentOffset;
+    setState(() {
+      _activeTable = nextTable;
+    });
     controller.replaceText(
       offset,
       1,
@@ -3014,11 +3433,17 @@ class _NotebookTableCellView extends StatelessWidget {
     required this.cell,
     required this.widthFactor,
     required this.selected,
+    required this.imageCache,
+    required this.downloadAttachmentBytes,
+    required this.onRetryUpload,
   });
 
   final NotebookTableCell cell;
   final double widthFactor;
   final bool selected;
+  final NotebookImageCache imageCache;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final Future<void> Function(Map<String, dynamic> payload) onRetryUpload;
 
   @override
   Widget build(BuildContext context) {
@@ -3052,11 +3477,77 @@ class _NotebookTableCellView extends StatelessWidget {
             horizontal: ResearchOsSpacing.xs,
             vertical: ResearchOsSpacing.xs,
           ),
-          child: Text(
-            cell.text,
-            style: style,
-            softWrap: true,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (final block in cell.effectiveBlocks)
+                if (block.type == 'image' && block.imagePayload != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: ResearchOsSpacing.xs,
+                    ),
+                    child: _TableCellImageBlock(
+                      payload: block.imagePayload!,
+                      imageCache: imageCache,
+                      downloadAttachmentBytes: downloadAttachmentBytes,
+                      onRetryUpload: onRetryUpload,
+                    ),
+                  )
+                else if ((block.text ?? '').isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 2,
+                    ),
+                    child: Text(
+                      block.text ?? '',
+                      style: style,
+                      softWrap: true,
+                    ),
+                  ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TableCellImageBlock extends StatelessWidget {
+  const _TableCellImageBlock({
+    required this.payload,
+    required this.imageCache,
+    required this.downloadAttachmentBytes,
+    required this.onRetryUpload,
+  });
+
+  final Map<String, dynamic> payload;
+  final NotebookImageCache imageCache;
+  final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final Future<void> Function(Map<String, dynamic> payload) onRetryUpload;
+
+  @override
+  Widget build(BuildContext context) {
+    final widthFactor =
+        double.tryParse(payload['width_factor']?.toString() ?? '') ?? 1.0;
+    final imageKey = payload['block_id']?.toString().isNotEmpty == true
+        ? payload['block_id'].toString()
+        : payload['attachment_id']?.toString() ??
+            payload['local_cache_key']?.toString() ??
+            'pending';
+    return FractionallySizedBox(
+      key: ValueKey('notebook-table-cell-image-$imageKey'),
+      alignment: Alignment.center,
+      widthFactor: widthFactor.clamp(0.35, 1.0).toDouble(),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusSm),
+        child: _NotebookImagePreview(
+          payload: payload,
+          imageCache: imageCache,
+          downloadAttachmentBytes: downloadAttachmentBytes,
+          onRetryUpload: onRetryUpload,
+          label: payload['display_name']?.toString() ?? 'Table cell image',
+          altText: payload['alt_text']?.toString() ?? '',
         ),
       ),
     );
