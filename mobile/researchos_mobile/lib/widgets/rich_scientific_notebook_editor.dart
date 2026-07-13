@@ -17,6 +17,7 @@ class RichScientificNotebookEditor extends StatefulWidget {
     super.key,
     required this.initialContent,
     required this.documentFormat,
+    required this.documentId,
     required this.onChanged,
     this.saveMessage,
     this.onSave,
@@ -31,6 +32,7 @@ class RichScientificNotebookEditor extends StatefulWidget {
 
   final String initialContent;
   final String documentFormat;
+  final String documentId;
   final ValueChanged<RichNotebookEdit> onChanged;
   final String? saveMessage;
   final VoidCallback? onSave;
@@ -54,14 +56,20 @@ class _RichScientificNotebookEditorState
   double _zoom = 1.0;
   String? _pasteMessage;
   bool _pastingImage = false;
+  late String _lastAcceptedCanonical;
 
   @override
   void initState() {
     super.initState();
+    _lastAcceptedCanonical = canonicalRichNotebookDeltaJson(
+          widget.initialContent,
+          documentFormat: widget.documentFormat,
+        ) ??
+        '[{"insert":"\\n"}]';
     _controller = QuillController(
       document: _documentFromContent(
-        widget.initialContent,
-        widget.documentFormat,
+        _lastAcceptedCanonical,
+        'rich_text_delta_json',
       ),
       selection: const TextSelection.collapsed(offset: 0),
       config: QuillControllerConfig(
@@ -86,13 +94,28 @@ class _RichScientificNotebookEditorState
           documentFormat: widget.documentFormat,
         ) ??
         '[{"insert":"\\n"}]';
-    if (oldWidget.initialContent != widget.initialContent &&
-        _currentDeltaJson() != nextCanonical) {
+    final currentCanonical = _currentDeltaJson();
+    if (oldWidget.documentId != widget.documentId) {
       _controller.document = _documentFromContent(
         nextCanonical,
         'rich_text_delta_json',
       );
-      _emitChange();
+      _lastAcceptedCanonical = nextCanonical;
+      return;
+    }
+    if (currentCanonical == nextCanonical) {
+      return;
+    }
+    final hasLocalEdits = currentCanonical != _lastAcceptedCanonical;
+    if (hasLocalEdits) {
+      return;
+    }
+    if (oldWidget.initialContent != widget.initialContent) {
+      _controller.document = _documentFromContent(
+        nextCanonical,
+        'rich_text_delta_json',
+      );
+      _lastAcceptedCanonical = nextCanonical;
     }
   }
 
@@ -211,6 +234,7 @@ class _RichScientificNotebookEditorState
   }) {
     final payload = {
       'embed_type': 'experiment_attachment',
+      'embed_id': 'embed-${DateTime.now().toUtc().microsecondsSinceEpoch}',
       'attachment_type': 'image',
       'attachment_id': null,
       'local_cache_key': cacheKey,
@@ -336,12 +360,14 @@ class _RichScientificNotebookEditorState
   }
 
   int? _findImageEmbedOffset(Map<String, dynamic> payload) {
+    final embedId = payload['embed_id']?.toString();
     final attachmentId = payload['attachment_id']?.toString();
     final cacheKey = payload['local_cache_key']?.toString();
     var offset = 0;
     for (final rawOp in _controller.document.toDelta().toJson()) {
       final insert = rawOp['insert'];
-      if (_insertReferencesAttachment(insert, attachmentId) ||
+      if (_insertReferencesEmbed(insert, embedId) ||
+          _insertReferencesAttachment(insert, attachmentId) ||
           _insertReferencesCacheKey(insert, cacheKey)) {
         return offset;
       }
@@ -2222,6 +2248,12 @@ bool _insertReferencesAttachment(Object? insert, String? attachmentId) {
   if (attachmentId == null || attachmentId.isEmpty) return false;
   final payload = _attachmentPayloadFromInsert(insert);
   return payload['attachment_id']?.toString() == attachmentId;
+}
+
+bool _insertReferencesEmbed(Object? insert, String? embedId) {
+  if (embedId == null || embedId.isEmpty) return false;
+  final payload = _attachmentPayloadFromInsert(insert);
+  return payload['embed_id']?.toString() == embedId;
 }
 
 bool _insertReferencesCacheKey(Object? insert, String? cacheKey) {

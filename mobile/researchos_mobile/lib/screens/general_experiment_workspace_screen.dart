@@ -43,6 +43,8 @@ class _GeneralExperimentWorkspaceScreenState
   bool _attachmentWorking = false;
   Timer? _autosaveTimer;
   String _lastSavedContent = '';
+  List<Map<String, dynamic>> _attachments = const [];
+  bool _attachmentsLoaded = false;
 
   @override
   void initState() {
@@ -65,17 +67,31 @@ class _GeneralExperimentWorkspaceScreenState
   Future<Map<String, dynamic>> _load() async {
     final workspace =
         await widget.api.generalExperimentWorkspace(widget.experimentId);
-    _hydrateNotebook(workspace);
+    _hydrateNotebook(
+      workspace,
+      preserveLocalEdits: _notebookContent != _lastSavedContent,
+    );
     return workspace;
   }
 
-  void _hydrateNotebook(Map<String, dynamic> workspace) {
+  void _hydrateNotebook(
+    Map<String, dynamic> workspace, {
+    bool preserveLocalEdits = false,
+  }) {
     final notebook = _map(workspace['notebook']);
     final experiment = _map(workspace['experiment']);
     _experimentTitle =
         _text(experiment['title'], fallback: 'Untitled Experiment');
     _documentId = notebook['document_id']?.toString();
     _notebookVersion = int.tryParse('${notebook['version'] ?? 1}');
+    final workspaceAttachments = _maps(workspace['attachments']).isNotEmpty
+        ? _maps(workspace['attachments'])
+        : _maps(notebook['attachments']);
+    _attachments = workspaceAttachments;
+    _attachmentsLoaded = true;
+    if (preserveLocalEdits && _notebookContent != _lastSavedContent) {
+      return;
+    }
     final normalizedNotebook = normalizeRichNotebookContent(
       content: _contentValueToString(notebook['content']),
       structuredContent: _contentValueToString(notebook['structured_content']),
@@ -90,6 +106,20 @@ class _GeneralExperimentWorkspaceScreenState
     setState(() {
       _future = _load();
     });
+  }
+
+  Future<void> _refreshAttachmentsOnly() async {
+    try {
+      final attachments =
+          await widget.api.experimentAttachments(widget.experimentId);
+      if (!mounted) return;
+      setState(() {
+        _attachments = attachments;
+        _attachmentsLoaded = true;
+      });
+    } catch (_) {
+      // Attachment cards are secondary to preserving the active notebook.
+    }
   }
 
   Future<void> _saveNotebook({bool force = false}) async {
@@ -230,7 +260,7 @@ class _GeneralExperimentWorkspaceScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Uploaded ${platformFile.name}')),
       );
-      await _reload();
+      await _refreshAttachmentsOnly();
     } catch (error) {
       if (!mounted) return;
       setState(() => _saveMessage = 'Attachment upload failed: $error');
@@ -267,7 +297,7 @@ class _GeneralExperimentWorkspaceScreenState
       final attachment = _map(response['attachment']);
       if (mounted) {
         setState(() => _saveMessage = 'Pasted image uploaded.');
-        _reload();
+        unawaited(_refreshAttachmentsOnly());
       }
       return attachment;
     } catch (error) {
@@ -302,7 +332,7 @@ class _GeneralExperimentWorkspaceScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Link attachment added')),
       );
-      await _reload();
+      await _refreshAttachmentsOnly();
     } catch (error) {
       if (!mounted) return;
       setState(() => _saveMessage = 'Could not add link: $error');
@@ -344,7 +374,7 @@ class _GeneralExperimentWorkspaceScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Attachment deleted')),
       );
-      await _reload();
+      await _refreshAttachmentsOnly();
     } catch (error) {
       if (!mounted) return;
       setState(() => _saveMessage = 'Could not delete attachment: $error');
@@ -470,9 +500,11 @@ class _GeneralExperimentWorkspaceScreenState
               final workspace = snapshot.data ?? const <String, dynamic>{};
               final overview = _map(workspace['overview']);
               final tools = _maps(workspace['tool_palette']);
-              final attachments = _maps(workspace['attachments']).isNotEmpty
-                  ? _maps(workspace['attachments'])
-                  : _maps(_map(workspace['notebook'])['attachments']);
+              final attachments = _attachmentsLoaded
+                  ? _attachments
+                  : (_maps(workspace['attachments']).isNotEmpty
+                      ? _maps(workspace['attachments'])
+                      : _maps(_map(workspace['notebook'])['attachments']));
               return LayoutBuilder(
                 builder: (context, constraints) {
                   final wide = constraints.maxWidth >= 900;
@@ -488,6 +520,7 @@ class _GeneralExperimentWorkspaceScreenState
                     saveMessage: _saveMessage,
                     attachments: attachments,
                     attachmentWorking: _attachmentWorking,
+                    documentId: _documentId ?? widget.experimentId,
                     onSave: () => _saveNotebook(force: true),
                     onTitleSubmitted: _saveTitle,
                     onNotebookChanged: (edit) {
@@ -560,6 +593,7 @@ class _NotebookSurface extends StatelessWidget {
     required this.saveMessage,
     required this.attachments,
     required this.attachmentWorking,
+    required this.documentId,
     required this.onSave,
     required this.onTitleSubmitted,
     required this.onNotebookChanged,
@@ -583,6 +617,7 @@ class _NotebookSurface extends StatelessWidget {
   final String? saveMessage;
   final List<Map<String, dynamic>> attachments;
   final bool attachmentWorking;
+  final String documentId;
   final VoidCallback onSave;
   final Future<bool> Function(String title) onTitleSubmitted;
   final ValueChanged<RichNotebookEdit> onNotebookChanged;
@@ -662,12 +697,14 @@ class _NotebookSurface extends StatelessWidget {
               ),
               const SizedBox(height: ResearchOsSpacing.md),
               RichScientificNotebookEditor(
+                key: ValueKey('rich-notebook-editor-$documentId'),
                 initialContent: notebookContent,
                 documentFormat: documentFormat,
                 saving: saving,
                 saveMessage: saveMessage,
                 onSave: onSave,
                 onPasteImage: onPasteImage,
+                documentId: documentId,
                 downloadAttachmentBytes: downloadAttachmentBytes,
                 onChanged: onNotebookChanged,
               ),

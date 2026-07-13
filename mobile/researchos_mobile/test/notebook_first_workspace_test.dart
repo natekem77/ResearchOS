@@ -781,6 +781,103 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+      'stale same-document initial content does not remove pasted image',
+      (tester) async {
+    final cache = _TestNotebookImageCache();
+    final uploadCompleter = Completer<Map<String, dynamic>>();
+    var delta = '';
+
+    Future<Map<String, dynamic>> upload(
+      PastedNotebookImage image, {
+      String? displayName,
+      String? description,
+    }) {
+      return uploadCompleter.future;
+    }
+
+    await pumpRichEditor(
+      tester,
+      imageCache: cache,
+      documentId: 'document:image',
+      initialContent: '[{"insert":"\\n"}]',
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      onChanged: (edit) => delta = edit.deltaJson,
+      onPasteImage: upload,
+    );
+
+    await tester.tap(find.byTooltip('Paste image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await _tapPasteImageInsert(tester);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 1000));
+
+    final pendingDelta = delta;
+    expect(pendingDelta, contains('local_cache_key'));
+    expect(pendingDelta, contains('embed_id'));
+    expect(_notebookImageBlock(), findsWidgets);
+
+    await pumpRichEditor(
+      tester,
+      imageCache: cache,
+      documentId: 'document:image',
+      initialContent: '[{"insert":"\\n"}]',
+      reader: const _FakeClipboardImageReader(_pngBytes),
+      onChanged: (edit) => delta = edit.deltaJson,
+      onPasteImage: upload,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(delta, contains('local_cache_key'));
+
+    uploadCompleter.complete(_imageAttachment(displayName: 'Uploaded image'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+
+    expect(_notebookImageBlock(), findsWidgets);
+    expect(delta, contains('attachment:pasted-image'));
+    expect(delta, contains('Uploaded image'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('switching document identity reloads editor content',
+      (tester) async {
+    await pumpRichEditor(
+      tester,
+      documentId: 'document:one',
+      initialContent: '[{"insert":"First document\\n"}]',
+    );
+    expect(
+      tester
+          .widget<RichScientificNotebookEditor>(
+            find.byType(RichScientificNotebookEditor),
+          )
+          .documentId,
+      'document:one',
+    );
+
+    await pumpRichEditor(
+      tester,
+      documentId: 'document:two',
+      initialContent: '[{"insert":"Second document\\n"}]',
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      tester
+          .widget<RichScientificNotebookEditor>(
+            find.byType(RichScientificNotebookEditor),
+          )
+          .documentId,
+      'document:two',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('uploaded image embed appears inline immediately after insert',
       (tester) async {
     await pumpRichEditor(
@@ -1011,6 +1108,7 @@ Future<void> pumpRichEditor(
   PastedImageUploader? onPasteImage,
   NotebookImageCache? imageCache,
   AttachmentBytesDownloader? downloadAttachmentBytes,
+  String documentId = 'document:test',
 }) async {
   final resolvedCache = imageCache ?? _TestNotebookImageCache();
   tester.view.physicalSize = size;
@@ -1024,8 +1122,10 @@ Future<void> pumpRichEditor(
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: RichScientificNotebookEditor(
+              key: ValueKey('rich-editor-$documentId'),
               initialContent: initialContent,
               documentFormat: documentFormat,
+              documentId: documentId,
               clipboardImageReader: reader,
               imageCache: resolvedCache,
               downloadAttachmentBytes: downloadAttachmentBytes,
