@@ -477,6 +477,10 @@ class GeneralExperimentUpdateRequest(BaseModel):
     title: str | None = None
 
 
+class ExperimentReorderRequest(BaseModel):
+    experiment_ids: list[str]
+
+
 class NotebookSaveRequest(BaseModel):
     current_version: int
     content: str
@@ -5275,6 +5279,7 @@ def _mobile_general_experiment_card(experiment: dict[str, object]) -> dict[str, 
         "key_markers": [],
         "status": experiment.get("status") or "draft",
         "last_activity": experiment.get("updated_at") or experiment.get("created_at"),
+        "sort_index": experiment.get("sort_index"),
         "route": f"/experiments/{experiment_id}/general-workspace",
         "icon": "experiment",
         "type_label": "Experiment",
@@ -6715,18 +6720,29 @@ def mobile_experiments() -> dict[str, object]:
     legacy_experiments = store.list_experiments(workspace_id=workspace_id)
     user_id = _authorization_service().current_user_id({})
     general_experiments = _general_experiment_service().list_experiments(user_id=user_id, lab_id="lab:demo")
-    legacy_ids = {str(experiment.get("experiment_id") or experiment.get("id") or "") for experiment in legacy_experiments}
-    general_cards = [
-        _mobile_general_experiment_card(experiment)
-        for experiment in general_experiments
-        if str(experiment.get("experiment_id") or "") not in legacy_ids
+    general_ids = {str(experiment.get("experiment_id") or experiment.get("id") or "") for experiment in general_experiments}
+    general_cards = [_mobile_general_experiment_card(experiment) for experiment in general_experiments]
+    legacy_cards = [
+        _mobile_experiment_card(store, experiment)
+        for experiment in legacy_experiments
+        if str(experiment.get("experiment_id") or experiment.get("id") or "") not in general_ids
     ]
-    legacy_cards = [_mobile_experiment_card(store, experiment) for experiment in legacy_experiments]
-    cards = sorted(
-        [*general_cards, *legacy_cards],
-        key=lambda item: str(item.get("last_activity") or item.get("date") or ""),
-        reverse=True,
-    )
+    cards = [*general_cards, *legacy_cards]
+    if any(card.get("sort_index") is not None for card in general_cards):
+        cards = sorted(
+            cards,
+            key=lambda item: (
+                item.get("sort_index") is None,
+                int(item.get("sort_index") or 2147483647),
+                str(item.get("last_activity") or item.get("date") or ""),
+            ),
+        )
+    else:
+        cards = sorted(
+            cards,
+            key=lambda item: str(item.get("last_activity") or item.get("date") or ""),
+            reverse=True,
+        )
     logger.debug("Mobile experiments listed", extra={"legacy_count": len(legacy_cards), "general_count": len(general_cards), "total": len(cards)})
     return {"experiments": cards, "count": len(cards)}
 
@@ -9810,6 +9826,38 @@ def update_general_experiment(experiment_id: str, request_body: GeneralExperimen
         return {"experiment": experiment, "workspace": workspace}
     except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
         raise _general_experiment_http_error(exc)
+
+
+@app.delete("/experiments/{experiment_id}/general", tags=["experiments"])
+def delete_general_experiment(experiment_id: str, request: Request) -> dict[str, object]:
+    service = _general_experiment_service()
+    try:
+        return service.delete_experiment(_request_user_id(request), experiment_id)
+    except ExperimentAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ExperimentValidationError as exc:
+        if "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ExperimentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@app.post("/mobile/experiments/reorder", tags=["mobile", "experiments"])
+def reorder_mobile_experiments(request_body: ExperimentReorderRequest, request: Request) -> dict[str, object]:
+    service = _general_experiment_service()
+    try:
+        experiments = service.reorder_experiments(_request_user_id(request), request_body.experiment_ids)
+        cards = [_mobile_general_experiment_card(experiment) for experiment in experiments]
+        return {"experiments": cards, "count": len(cards)}
+    except ExperimentAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ExperimentValidationError as exc:
+        if "unknown" in str(exc).lower() or "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ExperimentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.get("/experiments/{experiment_id}/general-workspace", tags=["experiments"])

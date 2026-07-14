@@ -131,6 +131,25 @@ class ResearchOsApi {
     );
   }
 
+  Future<void> deleteGeneralExperiment(String experimentId) {
+    return _delete('/experiments/${Uri.encodeComponent(experimentId)}/general');
+  }
+
+  Future<List<ExperimentCard>> reorderExperiments(
+      List<String> experimentIds) async {
+    final json = await _postMap('/mobile/experiments/reorder', {
+      'experiment_ids': experimentIds,
+    });
+    final experiments = json['experiments'];
+    if (experiments is! List) {
+      return const [];
+    }
+    return experiments
+        .whereType<Map<String, dynamic>>()
+        .map(ExperimentCard.fromJson)
+        .toList();
+  }
+
   Future<Map<String, dynamic>> createNotebookFirstExperiment({
     String? title,
     String? initialNote,

@@ -167,6 +167,9 @@ class GeneralExperimentService:
                     expected_end_date TEXT,
                     primary_protocol_id TEXT,
                     primary_protocol_version_id TEXT,
+                    sort_index INTEGER,
+                    archived_at TEXT,
+                    archived_by TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
@@ -384,6 +387,13 @@ class GeneralExperimentService:
                 """
             )
             for column, definition in {
+                "sort_index": "INTEGER",
+                "archived_at": "TEXT",
+                "archived_by": "TEXT",
+            }.items():
+                self._ensure_column(connection, "experiment_workspaces", column, definition)
+            self._backfill_experiment_order(connection)
+            for column, definition in {
                 "structured_content": "TEXT",
                 "schema_version": "INTEGER NOT NULL DEFAULT 1",
                 "document_version": "INTEGER NOT NULL DEFAULT 1",
@@ -535,11 +545,12 @@ class GeneralExperimentService:
                 if exists:
                     continue
                 biological_system = "retinal organoid" if _mentions_organoid(experiment) else str(experiment.get("cell_line") or "experimental system")
+                sort_index = self._next_sort_index(connection, "lab:demo")
                 connection.execute(
                     """
                     INSERT INTO experiment_workspaces
-                        (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, created_at, updated_at)
-                    VALUES (?, 'lab:demo', COALESCE(?, 'user:pi-owner'), ?, ?, 'active', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, sort_index, created_at, updated_at)
+                    VALUES (?, 'lab:demo', COALESCE(?, 'user:pi-owner'), ?, ?, 'active', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """,
                     (
                         experiment_id,
@@ -548,6 +559,7 @@ class GeneralExperimentService:
                         experiment.get("notes"),
                         biological_system,
                         "organoid" if "organoid" in biological_system.lower() else "sample",
+                        sort_index,
                     ),
                 )
 
@@ -568,13 +580,14 @@ class GeneralExperimentService:
         experiment_id = experiment_id or f"experiment:{uuid.uuid4().hex[:16]}"
         logger.info("Creating general experiment workspace", extra={"experiment_id": experiment_id, "lab_id": lab_id, "user_id": actor_user_id})
         with self._connect() as connection:
+            next_sort_index = self._next_sort_index(connection, lab_id)
             connection.execute(
                 """
                 INSERT INTO experiment_workspaces
-                    (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, start_date, nominal_day_zero, expected_end_day)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, start_date, nominal_day_zero, expected_end_day, sort_index)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (experiment_id, lab_id, actor_user_id, title, short_description, status, biological_system, sample_unit_type or "sample", start_date, start_date, expected_end_day),
+                (experiment_id, lab_id, actor_user_id, title, short_description, status, biological_system, sample_unit_type or "sample", start_date, start_date, expected_end_day, next_sort_index),
             )
             self._history(connection, experiment_id, actor_user_id, "experiment.created", {"status": status})
         self.get_or_create_notebook(actor_user_id, experiment_id)
@@ -589,12 +602,20 @@ class GeneralExperimentService:
         with self._connect() as connection:
             if lab_id:
                 rows = connection.execute(
-                    "SELECT * FROM experiment_workspaces WHERE lab_id = ? ORDER BY updated_at DESC, created_at DESC",
+                    """
+                    SELECT * FROM experiment_workspaces
+                    WHERE lab_id = ? AND archived_at IS NULL
+                    ORDER BY COALESCE(sort_index, 2147483647), updated_at DESC, created_at DESC
+                    """,
                     (lab_id,),
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT * FROM experiment_workspaces ORDER BY updated_at DESC, created_at DESC"
+                    """
+                    SELECT * FROM experiment_workspaces
+                    WHERE archived_at IS NULL
+                    ORDER BY COALESCE(sort_index, 2147483647), updated_at DESC, created_at DESC
+                    """
                 ).fetchall()
         experiments = [_decode(row) for row in rows]
         accessible = [experiment for experiment in experiments if self.can_access(user_id, str(experiment.get("experiment_id")), "view")]
@@ -682,6 +703,73 @@ class GeneralExperimentService:
         if experiment is None:
             raise ExperimentValidationError("Experiment not found.")
         return experiment
+
+    def delete_experiment(self, actor_user_id: str, experiment_id: str) -> dict[str, Any]:
+        experiment = self._experiment(experiment_id)
+        if experiment is None or experiment.get("archived_at"):
+            raise ExperimentValidationError("Experiment not found.")
+        if not self.can_access(actor_user_id, experiment_id, "manage"):
+            raise ExperimentAuthorizationError("Experiment deletion requires manage access.")
+        archived_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE experiment_workspaces
+                SET status = 'archived',
+                    archived_at = ?,
+                    archived_by = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE experiment_id = ? AND archived_at IS NULL
+                """,
+                (archived_at, actor_user_id, experiment_id),
+            )
+            self._history(connection, experiment_id, actor_user_id, "experiment.archived", {"deletion_behavior": "soft_delete"})
+        return {
+            "deleted": True,
+            "archived": True,
+            "experiment_id": experiment_id,
+            "archived_at": archived_at,
+            "attachment_policy": "retained",
+        }
+
+    def reorder_experiments(self, actor_user_id: str, ordered_experiment_ids: list[str]) -> list[dict[str, Any]]:
+        if not ordered_experiment_ids:
+            raise ExperimentValidationError("At least one experiment id is required.")
+        normalized_ids = [str(item).strip() for item in ordered_experiment_ids if str(item).strip()]
+        if len(normalized_ids) != len(ordered_experiment_ids):
+            raise ExperimentValidationError("Experiment ids must be non-empty.")
+        if len(set(normalized_ids)) != len(normalized_ids):
+            raise ExperimentValidationError("Duplicate experiment ids are not allowed.")
+        with self._connect() as connection:
+            placeholders = ",".join("?" for _ in normalized_ids)
+            rows = connection.execute(
+                f"""
+                SELECT * FROM experiment_workspaces
+                WHERE experiment_id IN ({placeholders}) AND archived_at IS NULL
+                """,
+                normalized_ids,
+            ).fetchall()
+            experiments = [_decode(row) for row in rows]
+            if len(experiments) != len(normalized_ids):
+                raise ExperimentValidationError("Unknown experiment id in reorder request.")
+            lab_ids = {str(experiment.get("lab_id") or "") for experiment in experiments}
+            if len(lab_ids) != 1:
+                raise ExperimentValidationError("Experiments must belong to the same lab.")
+            for experiment_id in normalized_ids:
+                if not self.can_access(actor_user_id, experiment_id, "manage"):
+                    raise ExperimentAuthorizationError("Experiment reorder requires manage access.")
+            for index, experiment_id in enumerate(normalized_ids):
+                connection.execute(
+                    """
+                    UPDATE experiment_workspaces
+                    SET sort_index = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE experiment_id = ?
+                    """,
+                    ((index + 1) * 1000, experiment_id),
+                )
+            for experiment_id in normalized_ids:
+                self._history(connection, experiment_id, actor_user_id, "experiment.reordered", {"position_count": len(normalized_ids)})
+        return self.list_experiments(actor_user_id, lab_id=next(iter(lab_ids)))
 
     def add_cohort(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_access(actor_user_id, experiment_id, "edit")
@@ -1189,6 +1277,8 @@ class GeneralExperimentService:
         experiment = self._experiment(experiment_id)
         if experiment is None:
             return False
+        if experiment.get("archived_at"):
+            return False
         if experiment["owner_user_id"] == user_id:
             return True
         lab_access = self.authz.user_access(user_id, str(experiment["lab_id"]))
@@ -1229,6 +1319,31 @@ class GeneralExperimentService:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM experiment_workspaces WHERE experiment_id = ?", (experiment_id,)).fetchone()
             return _decode(row) if row else None
+
+    def _next_sort_index(self, connection: sqlite3.Connection, lab_id: str) -> int:
+        row = connection.execute(
+            "SELECT COALESCE(MAX(sort_index), 0) AS max_sort FROM experiment_workspaces WHERE lab_id = ?",
+            (lab_id,),
+        ).fetchone()
+        return int(row["max_sort"] or 0) + 1000
+
+    def _backfill_experiment_order(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT experiment_id, lab_id
+            FROM experiment_workspaces
+            WHERE sort_index IS NULL
+            ORDER BY lab_id, updated_at DESC, created_at DESC
+            """
+        ).fetchall()
+        positions: dict[str, int] = {}
+        for row in rows:
+            lab_id = str(row["lab_id"])
+            positions[lab_id] = positions.get(lab_id, 0) + 1000
+            connection.execute(
+                "UPDATE experiment_workspaces SET sort_index = ? WHERE experiment_id = ?",
+                (positions[lab_id], row["experiment_id"]),
+            )
 
     def _rows(self, table: str, experiment_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:

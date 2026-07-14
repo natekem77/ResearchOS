@@ -203,6 +203,7 @@ class ResearchOsExperimentCard extends StatelessWidget {
     this.compounds = const [],
     this.markers = const [],
     this.onTap,
+    this.trailing,
   });
 
   final String title;
@@ -211,6 +212,7 @@ class ResearchOsExperimentCard extends StatelessWidget {
   final List<String> compounds;
   final List<String> markers;
   final VoidCallback? onTap;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -227,6 +229,10 @@ class ResearchOsExperimentCard extends StatelessWidget {
                   child: Text(title,
                       style: Theme.of(context).textTheme.titleMedium)),
               WorkflowBadge(stage: stage),
+              if (trailing != null) ...[
+                const SizedBox(width: ResearchOsSpacing.xs),
+                trailing!,
+              ],
             ],
           ),
           if (subtitle.isNotEmpty) ...[

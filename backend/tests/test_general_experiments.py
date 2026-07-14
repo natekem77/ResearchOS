@@ -14,6 +14,7 @@ from app.general_experiments import (
     CANONICAL_BLANK_DELTA_JSON,
     ExperimentAuthorizationError,
     ExperimentConflictError,
+    ExperimentValidationError,
     GeneralExperimentService,
     RichNotebookContextService,
     SamplePlanningService,
@@ -147,6 +148,90 @@ class GeneralExperimentTests(unittest.TestCase):
         assert reopened is not None
         self.assertEqual(reopened["experiment"]["title"], "Attachment Persistence Test")
         self.assertTrue(any(item["experiment_id"] == experiment_id for item in relisted))
+
+    def test_delete_experiment_soft_archives_and_retains_attachments(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment(
+                "user:researcher-a",
+                "lab:demo",
+                "Delete me",
+            )
+            attachment = service.create_link_attachment(
+                "user:researcher-a",
+                experiment["experiment_id"],
+                {"external_url": "https://example.com/data.csv", "display_name": "Data link"},
+            )
+            deleted = service.delete_experiment(
+                "user:researcher-a",
+                experiment["experiment_id"],
+            )
+            listed = service.list_experiments("user:researcher-a", lab_id="lab:demo")
+            reopened = service.get_workspace(experiment["experiment_id"], "user:researcher-a")
+            with service._connect() as connection:
+                retained_attachment = connection.execute(
+                    "SELECT * FROM experiment_notebook_attachments WHERE attachment_id = ?",
+                    (attachment["attachment_id"],),
+                ).fetchone()
+
+        self.assertTrue(deleted["deleted"])
+        self.assertTrue(deleted["archived"])
+        self.assertEqual(deleted["attachment_policy"], "retained")
+        self.assertFalse(any(item["experiment_id"] == experiment["experiment_id"] for item in listed))
+        self.assertIsNone(reopened)
+        self.assertIsNotNone(retained_attachment)
+
+    def test_delete_experiment_missing_and_unauthorized_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment(
+                "user:researcher-a",
+                "lab:demo",
+                "Private delete",
+            )
+
+            with self.assertRaises(ExperimentValidationError):
+                service.delete_experiment("user:researcher-a", "experiment:missing")
+            with self.assertRaises(ExperimentAuthorizationError):
+                service.delete_experiment("user:guest", experiment["experiment_id"])
+
+    def test_reorder_experiments_persists_and_validates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            first = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry A")
+            second = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry B")
+            third = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry C")
+            reordered = service.reorder_experiments(
+                "user:researcher-a",
+                [third["experiment_id"], first["experiment_id"], second["experiment_id"]],
+            )
+            restarted = self._service(tmpdir)
+            relisted = restarted.list_experiments("user:researcher-a", lab_id="lab:demo")
+
+            with self.assertRaises(ExperimentValidationError):
+                service.reorder_experiments(
+                    "user:researcher-a",
+                    [third["experiment_id"], third["experiment_id"]],
+                )
+            with self.assertRaises(ExperimentValidationError):
+                service.reorder_experiments(
+                    "user:researcher-a",
+                    [third["experiment_id"], "experiment:missing"],
+                )
+
+        reordered_ids = [item["experiment_id"] for item in reordered]
+        relisted_ids = [item["experiment_id"] for item in relisted]
+        for ids in [reordered_ids, relisted_ids]:
+            self.assertLess(ids.index(third["experiment_id"]), ids.index(first["experiment_id"]))
+            self.assertLess(ids.index(first["experiment_id"]), ids.index(second["experiment_id"]))
+
+    def test_new_experiment_receives_predictable_position(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            first = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry A")
+            second = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry B")
+
+        self.assertGreater(int(second["sort_index"]), int(first["sort_index"]))
 
     def test_create_from_protocol_version_inherits_linked_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
