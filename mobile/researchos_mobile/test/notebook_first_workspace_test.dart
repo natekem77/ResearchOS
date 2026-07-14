@@ -702,6 +702,23 @@ void main() {
     expect(payload.plainText, payload.tsv);
   });
 
+  test('RTF converted to HTML maps to the table model', () {
+    final result = NotebookRichPasteParser.parse(
+      const RichClipboardContent(
+        typeIdentifiers: ['public.rtf'],
+        selectedRepresentation: 'public.rtf',
+        html:
+            '<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>',
+        rtf: r'{\rtf1\trowd raw fallback}',
+      ),
+    );
+
+    expect(result.hasStructuredTable, isTrue);
+    final table = (result.blocks.single as NotebookPasteTableBlock).table;
+    expect(table.cells[0][0].header, isTrue);
+    expect(table.cells[1][1].text, '2');
+  });
+
   test('rich paste parser marks merged cells as degraded metadata', () {
     final result = NotebookRichPasteParser.parse(
       const RichClipboardContent(
@@ -1400,6 +1417,77 @@ void main() {
     expect(delta, contains('row_id'));
     expect(delta, contains('cell_id'));
     expect(delta, contains('column_widths'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('explicit Paste Table invokes dedicated reader and inserts table',
+      (tester) async {
+    String? delta;
+    final reader = _CountingClipboardRichContentReader(
+      tableContent: const RichClipboardContent(
+        typeIdentifiers: ['public.html', 'public.utf8-plain-text'],
+        selectedRepresentation: 'public.html',
+        html:
+            '<table><tr><th>Cell line</th><th>Count</th></tr><tr><td>IMR90</td><td>1500</td></tr></table>',
+        text: 'Cell line Count IMR90 1500',
+      ),
+    );
+    await pumpRichEditor(
+      tester,
+      richReader: reader,
+      onChanged: (edit) => delta = edit.deltaJson,
+      size: const Size(375, 667),
+    );
+
+    await tester.ensureVisible(find.byTooltip('Paste table'));
+    await tester.tap(find.byTooltip('Paste table'));
+    await tester.pumpAndSettle();
+
+    expect(reader.tableCalls, 1);
+    expect(reader.richCalls, 0);
+    expect(delta, isNot(contains('IMR90')));
+    expect(
+        find.textContaining('Detected one structured table'), findsOneWidget);
+
+    await tester.tap(find.text('Insert table'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('IMR90'), findsOneWidget);
+    expect(delta, contains('notebook_table'));
+    expect(delta, contains('IMR90'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('explicit Paste Table plain text only shows fallback choice',
+      (tester) async {
+    String? delta;
+    final reader = _CountingClipboardRichContentReader(
+      tableContent: const RichClipboardContent(
+        typeIdentifiers: ['public.utf8-plain-text'],
+        selectedRepresentation: 'public.utf8-plain-text',
+        text: 'A plain sentence without rows or columns.',
+      ),
+    );
+    await pumpRichEditor(
+      tester,
+      richReader: reader,
+      onChanged: (edit) => delta = edit.deltaJson,
+      size: const Size(375, 667),
+    );
+
+    await tester.ensureVisible(find.byTooltip('Paste table'));
+    await tester.tap(find.byTooltip('Paste table'));
+    await tester.pumpAndSettle();
+
+    expect(reader.tableCalls, 1);
+    expect(reader.richCalls, 0);
+    expect(find.text('No structured table found'), findsOneWidget);
+    expect(delta, isNot(contains('plain sentence')));
+
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(delta, isNot(contains('plain sentence')));
     expect(tester.takeException(), isNull);
   });
 
@@ -2254,6 +2342,28 @@ class _FakeClipboardRichContentReader extends ClipboardRichContentReader {
 
   @override
   Future<RichClipboardContent?> readRichContent() async => content;
+}
+
+class _CountingClipboardRichContentReader extends ClipboardRichContentReader {
+  _CountingClipboardRichContentReader({
+    this.tableContent,
+  });
+
+  final RichClipboardContent? tableContent;
+  int richCalls = 0;
+  int tableCalls = 0;
+
+  @override
+  Future<RichClipboardContent?> readRichContent() async {
+    richCalls += 1;
+    return null;
+  }
+
+  @override
+  Future<RichClipboardContent?> readTableContent() async {
+    tableCalls += 1;
+    return tableContent;
+  }
 }
 
 const _pngBytes = <int>[

@@ -30,6 +30,8 @@ import UIKit
         self.readImageClipboard(result: result)
       case "readRichClipboard":
         self.readRichClipboard(result: result)
+      case "readTable":
+        self.readTableClipboard(result: result)
       case "writeTableClipboard":
         self.writeTableClipboard(call: call, result: result)
       default:
@@ -39,6 +41,17 @@ import UIKit
   }
 
   private func readRichClipboard(result: @escaping FlutterResult) {
+    readStructuredClipboard(selectedPrefix: "rich", result: result)
+  }
+
+  private func readTableClipboard(result: @escaping FlutterResult) {
+    readStructuredClipboard(selectedPrefix: "table", result: result)
+  }
+
+  private func readStructuredClipboard(
+    selectedPrefix: String,
+    result: @escaping FlutterResult
+  ) {
     let pasteboard = UIPasteboard.general
     let providers = pasteboard.itemProviders
     let typeIdentifiers = providers.first?.registeredTypeIdentifiers.sorted() ?? []
@@ -58,6 +71,7 @@ import UIKit
       providerIndex: 0,
       typeIndex: 0,
       typeIdentifiers: typeIdentifiers,
+      selectedPrefix: selectedPrefix,
       result: result
     )
   }
@@ -68,6 +82,7 @@ import UIKit
     providerIndex: Int,
     typeIndex: Int,
     typeIdentifiers: [String],
+    selectedPrefix: String,
     result: @escaping FlutterResult
   ) {
     if typeIndex >= richTypes.count {
@@ -75,7 +90,7 @@ import UIKit
         "type_identifiers": typeIdentifiers,
         "selected_representation": "unsupported"
       ])
-      debugClipboardSelection(typeIdentifiers: typeIdentifiers, selectedRepresentation: "rich:unsupported")
+      debugClipboardSelection(typeIdentifiers: typeIdentifiers, selectedRepresentation: "\(selectedPrefix):unsupported")
       return
     }
     if providerIndex >= providers.count {
@@ -85,6 +100,7 @@ import UIKit
         providerIndex: 0,
         typeIndex: typeIndex + 1,
         typeIdentifiers: typeIdentifiers,
+        selectedPrefix: selectedPrefix,
         result: result
       )
       return
@@ -99,6 +115,7 @@ import UIKit
         providerIndex: providerIndex + 1,
         typeIndex: typeIndex,
         typeIdentifiers: typeIdentifiers,
+        selectedPrefix: selectedPrefix,
         result: result
       )
       return
@@ -113,6 +130,7 @@ import UIKit
             providerIndex: providerIndex + 1,
             typeIndex: typeIndex,
             typeIdentifiers: typeIdentifiers,
+            selectedPrefix: selectedPrefix,
             result: result
           )
           return
@@ -128,13 +146,14 @@ import UIKit
             providerIndex: providerIndex + 1,
             typeIndex: typeIndex,
             typeIdentifiers: typeIdentifiers,
+            selectedPrefix: selectedPrefix,
             result: result
           )
           return
         }
         self.debugClipboardSelection(
           typeIdentifiers: typeIdentifiers,
-          selectedRepresentation: "rich:\(typeIdentifier)"
+          selectedRepresentation: "\(selectedPrefix):\(typeIdentifier)"
         )
         var payload: [String: Any] = [
           "type_identifiers": typeIdentifiers,
@@ -155,6 +174,14 @@ import UIKit
         } else {
           payload["text"] = text
         }
+        payload["payload_lengths"] = [
+          "html": (payload["html"] as? String)?.count ?? 0,
+          "rtf": (payload["rtf"] as? String)?.count ?? 0,
+          "tsv": (payload["tsv"] as? String)?.count ?? 0,
+          "text": (payload["text"] as? String)?.count ?? 0,
+          "mundi_json": (payload["mundi_json"] as? String)?.count ?? 0
+        ]
+        payload["source_application"] = "unavailable"
         result(payload)
       }
     }

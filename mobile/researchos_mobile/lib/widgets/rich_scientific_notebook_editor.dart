@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
@@ -231,6 +232,64 @@ class _RichScientificNotebookEditorState
         });
       }
       return false;
+    }
+  }
+
+  Future<void> _pasteTableFromClipboard() async {
+    try {
+      final content =
+          await widget.clipboardRichContentReader.readTableContent();
+      if (!mounted) return;
+      if (content == null) {
+        setState(() {
+          _pasteMessage = 'No structured table was found in the clipboard.';
+        });
+        return;
+      }
+      final parsed = NotebookRichPasteParser.parse(content);
+      final decision = await showModalBottomSheet<_PasteTableAction>(
+        context: context,
+        showDragHandle: true,
+        isScrollControlled: true,
+        builder: (context) => _PasteTableDiagnosticSheet(
+          content: content,
+          parsed: parsed,
+        ),
+      );
+      if (!mounted ||
+          decision == null ||
+          decision == _PasteTableAction.cancel) {
+        return;
+      }
+      if (decision == _PasteTableAction.text) {
+        final fallbackText = content.tsv ?? content.text;
+        if (fallbackText == null || fallbackText.trim().isEmpty) {
+          setState(() {
+            _pasteMessage = 'No plain text fallback was available.';
+          });
+          return;
+        }
+        _insertRichPasteBlocks([NotebookPasteTextBlock(fallbackText)]);
+        setState(() => _pasteMessage = 'Pasted clipboard text.');
+        return;
+      }
+      if (!parsed.hasStructuredTable) {
+        setState(() {
+          _pasteMessage = parsed.warning ??
+              'No structured table was found in the clipboard.';
+        });
+        return;
+      }
+      _insertRichPasteBlocks(parsed.blocks);
+      setState(() {
+        _pasteMessage =
+            'Pasted ${parsed.tableCount == 1 ? 'a table' : '${parsed.tableCount} tables'}.';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _pasteMessage = 'Could not read a table from the clipboard.';
+      });
     }
   }
 
@@ -549,6 +608,7 @@ class _RichScientificNotebookEditorState
           onPasteImage:
               widget.onPasteImage == null ? null : _pasteImageFromClipboard,
           onInsertTable: _showInsertTableSheet,
+          onPasteTable: _pasteTableFromClipboard,
         ),
         const SizedBox(height: ResearchOsSpacing.sm),
         Row(
@@ -647,6 +707,7 @@ class _MobileNotebookToolbar extends StatelessWidget {
     required this.onDone,
     required this.onPasteImage,
     required this.onInsertTable,
+    required this.onPasteTable,
   });
 
   final QuillController controller;
@@ -656,6 +717,7 @@ class _MobileNotebookToolbar extends StatelessWidget {
   final VoidCallback onDone;
   final VoidCallback? onPasteImage;
   final VoidCallback onInsertTable;
+  final VoidCallback onPasteTable;
 
   @override
   Widget build(BuildContext context) {
@@ -839,6 +901,11 @@ class _MobileNotebookToolbar extends StatelessWidget {
               tooltip: 'Insert table',
               onPressed: onInsertTable,
               icon: const Icon(Icons.table_chart_outlined),
+            ),
+            IconButton(
+              tooltip: 'Paste table',
+              onPressed: onPasteTable,
+              icon: const Icon(Icons.assignment_return_outlined),
             ),
             const SizedBox(width: ResearchOsSpacing.xs),
             FilledButton.icon(
@@ -1265,6 +1332,8 @@ abstract class ClipboardRichContentReader {
   const ClipboardRichContentReader();
 
   Future<RichClipboardContent?> readRichContent();
+
+  Future<RichClipboardContent?> readTableContent() => readRichContent();
 }
 
 class RichClipboardContent {
@@ -1296,9 +1365,18 @@ class QuillClipboardRichContentReader extends ClipboardRichContentReader {
 
   @override
   Future<RichClipboardContent?> readRichContent() async {
+    return _readClipboardMethod('readRichClipboard');
+  }
+
+  @override
+  Future<RichClipboardContent?> readTableContent() async {
+    return _readClipboardMethod('readTable');
+  }
+
+  Future<RichClipboardContent?> _readClipboardMethod(String method) async {
     try {
       final result = await _clipboardChannel.invokeMapMethod<String, Object?>(
-        'readRichClipboard',
+        method,
       );
       if (result == null) return null;
       _debugRichClipboardSelection(result);
@@ -1640,6 +1718,8 @@ class _DecodedDataImage {
 
 enum _TsvPasteDecision { table, text, cancel }
 
+enum _PasteTableAction { table, text, cancel }
+
 class _PasteTableSheet extends StatelessWidget {
   const _PasteTableSheet();
 
@@ -1682,6 +1762,157 @@ class _PasteTableSheet extends StatelessWidget {
                 ),
               ],
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PasteTableDiagnosticSheet extends StatelessWidget {
+  const _PasteTableDiagnosticSheet({
+    required this.content,
+    required this.parsed,
+  });
+
+  final RichClipboardContent content;
+  final NotebookRichPasteResult parsed;
+
+  @override
+  Widget build(BuildContext context) {
+    final tables = parsed.blocks.whereType<NotebookPasteTableBlock>().toList();
+    final fallbackText = content.tsv ?? content.text;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: ResearchOsSpacing.lg,
+          right: ResearchOsSpacing.lg,
+          bottom:
+              MediaQuery.viewInsetsOf(context).bottom + ResearchOsSpacing.lg,
+          top: ResearchOsSpacing.lg,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                tables.isEmpty ? 'No structured table found' : 'Paste table?',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              Text(_tablePasteSummary(tables, parsed)),
+              if (kDebugMode) ...[
+                const SizedBox(height: ResearchOsSpacing.md),
+                _ClipboardDiagnosticPanel(content: content, parsed: parsed),
+              ],
+              const SizedBox(height: ResearchOsSpacing.lg),
+              Wrap(
+                spacing: ResearchOsSpacing.sm,
+                runSpacing: ResearchOsSpacing.sm,
+                children: [
+                  FilledButton.icon(
+                    onPressed: tables.isEmpty
+                        ? null
+                        : () => Navigator.pop(
+                              context,
+                              _PasteTableAction.table,
+                            ),
+                    icon: const Icon(Icons.table_chart_outlined),
+                    label: Text(tables.length <= 1
+                        ? 'Insert table'
+                        : 'Insert ${tables.length} tables'),
+                  ),
+                  OutlinedButton(
+                    onPressed: fallbackText == null ||
+                            fallbackText.trim().isEmpty
+                        ? null
+                        : () => Navigator.pop(context, _PasteTableAction.text),
+                    child: const Text('Paste as text'),
+                  ),
+                  TextButton(
+                    onPressed: () =>
+                        Navigator.pop(context, _PasteTableAction.cancel),
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _tablePasteSummary(
+    List<NotebookPasteTableBlock> tables,
+    NotebookRichPasteResult parsed,
+  ) {
+    if (tables.isEmpty) {
+      return parsed.warning ??
+          'No structured table was found in the clipboard.';
+    }
+    final dimensions = tables
+        .map((block) => '${block.table.rows} x ${block.table.columns}')
+        .join(', ');
+    final textBlocks = parsed.blocks.whereType<NotebookPasteTextBlock>().length;
+    if (tables.length == 1 && textBlocks == 0) {
+      return 'Detected one structured table: $dimensions.';
+    }
+    return 'Detected ${tables.length} table block${tables.length == 1 ? '' : 's'}'
+        '${textBlocks > 0 ? ' with surrounding text' : ''}: $dimensions.';
+  }
+}
+
+class _ClipboardDiagnosticPanel extends StatelessWidget {
+  const _ClipboardDiagnosticPanel({
+    required this.content,
+    required this.parsed,
+  });
+
+  final RichClipboardContent content;
+  final NotebookRichPasteResult parsed;
+
+  @override
+  Widget build(BuildContext context) {
+    final tables = parsed.blocks.whereType<NotebookPasteTableBlock>().toList();
+    final rowsColumns = tables
+        .map((block) => '${block.table.rows}x${block.table.columns}')
+        .join(', ');
+    final parserStatus = parsed.hasStructuredTable
+        ? 'success'
+        : parsed.warning ?? 'no structured table';
+    final diagnostics = [
+      'types: ${content.typeIdentifiers.isEmpty ? 'none' : content.typeIdentifiers.join(', ')}',
+      'selected: ${content.selectedRepresentation}',
+      'html: ${content.html?.length ?? 0} chars',
+      'rtf: ${content.rtf?.length ?? 0} chars',
+      'tsv: ${content.tsv?.length ?? 0} chars',
+      'text: ${content.text?.length ?? 0} chars',
+      'tables: ${tables.length}${rowsColumns.isEmpty ? '' : ' ($rowsColumns)'}',
+      'parser: $parserStatus',
+    ];
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Clipboard diagnostics',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: ResearchOsSpacing.xs),
+            for (final line in diagnostics)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Text(line, style: Theme.of(context).textTheme.bodySmall),
+              ),
           ],
         ),
       ),
