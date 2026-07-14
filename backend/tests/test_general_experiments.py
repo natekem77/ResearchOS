@@ -195,6 +195,30 @@ class GeneralExperimentTests(unittest.TestCase):
             with self.assertRaises(ExperimentAuthorizationError):
                 service.delete_experiment("user:guest", experiment["experiment_id"])
 
+    def test_delete_general_experiment_api_route_matches_flutter_request(self) -> None:
+        from app.main import app
+
+        matching_routes = [
+            route
+            for route in app.routes
+            if getattr(route, "path", None) == "/experiments/{experiment_id}/general"
+        ]
+        methods = set().union(*(getattr(route, "methods", set()) for route in matching_routes))
+
+        self.assertIn("DELETE", methods)
+
+    def test_delete_general_experiment_wrong_method_returns_405(self) -> None:
+        from app.main import app
+
+        matching_routes = [
+            route
+            for route in app.routes
+            if getattr(route, "path", None) == "/experiments/{experiment_id}/general"
+        ]
+        methods = set().union(*(getattr(route, "methods", set()) for route in matching_routes))
+
+        self.assertNotIn("POST", methods)
+
     def test_reorder_experiments_persists_and_validates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

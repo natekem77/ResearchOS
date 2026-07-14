@@ -125,22 +125,23 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
     }
   }
 
-  Future<void> _handleReorder(
-    int oldIndex,
-    int newIndex, {
-    bool newIndexAlreadyAdjusted = false,
-  }) async {
-    if (_reordering || oldIndex == newIndex) return;
+  Future<void> _handleReorder(int oldIndex, int newIndex) async {
+    var targetIndex = newIndex;
+    if (targetIndex > oldIndex) {
+      targetIndex -= 1;
+    }
+    await _commitReorder(oldIndex, targetIndex);
+  }
+
+  Future<void> _commitReorder(int oldIndex, int targetIndex) async {
+    if (_reordering || oldIndex == targetIndex) return;
     final previous = List<ExperimentCard>.from(_experiments);
-    final adjustedNewIndex = newIndexAlreadyAdjusted
-        ? newIndex
-        : (newIndex > oldIndex ? newIndex - 1 : newIndex);
-    if (adjustedNewIndex < 0 || adjustedNewIndex >= _experiments.length) {
+    if (targetIndex < 0 || targetIndex >= _experiments.length) {
       return;
     }
     final next = List<ExperimentCard>.from(_experiments);
     final item = next.removeAt(oldIndex);
-    next.insert(adjustedNewIndex, item);
+    next.insert(targetIndex, item);
     setState(() {
       _experiments = next;
       _reordering = true;
@@ -170,9 +171,7 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
 
   Future<void> _moveExperiment(int index, int targetIndex) async {
     if (targetIndex < 0 || targetIndex >= _experiments.length) return;
-    var reorderTarget = targetIndex;
-    if (targetIndex > index) reorderTarget = targetIndex + 1;
-    await _handleReorder(index, reorderTarget);
+    await _commitReorder(index, targetIndex);
   }
 
   @override
@@ -210,11 +209,7 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
           child: _NewExperimentCard(onTap: _openNewExperiment),
         ),
         itemCount: _experiments.length,
-        onReorderItem: (oldIndex, newIndex) => _handleReorder(
-          oldIndex,
-          newIndex,
-          newIndexAlreadyAdjusted: true,
-        ),
+        onReorderItem: _handleReorder,
         itemBuilder: (context, index) {
           final experiment = _experiments[index];
           return Padding(

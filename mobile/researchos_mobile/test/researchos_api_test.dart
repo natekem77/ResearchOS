@@ -78,6 +78,26 @@ void main() {
     expect((response['experiment'] as Map)['title'], 'Edited Experiment');
   });
 
+  test('deleteGeneralExperiment sends canonical DELETE route', () async {
+    late http.Request captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({'deleted': true, 'archived': true}),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    await api.deleteGeneralExperiment('experiment:test');
+
+    expect(captured.method, 'DELETE');
+    expect(captured.url.path, '/experiments/experiment%3Atest/general');
+  });
+
   test('experiments decodes notebook-first workspace cards from mobile list',
       () async {
     final api = ResearchOsApi(
