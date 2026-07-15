@@ -63,14 +63,14 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
   Future<void> _openExperiment(ExperimentCard experiment) async {
     final isNotebookFirst =
         experiment.route?.contains('general-workspace') == true ||
-            experiment.id.startsWith('experiment:') ||
-            experiment.id == 'NK_Expt_26';
+            experiment.canonicalExperimentId.startsWith('experiment:') ||
+            experiment.canonicalExperimentId == 'NK_Expt_26';
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => isNotebookFirst
             ? GeneralExperimentWorkspaceScreen(
                 api: widget.api,
-                experimentId: experiment.id,
+                experimentId: experiment.canonicalExperimentId,
               )
             : ExperimentDetailScreen(api: widget.api, experiment: experiment),
       ),
@@ -79,7 +79,12 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
   }
 
   Future<void> _confirmDelete(ExperimentCard experiment) async {
-    if (_deleting.contains(experiment.id)) return;
+    if (!experiment.canDelete) {
+      _showCapabilityMessage(experiment);
+      return;
+    }
+    final experimentId = experiment.canonicalExperimentId;
+    if (_deleting.contains(experimentId)) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -104,21 +109,22 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
       ),
     );
     if (confirmed != true || !mounted) return;
-    setState(() => _deleting.add(experiment.id));
+    setState(() => _deleting.add(experimentId));
     try {
-      await widget.api.deleteGeneralExperiment(experiment.id);
+      await widget.api.deleteGeneralExperiment(experimentId);
       if (!mounted) return;
       setState(() {
-        _experiments =
-            _experiments.where((item) => item.id != experiment.id).toList();
-        _deleting.remove(experiment.id);
+        _experiments = _experiments
+            .where((item) => item.canonicalExperimentId != experimentId)
+            .toList();
+        _deleting.remove(experimentId);
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Deleted "${experiment.title}".')),
       );
     } catch (error) {
       if (!mounted) return;
-      setState(() => _deleting.remove(experiment.id));
+      setState(() => _deleting.remove(experimentId));
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Delete failed: $error')),
       );
@@ -135,6 +141,10 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
 
   Future<void> _commitReorder(int oldIndex, int targetIndex) async {
     if (_reordering || oldIndex == targetIndex) return;
+    if (!_experiments[oldIndex].canReorder) {
+      _showCapabilityMessage(_experiments[oldIndex]);
+      return;
+    }
     final previous = List<ExperimentCard>.from(_experiments);
     if (targetIndex < 0 || targetIndex >= _experiments.length) {
       return;
@@ -147,8 +157,10 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
       _reordering = true;
     });
     try {
-      final canonical = await widget.api
-          .reorderExperiments(next.map((item) => item.id).toList());
+      final canonical = await widget.api.reorderExperiments(next
+          .where((item) => item.canReorder)
+          .map((item) => item.canonicalExperimentId)
+          .toList());
       if (!mounted) return;
       setState(() {
         _experiments = canonical.isEmpty ? next : canonical;
@@ -172,6 +184,15 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
   Future<void> _moveExperiment(int index, int targetIndex) async {
     if (targetIndex < 0 || targetIndex >= _experiments.length) return;
     await _commitReorder(index, targetIndex);
+  }
+
+  void _showCapabilityMessage(ExperimentCard experiment) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(experiment.capabilityReason ??
+            'You do not have permission to change this experiment.'),
+      ),
+    );
   }
 
   @override
@@ -213,7 +234,8 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
         itemBuilder: (context, index) {
           final experiment = _experiments[index];
           return Padding(
-            key: ValueKey('experiment-card-${experiment.id}'),
+            key:
+                ValueKey('experiment-card-${experiment.canonicalExperimentId}'),
             padding: const EdgeInsets.only(bottom: ResearchOsSpacing.sm),
             child: ResearchOsExperimentCard(
               title: experiment.title,
@@ -227,8 +249,11 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
               trailing: _ExperimentEntryMenu(
                 index: index,
                 count: _experiments.length,
-                deleting: _deleting.contains(experiment.id),
+                deleting: _deleting.contains(experiment.canonicalExperimentId),
                 reordering: _reordering,
+                canDelete: experiment.canDelete,
+                canReorder: experiment.canReorder,
+                capabilityReason: experiment.capabilityReason,
                 onDelete: () => _confirmDelete(experiment),
                 onMoveUp:
                     index == 0 ? null : () => _moveExperiment(index, index - 1),
@@ -288,6 +313,9 @@ class _ExperimentEntryMenu extends StatelessWidget {
     required this.count,
     required this.deleting,
     required this.reordering,
+    required this.canDelete,
+    required this.canReorder,
+    this.capabilityReason,
     required this.onDelete,
     required this.onMoveUp,
     required this.onMoveDown,
@@ -299,6 +327,9 @@ class _ExperimentEntryMenu extends StatelessWidget {
   final int count;
   final bool deleting;
   final bool reordering;
+  final bool canDelete;
+  final bool canReorder;
+  final String? capabilityReason;
   final VoidCallback onDelete;
   final VoidCallback? onMoveUp;
   final VoidCallback? onMoveDown;
@@ -311,15 +342,25 @@ class _ExperimentEntryMenu extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Semantics(
-          label: 'Reorder experiment',
-          button: true,
-          child: ReorderableDelayedDragStartListener(
-            index: index,
-            child: const Padding(
-              padding: EdgeInsets.all(ResearchOsSpacing.xs),
-              child: Icon(Icons.drag_handle),
-            ),
-          ),
+          label: canReorder
+              ? 'Reorder experiment'
+              : 'Reorder unavailable for this experiment',
+          button: canReorder,
+          child: canReorder
+              ? ReorderableDelayedDragStartListener(
+                  index: index,
+                  child: const Padding(
+                    padding: EdgeInsets.all(ResearchOsSpacing.xs),
+                    child: Icon(Icons.drag_handle),
+                  ),
+                )
+              : Padding(
+                  padding: const EdgeInsets.all(ResearchOsSpacing.xs),
+                  child: Icon(
+                    Icons.drag_handle,
+                    color: Theme.of(context).disabledColor,
+                  ),
+                ),
         ),
         if (deleting)
           const SizedBox.square(
@@ -350,32 +391,44 @@ class _ExperimentEntryMenu extends StatelessWidget {
               }
             },
             itemBuilder: (context) => [
+              if ((!canDelete || !canReorder) && capabilityReason != null) ...[
+                PopupMenuItem(
+                  enabled: false,
+                  child: Text(capabilityReason!),
+                ),
+                const PopupMenuDivider(),
+              ],
               PopupMenuItem(
                 value: _ExperimentMenuAction.moveUp,
-                enabled: onMoveUp != null,
+                enabled: canReorder && onMoveUp != null,
                 child: const Text('Move Up'),
               ),
               PopupMenuItem(
                 value: _ExperimentMenuAction.moveDown,
-                enabled: onMoveDown != null,
+                enabled: canReorder && onMoveDown != null,
                 child: const Text('Move Down'),
               ),
               PopupMenuItem(
                 value: _ExperimentMenuAction.moveTop,
-                enabled: onMoveTop != null,
+                enabled: canReorder && onMoveTop != null,
                 child: const Text('Move to Top'),
               ),
               PopupMenuItem(
                 value: _ExperimentMenuAction.moveBottom,
-                enabled: onMoveBottom != null,
+                enabled: canReorder && onMoveBottom != null,
                 child: const Text('Move to Bottom'),
               ),
               const PopupMenuDivider(),
               PopupMenuItem(
                 value: _ExperimentMenuAction.delete,
+                enabled: canDelete,
                 child: Text(
                   'Delete',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  style: TextStyle(
+                    color: canDelete
+                        ? Theme.of(context).colorScheme.error
+                        : Theme.of(context).disabledColor,
+                  ),
                 ),
               ),
             ],

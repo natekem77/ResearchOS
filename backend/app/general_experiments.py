@@ -687,6 +687,7 @@ class GeneralExperimentService:
         return {"experiment_id": experiment_id, "protocol_id": protocol_id, "protocol_version_id": protocol_version_id, "inherited_events": inherit_events}
 
     def update_experiment_title(self, actor_user_id: str, experiment_id: str, title: str) -> dict[str, Any]:
+        experiment_id = self.resolve_experiment_id(experiment_id) or experiment_id
         self._require_access(actor_user_id, experiment_id, "edit")
         resolved_title = title.strip() or "Untitled Experiment"
         with self._connect() as connection:
@@ -705,6 +706,7 @@ class GeneralExperimentService:
         return experiment
 
     def delete_experiment(self, actor_user_id: str, experiment_id: str) -> dict[str, Any]:
+        experiment_id = self.resolve_experiment_id(experiment_id) or experiment_id
         experiment = self._experiment(experiment_id)
         if experiment is None or experiment.get("archived_at"):
             raise ExperimentValidationError("Experiment not found.")
@@ -735,9 +737,10 @@ class GeneralExperimentService:
     def reorder_experiments(self, actor_user_id: str, ordered_experiment_ids: list[str]) -> list[dict[str, Any]]:
         if not ordered_experiment_ids:
             raise ExperimentValidationError("At least one experiment id is required.")
-        normalized_ids = [str(item).strip() for item in ordered_experiment_ids if str(item).strip()]
-        if len(normalized_ids) != len(ordered_experiment_ids):
+        requested_ids = [str(item).strip() for item in ordered_experiment_ids if str(item).strip()]
+        if len(requested_ids) != len(ordered_experiment_ids):
             raise ExperimentValidationError("Experiment ids must be non-empty.")
+        normalized_ids = [self.resolve_experiment_id(item) or item for item in requested_ids]
         if len(set(normalized_ids)) != len(normalized_ids):
             raise ExperimentValidationError("Duplicate experiment ids are not allowed.")
         with self._connect() as connection:
@@ -867,6 +870,7 @@ class GeneralExperimentService:
         return self._row_by_id("experiment_events_general", "event_id", event_id)
 
     def get_workspace(self, experiment_id: str, user_id: str) -> dict[str, Any] | None:
+        experiment_id = self.resolve_experiment_id(experiment_id) or experiment_id
         if not self.can_access(user_id, experiment_id, "view"):
             return None
         experiment = self._experiment(experiment_id)
@@ -1274,6 +1278,7 @@ class GeneralExperimentService:
         return version
 
     def can_access(self, user_id: str, experiment_id: str, access_level: str = "view") -> bool:
+        experiment_id = self.resolve_experiment_id(experiment_id) or experiment_id
         experiment = self._experiment(experiment_id)
         if experiment is None:
             return False
@@ -1282,6 +1287,8 @@ class GeneralExperimentService:
         if experiment["owner_user_id"] == user_id:
             return True
         lab_access = self.authz.user_access(user_id, str(experiment["lab_id"]))
+        if access_level in {"edit", "manage"} and lab_access["role"] in {"owner", "admin"}:
+            return True
         if "lab.notebooks.view_all" in lab_access["permissions"] and access_level == "view":
             return True
         required = EXPERIMENT_ACCESS_ORDER[access_level]
@@ -1319,6 +1326,62 @@ class GeneralExperimentService:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM experiment_workspaces WHERE experiment_id = ?", (experiment_id,)).fetchone()
             return _decode(row) if row else None
+
+    def resolve_experiment_id(self, identifier: str) -> str | None:
+        candidate = str(identifier or "").strip()
+        if not candidate:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT experiment_id FROM experiment_workspaces WHERE experiment_id = ?",
+                (candidate,),
+            ).fetchone()
+            if row:
+                return str(row["experiment_id"])
+            legacy_row = self.store.get_experiment(candidate)
+            if legacy_row is None:
+                for legacy in self.store.list_experiments():
+                    legacy_id = str(legacy.get("id") or "")
+                    legacy_experiment_id = str(legacy.get("experiment_id") or "")
+                    if candidate in {legacy_id, legacy_experiment_id}:
+                        legacy_row = legacy
+                        break
+            if legacy_row is None:
+                return None
+            for alias in [
+                str(legacy_row.get("experiment_id") or ""),
+                str(legacy_row.get("id") or ""),
+            ]:
+                if not alias:
+                    continue
+                row = connection.execute(
+                    "SELECT experiment_id FROM experiment_workspaces WHERE experiment_id = ?",
+                    (alias,),
+                ).fetchone()
+                if row:
+                    return str(row["experiment_id"])
+            canonical_id = str(legacy_row.get("experiment_id") or legacy_row.get("id") or "").strip()
+            if not canonical_id:
+                return None
+            biological_system = "retinal organoid" if _mentions_organoid(legacy_row) else str(legacy_row.get("cell_line") or "experimental system")
+            connection.execute(
+                """
+                INSERT INTO experiment_workspaces
+                    (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, sort_index, created_at, updated_at)
+                VALUES (?, 'lab:demo', COALESCE(?, 'user:pi-owner'), ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                (
+                    canonical_id,
+                    legacy_row.get("owner_user_id") or legacy_row.get("created_by"),
+                    legacy_row.get("title") or canonical_id,
+                    legacy_row.get("notes"),
+                    legacy_row.get("status") or "active",
+                    biological_system,
+                    "organoid" if "organoid" in biological_system.lower() else "sample",
+                    self._next_sort_index(connection, "lab:demo"),
+                ),
+            )
+            return canonical_id
 
     def _next_sort_index(self, connection: sqlite3.Connection, lab_id: str) -> int:
         row = connection.execute(

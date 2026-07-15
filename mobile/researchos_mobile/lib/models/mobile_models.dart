@@ -63,33 +63,52 @@ class ExperimentCard {
   const ExperimentCard({
     required this.id,
     required this.title,
+    this.experimentId,
     this.humanExperimentId,
     this.date,
     this.workflowStage,
     this.status,
     this.lastActivity,
     this.route,
+    this.ownerId,
+    this.workspaceId,
+    this.canOpen = true,
+    this.canEdit = false,
+    this.canDelete = true,
+    this.canReorder = true,
+    this.capabilityReason,
+    this.legacySource,
     this.keyCompounds = const [],
     this.keyMarkers = const [],
   });
 
   factory ExperimentCard.fromJson(Map<String, dynamic> json) {
+    final id = json['id']?.toString() ?? '';
     return ExperimentCard(
-      id: json['id']?.toString() ?? '',
-      title:
-          json['title']?.toString() ?? json['id']?.toString() ?? 'Experiment',
+      id: id,
+      experimentId: json['experiment_id']?.toString(),
+      title: json['title']?.toString() ?? (id.isEmpty ? 'Experiment' : id),
       humanExperimentId: json['human_experiment_id']?.toString(),
       date: json['date']?.toString(),
       workflowStage: json['workflow_stage']?.toString(),
       status: json['status']?.toString(),
       lastActivity: json['last_activity']?.toString(),
       route: json['route']?.toString(),
+      ownerId: json['owner_id']?.toString(),
+      workspaceId: json['workspace_id']?.toString(),
+      canOpen: json['can_open'] != false,
+      canEdit: json['can_edit'] == true,
+      canDelete: json['can_delete'] != false,
+      canReorder: json['can_reorder'] != false,
+      capabilityReason: json['capability_reason']?.toString(),
+      legacySource: json['legacy_source']?.toString(),
       keyCompounds: _stringList(json['key_compounds']),
       keyMarkers: _stringList(json['key_markers']),
     );
   }
 
   final String id;
+  final String? experimentId;
   final String title;
   final String? humanExperimentId;
   final String? date;
@@ -97,8 +116,19 @@ class ExperimentCard {
   final String? status;
   final String? lastActivity;
   final String? route;
+  final String? ownerId;
+  final String? workspaceId;
+  final bool canOpen;
+  final bool canEdit;
+  final bool canDelete;
+  final bool canReorder;
+  final String? capabilityReason;
+  final String? legacySource;
   final List<String> keyCompounds;
   final List<String> keyMarkers;
+
+  String get canonicalExperimentId =>
+      experimentId?.trim().isNotEmpty == true ? experimentId!.trim() : id;
 }
 
 class MobileSession {

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.attachment_storage import AttachmentStorageError, LocalAttachmentStorage
 from app.config import Settings
+from app.experiments import Experiment
 from app.general_experiments import (
     CANONICAL_BLANK_DELTA_JSON,
     ExperimentAuthorizationError,
@@ -199,13 +200,57 @@ class GeneralExperimentTests(unittest.TestCase):
         from app.main import app
 
         matching_routes = [
-            route
-            for route in app.routes
+            (index, route)
+            for index, route in enumerate(app.routes)
             if getattr(route, "path", None) == "/experiments/{experiment_id}/general"
         ]
-        methods = set().union(*(getattr(route, "methods", set()) for route in matching_routes))
+        methods = set().union(*(getattr(route, "methods", set()) for _, route in matching_routes))
+        delete_index = min(
+            index
+            for index, route in matching_routes
+            if "DELETE" in getattr(route, "methods", set())
+        )
+        put_index = min(
+            index
+            for index, route in matching_routes
+            if "PUT" in getattr(route, "methods", set())
+        )
 
         self.assertIn("DELETE", methods)
+        self.assertLess(delete_index, put_index)
+
+    def test_reorder_mobile_experiments_route_precedes_dynamic_detail_route(self) -> None:
+        from app.main import app
+
+        route_entries = [
+            (index, route)
+            for index, route in enumerate(app.routes)
+            if getattr(route, "path", None)
+            in {
+                "/mobile/experiments/reorder",
+                "/mobile/experiments/{experiment_id}",
+            }
+        ]
+        reorder_index = min(
+            index
+            for index, route in route_entries
+            if getattr(route, "path", None) == "/mobile/experiments/reorder"
+        )
+        detail_index = min(
+            index
+            for index, route in route_entries
+            if getattr(route, "path", None) == "/mobile/experiments/{experiment_id}"
+        )
+        methods = set().union(
+            *(
+                getattr(route, "methods", set())
+                for _, route in route_entries
+                if getattr(route, "path", None) == "/mobile/experiments/reorder"
+            )
+        )
+
+        self.assertIn("POST", methods)
+        self.assertLess(reorder_index, detail_index)
 
     def test_delete_general_experiment_wrong_method_returns_405(self) -> None:
         from app.main import app
@@ -242,12 +287,68 @@ class GeneralExperimentTests(unittest.TestCase):
                     "user:researcher-a",
                     [third["experiment_id"], "experiment:missing"],
                 )
+            with self.assertRaises(ExperimentAuthorizationError):
+                service.reorder_experiments(
+                    "user:guest",
+                    [third["experiment_id"], first["experiment_id"], second["experiment_id"]],
+                )
 
         reordered_ids = [item["experiment_id"] for item in reordered]
         relisted_ids = [item["experiment_id"] for item in relisted]
         for ids in [reordered_ids, relisted_ids]:
             self.assertLess(ids.index(third["experiment_id"]), ids.index(first["experiment_id"]))
             self.assertLess(ids.index(first["experiment_id"]), ids.index(second["experiment_id"]))
+
+    def test_lab_owner_can_reorder_researcher_planned_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            first = service.create_blank_experiment("user:researcher-a", "lab:demo", "Planned A", status="planned")
+            second = service.create_blank_experiment("user:researcher-a", "lab:demo", "Planned B", status="planned")
+
+            reordered = service.reorder_experiments(
+                "user:pi-owner",
+                [second["experiment_id"], first["experiment_id"]],
+            )
+
+        reordered_ids = [item["experiment_id"] for item in reordered]
+        self.assertLess(reordered_ids.index(second["experiment_id"]), reordered_ids.index(first["experiment_id"]))
+
+    def test_lab_owner_can_delete_researcher_planned_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            experiment = service.create_blank_experiment("user:researcher-a", "lab:demo", "Planned delete", status="planned")
+
+            deleted = service.delete_experiment("user:pi-owner", experiment["experiment_id"])
+
+        self.assertTrue(deleted["deleted"])
+
+    def test_legacy_alias_resolves_to_canonical_experiment_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            store = SQLiteStore(settings=self._settings(tmpdir))
+            store.upsert_experiment(
+                Experiment(
+                    id="legacy-row-1",
+                    source_document_id="legacy-doc",
+                    source_provider="test",
+                    title="Legacy Display Title",
+                    experiment_id="experiment:legacy-canonical",
+                )
+            )
+            canonical = service.resolve_experiment_id("legacy-row-1")
+            deleted = service.delete_experiment("user:pi-owner", "legacy-row-1")
+
+        self.assertEqual(canonical, "experiment:legacy-canonical")
+        self.assertEqual(deleted["experiment_id"], "experiment:legacy-canonical")
+
+    def test_title_is_not_treated_as_experiment_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            service.create_blank_experiment("user:researcher-a", "lab:demo", "Do Not Use Title")
+
+            resolved = service.resolve_experiment_id("Do Not Use Title")
+
+        self.assertIsNone(resolved)
 
     def test_new_experiment_receives_predictable_position(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

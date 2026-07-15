@@ -182,6 +182,99 @@ void main() {
     expect(find.textContaining('Delete failed'), findsOneWidget);
   });
 
+  testWidgets('delete uses canonical experiment_id instead of raw row id',
+      (tester) async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/mobile/experiments') {
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                _experimentJson(
+                  'Legacy Display Title',
+                  'Legacy Display Title',
+                  experimentId: 'experiment:canonical',
+                ),
+              ],
+              'count': 1,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'DELETE') {
+          return http.Response(
+            jsonEncode({'deleted': true, 'archived': true}),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200,
+            headers: {'Content-Type': 'application/json'});
+      }),
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Experiment actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+
+    final delete =
+        requests.singleWhere((request) => request.method == 'DELETE');
+    expect(delete.url.path, '/experiments/experiment%3Acanonical/general');
+    expect(delete.url.path, isNot(contains('Legacy%20Display%20Title')));
+  });
+
+  testWidgets('can_delete false disables delete action', (tester) async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/mobile/experiments') {
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                _experimentJson(
+                  'experiment:a',
+                  'Entry A',
+                  canDelete: false,
+                  capabilityReason: 'Manage access required.',
+                ),
+              ],
+              'count': 1,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200,
+            headers: {'Content-Type': 'application/json'});
+      }),
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Experiment actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delete "Entry A"?'), findsNothing);
+    expect(requests.where((request) => request.method == 'DELETE'), isEmpty);
+  });
+
   testWidgets('Move Down fallback persists reordered experiment list',
       (tester) async {
     final requests = <http.Request>[];
@@ -465,18 +558,74 @@ void main() {
         lessThan(tester.getTopLeft(find.text('Entry B')).dy));
     expect(find.textContaining('Reorder failed'), findsOneWidget);
   });
+
+  testWidgets('can_reorder false disables move actions and drag handle',
+      (tester) async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/mobile/experiments') {
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                _experimentJson(
+                  'experiment:a',
+                  'Entry A',
+                  canReorder: false,
+                  capabilityReason: 'Manage access required.',
+                ),
+                _experimentJson('experiment:b', 'Entry B'),
+              ],
+              'count': 2,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200,
+            headers: {'Content-Type': 'application/json'});
+      }),
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Experiment actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Move Down'));
+    await tester.pumpAndSettle();
+
+    expect(
+        requests.where(
+            (request) => request.url.path == '/mobile/experiments/reorder'),
+        isEmpty);
+  });
 }
 
 Widget _experimentsApp(ResearchOsApi api) {
   return MaterialApp(home: Scaffold(body: ExperimentsScreen(api: api)));
 }
 
-Map<String, Object?> _experimentJson(String id, String title) {
+Map<String, Object?> _experimentJson(
+  String id,
+  String title, {
+  String? experimentId,
+  bool canDelete = true,
+  bool canReorder = true,
+  String? capabilityReason,
+}) {
   return {
     'id': id,
+    'experiment_id': experimentId ?? id,
     'title': title,
-    'human_experiment_id': id,
+    'human_experiment_id': experimentId ?? id,
     'workflow_stage': 'Draft',
+    'can_delete': canDelete,
+    'can_reorder': canReorder,
+    if (capabilityReason != null) 'capability_reason': capabilityReason,
     'route': '/experiments/$id/general-workspace',
   };
 }

@@ -5251,28 +5251,45 @@ def _compact_provenance(source: str, provider: str = "ResearchOS", **extra: obje
 def _mobile_experiment_card(store: SQLiteStore, experiment: dict[str, object]) -> dict[str, object]:
     workflow = WorkflowEngine(store).workflow_for_experiment(experiment)
     linked_assets = store.list_assets_for_experiment(experiment)
+    experiment_id = str(experiment.get("experiment_id") or experiment.get("id") or "")
     return {
         "id": experiment.get("id"),
+        "experiment_id": experiment_id,
         "title": experiment.get("title") or experiment.get("experiment_id") or experiment.get("id"),
         "human_experiment_id": experiment.get("experiment_id"),
+        "owner_id": experiment.get("owner_user_id") or experiment.get("created_by"),
+        "workspace_id": experiment.get("workspace_id"),
         "date": experiment.get("date"),
         "workflow_stage": workflow.get("current_stage") or "Planning",
         "key_compounds": list(experiment.get("compounds") or [])[:4],
         "key_markers": list(experiment.get("markers") or [])[:4],
         "status": "needs_statistics" if not any(_asset_has_statistics(asset) for asset in linked_assets) else "has_statistics",
         "last_activity": experiment.get("date") or experiment.get("extracted_at"),
+        "can_open": True,
+        "can_edit": False,
+        "can_delete": False,
+        "can_reorder": False,
+        "capability_reason": "Legacy entry has not been migrated to a notebook-first workspace.",
+        "legacy_source": "experiments",
         "route": _mobile_route(f"/experiments/{experiment.get('id')}"),
         "icon": "experiment",
         "type_label": "Experiment",
     }
 
 
-def _mobile_general_experiment_card(experiment: dict[str, object]) -> dict[str, object]:
+def _mobile_general_experiment_card(experiment: dict[str, object], user_id: str | None = None) -> dict[str, object]:
     experiment_id = str(experiment.get("experiment_id") or experiment.get("id") or "")
+    service = _general_experiment_service()
+    can_open = service.can_access(user_id or _authorization_service().current_user_id({}), experiment_id, "view")
+    can_edit = service.can_access(user_id or _authorization_service().current_user_id({}), experiment_id, "edit")
+    can_manage = service.can_access(user_id or _authorization_service().current_user_id({}), experiment_id, "manage")
     return {
         "id": experiment_id,
+        "experiment_id": experiment_id,
         "title": experiment.get("title") or experiment_id or "Experiment",
         "human_experiment_id": experiment_id,
+        "owner_id": experiment.get("owner_user_id"),
+        "workspace_id": experiment.get("lab_id"),
         "date": experiment.get("start_date") or experiment.get("created_at"),
         "workflow_stage": str(experiment.get("status") or "Draft").replace("_", " ").title(),
         "key_compounds": [],
@@ -5280,6 +5297,11 @@ def _mobile_general_experiment_card(experiment: dict[str, object]) -> dict[str, 
         "status": experiment.get("status") or "draft",
         "last_activity": experiment.get("updated_at") or experiment.get("created_at"),
         "sort_index": experiment.get("sort_index"),
+        "can_open": can_open,
+        "can_edit": can_edit,
+        "can_delete": can_manage,
+        "can_reorder": can_manage,
+        "capability_reason": None if can_manage else "Manage access required.",
         "route": f"/experiments/{experiment_id}/general-workspace",
         "icon": "experiment",
         "type_label": "Experiment",
@@ -6721,7 +6743,7 @@ def mobile_experiments() -> dict[str, object]:
     user_id = _authorization_service().current_user_id({})
     general_experiments = _general_experiment_service().list_experiments(user_id=user_id, lab_id="lab:demo")
     general_ids = {str(experiment.get("experiment_id") or experiment.get("id") or "") for experiment in general_experiments}
-    general_cards = [_mobile_general_experiment_card(experiment) for experiment in general_experiments]
+    general_cards = [_mobile_general_experiment_card(experiment, user_id=user_id) for experiment in general_experiments]
     legacy_cards = [
         _mobile_experiment_card(store, experiment)
         for experiment in legacy_experiments
@@ -6752,6 +6774,23 @@ def mobile_create_experiment(request: NewExperimentWizardRequest) -> dict[str, o
     """Create a planned experiment from the mobile New Experiment Wizard."""
 
     return _create_experiment_from_wizard(request, mobile=True)
+
+
+@app.post("/mobile/experiments/reorder", tags=["mobile", "experiments"])
+def reorder_mobile_experiments(request_body: ExperimentReorderRequest, request: Request) -> dict[str, object]:
+    service = _general_experiment_service()
+    try:
+        experiments = service.reorder_experiments(_request_user_id(request), request_body.experiment_ids)
+        cards = [_mobile_general_experiment_card(experiment, user_id=_request_user_id(request)) for experiment in experiments]
+        return {"experiments": cards, "count": len(cards)}
+    except ExperimentAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ExperimentValidationError as exc:
+        if "unknown" in str(exc).lower() or "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ExperimentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.get("/mobile/experiments/{experiment_id}", tags=["mobile"])
@@ -9810,6 +9849,21 @@ def attach_protocol_to_experiment(experiment_id: str, request_body: GeneralProto
         raise _general_experiment_http_error(exc)
 
 
+@app.delete("/experiments/{experiment_id}/general", tags=["experiments"])
+def delete_general_experiment(experiment_id: str, request: Request) -> dict[str, object]:
+    service = _general_experiment_service()
+    try:
+        return service.delete_experiment(_request_user_id(request), experiment_id)
+    except ExperimentAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ExperimentValidationError as exc:
+        if "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ExperimentConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @app.put("/experiments/{experiment_id}/general", tags=["experiments"])
 def update_general_experiment(experiment_id: str, request_body: GeneralExperimentUpdateRequest, request: Request) -> dict[str, object]:
     service = _general_experiment_service()
@@ -9826,38 +9880,6 @@ def update_general_experiment(experiment_id: str, request_body: GeneralExperimen
         return {"experiment": experiment, "workspace": workspace}
     except (ExperimentAuthorizationError, ExperimentValidationError, ExperimentConflictError) as exc:
         raise _general_experiment_http_error(exc)
-
-
-@app.delete("/experiments/{experiment_id}/general", tags=["experiments"])
-def delete_general_experiment(experiment_id: str, request: Request) -> dict[str, object]:
-    service = _general_experiment_service()
-    try:
-        return service.delete_experiment(_request_user_id(request), experiment_id)
-    except ExperimentAuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except ExperimentValidationError as exc:
-        if "not found" in str(exc).lower():
-            raise HTTPException(status_code=404, detail=str(exc))
-        raise HTTPException(status_code=400, detail=str(exc))
-    except ExperimentConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-
-
-@app.post("/mobile/experiments/reorder", tags=["mobile", "experiments"])
-def reorder_mobile_experiments(request_body: ExperimentReorderRequest, request: Request) -> dict[str, object]:
-    service = _general_experiment_service()
-    try:
-        experiments = service.reorder_experiments(_request_user_id(request), request_body.experiment_ids)
-        cards = [_mobile_general_experiment_card(experiment) for experiment in experiments]
-        return {"experiments": cards, "count": len(cards)}
-    except ExperimentAuthorizationError as exc:
-        raise HTTPException(status_code=403, detail=str(exc))
-    except ExperimentValidationError as exc:
-        if "unknown" in str(exc).lower() or "not found" in str(exc).lower():
-            raise HTTPException(status_code=404, detail=str(exc))
-        raise HTTPException(status_code=400, detail=str(exc))
-    except ExperimentConflictError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @app.get("/experiments/{experiment_id}/general-workspace", tags=["experiments"])
