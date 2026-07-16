@@ -387,6 +387,76 @@ void main() {
         ['experiment:b', 'experiment:a', 'experiment:c']);
   });
 
+  testWidgets('Move Down from middle sends and keeps exact downward order',
+      (tester) async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/mobile/experiments') {
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                _experimentJson('experiment:a', 'Entry A'),
+                _experimentJson('experiment:b', 'Entry B'),
+                _experimentJson('experiment:c', 'Entry C'),
+                _experimentJson('experiment:d', 'Entry D'),
+              ],
+              'count': 4,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/mobile/experiments/reorder') {
+          final ids = (jsonDecode(request.body)
+              as Map<String, dynamic>)['experiment_ids'] as List<dynamic>;
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                for (final id in ids)
+                  _experimentJson(id as String, _titleForExperimentId(id)),
+              ],
+              'count': ids.length,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200,
+            headers: {'Content-Type': 'application/json'});
+      }),
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Experiment actions').at(1));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Move Down'));
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(find.text('Entry A')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry C')).dy));
+    expect(tester.getTopLeft(find.text('Entry C')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry B')).dy));
+    expect(tester.getTopLeft(find.text('Entry B')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry D')).dy));
+    final reorder = requests.singleWhere(
+      (request) => request.url.path == '/mobile/experiments/reorder',
+    );
+    expect(jsonDecode(reorder.body)['experiment_ids'], [
+      'experiment:a',
+      'experiment:c',
+      'experiment:b',
+      'experiment:d',
+    ]);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Move to Bottom and Move to Top preserve exact target positions',
       (tester) async {
     final requests = <http.Request>[];
@@ -515,6 +585,68 @@ void main() {
         lessThan(tester.getTopLeft(find.text('Entry A')).dy));
   });
 
+  testWidgets('subset canonical reorder response preserves nonreturned rows',
+      (tester) async {
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path == '/mobile/experiments') {
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                _experimentJson('experiment:a', 'Entry A'),
+                _experimentJson('experiment:b', 'Entry B'),
+                _experimentJson(
+                  'experiment:x',
+                  'Fixed Entry',
+                  canReorder: false,
+                ),
+                _experimentJson('experiment:c', 'Entry C'),
+              ],
+              'count': 4,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/mobile/experiments/reorder') {
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                _experimentJson('experiment:b', 'Entry B'),
+                _experimentJson('experiment:a', 'Entry A'),
+                _experimentJson('experiment:c', 'Entry C'),
+              ],
+              'count': 3,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200,
+            headers: {'Content-Type': 'application/json'});
+      }),
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Experiment actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Move Down'));
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(find.text('Entry B')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry A')).dy));
+    expect(tester.getTopLeft(find.text('Entry A')).dy,
+        lessThan(tester.getTopLeft(find.text('Fixed Entry')).dy));
+    expect(tester.getTopLeft(find.text('Fixed Entry')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry C')).dy));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('failed reorder rolls back visible order', (tester) async {
     final api = ResearchOsApi(
       baseUrl: 'http://example.test',
@@ -635,6 +767,7 @@ String _titleForExperimentId(String id) {
     'experiment:a' => 'Entry A',
     'experiment:b' => 'Entry B',
     'experiment:c' => 'Entry C',
+    'experiment:d' => 'Entry D',
     _ => id,
   };
 }

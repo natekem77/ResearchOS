@@ -299,6 +299,36 @@ class GeneralExperimentTests(unittest.TestCase):
             self.assertLess(ids.index(third["experiment_id"]), ids.index(first["experiment_id"]))
             self.assertLess(ids.index(first["experiment_id"]), ids.index(second["experiment_id"]))
 
+    def test_downward_reorder_returns_and_persists_exact_requested_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            first = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry A", experiment_id="experiment:a")
+            second = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry B", experiment_id="experiment:b")
+            third = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry C", experiment_id="experiment:c")
+            fourth = service.create_blank_experiment("user:researcher-a", "lab:demo", "Entry D", experiment_id="experiment:d")
+            requested = [first["experiment_id"], third["experiment_id"], second["experiment_id"], fourth["experiment_id"]]
+
+            returned = service.reorder_experiments("user:researcher-a", requested)
+            relisted = service.list_experiments("user:researcher-a", lab_id="lab:demo")
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                positions = connection.execute(
+                    """
+                    SELECT experiment_id, sort_index
+                    FROM experiment_workspaces
+                    WHERE experiment_id IN ('experiment:a', 'experiment:b', 'experiment:c', 'experiment:d')
+                    ORDER BY sort_index ASC
+                    """,
+                ).fetchall()
+
+        returned_ids = [item["experiment_id"] for item in returned]
+        relisted_ids = [item["experiment_id"] for item in relisted if item["experiment_id"] in requested]
+        position_ids = [row[0] for row in positions]
+        position_values = [row[1] for row in positions]
+        self.assertEqual(returned_ids, requested)
+        self.assertEqual(relisted_ids, requested)
+        self.assertEqual(position_ids, requested)
+        self.assertEqual(len(position_values), len(set(position_values)))
+
     def test_lab_owner_can_reorder_researcher_planned_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

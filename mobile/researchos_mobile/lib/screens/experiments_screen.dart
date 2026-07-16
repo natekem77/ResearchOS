@@ -163,7 +163,8 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
           .toList());
       if (!mounted) return;
       setState(() {
-        _experiments = canonical.isEmpty ? next : canonical;
+        _experiments =
+            canonical.isEmpty ? next : _mergeCanonicalOrder(next, canonical);
         _reordering = false;
       });
       ScaffoldMessenger.of(context).showSnackBar(
@@ -184,6 +185,32 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
   Future<void> _moveExperiment(int index, int targetIndex) async {
     if (targetIndex < 0 || targetIndex >= _experiments.length) return;
     await _commitReorder(index, targetIndex);
+  }
+
+  List<ExperimentCard> _mergeCanonicalOrder(
+    List<ExperimentCard> optimistic,
+    List<ExperimentCard> canonical,
+  ) {
+    final optimisticIds =
+        optimistic.map((item) => item.canonicalExperimentId).toSet();
+    final canonicalIds =
+        canonical.map((item) => item.canonicalExperimentId).toSet();
+    if (canonical.length == optimistic.length &&
+        canonicalIds.length == optimisticIds.length &&
+        canonicalIds.containsAll(optimisticIds)) {
+      return canonical;
+    }
+    final canonicalById = {
+      for (final item in canonical) item.canonicalExperimentId: item,
+    };
+    final canonicalQueue = List<ExperimentCard>.from(canonical);
+    return [
+      for (final item in optimistic)
+        if (canonicalById.containsKey(item.canonicalExperimentId))
+          canonicalQueue.removeAt(0)
+        else
+          item,
+    ];
   }
 
   void _showCapabilityMessage(ExperimentCard experiment) {

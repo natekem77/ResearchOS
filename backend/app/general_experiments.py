@@ -632,7 +632,7 @@ class GeneralExperimentService:
                     """
                     SELECT * FROM experiment_workspaces
                     WHERE lab_id = ? AND archived_at IS NULL
-                    ORDER BY COALESCE(sort_index, 2147483647), updated_at DESC, created_at DESC
+                    ORDER BY COALESCE(sort_index, 2147483647), experiment_id ASC
                     """,
                     (lab_id,),
                 ).fetchall()
@@ -641,7 +641,7 @@ class GeneralExperimentService:
                     """
                     SELECT * FROM experiment_workspaces
                     WHERE archived_at IS NULL
-                    ORDER BY COALESCE(sort_index, 2147483647), updated_at DESC, created_at DESC
+                    ORDER BY COALESCE(sort_index, 2147483647), lab_id ASC, experiment_id ASC
                     """
                 ).fetchall()
         experiments = [_decode(row) for row in rows]
@@ -802,7 +802,16 @@ class GeneralExperimentService:
                 )
             for experiment_id in normalized_ids:
                 self._history(connection, experiment_id, actor_user_id, "experiment.reordered", {"position_count": len(normalized_ids)})
-        return self.list_experiments(actor_user_id, lab_id=target_lab_id)
+            placeholders = ",".join("?" for _ in normalized_ids)
+            rows = connection.execute(
+                f"""
+                SELECT * FROM experiment_workspaces
+                WHERE experiment_id IN ({placeholders}) AND archived_at IS NULL
+                """,
+                normalized_ids,
+            ).fetchall()
+        by_id = {str(row["experiment_id"]): _decode(row) for row in rows}
+        return [by_id[experiment_id] for experiment_id in normalized_ids if experiment_id in by_id]
 
     def add_cohort(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_access(actor_user_id, experiment_id, "edit")
