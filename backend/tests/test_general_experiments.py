@@ -419,6 +419,86 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertNotIn("NK_Expt_A", relisted_ids)
         self.assertIn("NK_Expt_B", relisted_ids)
 
+    def test_ensure_demo_data_is_idempotent_and_preserves_existing_notebook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            notebook = service.get_or_create_notebook("user:researcher-a", "NK_Expt_26")
+            saved = service.save_notebook(
+                "user:researcher-a",
+                notebook["document_id"],
+                notebook["version"],
+                "Researcher-edited demo notebook.",
+                document_format="markdown",
+            )
+
+            service.ensure_demo_data()
+            service.ensure_demo_data()
+            restarted = self._service(tmpdir)
+            reopened = restarted.get_or_create_notebook("user:researcher-a", "NK_Expt_26")
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM experiment_workspaces WHERE experiment_id = 'NK_Expt_26'",
+                ).fetchone()[0]
+
+        self.assertEqual(count, 1)
+        self.assertIn("Researcher-edited demo notebook.", saved["plain_text_cache"])
+        self.assertEqual(reopened["plain_text_cache"], saved["plain_text_cache"])
+
+    def test_service_construction_twice_does_not_duplicate_demo_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._service(tmpdir)
+            self._service(tmpdir)
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM experiment_workspaces WHERE experiment_id = 'NK_Expt_26'",
+                ).fetchone()[0]
+
+        self.assertEqual(count, 1)
+
+    def test_partially_migrated_legacy_experiment_completes_missing_notebook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            store = SQLiteStore(settings=self._settings(tmpdir))
+            store.upsert_experiment(
+                Experiment(
+                    id="legacy-partial-row",
+                    source_document_id="legacy-doc",
+                    source_provider="test",
+                    title="Partial Legacy",
+                    experiment_id="NK_Expt_Partial",
+                    notes="Partial migration notes.",
+                )
+            )
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    """
+                    INSERT INTO experiment_workspaces
+                        (experiment_id, lab_id, owner_user_id, title, status, sample_unit_type, sort_index)
+                    VALUES ('NK_Expt_Partial', 'lab:demo', 'user:pi-owner', 'Partial Legacy', 'active', 'sample', 999)
+                    """
+                )
+
+            canonical = service.resolve_experiment_id("legacy-partial-row")
+            workspace = service.get_workspace("NK_Expt_Partial", "user:pi-owner")
+            service.migrate_legacy_organoid_experiments()
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                workspace_count = connection.execute(
+                    "SELECT COUNT(*) FROM experiment_workspaces WHERE experiment_id = 'NK_Expt_Partial'",
+                ).fetchone()[0]
+                notebook_count = connection.execute(
+                    "SELECT COUNT(*) FROM experiment_notebook_documents WHERE experiment_id = 'NK_Expt_Partial'",
+                ).fetchone()[0]
+                sort_index = connection.execute(
+                    "SELECT sort_index FROM experiment_workspaces WHERE experiment_id = 'NK_Expt_Partial'",
+                ).fetchone()[0]
+
+        assert workspace is not None
+        self.assertEqual(canonical, "NK_Expt_Partial")
+        self.assertEqual(workspace_count, 1)
+        self.assertEqual(notebook_count, 1)
+        self.assertEqual(sort_index, 999)
+        self.assertIn("Partial migration notes.", workspace["notebook"]["plain_text_cache"])
+
     def test_title_is_not_treated_as_experiment_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

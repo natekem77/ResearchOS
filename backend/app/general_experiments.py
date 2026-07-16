@@ -432,20 +432,23 @@ class GeneralExperimentService:
                 {"title": "BMP4 on D6", "description": "Protocol-derived BMP4 event.", "day": 6, "event_type": "treatment", "default_concentration": "Needs protocol confirmation"},
             ],
         )
-        if self.get_workspace("NK_Expt_26", "user:pi-owner") is None:
-            experiment = self.create_blank_experiment(
+        experiment_id = "NK_Expt_26"
+        if not self._workspace_exists(experiment_id):
+            created = self._insert_workspace_if_missing(
                 actor_user_id="user:researcher-a",
                 lab_id="lab:demo",
+                experiment_id=experiment_id,
                 title="NK_Expt_26 generalized SAG timing experiment",
-                experiment_id="NK_Expt_26",
                 short_description="Demo generalized experiment with early and late SAG cohorts.",
+                status="planned",
                 biological_system="retinal organoid",
                 sample_unit_type="organoid",
                 start_date=None,
                 expected_end_day=90,
-                status="planned",
             )
-            experiment_id = experiment["experiment_id"]
+            if not created:
+                self.get_or_create_notebook("user:researcher-a", experiment_id)
+                return
             self.link_protocol("user:researcher-a", experiment_id, protocol["protocol_id"], protocol["current_version_id"], inherit_events=True)
             early = self.add_cohort("user:researcher-a", experiment_id, {"name": "Early treatment cohort on D1", "start_day": 1})
             late = self.add_cohort("user:researcher-a", experiment_id, {"name": "Late treatment cohort on D9", "start_day": 9})
@@ -488,6 +491,8 @@ class GeneralExperimentService:
                 ),
                 document_format="markdown",
             )
+        else:
+            self.get_or_create_notebook("user:pi-owner", experiment_id)
 
     def seed_protocol(self, lab_id: str, title: str, description: str, biological_system: str | None, default_sample_unit: str | None, version_label: str, content: str, created_by: str, events: list[dict[str, Any]]) -> dict[str, Any]:
         protocol_id = f"protocol:{_slug(title)}"
@@ -563,22 +568,57 @@ class GeneralExperimentService:
         self._require_lab_member(actor_user_id, lab_id)
         experiment_id = experiment_id or f"experiment:{uuid.uuid4().hex[:16]}"
         logger.info("Creating general experiment workspace", extra={"experiment_id": experiment_id, "lab_id": lab_id, "user_id": actor_user_id})
-        with self._connect() as connection:
-            next_sort_index = self._next_sort_index(connection, lab_id)
-            connection.execute(
-                """
-                INSERT INTO experiment_workspaces
-                    (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, start_date, nominal_day_zero, expected_end_day, sort_index)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (experiment_id, lab_id, actor_user_id, title, short_description, status, biological_system, sample_unit_type or "sample", start_date, start_date, expected_end_day, next_sort_index),
-            )
-            self._history(connection, experiment_id, actor_user_id, "experiment.created", {"status": status})
+        if self._workspace_exists(experiment_id):
+            raise ExperimentValidationError(f"Experiment already exists: {experiment_id}")
+        created = self._insert_workspace_if_missing(
+            actor_user_id=actor_user_id,
+            lab_id=lab_id,
+            experiment_id=experiment_id,
+            title=title,
+            short_description=short_description,
+            status=status,
+            biological_system=biological_system,
+            sample_unit_type=sample_unit_type or "sample",
+            start_date=start_date,
+            expected_end_day=expected_end_day,
+        )
+        if not created:
+            raise ExperimentValidationError(f"Experiment already exists: {experiment_id}")
         self.get_or_create_notebook(actor_user_id, experiment_id)
         workspace = self.get_workspace(experiment_id, actor_user_id)
         assert workspace is not None
         logger.info("Created general experiment workspace", extra={"experiment_id": experiment_id, "user_id": actor_user_id})
         return workspace["experiment"]
+
+    def _insert_workspace_if_missing(
+        self,
+        *,
+        actor_user_id: str,
+        lab_id: str,
+        experiment_id: str,
+        title: str,
+        short_description: str | None = None,
+        status: str = "draft",
+        biological_system: str | None = None,
+        sample_unit_type: str | None = None,
+        start_date: str | None = None,
+        expected_end_day: int | None = None,
+    ) -> bool:
+        with self._connect() as connection:
+            next_sort_index = self._next_sort_index(connection, lab_id)
+            cursor = connection.execute(
+                """
+                INSERT INTO experiment_workspaces
+                    (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, start_date, nominal_day_zero, expected_end_day, sort_index)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(experiment_id) DO NOTHING
+                """,
+                (experiment_id, lab_id, actor_user_id, title, short_description, status, biological_system, sample_unit_type or "sample", start_date, start_date, expected_end_day, next_sort_index),
+            )
+            created = cursor.rowcount > 0
+            if created:
+                self._history(connection, experiment_id, actor_user_id, "experiment.created", {"status": status})
+            return created
 
     def list_experiments(self, user_id: str, lab_id: str | None = None) -> list[dict[str, Any]]:
         """Return accessible generalized experiment workspaces newest first."""
@@ -1314,6 +1354,14 @@ class GeneralExperimentService:
             row = connection.execute("SELECT * FROM experiment_workspaces WHERE experiment_id = ?", (experiment_id,)).fetchone()
             return _decode(row) if row else None
 
+    def _workspace_exists(self, experiment_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM experiment_workspaces WHERE experiment_id = ?",
+                (experiment_id,),
+            ).fetchone()
+            return row is not None
+
     def resolve_experiment_id(self, identifier: str) -> str | None:
         candidate = str(identifier or "").strip()
         if not candidate:
@@ -1346,7 +1394,9 @@ class GeneralExperimentService:
                     (alias,),
                 ).fetchone()
                 if row:
-                    return str(row["experiment_id"])
+                    resolved_id = str(row["experiment_id"])
+                    self._migrate_legacy_experiment_row(legacy_row)
+                    return resolved_id
         return self._migrate_legacy_experiment_row(legacy_row)
 
     def _migrate_legacy_experiment_row(self, legacy_row: dict[str, Any]) -> str | None:
@@ -1379,12 +1429,13 @@ class GeneralExperimentService:
             ).fetchone()
             if existing is None:
                 sort_index = self._next_sort_index(connection, "lab:demo")
-                connection.execute(
+                cursor = connection.execute(
                     """
                     INSERT INTO experiment_workspaces
                         (experiment_id, lab_id, owner_user_id, title, short_description, status,
                          biological_system, sample_unit_type, sort_index, created_at, updated_at)
                     VALUES (?, 'lab:demo', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(experiment_id) DO NOTHING
                     """,
                     (
                         canonical_id,
@@ -1399,7 +1450,8 @@ class GeneralExperimentService:
                         updated_at,
                     ),
                 )
-                self._history(connection, canonical_id, owner_user_id, "experiment.legacy_migrated", metadata)
+                if cursor.rowcount > 0:
+                    self._history(connection, canonical_id, owner_user_id, "experiment.legacy_migrated", metadata)
             else:
                 existing_payload = _decode(existing)
                 if not existing_payload.get("owner_user_id"):
