@@ -455,6 +455,32 @@ class GeneralExperimentTests(unittest.TestCase):
 
         self.assertEqual(count, 1)
 
+    def test_demo_seed_repairs_existing_workspace_notebook_without_pi_access(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    "UPDATE experiment_workspaces SET owner_user_id = 'user:researcher-b' WHERE experiment_id = 'NK_Expt_26'",
+                )
+                connection.execute("DELETE FROM experiment_notebook_documents WHERE experiment_id = 'NK_Expt_26'")
+                connection.execute(
+                    "UPDATE lab_memberships SET active = 0 WHERE lab_id = 'lab:demo' AND user_id = 'user:pi-owner'",
+                )
+
+            service.ensure_demo_data()
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                notebook = connection.execute(
+                    "SELECT updated_by FROM experiment_notebook_documents WHERE experiment_id = 'NK_Expt_26'",
+                ).fetchone()
+                workspace_count = connection.execute(
+                    "SELECT COUNT(*) FROM experiment_workspaces WHERE experiment_id = 'NK_Expt_26'",
+                ).fetchone()[0]
+
+            self.assertEqual(workspace_count, 1)
+            self.assertIsNotNone(notebook)
+            self.assertEqual(notebook[0], "user:researcher-b")
+            self.assertFalse(service.can_access("user:guest", "NK_Expt_26", "edit"))
+
     def test_partially_migrated_legacy_experiment_completes_missing_notebook(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

@@ -447,7 +447,8 @@ class GeneralExperimentService:
                 expected_end_day=90,
             )
             if not created:
-                self.get_or_create_notebook("user:researcher-a", experiment_id)
+                with self._connect() as connection:
+                    self._get_or_create_notebook_unchecked(connection, experiment_id, "user:researcher-a")
                 return
             self.link_protocol("user:researcher-a", experiment_id, protocol["protocol_id"], protocol["current_version_id"], inherit_events=True)
             early = self.add_cohort("user:researcher-a", experiment_id, {"name": "Early treatment cohort on D1", "start_day": 1})
@@ -477,22 +478,24 @@ class GeneralExperimentService:
                 ("Culture endpoint D90", 90, "endpoint", None),
             ]:
                 self.add_event("user:researcher-a", experiment_id, {"title": title, "day": day, "event_type": event_type, "cohort_id": cohort_id, "applies_to_all_conditions": cohort_id is None})
-            notebook = self.get_or_create_notebook("user:researcher-a", experiment_id)
-            self.save_notebook(
-                "user:researcher-a",
-                notebook["document_id"],
-                current_version=notebook["version"],
-                content=(
-                    "# NK_Expt_26 design\n\n"
-                    "Generalized retinal organoid experiment comparing early D1 and late D9 SAG treatment windows.\n\n"
-                    "## Conditions\n\n"
-                    "- Untreated\n- DMSO control\n- SAG 300 nM\n- SAG 300 nM + GRKi 10 nM\n\n"
-                    "Needs confirmation: likely 1:1000 final dilution for DMSO 1000x.\n"
-                ),
-                document_format="markdown",
-            )
+            with self._connect() as connection:
+                self._get_or_create_notebook_unchecked(
+                    connection,
+                    experiment_id,
+                    "user:researcher-a",
+                    initial_content=(
+                        "# NK_Expt_26 design\n\n"
+                        "Generalized retinal organoid experiment comparing early D1 and late D9 SAG treatment windows.\n\n"
+                        "## Conditions\n\n"
+                        "- Untreated\n- DMSO control\n- SAG 300 nM\n- SAG 300 nM + GRKi 10 nM\n\n"
+                        "Needs confirmation: likely 1:1000 final dilution for DMSO 1000x.\n"
+                    ),
+                )
         else:
-            self.get_or_create_notebook("user:pi-owner", experiment_id)
+            experiment = self._experiment(experiment_id) or {}
+            actor_user_id = str(experiment.get("owner_user_id") or "user:researcher-a")
+            with self._connect() as connection:
+                self._get_or_create_notebook_unchecked(connection, experiment_id, actor_user_id)
 
     def seed_protocol(self, lab_id: str, title: str, description: str, biological_system: str | None, default_sample_unit: str | None, version_label: str, content: str, created_by: str, events: list[dict[str, Any]]) -> dict[str, Any]:
         protocol_id = f"protocol:{_slug(title)}"
@@ -964,34 +967,62 @@ class GeneralExperimentService:
     def get_or_create_notebook(self, user_id: str, experiment_id: str) -> dict[str, Any]:
         self._require_access(user_id, experiment_id, "view")
         with self._connect() as connection:
-            row = connection.execute("SELECT * FROM experiment_notebook_documents WHERE experiment_id = ? ORDER BY version DESC LIMIT 1", (experiment_id,)).fetchone()
-            if row:
-                return self._notebook_payload(connection, dict(row))
-            document_id = f"experiment-notebook:{experiment_id}"
-            experiment = self._experiment(experiment_id) or {}
-            title = str(experiment.get("title") or experiment_id)
-            content = canonical_notebook_delta_json("")
-            connection.execute(
-                """
-                INSERT INTO experiment_notebook_documents
-                    (document_id, experiment_id, title, document_format, content, structured_content,
-                     plain_text_cache, original_format, original_content, migration_version, updated_by)
-                VALUES (?, ?, ?, 'rich_text_delta_json', ?, ?, ?, '', '', ?, ?)
-                """,
-                (
-                    document_id,
-                    experiment_id,
-                    title,
-                    content,
-                    content,
-                    "",
-                    NOTEBOOK_MIGRATION_VERSION,
-                    user_id,
-                ),
-            )
-            row = connection.execute("SELECT * FROM experiment_notebook_documents WHERE document_id = ?", (document_id,)).fetchone()
-            assert row is not None
+            return self._get_or_create_notebook_unchecked(connection, experiment_id, user_id)
+
+    def _get_or_create_notebook_unchecked(
+        self,
+        connection: sqlite3.Connection,
+        experiment_id: str,
+        updated_by: str,
+        initial_content: str = "",
+    ) -> dict[str, Any]:
+        """Create or repair a notebook row from trusted init/migration code.
+
+        Public API paths must use ``get_or_create_notebook`` so authorization
+        remains enforced before reaching this helper.
+        """
+
+        row = connection.execute(
+            "SELECT * FROM experiment_notebook_documents WHERE experiment_id = ? ORDER BY version DESC LIMIT 1",
+            (experiment_id,),
+        ).fetchone()
+        if row:
             return self._notebook_payload(connection, dict(row))
+        document_id = f"experiment-notebook:{experiment_id}"
+        experiment_row = connection.execute(
+            "SELECT title FROM experiment_workspaces WHERE experiment_id = ?",
+            (experiment_id,),
+        ).fetchone()
+        title = str((experiment_row["title"] if experiment_row else None) or experiment_id)
+        content = canonical_notebook_delta_json(initial_content)
+        plain_text = _plain_text_from_document(content, "rich_text_delta_json")
+        connection.execute(
+            """
+            INSERT INTO experiment_notebook_documents
+                (document_id, experiment_id, title, document_format, content, structured_content,
+                 plain_text_cache, original_format, original_content, migration_version, updated_by)
+            VALUES (?, ?, ?, 'rich_text_delta_json', ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(document_id) DO NOTHING
+            """,
+            (
+                document_id,
+                experiment_id,
+                title,
+                content,
+                content,
+                plain_text,
+                "legacy_plain_text" if initial_content else "",
+                initial_content,
+                NOTEBOOK_MIGRATION_VERSION,
+                updated_by,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM experiment_notebook_documents WHERE experiment_id = ? ORDER BY version DESC LIMIT 1",
+            (experiment_id,),
+        ).fetchone()
+        assert row is not None
+        return self._notebook_payload(connection, dict(row))
 
     def save_notebook(self, user_id: str, document_id: str, current_version: int, content: str, document_format: str = "markdown", title: str | None = None) -> dict[str, Any]:
         with self._connect() as connection:
