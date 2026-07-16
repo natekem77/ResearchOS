@@ -6739,15 +6739,29 @@ def mobile_experiments() -> dict[str, object]:
 
     store = SQLiteStore(settings=settings)
     workspace_id = _current_workspace_id()
+    service = _general_experiment_service()
+    service.migrate_legacy_organoid_experiments()
     legacy_experiments = store.list_experiments(workspace_id=workspace_id)
     user_id = _authorization_service().current_user_id({})
-    general_experiments = _general_experiment_service().list_experiments(user_id=user_id, lab_id="lab:demo")
+    general_experiments = service.list_experiments(user_id=user_id, lab_id="lab:demo")
     general_ids = {str(experiment.get("experiment_id") or experiment.get("id") or "") for experiment in general_experiments}
+    migrated_legacy_aliases: set[str] = set()
+    for experiment in legacy_experiments:
+        aliases = {
+            str(experiment.get("id") or ""),
+            str(experiment.get("experiment_id") or ""),
+        }
+        resolved = next((service.resolve_experiment_id(alias) for alias in aliases if alias), None)
+        if resolved:
+            migrated_legacy_aliases.update(alias for alias in aliases if alias)
+            migrated_legacy_aliases.add(resolved)
     general_cards = [_mobile_general_experiment_card(experiment, user_id=user_id) for experiment in general_experiments]
     legacy_cards = [
         _mobile_experiment_card(store, experiment)
         for experiment in legacy_experiments
         if str(experiment.get("experiment_id") or experiment.get("id") or "") not in general_ids
+        and str(experiment.get("experiment_id") or "") not in migrated_legacy_aliases
+        and str(experiment.get("id") or "") not in migrated_legacy_aliases
     ]
     cards = [*general_cards, *legacy_cards]
     if any(card.get("sort_index") is not None for card in general_cards):
@@ -6798,16 +6812,14 @@ def mobile_experiment_detail(experiment_id: str) -> dict[str, object]:
     """Return compact experiment detail for mobile."""
 
     store = SQLiteStore(settings=settings)
-    experiment = store.find_experiment_by_reference(experiment_id)
-    if experiment is None:
-        general_workspace = _general_experiment_service().get_workspace(experiment_id, _authorization_service().current_user_id({}))
-        if general_workspace is None:
-            raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
+    user_id = _authorization_service().current_user_id({})
+    general_workspace = _general_experiment_service().get_workspace(experiment_id, user_id)
+    if general_workspace is not None:
         general_experiment = general_workspace.get("experiment") if isinstance(general_workspace.get("experiment"), dict) else {}
         timeline_events = (general_workspace.get("timeline") or {}).get("events", []) if isinstance(general_workspace.get("timeline"), dict) else []
         attachments = list(general_workspace.get("attachments") or [])
         return {
-            "overview": _mobile_general_experiment_card(general_experiment),
+            "overview": _mobile_general_experiment_card(general_experiment, user_id=user_id),
             "workflow_stage": general_experiment.get("status") or "draft",
             "latest_timeline_events": timeline_events[:5],
             "key_findings": [],
@@ -6817,6 +6829,9 @@ def mobile_experiment_detail(experiment_id: str) -> dict[str, object]:
             "notebook_count": 1 if general_workspace.get("notebook") else 0,
             "quick_actions": ["open_workspace", "attach_file", "ask_copilot"],
         }
+    experiment = store.find_experiment_by_reference(experiment_id)
+    if experiment is None:
+        raise HTTPException(status_code=404, detail=f"Experiment not found: {experiment_id}")
     timeline = _experiment_timeline(store, experiment)
     linked_assets = store.list_assets_for_experiment(experiment)
     statistics_assets = [asset for asset in linked_assets if _asset_has_statistics(asset)]

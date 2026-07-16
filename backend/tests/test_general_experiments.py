@@ -341,6 +341,84 @@ class GeneralExperimentTests(unittest.TestCase):
         self.assertEqual(canonical, "experiment:legacy-canonical")
         self.assertEqual(deleted["experiment_id"], "experiment:legacy-canonical")
 
+    def test_legacy_experiment_migrates_to_notebook_workspace_idempotently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            store = SQLiteStore(settings=self._settings(tmpdir))
+            store.upsert_experiment(
+                Experiment(
+                    id="legacy-row-2",
+                    source_document_id="legacy-doc",
+                    source_provider="test",
+                    title="Legacy Notes",
+                    experiment_id="NK_Expt_Legacy",
+                    cell_line="retinal organoid",
+                    notes="Legacy notebook observations.",
+                    conclusions="Legacy conclusion.",
+                )
+            )
+            store.register_asset(
+                asset_type="image",
+                experiment_id="legacy-row-2",
+                title="Legacy image",
+                filename="legacy.png",
+                provider="local",
+                path="/tmp/legacy.png",
+                asset_id="asset:legacy-image",
+            )
+
+            canonical = service.resolve_experiment_id("legacy-row-2")
+            workspace = service.get_workspace("legacy-row-2", "user:pi-owner")
+            migrated_assets = store.list_assets(experiment_id="NK_Expt_Legacy")
+            first_count = len(service.list_experiments("user:pi-owner", lab_id="lab:demo"))
+            service.migrate_legacy_organoid_experiments()
+            second_count = len(service.list_experiments("user:pi-owner", lab_id="lab:demo"))
+            restarted = self._service(tmpdir)
+            reopened = restarted.get_workspace("NK_Expt_Legacy", "user:pi-owner")
+
+        assert workspace is not None
+        assert reopened is not None
+        self.assertEqual(canonical, "NK_Expt_Legacy")
+        self.assertEqual(workspace["experiment"]["title"], "Legacy Notes")
+        self.assertEqual(workspace["experiment"]["sample_unit_type"], "organoid")
+        self.assertIn("Legacy notebook observations.", workspace["notebook"]["plain_text_cache"])
+        self.assertIn("Legacy conclusion.", workspace["notebook"]["plain_text_cache"])
+        self.assertEqual([asset["asset_id"] for asset in migrated_assets], ["asset:legacy-image"])
+        self.assertEqual(first_count, second_count)
+        self.assertEqual(reopened["notebook"]["plain_text_cache"], workspace["notebook"]["plain_text_cache"])
+
+    def test_legacy_experiment_aliases_can_delete_and_reorder_after_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            store = SQLiteStore(settings=self._settings(tmpdir))
+            for row_id, human_id, title in [
+                ("legacy-row-a", "NK_Expt_A", "Legacy A"),
+                ("legacy-row-b", "NK_Expt_B", "Legacy B"),
+            ]:
+                store.upsert_experiment(
+                    Experiment(
+                        id=row_id,
+                        source_document_id="legacy-doc",
+                        source_provider="test",
+                        title=title,
+                        experiment_id=human_id,
+                    )
+                )
+            service.resolve_experiment_id("legacy-row-a")
+            service.resolve_experiment_id("legacy-row-b")
+
+            reordered = service.reorder_experiments("user:pi-owner", ["legacy-row-b", "legacy-row-a"])
+            deleted = service.delete_experiment("user:pi-owner", "legacy-row-a")
+            restarted = self._service(tmpdir)
+            relisted = restarted.list_experiments("user:pi-owner", lab_id="lab:demo")
+
+        reordered_ids = [item["experiment_id"] for item in reordered]
+        relisted_ids = [item["experiment_id"] for item in relisted]
+        self.assertLess(reordered_ids.index("NK_Expt_B"), reordered_ids.index("NK_Expt_A"))
+        self.assertEqual(deleted["experiment_id"], "NK_Expt_A")
+        self.assertNotIn("NK_Expt_A", relisted_ids)
+        self.assertIn("NK_Expt_B", relisted_ids)
+
     def test_title_is_not_treated_as_experiment_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

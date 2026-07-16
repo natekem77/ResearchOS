@@ -536,32 +536,16 @@ class GeneralExperimentService:
         return self.get_protocol(protocol_id) or {"protocol_id": protocol_id, "current_version_id": version_id}
 
     def migrate_legacy_organoid_experiments(self) -> None:
+        """Compatibility wrapper for older callers/tests.
+
+        Legacy extracted experiment rows are migrated into the notebook-first
+        workspace tables. The source ``experiments`` rows remain available for
+        provenance and alias resolution, but mobile/open/delete/reorder should
+        operate on the generalized workspace after this runs.
+        """
+
         for experiment in self.store.list_experiments():
-            experiment_id = str(experiment.get("experiment_id") or experiment.get("id") or "")
-            if not experiment_id:
-                continue
-            with self._connect() as connection:
-                exists = connection.execute("SELECT 1 FROM experiment_workspaces WHERE experiment_id = ?", (experiment_id,)).fetchone()
-                if exists:
-                    continue
-                biological_system = "retinal organoid" if _mentions_organoid(experiment) else str(experiment.get("cell_line") or "experimental system")
-                sort_index = self._next_sort_index(connection, "lab:demo")
-                connection.execute(
-                    """
-                    INSERT INTO experiment_workspaces
-                        (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, sort_index, created_at, updated_at)
-                    VALUES (?, 'lab:demo', COALESCE(?, 'user:pi-owner'), ?, ?, 'active', ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """,
-                    (
-                        experiment_id,
-                        experiment.get("owner_user_id") or experiment.get("created_by"),
-                        experiment.get("title") or experiment_id,
-                        experiment.get("notes"),
-                        biological_system,
-                        "organoid" if "organoid" in biological_system.lower() else "sample",
-                        sort_index,
-                    ),
-                )
+            self._migrate_legacy_experiment_row(experiment)
 
     def create_blank_experiment(
         self,
@@ -743,6 +727,7 @@ class GeneralExperimentService:
         normalized_ids = [self.resolve_experiment_id(item) or item for item in requested_ids]
         if len(set(normalized_ids)) != len(normalized_ids):
             raise ExperimentValidationError("Duplicate experiment ids are not allowed.")
+        target_lab_id: str | None = None
         with self._connect() as connection:
             placeholders = ",".join("?" for _ in normalized_ids)
             rows = connection.execute(
@@ -758,9 +743,11 @@ class GeneralExperimentService:
             lab_ids = {str(experiment.get("lab_id") or "") for experiment in experiments}
             if len(lab_ids) != 1:
                 raise ExperimentValidationError("Experiments must belong to the same lab.")
-            for experiment_id in normalized_ids:
-                if not self.can_access(actor_user_id, experiment_id, "manage"):
-                    raise ExperimentAuthorizationError("Experiment reorder requires manage access.")
+            target_lab_id = next(iter(lab_ids))
+        for experiment_id in normalized_ids:
+            if not self.can_access(actor_user_id, experiment_id, "manage"):
+                raise ExperimentAuthorizationError("Experiment reorder requires manage access.")
+        with self._connect() as connection:
             for index, experiment_id in enumerate(normalized_ids):
                 connection.execute(
                     """
@@ -772,7 +759,7 @@ class GeneralExperimentService:
                 )
             for experiment_id in normalized_ids:
                 self._history(connection, experiment_id, actor_user_id, "experiment.reordered", {"position_count": len(normalized_ids)})
-        return self.list_experiments(actor_user_id, lab_id=next(iter(lab_ids)))
+        return self.list_experiments(actor_user_id, lab_id=target_lab_id)
 
     def add_cohort(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_access(actor_user_id, experiment_id, "edit")
@@ -1360,28 +1347,155 @@ class GeneralExperimentService:
                 ).fetchone()
                 if row:
                     return str(row["experiment_id"])
-            canonical_id = str(legacy_row.get("experiment_id") or legacy_row.get("id") or "").strip()
-            if not canonical_id:
-                return None
-            biological_system = "retinal organoid" if _mentions_organoid(legacy_row) else str(legacy_row.get("cell_line") or "experimental system")
-            connection.execute(
-                """
-                INSERT INTO experiment_workspaces
-                    (experiment_id, lab_id, owner_user_id, title, short_description, status, biological_system, sample_unit_type, sort_index, created_at, updated_at)
-                VALUES (?, 'lab:demo', COALESCE(?, 'user:pi-owner'), ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """,
-                (
-                    canonical_id,
-                    legacy_row.get("owner_user_id") or legacy_row.get("created_by"),
-                    legacy_row.get("title") or canonical_id,
-                    legacy_row.get("notes"),
-                    legacy_row.get("status") or "active",
-                    biological_system,
-                    "organoid" if "organoid" in biological_system.lower() else "sample",
-                    self._next_sort_index(connection, "lab:demo"),
-                ),
-            )
-            return canonical_id
+        return self._migrate_legacy_experiment_row(legacy_row)
+
+    def _migrate_legacy_experiment_row(self, legacy_row: dict[str, Any]) -> str | None:
+        canonical_id = str(legacy_row.get("experiment_id") or legacy_row.get("id") or "").strip()
+        if not canonical_id:
+            return None
+        legacy_internal_id = str(legacy_row.get("id") or "").strip()
+        title = str(legacy_row.get("title") or canonical_id)
+        notes = str(legacy_row.get("notes") or "").strip()
+        conclusions = str(legacy_row.get("conclusions") or "").strip()
+        notebook_source = "\n\n".join(part for part in [notes, conclusions] if part)
+        biological_system = "retinal organoid" if _mentions_organoid(legacy_row) else str(legacy_row.get("cell_line") or "experimental system")
+        sample_unit_type = "organoid" if "organoid" in biological_system.lower() else "sample"
+        owner_user_id = str(legacy_row.get("owner_user_id") or legacy_row.get("created_by") or "user:pi-owner")
+        created_at = str(legacy_row.get("date") or legacy_row.get("extracted_at") or datetime.now(timezone.utc).isoformat())
+        updated_at = str(legacy_row.get("extracted_at") or legacy_row.get("date") or created_at)
+        status = str(legacy_row.get("status") or "active")
+        metadata = {
+            "legacy_source": "experiments",
+            "legacy_internal_id": legacy_internal_id or None,
+            "source_document_id": legacy_row.get("source_document_id"),
+            "source_provider": legacy_row.get("source_provider"),
+            "human_experiment_id": legacy_row.get("experiment_id"),
+        }
+
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM experiment_workspaces WHERE experiment_id = ?",
+                (canonical_id,),
+            ).fetchone()
+            if existing is None:
+                sort_index = self._next_sort_index(connection, "lab:demo")
+                connection.execute(
+                    """
+                    INSERT INTO experiment_workspaces
+                        (experiment_id, lab_id, owner_user_id, title, short_description, status,
+                         biological_system, sample_unit_type, sort_index, created_at, updated_at)
+                    VALUES (?, 'lab:demo', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        canonical_id,
+                        owner_user_id,
+                        title,
+                        notes or conclusions or None,
+                        status,
+                        biological_system,
+                        sample_unit_type,
+                        sort_index,
+                        created_at,
+                        updated_at,
+                    ),
+                )
+                self._history(connection, canonical_id, owner_user_id, "experiment.legacy_migrated", metadata)
+            else:
+                existing_payload = _decode(existing)
+                if not existing_payload.get("owner_user_id"):
+                    connection.execute(
+                        "UPDATE experiment_workspaces SET owner_user_id = ?, updated_at = COALESCE(updated_at, ?) WHERE experiment_id = ?",
+                        (owner_user_id, updated_at, canonical_id),
+                    )
+
+            document_id = f"experiment-notebook:{canonical_id}"
+            doc = connection.execute(
+                "SELECT * FROM experiment_notebook_documents WHERE experiment_id = ? ORDER BY version DESC LIMIT 1",
+                (canonical_id,),
+            ).fetchone()
+            if doc is None:
+                structured_content = canonical_notebook_delta_json(notebook_source)
+                plain_text = _plain_text_from_document(structured_content, "rich_text_delta_json")
+                connection.execute(
+                    """
+                    INSERT INTO experiment_notebook_documents
+                        (document_id, experiment_id, title, document_format, content, structured_content,
+                         schema_version, original_format, original_content, migration_version,
+                         plain_text_cache, created_at, updated_at, updated_by)
+                    VALUES (?, ?, ?, 'rich_text_delta_json', ?, ?, ?, 'legacy_plain_text',
+                            ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        document_id,
+                        canonical_id,
+                        title,
+                        structured_content,
+                        structured_content,
+                        NOTEBOOK_SCHEMA_VERSION,
+                        notebook_source,
+                        NOTEBOOK_MIGRATION_VERSION,
+                        plain_text,
+                        created_at,
+                        updated_at,
+                        owner_user_id,
+                    ),
+                )
+            else:
+                doc_payload = _decode(doc)
+                canonical = canonical_notebook_delta_json(
+                    content=doc_payload.get("content"),
+                    structured_content=doc_payload.get("structured_content"),
+                    document_format=str(doc_payload.get("document_format") or "markdown"),
+                )
+                plain_text = _plain_text_from_document(canonical, "rich_text_delta_json")
+                needs_repair = (
+                    doc_payload.get("document_format") != "rich_text_delta_json"
+                    or doc_payload.get("content") != canonical
+                    or doc_payload.get("structured_content") != canonical
+                    or doc_payload.get("plain_text_cache") != plain_text
+                    or int(doc_payload.get("migration_version") or 0) < NOTEBOOK_MIGRATION_VERSION
+                )
+                if needs_repair:
+                    connection.execute(
+                        """
+                        UPDATE experiment_notebook_documents
+                        SET document_format = 'rich_text_delta_json',
+                            content = ?,
+                            structured_content = ?,
+                            plain_text_cache = ?,
+                            schema_version = ?,
+                            migration_version = ?,
+                            original_format = COALESCE(original_format, ?),
+                            original_content = COALESCE(original_content, ?)
+                        WHERE document_id = ?
+                        """,
+                        (
+                            canonical,
+                            canonical,
+                            plain_text,
+                            NOTEBOOK_SCHEMA_VERSION,
+                            NOTEBOOK_MIGRATION_VERSION,
+                            str(doc_payload.get("document_format") or "markdown"),
+                            str(doc_payload.get("content") or ""),
+                            doc_payload["document_id"],
+                        ),
+                    )
+            aliases = [alias for alias in {canonical_id, legacy_internal_id} if alias]
+            if aliases:
+                placeholders = ",".join("?" for _ in aliases)
+                connection.execute(
+                    f"""
+                    UPDATE assets
+                    SET experiment_id = ?,
+                        owner_user_id = COALESCE(owner_user_id, ?),
+                        created_by = COALESCE(created_by, ?),
+                        workspace_id = COALESCE(workspace_id, 'workspace:demo-lab'),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE experiment_id IN ({placeholders})
+                    """,
+                    (canonical_id, owner_user_id, owner_user_id, *aliases),
+                )
+        return canonical_id
 
     def _next_sort_index(self, connection: sqlite3.Connection, lab_id: str) -> int:
         row = connection.execute(
