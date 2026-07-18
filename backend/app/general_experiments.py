@@ -770,6 +770,7 @@ class GeneralExperimentService:
         normalized_ids = [self.resolve_experiment_id(item) or item for item in requested_ids]
         if len(set(normalized_ids)) != len(normalized_ids):
             raise ExperimentValidationError("Duplicate experiment ids are not allowed.")
+        logger.info("Experiment reorder received ordered IDs: %s", normalized_ids)
         target_lab_id: str | None = None
         with self._connect() as connection:
             placeholders = ",".join("?" for _ in normalized_ids)
@@ -787,10 +788,21 @@ class GeneralExperimentService:
             if len(lab_ids) != 1:
                 raise ExperimentValidationError("Experiments must belong to the same lab.")
             target_lab_id = next(iter(lab_ids))
+            logger.info(
+                "Experiment reorder DB positions before update: %s",
+                [
+                    {
+                        "experiment_id": experiment.get("experiment_id"),
+                        "sort_index": experiment.get("sort_index"),
+                    }
+                    for experiment in sorted(experiments, key=lambda item: int(item.get("sort_index") or 2147483647))
+                ],
+            )
         for experiment_id in normalized_ids:
             if not self.can_access(actor_user_id, experiment_id, "manage"):
                 raise ExperimentAuthorizationError("Experiment reorder requires manage access.")
         with self._connect() as connection:
+            logger.info("Experiment reorder SQL transaction: sequential UPDATE sort_index by ordered ID list")
             for index, experiment_id in enumerate(normalized_ids):
                 connection.execute(
                     """
@@ -810,8 +822,22 @@ class GeneralExperimentService:
                 """,
                 normalized_ids,
             ).fetchall()
+            after_rows = connection.execute(
+                f"""
+                SELECT experiment_id, sort_index FROM experiment_workspaces
+                WHERE experiment_id IN ({placeholders}) AND archived_at IS NULL
+                ORDER BY sort_index ASC, experiment_id ASC
+                """,
+                normalized_ids,
+            ).fetchall()
+            logger.info(
+                "Experiment reorder DB positions after update: %s",
+                [dict(row) for row in after_rows],
+            )
         by_id = {str(row["experiment_id"]): _decode(row) for row in rows}
-        return [by_id[experiment_id] for experiment_id in normalized_ids if experiment_id in by_id]
+        returned = [by_id[experiment_id] for experiment_id in normalized_ids if experiment_id in by_id]
+        logger.info("Experiment reorder returning canonical order: %s", [item.get("experiment_id") for item in returned])
+        return returned
 
     def add_cohort(self, actor_user_id: str, experiment_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_access(actor_user_id, experiment_id, "edit")
