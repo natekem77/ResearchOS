@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -644,6 +645,90 @@ void main() {
         lessThan(tester.getTopLeft(find.text('Fixed Entry')).dy));
     expect(tester.getTopLeft(find.text('Fixed Entry')).dy,
         lessThan(tester.getTopLeft(find.text('Entry C')).dy));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('stale refresh begun before reorder is ignored', (tester) async {
+    var getCount = 0;
+    final staleRefresh = Completer<http.Response>();
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        if (request.method == 'GET' &&
+            request.url.path == '/mobile/experiments') {
+          getCount += 1;
+          if (getCount == 1) {
+            return http.Response(
+              jsonEncode({
+                'experiments': [
+                  _experimentJson('experiment:a', 'Entry A'),
+                  _experimentJson('experiment:b', 'Entry B'),
+                  _experimentJson('experiment:c', 'Entry C'),
+                  _experimentJson('experiment:d', 'Entry D'),
+                ],
+                'count': 4,
+              }),
+              200,
+              headers: {'Content-Type': 'application/json'},
+            );
+          }
+          return staleRefresh.future;
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/mobile/experiments/reorder') {
+          final ids = (jsonDecode(request.body)
+              as Map<String, dynamic>)['experiment_ids'] as List<dynamic>;
+          return http.Response(
+            jsonEncode({
+              'experiments': [
+                for (final id in ids)
+                  _experimentJson(id as String, _titleForExperimentId(id)),
+              ],
+              'count': ids.length,
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        return http.Response('{}', 200,
+            headers: {'Content-Type': 'application/json'});
+      }),
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    final state = tester.state(find.byType(ExperimentsScreen)) as dynamic;
+    unawaited(state.debugReloadForTest() as Future<void>);
+    await tester.pump();
+    expect(getCount, 2);
+
+    await tester.tap(find.byTooltip('Experiment actions').at(1));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Move Down'));
+    await tester.pumpAndSettle();
+
+    staleRefresh.complete(http.Response(
+      jsonEncode({
+        'experiments': [
+          _experimentJson('experiment:a', 'Entry A'),
+          _experimentJson('experiment:b', 'Entry B'),
+          _experimentJson('experiment:c', 'Entry C'),
+          _experimentJson('experiment:d', 'Entry D'),
+        ],
+        'count': 4,
+      }),
+      200,
+      headers: {'Content-Type': 'application/json'},
+    ));
+    await tester.pumpAndSettle();
+
+    expect(tester.getTopLeft(find.text('Entry A')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry C')).dy));
+    expect(tester.getTopLeft(find.text('Entry C')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry B')).dy));
+    expect(tester.getTopLeft(find.text('Entry B')).dy,
+        lessThan(tester.getTopLeft(find.text('Entry D')).dy));
     expect(tester.takeException(), isNull);
   });
 

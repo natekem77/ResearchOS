@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
@@ -23,6 +24,7 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
   Object? _error;
   List<ExperimentCard> _experiments = const [];
   final Set<String> _deleting = {};
+  var _requestGeneration = 0;
 
   @override
   void initState() {
@@ -31,25 +33,41 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
   }
 
   Future<void> _reload() async {
+    final generation = ++_requestGeneration;
+    _logOrder(
+      'refresh start generation=$generation timestamp=${DateTime.now().toIso8601String()}',
+    );
     setState(() {
-      _loading = true;
+      _loading = _experiments.isEmpty;
       _error = null;
     });
     try {
       final experiments = await widget.api.experiments();
-      if (!mounted) return;
+      _logOrder(
+        'refresh complete generation=$generation timestamp=${DateTime.now().toIso8601String()} order=${_orderIds(experiments)}',
+      );
+      if (!mounted || generation != _requestGeneration) {
+        _logOrder(
+          'refresh ignored generation=$generation latest=$_requestGeneration',
+        );
+        return;
+      }
       setState(() {
         _experiments = experiments;
         _loading = false;
       });
+      _logOrder('refresh applied order=${_orderIds(_experiments)}');
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _requestGeneration) return;
       setState(() {
         _error = error;
         _loading = false;
       });
     }
   }
+
+  @visibleForTesting
+  Future<void> debugReloadForTest() => _reload();
 
   Future<void> _openNewExperiment() async {
     await Navigator.of(context).push(
@@ -136,6 +154,9 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
     if (targetIndex > oldIndex) {
       targetIndex -= 1;
     }
+    _logOrder(
+      'reorder indices oldIndex=$oldIndex rawNewIndex=$newIndex correctedNewIndex=$targetIndex',
+    );
     await _commitReorder(oldIndex, targetIndex);
   }
 
@@ -149,29 +170,47 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
     if (targetIndex < 0 || targetIndex >= _experiments.length) {
       return;
     }
+    final generation = ++_requestGeneration;
+    _logOrder(
+      'reorder start generation=$generation timestamp=${DateTime.now().toIso8601String()} before=${_orderIds(previous)} oldIndex=$oldIndex targetIndex=$targetIndex',
+    );
     final next = List<ExperimentCard>.from(_experiments);
     final item = next.removeAt(oldIndex);
     next.insert(targetIndex, item);
+    final payload = next
+        .where((item) => item.canReorder)
+        .map((item) => item.canonicalExperimentId)
+        .toList();
+    _logOrder('reorder optimistic order=${_orderIds(next)} payload=$payload');
     setState(() {
       _experiments = next;
       _reordering = true;
     });
     try {
-      final canonical = await widget.api.reorderExperiments(next
-          .where((item) => item.canReorder)
-          .map((item) => item.canonicalExperimentId)
-          .toList());
-      if (!mounted) return;
+      _logOrder(
+        'reorder request start generation=$generation timestamp=${DateTime.now().toIso8601String()} payload=$payload',
+      );
+      final canonical = await widget.api.reorderExperiments(payload);
+      _logOrder(
+        'reorder request complete generation=$generation timestamp=${DateTime.now().toIso8601String()} canonical=${_orderIds(canonical)}',
+      );
+      if (!mounted || generation != _requestGeneration) {
+        _logOrder(
+          'reorder response ignored generation=$generation latest=$_requestGeneration',
+        );
+        return;
+      }
       setState(() {
         _experiments =
             canonical.isEmpty ? next : _mergeCanonicalOrder(next, canonical);
         _reordering = false;
       });
+      _logOrder('reorder applied final=${_orderIds(_experiments)}');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Experiment order saved.')),
       );
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _requestGeneration) return;
       setState(() {
         _experiments = previous;
         _reordering = false;
@@ -179,6 +218,16 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Reorder failed: $error')),
       );
+    }
+  }
+
+  List<String> _orderIds(List<ExperimentCard> experiments) {
+    return experiments.map((item) => item.canonicalExperimentId).toList();
+  }
+
+  void _logOrder(String message) {
+    if (kDebugMode) {
+      debugPrint('mundi_experiment_reorder $message');
     }
   }
 
