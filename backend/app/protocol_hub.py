@@ -14,6 +14,7 @@ from typing import Any
 from app.attachment_storage import StoredAttachment
 from app.config import Settings
 from app.general_experiments import GeneralExperimentService, _decode, _slug
+from app.protocol_document_extractor import extract_protocol_document
 from app.protocol_file_storage import ProtocolFileStorage
 from app.storage import SQLiteStore
 
@@ -434,7 +435,19 @@ class ProtocolHubService:
             },
         }
 
-    def create_version(self, actor_user_id: str, protocol_id: str, version_number: str, summary_of_changes: str, content: str, events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    def create_version(
+        self,
+        actor_user_id: str,
+        protocol_id: str,
+        version_number: str,
+        summary_of_changes: str,
+        content: str,
+        events: list[dict[str, Any]] | None = None,
+        materials: list[dict[str, Any]] | None = None,
+        media: list[dict[str, Any]] | None = None,
+        expected_results: list[dict[str, Any]] | None = None,
+        troubleshooting: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         protocol = self.general.get_protocol(protocol_id)
         if protocol is None:
             raise ProtocolHubValidationError("Protocol not found.")
@@ -479,6 +492,15 @@ class ProtocolHubService:
                         event_title,
                     ),
                 )
+            version_id = str(version["protocol_version_id"])
+            for material in materials or []:
+                self._insert_material(connection, version_id, material)
+            for medium in media or []:
+                self._insert_media(connection, version_id, medium)
+            for expected in expected_results or []:
+                self._insert_expected(connection, version_id, expected)
+            for item in troubleshooting or []:
+                self._insert_troubleshooting(connection, version_id, item)
         refreshed = self.general.get_protocol_version(str(version["protocol_version_id"]))
         assert refreshed is not None
         return refreshed | {"summary_of_changes": summary_of_changes}
@@ -708,6 +730,119 @@ class ProtocolHubService:
             proposed_category=proposed_category,
             source_citation=source_citation,
         )
+        return self._create_extraction_draft_record(
+            actor_user_id=actor_user_id,
+            lab_id=lab_id,
+            source_text=source_text,
+            draft=draft,
+            import_id=import_id,
+        )
+
+    def extract_uploaded_protocol_document(
+        self,
+        *,
+        actor_user_id: str,
+        protocol_id: str,
+        import_id: str | None = None,
+    ) -> dict[str, Any]:
+        protocol = self.get_protocol(protocol_id)
+        if protocol is None:
+            raise ProtocolHubValidationError("Protocol not found.")
+        imports = self.imports_for_protocol(protocol_id)
+        if import_id:
+            imports = [item for item in imports if item.get("import_id") == import_id]
+        if not imports:
+            raise ProtocolHubValidationError("Protocol has no uploaded source document to extract.")
+        imported = imports[0]
+        path = self.import_file_path(str(imported["import_id"]))
+        extracted = extract_protocol_document(
+            path,
+            filename=str(imported.get("original_filename") or path.name),
+            mime_type=str(imported.get("mime_type") or ""),
+        )
+        source_text = extracted.text.strip()
+        if not source_text:
+            source_text = (
+                f"OCR required for {imported.get('original_filename') or 'uploaded protocol document'}. "
+                "No embedded text could be extracted."
+            )
+        draft = self._extract_protocol_draft(
+            source_text=source_text,
+            origin="document",
+            proposed_title=str(protocol.get("title") or ""),
+            proposed_category=str(protocol.get("category") or ""),
+            source_citation=str(imported.get("original_filename") or ""),
+        )
+        draft["warnings"] = [
+            *list(draft.get("warnings") or []),
+            *extracted.warnings,
+        ]
+        draft["extraction_evidence"] = {
+            **dict(draft.get("extraction_evidence") or {}),
+            "source_document": {
+                "import_id": imported.get("import_id"),
+                "original_filename": imported.get("original_filename"),
+                "mime_type": imported.get("mime_type"),
+                "parser_version": "deterministic-protocol-document-v1",
+                "source_type": extracted.source_type,
+                "metadata": extracted.metadata,
+                "tables": extracted.tables,
+                "confidence": "high" if extracted.text.strip() else "unknown",
+            },
+        }
+        confidence = dict(draft.get("confidence_by_field") or {})
+        confidence["source_document"] = "high" if extracted.text.strip() else "unknown"
+        draft["confidence_by_field"] = confidence
+        return self._create_extraction_draft_record(
+            actor_user_id=actor_user_id,
+            lab_id=str(protocol.get("lab_id") or "lab:demo"),
+            source_text=source_text,
+            draft=draft,
+            import_id=str(imported["import_id"]),
+            protocol_id=protocol_id,
+        )
+
+    def latest_extraction_for_protocol(self, protocol_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM protocol_extraction_drafts
+                WHERE protocol_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (protocol_id,),
+            ).fetchone()
+            return self._decode_draft_row(row) if row else None
+
+    def update_extraction_for_protocol(self, protocol_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        draft = self.latest_extraction_for_protocol(protocol_id)
+        if draft is None:
+            raise ProtocolHubValidationError("Protocol extraction draft not found.")
+        return self.update_extraction_draft(str(draft["extraction_id"]), updates)
+
+    def approve_extraction_for_protocol(self, actor_user_id: str, protocol_id: str, version_label: str, confirmed: bool) -> dict[str, Any]:
+        draft = self.latest_extraction_for_protocol(protocol_id)
+        if draft is None:
+            raise ProtocolHubValidationError("Protocol extraction draft not found.")
+        return self.approve_extraction_draft(
+            actor_user_id=actor_user_id,
+            extraction_id=str(draft["extraction_id"]),
+            version_label=version_label,
+            confirmed=confirmed,
+            target_protocol_id=protocol_id,
+        )
+
+    def _create_extraction_draft_record(
+        self,
+        *,
+        actor_user_id: str,
+        lab_id: str,
+        source_text: str,
+        draft: dict[str, Any],
+        import_id: str | None = None,
+        protocol_id: str | None = None,
+    ) -> dict[str, Any]:
         extraction_id = f"protocol-extraction:{uuid.uuid4().hex[:16]}"
         with self._connect() as connection:
             connection.execute(
@@ -719,11 +854,12 @@ class ProtocolHubService:
                      proposed_expected_results_json, proposed_qc_json, proposed_troubleshooting_json,
                      proposed_references_json, ambiguities_json, warnings_json, confidence_by_field_json,
                      extraction_evidence_json, status, created_by)
-                VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_review', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'awaiting_review', ?)
                 """,
                 (
                     extraction_id,
                     import_id,
+                    protocol_id,
                     lab_id,
                     source_text,
                     draft["proposed_title"],
@@ -823,13 +959,26 @@ class ProtocolHubService:
         if not source_text.strip() and not events:
             raise ProtocolHubValidationError("Approval requires narrative content or at least one structured event.")
         if target_protocol_id:
+            target_protocol = self.general.get_protocol(target_protocol_id)
+            if target_protocol is None:
+                raise ProtocolHubValidationError("Protocol not found.")
+            workspace = self.version_workspace(str(target_protocol["current_version_id"]))
+            merged_events = _merge_named_items(workspace["timeline"], events, "title")
+            merged_materials = _merge_named_items(workspace["materials"], list(draft.get("proposed_materials") or []), "name")
+            merged_media = _merge_named_items(workspace["media"], list(draft.get("proposed_media") or []), "recipe")
+            merged_expected = _merge_named_items(workspace["expected_results"], list(draft.get("proposed_expected_results") or []), "title")
+            merged_troubleshooting = _merge_named_items(workspace["troubleshooting"], list(draft.get("proposed_troubleshooting") or []), "issue")
             version = self.create_version(
                 actor_user_id=actor_user_id,
                 protocol_id=target_protocol_id,
                 version_number=version_label.strip(),
                 summary_of_changes="Created from reviewed protocol import draft.",
                 content=source_text,
-                events=events,
+                events=merged_events,
+                materials=merged_materials,
+                media=merged_media,
+                expected_results=merged_expected,
+                troubleshooting=merged_troubleshooting,
             )
             protocol = self.get_protocol(target_protocol_id)
         else:
@@ -1131,6 +1280,18 @@ class ProtocolHubService:
         if duration:
             evidence["proposed_duration"] = {"confidence": "medium", "origin": origin, "excerpt": duration}
             confidence["proposed_duration"] = "medium"
+        materials = self._extract_materials(text, origin)
+        media = self._extract_media(text, origin)
+        expected_results = self._extract_expected_results(text, origin)
+        qc = self._extract_qc(text, origin)
+        troubleshooting = self._extract_troubleshooting(text, origin)
+        unclassified = self._unclassified_notes(text)
+        if unclassified:
+            evidence["unclassified_notes"] = {
+                "confidence": "low",
+                "origin": origin,
+                "items": unclassified[:20],
+            }
         ambiguities = []
         warnings = ["Extracted fields are proposals and require researcher review before approval."]
         if not title:
@@ -1150,12 +1311,12 @@ class ProtocolHubService:
             "proposed_sample_unit": sample_unit,
             "proposed_duration": duration,
             "proposed_events": events,
-            "proposed_materials": self._extract_materials(text, origin),
-            "proposed_media": [],
+            "proposed_materials": materials,
+            "proposed_media": media,
             "proposed_equipment": [],
-            "proposed_expected_results": [],
-            "proposed_qc": [],
-            "proposed_troubleshooting": [],
+            "proposed_expected_results": expected_results,
+            "proposed_qc": qc,
+            "proposed_troubleshooting": troubleshooting,
             "proposed_references": refs,
             "ambiguities": ambiguities,
             "warnings": warnings,
@@ -1202,6 +1363,8 @@ class ProtocolHubService:
                     "confidence": "medium",
                     "origin": origin,
                     "source_excerpt": excerpt,
+                    "source_location": "source text",
+                    "draft_status": "proposed",
                 }
             )
         return events
@@ -1239,20 +1402,148 @@ class ProtocolHubService:
     def _extract_materials(self, text: str, origin: str) -> list[dict[str, Any]]:
         lower = text.lower()
         materials: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for name in ["BMP4", "SAG", "DMSO", "GRKi"]:
             if name.lower() in lower:
                 excerpt = self._excerpt_around(text, name)
+                seen.add(name.lower())
                 materials.append(
                     {
                         "name": name,
                         "required": True,
+                        "concentration": _first_concentration(excerpt),
                         "notes": "Mentioned in source text; vendor, catalog number, lot, and concentration require review.",
                         "confidence": "medium",
                         "origin": origin,
                         "source_excerpt": excerpt,
+                        "source_location": "source text",
+                        "draft_status": "proposed",
                     }
                 )
+        for line in self._section_lines(text, {"materials", "material", "reagents", "reagent", "supplies"}):
+            name = _material_name_from_line(line)
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            materials.append(
+                {
+                    "name": name,
+                    "catalog_number": _first_catalog_number(line),
+                    "concentration": _first_concentration(line),
+                    "required": True,
+                    "notes": line,
+                    "confidence": "medium" if _first_concentration(line) or _first_catalog_number(line) else "low",
+                    "origin": origin,
+                    "source_excerpt": line,
+                    "source_location": "materials/reagents section",
+                    "draft_status": "proposed",
+                }
+            )
         return materials
+
+    def _extract_media(self, text: str, origin: str) -> list[dict[str, Any]]:
+        media: list[dict[str, Any]] = []
+        for line in self._section_lines(text, {"media", "medium", "media recipe", "recipes"}):
+            if not line.strip():
+                continue
+            media.append(
+                {
+                    "recipe": line[:80],
+                    "components": [],
+                    "preparation": line,
+                    "storage": _storage_from_line(line),
+                    "media_change_schedule": line if re.search(r"\b(feed|change|media change)\b", line, re.I) else None,
+                    "confidence": "low",
+                    "origin": origin,
+                    "source_excerpt": line,
+                    "source_location": "media section",
+                    "draft_status": "proposed",
+                }
+            )
+        return media
+
+    def _extract_expected_results(self, text: str, origin: str) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        lines = self._section_lines(text, {"expected results", "results", "expected outcome", "morphology"})
+        for line in lines:
+            results.append(
+                {
+                    "title": line[:80],
+                    "description": line,
+                    "day": _first_day(line),
+                    "confidence": "low",
+                    "origin": origin,
+                    "source_excerpt": line,
+                    "source_location": "expected results section",
+                    "draft_status": "proposed",
+                }
+            )
+        return results
+
+    def _extract_qc(self, text: str, origin: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for line in self._section_lines(text, {"qc", "quality control", "checkpoint", "acceptance criteria"}):
+            items.append(
+                {
+                    "title": line[:80],
+                    "description": line,
+                    "day": _first_day(line),
+                    "confidence": "low",
+                    "origin": origin,
+                    "source_excerpt": line,
+                    "source_location": "qc section",
+                    "draft_status": "proposed",
+                }
+            )
+        return items
+
+    def _extract_troubleshooting(self, text: str, origin: str) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for line in self._section_lines(text, {"troubleshooting", "problems", "problem", "failure"}):
+            items.append(
+                {
+                    "issue": line[:80],
+                    "possible_causes": [],
+                    "possible_solutions": [line] if re.search(r"\b(try|use|increase|decrease|replace|check)\b", line, re.I) else [],
+                    "confidence": "low",
+                    "origin": origin,
+                    "source_excerpt": line,
+                    "source_location": "troubleshooting section",
+                    "draft_status": "proposed",
+                }
+            )
+        return items
+
+    def _section_lines(self, text: str, headings: set[str]) -> list[str]:
+        lines = [line.strip().strip("#:") for line in text.splitlines()]
+        selected: list[str] = []
+        active = False
+        for line in lines:
+            if not line:
+                continue
+            normalized = re.sub(r"^\d+[\).]\s*", "", line).strip().lower()
+            is_heading = len(normalized) <= 48 and any(normalized == heading or normalized.startswith(f"{heading}:") for heading in headings)
+            if is_heading:
+                active = True
+                remainder = line.split(":", 1)[1].strip() if ":" in line else ""
+                if remainder:
+                    selected.append(remainder)
+                continue
+            if active and len(normalized) <= 48 and re.match(r"^[A-Z][A-Za-z /&-]+$", line):
+                active = False
+            if active:
+                selected.append(line)
+        return selected
+
+    def _unclassified_notes(self, text: str) -> list[str]:
+        notes: list[str] = []
+        for line in [line.strip() for line in text.splitlines() if line.strip()]:
+            lower = line.lower()
+            if re.search(r"\b(day|d\d+|materials?|reagents?|media|qc|troubleshoot|expected)\b", lower):
+                continue
+            if len(line) > 20:
+                notes.append(line)
+        return notes
 
     def _sentence_for_index(self, text: str, index: int) -> str:
         start_candidates = [text.rfind(".", 0, index), text.rfind("\n", 0, index), text.rfind(";", 0, index)]
@@ -1398,6 +1689,55 @@ def _compare_named_lists(left: list[dict[str, Any]], right: list[dict[str, Any]]
         "left_only": sorted(left_names - right_names),
         "right_only": sorted(right_names - left_names),
     }
+
+
+def _merge_named_items(existing: list[dict[str, Any]], proposed: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = [dict(item) for item in existing]
+    seen = {str(item.get(key) or "").strip().lower() for item in merged if str(item.get(key) or "").strip()}
+    for item in proposed:
+        name = str(item.get(key) or "").strip().lower()
+        if name and name in seen:
+            continue
+        merged.append(dict(item))
+        if name:
+            seen.add(name)
+    return merged
+
+
+def _first_concentration(text: str) -> str | None:
+    match = re.search(
+        r"\b\d+(?:\.\d+)?\s*(?:nM|uM|µM|mM|M|ng/mL|ug/mL|µg/mL|mg/mL|%|x|X)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return match.group(0) if match else None
+
+
+def _first_catalog_number(text: str) -> str | None:
+    match = re.search(r"\b(?:cat(?:alog)?\.?\s*#?|SKU)\s*[:#]?\s*([A-Za-z0-9._-]+)", text, flags=re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def _first_day(text: str) -> int | None:
+    match = re.search(r"\bD(?:ay\s*)?(\d{1,3})\b", text, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _material_name_from_line(line: str) -> str:
+    cleaned = re.sub(r"^[-*•\d\).]+\s*", "", line.strip())
+    if not cleaned:
+        return ""
+    for separator in ["\t", ",", ";", " - ", ":"]:
+        if separator in cleaned:
+            cleaned = cleaned.split(separator, 1)[0].strip()
+            break
+    cleaned = re.sub(r"\s{2,}.*$", "", cleaned)
+    return cleaned[:80]
+
+
+def _storage_from_line(line: str) -> str | None:
+    match = re.search(r"\b(?:store|storage|keep)\b.*", line, flags=re.IGNORECASE)
+    return match.group(0)[:160] if match else None
 
 
 def _timestamp_sql_value(status: str) -> str | None:

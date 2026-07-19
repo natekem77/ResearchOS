@@ -1022,10 +1022,12 @@ class ProtocolDraftReviewScreen extends StatefulWidget {
     super.key,
     required this.api,
     required this.draft,
+    this.targetProtocolId,
   });
 
   final ResearchOsApi api;
   final Map<String, dynamic> draft;
+  final String? targetProtocolId;
 
   @override
   State<ProtocolDraftReviewScreen> createState() =>
@@ -1047,11 +1049,19 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
     if (!_confirmed || _approving) return;
     setState(() => _approving = true);
     try {
-      await widget.api.approveProtocolHubDraft(
-        extractionId: _text(widget.draft['extraction_id']),
-        versionLabel: _version.text,
-        confirmed: _confirmed,
-      );
+      if (widget.targetProtocolId == null) {
+        await widget.api.approveProtocolHubDraft(
+          extractionId: _text(widget.draft['extraction_id']),
+          versionLabel: _version.text,
+          confirmed: _confirmed,
+        );
+      } else {
+        await widget.api.approveProtocolHubExtraction(
+          protocolId: widget.targetProtocolId!,
+          versionLabel: _version.text,
+          confirmed: _confirmed,
+        );
+      }
       if (mounted) Navigator.pop(context, true);
     } catch (error) {
       if (mounted) {
@@ -1067,6 +1077,10 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
   Widget build(BuildContext context) {
     final events = _maps(widget.draft['proposed_events']);
     final materials = _maps(widget.draft['proposed_materials']);
+    final media = _maps(widget.draft['proposed_media']);
+    final expected = _maps(widget.draft['proposed_expected_results']);
+    final qc = _maps(widget.draft['proposed_qc']);
+    final troubleshooting = _maps(widget.draft['proposed_troubleshooting']);
     final questions = _maps(widget.draft['clarification_questions']);
     final warnings = _list(widget.draft['warnings']);
     final ambiguities = _list(widget.draft['ambiguities']);
@@ -1140,10 +1154,15 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
                   ),
               ],
             ),
-            const _ReviewListSection(
+            _ReviewListSection(
               title: 'Media',
               icon: Icons.local_drink_outlined,
-              items: [],
+              items: media
+                  .map((item) => [
+                        _text(item['recipe'], fallback: 'Media recipe'),
+                        _text(item['preparation']),
+                      ].where((value) => value.isNotEmpty).join(' — '))
+                  .toList(),
               empty: 'No proposed media details. Unknown remains unknown.',
             ),
             const _ReviewListSection(
@@ -1152,17 +1171,25 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
               items: [],
               empty: 'No proposed equipment details.',
             ),
-            const _ReviewListSection(
+            _ReviewListSection(
               title: 'Expected Results and QC',
               icon: Icons.fact_check_outlined,
-              items: [],
+              items: [
+                ...expected.map((item) =>
+                    _text(item['title'], fallback: _text(item['description']))),
+                ...qc.map((item) =>
+                    _text(item['title'], fallback: _text(item['description']))),
+              ],
               empty:
                   'No expected results were inferred. Add source-supported details before approval if needed.',
             ),
-            const _ReviewListSection(
+            _ReviewListSection(
               title: 'Troubleshooting',
               icon: Icons.build_circle_outlined,
-              items: [],
+              items: troubleshooting
+                  .map((item) => _text(item['issue'],
+                      fallback: _text(item['recommended_action'])))
+                  .toList(),
               empty: 'No troubleshooting entries were inferred.',
             ),
             _ReviewListSection(
@@ -1277,6 +1304,7 @@ class ProtocolHubDetailScreen extends StatefulWidget {
 class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
   late Future<Map<String, dynamic>> _future;
   String? _selectedVersionId;
+  String? _extractingImportId;
 
   @override
   void initState() {
@@ -1288,6 +1316,38 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
     setState(() {
       _future = widget.api.protocolHubProtocol(widget.protocolId);
     });
+  }
+
+  Future<void> _extractProtocol(Map<String, dynamic> document) async {
+    final importId = _text(document['import_id'],
+        fallback: _text(document['attachment_id']));
+    if (importId.isEmpty || _extractingImportId != null) return;
+    setState(() => _extractingImportId = importId);
+    try {
+      final response = await widget.api.extractProtocolHubProtocol(
+        protocolId: widget.protocolId,
+        importId: importId,
+      );
+      if (!mounted) return;
+      final draft = _map(response['draft']);
+      final approved = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => ProtocolDraftReviewScreen(
+            api: widget.api,
+            draft: draft,
+            targetProtocolId: widget.protocolId,
+          ),
+        ),
+      );
+      if (approved == true) _reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Extraction failed: $error')),
+      );
+    } finally {
+      if (mounted) setState(() => _extractingImportId = null);
+    }
   }
 
   @override
@@ -1342,6 +1402,8 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
                     _ProtocolSourceDocumentsSection(
                       api: widget.api,
                       documents: _maps(protocol['source_documents']),
+                      extractingImportId: _extractingImportId,
+                      onExtract: _extractProtocol,
                     ),
                     if (versions.isNotEmpty)
                       ResearchOsCard(
@@ -1476,10 +1538,14 @@ class _ProtocolSourceDocumentsSection extends StatelessWidget {
   const _ProtocolSourceDocumentsSection({
     required this.api,
     required this.documents,
+    required this.onExtract,
+    this.extractingImportId,
   });
 
   final ResearchOsApi api;
   final List<Map<String, dynamic>> documents;
+  final ValueChanged<Map<String, dynamic>> onExtract;
+  final String? extractingImportId;
 
   @override
   Widget build(BuildContext context) {
@@ -1490,17 +1556,69 @@ class _ProtocolSourceDocumentsSection extends StatelessWidget {
       empty: '',
       children: [
         for (final document in documents)
-          ResearchOsInfoCard(
-            title: _text(document['original_filename'],
-                fallback: 'Protocol source document'),
-            subtitle: [
-              _text(document['mime_type']),
-              _formatProtocolBytes(document['size_bytes']),
-              _text(document['upload_status'], fallback: 'uploaded'),
-            ].where((item) => item.isNotEmpty).join('\n'),
-            icon: _protocolFileIcon(_text(document['attachment_type'])),
-            onTap: () => _openProtocolImport(context, api, document),
-            trailing: const Icon(Icons.open_in_new),
+          ResearchOsCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(_protocolFileIcon(_text(document['attachment_type'])),
+                        color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: ResearchOsSpacing.sm),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _text(document['original_filename'],
+                                fallback: 'Protocol source document'),
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: ResearchOsSpacing.xs),
+                          Text([
+                            _text(document['mime_type']),
+                            _formatProtocolBytes(document['size_bytes']),
+                            _text(document['upload_status'],
+                                fallback: 'uploaded'),
+                          ].where((item) => item.isNotEmpty).join('\n')),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Open source document',
+                      onPressed: () =>
+                          _openProtocolImport(context, api, document),
+                      icon: const Icon(Icons.open_in_new),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: ResearchOsSpacing.sm),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: extractingImportId == null
+                        ? () => onExtract(document)
+                        : null,
+                    icon: extractingImportId ==
+                            _text(document['import_id'],
+                                fallback: _text(document['attachment_id']))
+                        ? const SizedBox.square(
+                            dimension: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.auto_fix_high_outlined),
+                    label: Text(
+                      extractingImportId ==
+                              _text(document['import_id'],
+                                  fallback: _text(document['attachment_id']))
+                          ? 'Extracting...'
+                          : 'Extract Protocol',
+                    ),
+                  ),
+                ),
+              ],
+            ),
           ),
       ],
     );

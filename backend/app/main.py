@@ -616,6 +616,10 @@ class ProtocolHubDraftApproveRequest(BaseModel):
     target_protocol_id: str | None = None
 
 
+class ProtocolHubExtractRequest(BaseModel):
+    import_id: str | None = None
+
+
 class ProtocolNotebookSaveRequest(BaseModel):
     current_version: int
     content: str
@@ -9693,6 +9697,63 @@ def protocol_hub_protocol(protocol_id: str) -> dict[str, object]:
     if protocol is None:
         raise HTTPException(status_code=404, detail="Protocol not found.")
     return protocol
+
+
+@app.post("/mobile/protocols/{protocol_id}/extract", tags=["mobile", "protocol-hub"])
+def extract_mobile_protocol(
+    protocol_id: str,
+    request_body: ProtocolHubExtractRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        draft = _protocol_hub_service().extract_uploaded_protocol_document(
+            actor_user_id=_request_user_id(request),
+            protocol_id=protocol_id,
+            import_id=request_body.import_id,
+        )
+        return {"status": "extraction_complete", "draft": draft}
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.get("/mobile/protocols/{protocol_id}/extraction", tags=["mobile", "protocol-hub"])
+def mobile_protocol_extraction(protocol_id: str) -> dict[str, object]:
+    draft = _protocol_hub_service().latest_extraction_for_protocol(protocol_id)
+    if draft is None:
+        raise HTTPException(status_code=404, detail="Protocol extraction draft not found.")
+    return {"status": draft.get("status") or "draft", "draft": draft}
+
+
+@app.put("/mobile/protocols/{protocol_id}/extraction/draft", tags=["mobile", "protocol-hub"])
+def update_mobile_protocol_extraction(
+    protocol_id: str,
+    request_body: ProtocolHubDraftUpdateRequest,
+) -> dict[str, object]:
+    try:
+        draft = _protocol_hub_service().update_extraction_for_protocol(
+            protocol_id,
+            {key: value for key, value in request_body.model_dump().items() if value is not None},
+        )
+        return {"status": draft.get("status") or "draft", "draft": draft}
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/mobile/protocols/{protocol_id}/extraction/approve", tags=["mobile", "protocol-hub"])
+def approve_mobile_protocol_extraction(
+    protocol_id: str,
+    request_body: ProtocolHubDraftApproveRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().approve_extraction_for_protocol(
+            actor_user_id=_request_user_id(request),
+            protocol_id=protocol_id,
+            version_label=request_body.version_label,
+            confirmed=request_body.confirmed,
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
 
 
 @app.get("/protocol-hub/imports/{import_id}/download", tags=["protocol-hub"])

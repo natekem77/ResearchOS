@@ -4,12 +4,35 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from app.attachment_storage import AttachmentStorageError
 from app.config import Settings
 from app.general_experiments import GeneralExperimentService
 from app.protocol_hub import ProtocolHubService
+
+
+def _docx_bytes(*, paragraphs: list[str], table_rows: list[list[str]]) -> bytes:
+    from io import BytesIO
+
+    def paragraph(text: str) -> str:
+        return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+    rows = []
+    for row in table_rows:
+        cells = "".join(f"<w:tc><w:p><w:r><w:t>{cell}</w:t></w:r></w:p></w:tc>" for cell in row)
+        rows.append(f"<w:tr>{cells}</w:tr>")
+    body = "".join(paragraph(text) for text in paragraphs) + f"<w:tbl>{''.join(rows)}</w:tbl>"
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body></w:document>"
+    )
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("word/document.xml", document)
+    return buffer.getvalue()
 
 
 class ProtocolHubTests(unittest.TestCase):
@@ -241,6 +264,98 @@ class ProtocolHubTests(unittest.TestCase):
         self.assertEqual(first["source_document"]["attachment_type"], "docx")
         self.assertEqual(second["source_documents"][0]["original_filename"], "Protocol Source.docx")
         self.assertEqual(second["source_documents"][0]["checksum"], uploaded["attachment"]["checksum"])
+
+    def test_uploaded_docx_extracts_paragraphs_tables_and_requires_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="PLSR protocol v1 copy.docx",
+                data=_docx_bytes(
+                    paragraphs=[
+                        "PLSR protocol v1",
+                        "Timeline",
+                        "Day 0 seed cells.",
+                        "Day 2 change media.",
+                        "Materials",
+                    ],
+                    table_rows=[
+                        ["Reagent", "Concentration"],
+                        ["BMP4", "10 ng/mL"],
+                        ["Matrigel", "1x"],
+                    ],
+                ),
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            protocol_id = uploaded["protocol"]["protocol_id"]
+            draft = service.extract_uploaded_protocol_document(
+                actor_user_id="user:researcher-a",
+                protocol_id=protocol_id,
+            )
+            before_approval = service.get_protocol(protocol_id)
+            approved = service.approve_extraction_for_protocol(
+                actor_user_id="user:researcher-a",
+                protocol_id=protocol_id,
+                version_label="extracted-review-1",
+                confirmed=True,
+            )
+            after_approval = service.get_protocol(protocol_id)
+
+        assert before_approval is not None
+        assert after_approval is not None
+        self.assertEqual(draft["status"], "awaiting_review")
+        self.assertTrue(any(event["relative_day"] == 0 for event in draft["proposed_events"]))
+        self.assertTrue(any(material["name"] == "BMP4" for material in draft["proposed_materials"]))
+        self.assertEqual(draft["extraction_evidence"]["source_document"]["parser_version"], "deterministic-protocol-document-v1")
+        self.assertEqual(draft["extraction_evidence"]["source_document"]["metadata"]["table_count"], 1)
+        self.assertFalse(before_approval["workspace"]["materials"])
+        self.assertTrue(any(material["name"] == "BMP4" for material in after_approval["workspace"]["materials"]))
+        self.assertEqual(approved["draft"]["status"], "approved")
+
+    def test_image_only_pdf_reports_ocr_required(self) -> None:
+        from pypdf import PdfWriter
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = Path(tmpdir) / "image_only.pdf"
+            writer = PdfWriter()
+            writer.add_blank_page(width=72, height=72)
+            with pdf_path.open("wb") as handle:
+                writer.write(handle)
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="image_only.pdf",
+                data=pdf_path.read_bytes(),
+                mime_type="application/pdf",
+            )
+            draft = service.extract_uploaded_protocol_document(
+                actor_user_id="user:researcher-a",
+                protocol_id=uploaded["protocol"]["protocol_id"],
+            )
+
+        self.assertTrue(any("OCR is required" in warning for warning in draft["warnings"]))
+        self.assertEqual(draft["extraction_evidence"]["source_document"]["metadata"]["ocr_required"], True)
+
+    def test_csv_extraction_preserves_table_source_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="materials.csv",
+                data=b"Material,Concentration\nSAG,300 nM\nDMSO,1x\n",
+                mime_type="text/csv",
+            )
+            draft = service.extract_uploaded_protocol_document(
+                actor_user_id="user:researcher-a",
+                protocol_id=uploaded["protocol"]["protocol_id"],
+            )
+
+        tables = draft["extraction_evidence"]["source_document"]["tables"]
+        self.assertEqual(tables[0]["rows"][1], ["SAG", "300 nM"])
+        self.assertTrue(any(material["name"] == "SAG" for material in draft["proposed_materials"]))
 
     def test_protocol_upload_rejects_unsupported_or_oversized_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

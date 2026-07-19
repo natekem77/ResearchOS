@@ -370,6 +370,31 @@ class ResearchOsApi {
     );
   }
 
+  Future<Map<String, dynamic>> extractProtocolHubProtocol({
+    required String protocolId,
+    String? importId,
+  }) {
+    return _postMap(
+        '/mobile/protocols/${Uri.encodeComponent(protocolId)}/extract', {
+      if (importId != null && importId.trim().isNotEmpty)
+        'import_id': importId.trim(),
+    });
+  }
+
+  Future<Map<String, dynamic>> approveProtocolHubExtraction({
+    required String protocolId,
+    required String versionLabel,
+    required bool confirmed,
+  }) {
+    return _postMap(
+      '/mobile/protocols/${Uri.encodeComponent(protocolId)}/extraction/approve',
+      {
+        'version_label': versionLabel,
+        'confirmed': confirmed,
+      },
+    );
+  }
+
   Future<Map<String, dynamic>> saveProtocolHubNotebook({
     required String documentId,
     required int currentVersion,

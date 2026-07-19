@@ -265,6 +265,75 @@ void main() {
     expect(multipart.files.single.filename, 'protocol_api_test.pdf');
     expect((response['protocol'] as Map)['protocol_id'], 'protocol:source');
   });
+
+  test('extractProtocolHubProtocol posts source import id and decodes draft',
+      () async {
+    late http.Request captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'status': 'extraction_complete',
+            'draft': {
+              'extraction_id': 'protocol-extraction:test',
+              'proposed_events': [
+                {'title': 'Day 0 seed cells'}
+              ],
+            },
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final response = await api.extractProtocolHubProtocol(
+      protocolId: 'protocol:test',
+      importId: 'protocol-import:test',
+    );
+    final body = jsonDecode(captured.body) as Map<String, dynamic>;
+
+    expect(captured.method, 'POST');
+    expect(captured.url.path, '/mobile/protocols/protocol%3Atest/extract');
+    expect(body['import_id'], 'protocol-import:test');
+    expect(response['status'], 'extraction_complete');
+    expect((response['draft'] as Map)['extraction_id'],
+        'protocol-extraction:test');
+  });
+
+  test('approveProtocolHubExtraction posts explicit confirmation', () async {
+    late http.Request captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'draft': {'status': 'approved'},
+            'protocol': {'protocol_id': 'protocol:test'},
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final response = await api.approveProtocolHubExtraction(
+      protocolId: 'protocol:test',
+      versionLabel: 'reviewed-1',
+      confirmed: true,
+    );
+    final body = jsonDecode(captured.body) as Map<String, dynamic>;
+
+    expect(captured.method, 'POST');
+    expect(captured.url.path,
+        '/mobile/protocols/protocol%3Atest/extraction/approve');
+    expect(body['version_label'], 'reviewed-1');
+    expect(body['confirmed'], true);
+    expect((response['draft'] as Map)['status'], 'approved');
+  });
 }
 
 class _CapturingClient extends http.BaseClient {
