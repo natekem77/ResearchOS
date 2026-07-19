@@ -9562,6 +9562,33 @@ def create_protocol_hub_import(request_body: ProtocolHubImportRequest, request: 
     )
 
 
+@app.post("/mobile/protocols/import", tags=["mobile", "protocol-hub"])
+async def upload_mobile_protocol_import(
+    request: Request,
+    file: UploadFile = File(...),
+    source_type: str | None = Form(default=None),
+    extracted_text: str | None = Form(default=None),
+    title: str | None = Form(default=None),
+    lab_id: str = Form(default="lab:demo"),
+) -> dict[str, object]:
+    """Upload a protocol source document from the mobile native file picker."""
+
+    try:
+        data = await file.read()
+        return _protocol_hub_service().upload_protocol_document(
+            actor_user_id=_request_user_id(request),
+            lab_id=lab_id,
+            filename=file.filename or "protocol-document",
+            data=data,
+            mime_type=file.content_type,
+            source_type=source_type,
+            extracted_text=extracted_text,
+            title=title,
+        )
+    except (AttachmentStorageError, ProtocolHubValidationError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
 @app.post("/protocol-hub/drafts/from-text", tags=["protocol-hub"])
 def create_protocol_hub_text_draft(request_body: ProtocolHubTextDraftRequest, request: Request) -> dict[str, object]:
     """Create a reviewable protocol extraction draft from pasted, described, or imported text."""
@@ -9666,6 +9693,23 @@ def protocol_hub_protocol(protocol_id: str) -> dict[str, object]:
     if protocol is None:
         raise HTTPException(status_code=404, detail="Protocol not found.")
     return protocol
+
+
+@app.get("/protocol-hub/imports/{import_id}/download", tags=["protocol-hub"])
+def download_protocol_hub_import(import_id: str) -> FileResponse:
+    try:
+        service = _protocol_hub_service()
+        imported = service.import_by_id(import_id)
+        if imported is None:
+            raise HTTPException(status_code=404, detail="Protocol import not found.")
+        path = service.import_file_path(import_id)
+        return FileResponse(
+            path,
+            media_type=str(imported.get("mime_type") or "application/octet-stream"),
+            filename=str(imported.get("original_filename") or path.name),
+        )
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
 
 
 @app.get("/protocol-hub/versions/{protocol_version_id}", tags=["protocol-hub"])

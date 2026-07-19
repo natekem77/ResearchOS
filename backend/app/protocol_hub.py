@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from app.attachment_storage import StoredAttachment
 from app.config import Settings
 from app.general_experiments import GeneralExperimentService, _decode, _slug
+from app.protocol_file_storage import ProtocolFileStorage
 from app.storage import SQLiteStore
 
 
@@ -121,6 +125,12 @@ class ProtocolHubService:
                     original_filename TEXT,
                     storage_reference TEXT,
                     mime_type TEXT,
+                    protocol_id TEXT,
+                    safe_filename TEXT,
+                    file_extension TEXT,
+                    size_bytes INTEGER,
+                    checksum TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
                     extraction_status TEXT NOT NULL DEFAULT 'uploaded',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     error_message TEXT
@@ -155,6 +165,12 @@ class ProtocolHubService:
                 );
                 """
             )
+            self._ensure_column(connection, "protocol_imports", "protocol_id", "TEXT")
+            self._ensure_column(connection, "protocol_imports", "safe_filename", "TEXT")
+            self._ensure_column(connection, "protocol_imports", "file_extension", "TEXT")
+            self._ensure_column(connection, "protocol_imports", "size_bytes", "INTEGER")
+            self._ensure_column(connection, "protocol_imports", "checksum", "TEXT")
+            self._ensure_column(connection, "protocol_imports", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
 
     def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -613,6 +629,65 @@ class ProtocolHubService:
             assert row is not None
             return _decode(row)
 
+    def upload_protocol_document(
+        self,
+        *,
+        actor_user_id: str,
+        lab_id: str,
+        filename: str,
+        data: bytes,
+        mime_type: str | None = None,
+        source_type: str | None = None,
+        extracted_text: str | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        if not filename.strip():
+            raise ProtocolHubValidationError("A filename is required.")
+        import_id = f"protocol-import:{uuid.uuid4().hex[:16]}"
+        storage = ProtocolFileStorage(self.settings)
+        stored = storage.save(
+            import_id=import_id,
+            filename=filename,
+            data=data,
+            mime_type=mime_type,
+        )
+        try:
+            protocol_title = self._unique_import_title(title or Path(stored.original_filename).stem)
+            inferred_source_type = source_type or _source_type_for_file(stored.original_filename, stored.mime_type)
+            content = (extracted_text or "").strip()
+            if not content:
+                content = (
+                    f"# {protocol_title}\n\n"
+                    "Uploaded protocol source document retained for researcher review.\n\n"
+                    "No scientific details have been extracted or approved yet.\n"
+                )
+            protocol = self.create_or_update_protocol(
+                actor_user_id=actor_user_id,
+                lab_id=lab_id,
+                title=protocol_title,
+                short_name=protocol_title,
+                description=f"Draft protocol imported from {stored.original_filename}.",
+                category=inferred_source_type,
+                version_number="draft-1",
+                summary_of_changes="Created from uploaded protocol document.",
+                content=content,
+                status="draft",
+            )
+            imported = self._insert_protocol_import(
+                import_id=import_id,
+                actor_user_id=actor_user_id,
+                lab_id=lab_id,
+                source_type=inferred_source_type,
+                protocol_id=str(protocol["protocol_id"]),
+                stored=stored,
+                mime_type=mime_type,
+            )
+        except Exception:
+            storage.delete(stored.storage_path)
+            raise
+        protocol = self.get_protocol(str(protocol["protocol_id"])) or protocol
+        return {"protocol": protocol, "import": imported, "attachment": self._import_attachment_payload(imported)}
+
     def create_extraction_draft_from_text(
         self,
         actor_user_id: str,
@@ -870,13 +945,114 @@ class ProtocolHubService:
         if protocol is None:
             return None
         current_version_id = str(protocol.get("current_version_id") or "")
+        imports = self.imports_for_protocol(protocol_id)
         return protocol | {
             "material_count": len(self.materials(current_version_id)) if current_version_id else 0,
             "event_count": len(self.events(current_version_id)) if current_version_id else 0,
             "expected_result_count": len(self.expected_results(current_version_id)) if current_version_id else 0,
             "usage_statistics": self.usage_statistics(protocol_id),
             "unresolved_clarification_count": self._unresolved_drafts_for_protocol(protocol_id),
+            "source_documents": [self._import_attachment_payload(item) for item in imports],
+            "source_document": self._import_attachment_payload(imports[0]) if imports else None,
         }
+
+    def imports_for_protocol(self, protocol_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM protocol_imports
+                WHERE protocol_id = ?
+                ORDER BY created_at DESC
+                """,
+                (protocol_id,),
+            ).fetchall()
+            return [_decode(row) for row in rows]
+
+    def import_by_id(self, import_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM protocol_imports WHERE import_id = ?", (import_id,)).fetchone()
+            return _decode(row) if row else None
+
+    def import_file_path(self, import_id: str) -> Path:
+        imported = self.import_by_id(import_id)
+        if imported is None:
+            raise ProtocolHubValidationError("Protocol import not found.")
+        storage_reference = str(imported.get("storage_reference") or "")
+        if not storage_reference:
+            raise ProtocolHubValidationError("Protocol import has no stored file.")
+        return ProtocolFileStorage(self.settings).open(storage_reference)
+
+    def _insert_protocol_import(
+        self,
+        *,
+        import_id: str,
+        actor_user_id: str,
+        lab_id: str,
+        source_type: str,
+        protocol_id: str,
+        stored: StoredAttachment,
+        mime_type: str | None = None,
+    ) -> dict[str, Any]:
+        metadata = {"storage_provider": "local_development"}
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO protocol_imports
+                    (import_id, lab_id, uploaded_by, source_type, original_filename,
+                     storage_reference, mime_type, extraction_status, protocol_id,
+                     safe_filename, file_extension, size_bytes, checksum, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'uploaded', ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    import_id,
+                    lab_id,
+                    actor_user_id,
+                    source_type,
+                    stored.original_filename,
+                    stored.storage_path,
+                    stored.mime_type or mime_type or mimetypes.guess_type(stored.original_filename)[0] or "application/octet-stream",
+                    protocol_id,
+                    stored.safe_filename,
+                    stored.file_extension,
+                    stored.size_bytes,
+                    stored.checksum,
+                    json.dumps(metadata),
+                ),
+            )
+            row = connection.execute("SELECT * FROM protocol_imports WHERE import_id = ?", (import_id,)).fetchone()
+            assert row is not None
+            return _decode(row)
+
+    def _import_attachment_payload(self, imported: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not imported:
+            return None
+        return {
+            "import_id": imported.get("import_id"),
+            "attachment_id": imported.get("import_id"),
+            "source_type": "uploaded_file",
+            "attachment_type": imported.get("source_type") or "document",
+            "display_name": imported.get("original_filename") or "Protocol document",
+            "original_filename": imported.get("original_filename"),
+            "mime_type": imported.get("mime_type"),
+            "file_extension": imported.get("file_extension"),
+            "size_bytes": imported.get("size_bytes"),
+            "storage_path": imported.get("storage_reference"),
+            "upload_status": imported.get("extraction_status") or "uploaded",
+            "processing_status": imported.get("extraction_status") or "uploaded",
+            "created_at": imported.get("created_at"),
+            "created_by": imported.get("uploaded_by"),
+            "checksum": imported.get("checksum"),
+            "metadata": imported.get("metadata") or {},
+        }
+
+    def _unique_import_title(self, title: str) -> str:
+        base = title.strip() or "Imported protocol"
+        candidate = base
+        suffix = 2
+        while self.general.get_protocol(f"protocol:{_slug(candidate)}") is not None:
+            candidate = f"{base} import {suffix}"
+            suffix += 1
+        return candidate
 
     def _unresolved_drafts_for_protocol(self, protocol_id: str) -> int:
         with self._connect() as connection:
@@ -1228,6 +1404,19 @@ def _timestamp_sql_value(status: str) -> str | None:
     if status != "approved":
         return None
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _source_type_for_file(filename: str, mime_type: str | None = None) -> str:
+    extension = Path(filename or "").suffix.lower()
+    if extension == ".pdf" or mime_type == "application/pdf":
+        return "pdf"
+    if extension in {".doc", ".docx", ".rtf"}:
+        return "docx" if extension == ".docx" else extension.removeprefix(".")
+    if extension in {".xls", ".xlsx", ".csv"}:
+        return extension.removeprefix(".")
+    if extension in {".txt", ".md"}:
+        return "txt" if extension == ".txt" else "markdown"
+    return "document"
 
 
 def _json_load(value: Any, fallback: Any) -> Any:

@@ -293,6 +293,32 @@ class ResearchOsApi {
     });
   }
 
+  Future<Map<String, dynamic>> uploadProtocolHubImport({
+    required File file,
+    required String sourceType,
+    String? extractedText,
+    String? title,
+  }) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/mobile/protocols/import'),
+    );
+    request.fields['source_type'] = sourceType.trim().isEmpty
+        ? _sourceTypeFromFilename(file.path)
+        : sourceType.trim();
+    if (extractedText != null && extractedText.trim().isNotEmpty) {
+      request.fields['extracted_text'] = extractedText.trim();
+    }
+    if (title != null && title.trim().isNotEmpty) {
+      request.fields['title'] = title.trim();
+    }
+    request.files.add(await http.MultipartFile.fromPath('file', file.path));
+    final streamed = await _client.send(request).timeout(requestTimeout);
+    final response =
+        await http.Response.fromStream(streamed).timeout(requestTimeout);
+    return _decodeMapResponse(response);
+  }
+
   Future<Map<String, dynamic>> createProtocolHubTextDraft({
     required String sourceText,
     String origin = 'pasted_text',
@@ -1096,4 +1122,20 @@ MediaType _mediaType(String mimeType) {
     return MediaType(parts[0].trim(), parts[1].trim());
   }
   return MediaType('application', 'octet-stream');
+}
+
+String _sourceTypeFromFilename(String filename) {
+  final name = filename.split(RegExp(r'[/\\]')).last.toLowerCase();
+  final extension = name.contains('.') ? name.split('.').last : '';
+  return switch (extension) {
+    'pdf' => 'pdf',
+    'doc' => 'doc',
+    'docx' => 'docx',
+    'rtf' => 'rtf',
+    'xls' => 'xls',
+    'xlsx' => 'xlsx',
+    'csv' => 'csv',
+    'txt' => 'txt',
+    _ => 'document',
+  };
 }

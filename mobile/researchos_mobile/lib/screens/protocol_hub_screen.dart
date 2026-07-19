@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
@@ -573,10 +577,17 @@ class _ProtocolTextDraftScreenState extends State<ProtocolTextDraftScreen> {
   }
 }
 
+typedef ProtocolDocumentPicker = Future<PlatformFile?> Function();
+
 class ProtocolImportDocumentScreen extends StatefulWidget {
-  const ProtocolImportDocumentScreen({super.key, required this.api});
+  const ProtocolImportDocumentScreen({
+    super.key,
+    required this.api,
+    this.pickDocument,
+  });
 
   final ResearchOsApi api;
+  final ProtocolDocumentPicker? pickDocument;
 
   @override
   State<ProtocolImportDocumentScreen> createState() =>
@@ -589,6 +600,7 @@ class _ProtocolImportDocumentScreenState
   final _mimeType = TextEditingController();
   final _sourceText = TextEditingController();
   String _sourceType = 'pdf';
+  PlatformFile? _selectedFile;
   bool _submitting = false;
 
   @override
@@ -599,46 +611,82 @@ class _ProtocolImportDocumentScreenState
     super.dispose();
   }
 
-  Future<void> _submit() async {
-    if (_submitting) return;
-    setState(() => _submitting = true);
+  Future<void> _chooseFile() async {
     try {
-      final imported = await widget.api.createProtocolHubImport(
-        sourceType: _sourceType,
-        originalFilename: _filename.text,
-        mimeType: _mimeType.text,
-      );
-      if (_sourceText.text.trim().isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'Import metadata saved. Add extracted text when document parsing is available.'),
-            ),
-          );
-          Navigator.pop(context, true);
-        }
+      final picked = widget.pickDocument == null
+          ? await _pickProtocolDocument()
+          : await widget.pickDocument!();
+      if (picked == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('File selection cancelled.')),
+        );
         return;
       }
-      final draft = await widget.api.createProtocolHubTextDraft(
-        sourceText: _sourceText.text,
-        origin: 'document',
-        importId: _text(imported['import_id']),
+      final extension = _extensionForFile(picked.name);
+      final mimeType = _mimeTypeForExtension(extension);
+      setState(() {
+        _selectedFile = picked;
+        _filename.text = picked.name;
+        _mimeType.text = mimeType;
+        _sourceType = _sourceTypeForExtension(extension);
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not choose file: $error')),
+      );
+    }
+  }
+
+  Future<PlatformFile?> _pickProtocolDocument() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowMultiple: false,
+      allowedExtensions: const [
+        'pdf',
+        'doc',
+        'docx',
+        'txt',
+        'rtf',
+        'xls',
+        'xlsx',
+        'csv',
+      ],
+    );
+    if (result == null || result.files.isEmpty) return null;
+    return result.files.single;
+  }
+
+  Future<void> _submit() async {
+    if (_submitting || _selectedFile == null) return;
+    final path = _selectedFile!.path;
+    if (path == null || path.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Selected file is not available for upload.')),
+      );
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await widget.api.uploadProtocolHubImport(
+        file: File(path),
+        sourceType: _sourceType,
+        extractedText: _sourceText.text,
+        title: _filename.text.trim().isEmpty
+            ? null
+            : _filename.text.trim().replaceFirst(RegExp(r'\.[^.]+$'), ''),
       );
       if (!mounted) return;
-      final approved = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => ProtocolDraftReviewScreen(
-            api: widget.api,
-            draft: draft,
-          ),
-        ),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Uploaded ${_filename.text}.')),
       );
-      if (mounted && approved == true) Navigator.pop(context, true);
+      Navigator.pop(context, true);
     } catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(error.toString())));
+            .showSnackBar(SnackBar(content: Text('Upload failed: $error')));
       }
     } finally {
       if (mounted) setState(() => _submitting = false);
@@ -661,19 +709,47 @@ class _ProtocolImportDocumentScreenState
                       style: Theme.of(context).textTheme.titleLarge),
                   const SizedBox(height: ResearchOsSpacing.sm),
                   const Text(
-                    'This first version preserves document metadata and optional extracted text. Native file picking and OCR are future-ready paths.',
+                    'Choose a source protocol document from Files. Mundi preserves the original file and creates an incomplete draft for researcher review.',
                   ),
+                  const SizedBox(height: ResearchOsSpacing.md),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _submitting ? null : _chooseFile,
+                      icon: const Icon(Icons.folder_open_outlined),
+                      label: Text(_selectedFile == null
+                          ? 'Choose File'
+                          : 'Replace File'),
+                    ),
+                  ),
+                  if (_selectedFile != null) ...[
+                    const SizedBox(height: ResearchOsSpacing.md),
+                    _SelectedProtocolFileCard(
+                      file: _selectedFile!,
+                      mimeType: _mimeType.text,
+                      sourceType: _sourceType,
+                      onRemove: _submitting
+                          ? null
+                          : () => setState(() {
+                                _selectedFile = null;
+                                _filename.clear();
+                                _mimeType.clear();
+                              }),
+                    ),
+                  ],
                   const SizedBox(height: ResearchOsSpacing.md),
                   DropdownButtonFormField<String>(
                     initialValue: _sourceType,
                     decoration: const InputDecoration(labelText: 'Source type'),
                     items: const [
                       DropdownMenuItem(value: 'pdf', child: Text('PDF')),
+                      DropdownMenuItem(value: 'doc', child: Text('DOC')),
                       DropdownMenuItem(value: 'docx', child: Text('DOCX')),
-                      DropdownMenuItem(
-                          value: 'markdown', child: Text('Markdown')),
+                      DropdownMenuItem(value: 'rtf', child: Text('RTF')),
                       DropdownMenuItem(value: 'txt', child: Text('TXT')),
-                      DropdownMenuItem(value: 'image', child: Text('Image')),
+                      DropdownMenuItem(value: 'xls', child: Text('XLS')),
+                      DropdownMenuItem(value: 'xlsx', child: Text('XLSX')),
+                      DropdownMenuItem(value: 'csv', child: Text('CSV')),
                     ],
                     onChanged: (value) {
                       if (value != null) setState(() => _sourceType = value);
@@ -705,14 +781,15 @@ class _ProtocolImportDocumentScreenState
                   SizedBox(
                     width: double.infinity,
                     child: FilledButton.icon(
-                      onPressed: _submitting ? null : _submit,
+                      onPressed:
+                          _submitting || _selectedFile == null ? null : _submit,
                       icon: _submitting
                           ? const SizedBox.square(
                               dimension: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.upload_file_outlined),
-                      label: const Text('Save Import'),
+                      label: const Text('Upload Protocol'),
                     ),
                   ),
                 ],
@@ -720,6 +797,66 @@ class _ProtocolImportDocumentScreenState
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SelectedProtocolFileCard extends StatelessWidget {
+  const _SelectedProtocolFileCard({
+    required this.file,
+    required this.mimeType,
+    required this.sourceType,
+    required this.onRemove,
+  });
+
+  final PlatformFile file;
+  final String mimeType;
+  final String sourceType;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final extension = _extensionForFile(file.name);
+    return Container(
+      padding: const EdgeInsets.all(ResearchOsSpacing.md),
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(_protocolFileIcon(sourceType),
+              color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: ResearchOsSpacing.sm),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  file.name,
+                  style: Theme.of(context).textTheme.titleSmall,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: ResearchOsSpacing.xs),
+                Text(
+                  [
+                    extension.toUpperCase(),
+                    _formatProtocolBytes(file.size),
+                    if (mimeType.isNotEmpty) mimeType,
+                  ].where((item) => item.isNotEmpty).join(' • '),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Remove selected file',
+            onPressed: onRemove,
+            icon: const Icon(Icons.close),
+          ),
+        ],
       ),
     );
   }
@@ -1202,6 +1339,10 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
                   children: [
                     _ProtocolHero(protocol: protocol),
                     const SizedBox(height: ResearchOsSpacing.md),
+                    _ProtocolSourceDocumentsSection(
+                      api: widget.api,
+                      documents: _maps(protocol['source_documents']),
+                    ),
                     if (versions.isNotEmpty)
                       ResearchOsCard(
                         child: DropdownButtonFormField<String>(
@@ -1316,10 +1457,52 @@ class _ProtocolCard extends StatelessWidget {
                 _MetricChip(
                     icon: Icons.science_outlined,
                     label: _text(protocol['biological_system'])),
+              if (_map(protocol['source_document']).isNotEmpty)
+                _MetricChip(
+                    icon: _protocolFileIcon(_text(
+                        _map(protocol['source_document'])['attachment_type'])),
+                    label: _text(
+                        _map(protocol['source_document'])['original_filename'],
+                        fallback: 'source file')),
             ],
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ProtocolSourceDocumentsSection extends StatelessWidget {
+  const _ProtocolSourceDocumentsSection({
+    required this.api,
+    required this.documents,
+  });
+
+  final ResearchOsApi api;
+  final List<Map<String, dynamic>> documents;
+
+  @override
+  Widget build(BuildContext context) {
+    if (documents.isEmpty) return const SizedBox.shrink();
+    return _Section(
+      title: 'Source Document',
+      icon: Icons.attach_file,
+      empty: '',
+      children: [
+        for (final document in documents)
+          ResearchOsInfoCard(
+            title: _text(document['original_filename'],
+                fallback: 'Protocol source document'),
+            subtitle: [
+              _text(document['mime_type']),
+              _formatProtocolBytes(document['size_bytes']),
+              _text(document['upload_status'], fallback: 'uploaded'),
+            ].where((item) => item.isNotEmpty).join('\n'),
+            icon: _protocolFileIcon(_text(document['attachment_type'])),
+            onTap: () => _openProtocolImport(context, api, document),
+            trailing: const Icon(Icons.open_in_new),
+          ),
+      ],
     );
   }
 }
@@ -1741,4 +1924,82 @@ String _listText(Object? value) {
 String _prefixedList(String prefix, Object? value) {
   final text = _listText(value);
   return text.isEmpty ? '' : '$prefix: $text';
+}
+
+String _extensionForFile(String filename) {
+  final name = filename.trim().toLowerCase();
+  if (!name.contains('.')) return '';
+  return name.split('.').last;
+}
+
+String _sourceTypeForExtension(String extension) {
+  return switch (extension.toLowerCase()) {
+    'pdf' => 'pdf',
+    'doc' => 'doc',
+    'docx' => 'docx',
+    'rtf' => 'rtf',
+    'xls' => 'xls',
+    'xlsx' => 'xlsx',
+    'csv' => 'csv',
+    'txt' => 'txt',
+    _ => 'document',
+  };
+}
+
+String _mimeTypeForExtension(String extension) {
+  return switch (extension.toLowerCase()) {
+    'pdf' => 'application/pdf',
+    'doc' => 'application/msword',
+    'docx' =>
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'rtf' => 'application/rtf',
+    'xls' => 'application/vnd.ms-excel',
+    'xlsx' =>
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'csv' => 'text/csv',
+    'txt' => 'text/plain',
+    _ => 'application/octet-stream',
+  };
+}
+
+IconData _protocolFileIcon(String sourceType) {
+  return switch (sourceType.toLowerCase()) {
+    'pdf' => Icons.picture_as_pdf_outlined,
+    'xls' || 'xlsx' || 'csv' => Icons.table_chart_outlined,
+    'doc' || 'docx' || 'rtf' || 'txt' => Icons.description_outlined,
+    _ => Icons.insert_drive_file_outlined,
+  };
+}
+
+String _formatProtocolBytes(Object? value) {
+  final bytes = int.tryParse('${value ?? ''}');
+  if (bytes == null || bytes <= 0) return '';
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+}
+
+Future<void> _openProtocolImport(
+  BuildContext context,
+  ResearchOsApi api,
+  Map<String, dynamic> document,
+) async {
+  final importId =
+      _text(document['import_id'], fallback: _text(document['attachment_id']));
+  if (importId.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: Text('Protocol document is missing an import ID.')),
+    );
+    return;
+  }
+  final url = Uri.parse(
+    '${api.baseUrl.replaceAll(RegExp(r'/$'), '')}/protocol-hub/imports/${Uri.encodeComponent(importId)}/download',
+  );
+  final opened = await launchUrl(url, mode: LaunchMode.externalApplication);
+  if (!opened && context.mounted) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Could not open protocol document.')),
+    );
+  }
 }

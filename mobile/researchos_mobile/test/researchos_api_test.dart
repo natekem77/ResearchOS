@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -215,6 +216,55 @@ void main() {
     expect(
         (response['attachment'] as Map)['attachment_id'], 'attachment:image');
   });
+
+  test('uploadProtocolHubImport posts protocol document multipart data',
+      () async {
+    final temp =
+        await File('${Directory.systemTemp.path}/protocol_api_test.pdf')
+            .writeAsBytes([37, 80, 68, 70]);
+    addTearDown(() async {
+      if (await temp.exists()) await temp.delete();
+    });
+    late http.BaseRequest captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: _CapturingClient((request) async {
+        captured = request;
+        return http.StreamedResponse(
+          Stream.value(utf8.encode(jsonEncode({
+            'protocol': {
+              'protocol_id': 'protocol:source',
+              'title': 'Protocol Source',
+            },
+            'attachment': {
+              'import_id': 'protocol-import:test',
+              'original_filename': 'protocol_api_test.pdf',
+            }
+          }))),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final response = await api.uploadProtocolHubImport(
+      file: temp,
+      sourceType: 'pdf',
+      extractedText: 'optional copied text',
+      title: 'Protocol Source',
+    );
+
+    expect(captured, isA<http.MultipartRequest>());
+    final multipart = captured as http.MultipartRequest;
+    expect(multipart.method, 'POST');
+    expect(multipart.url.path, '/mobile/protocols/import');
+    expect(multipart.fields['source_type'], 'pdf');
+    expect(multipart.fields['extracted_text'], 'optional copied text');
+    expect(multipart.fields['title'], 'Protocol Source');
+    expect(multipart.files.single.field, 'file');
+    expect(multipart.files.single.filename, 'protocol_api_test.pdf');
+    expect((response['protocol'] as Map)['protocol_id'], 'protocol:source');
+  });
 }
 
 class _CapturingClient extends http.BaseClient {
@@ -224,7 +274,12 @@ class _CapturingClient extends http.BaseClient {
       _handler;
 
   @override
-  Future<http.StreamedResponse> send(http.BaseRequest request) {
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    if (request is http.MultipartRequest) {
+      await request
+          .finalize()
+          .fold<int>(0, (total, chunk) => total + chunk.length);
+    }
     return _handler(request);
   }
 }

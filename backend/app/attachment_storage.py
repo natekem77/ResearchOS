@@ -20,8 +20,10 @@ ALLOWED_ATTACHMENT_EXTENSIONS = {
     ".csv",
     ".tsv",
     ".pdf",
+    ".doc",
     ".docx",
     ".txt",
+    ".rtf",
     ".md",
     ".png",
     ".jpg",
@@ -73,7 +75,7 @@ def classify_attachment_type(filename: str, mime_type: str | None = None) -> str
         return "pdf"
     if extension in {".png", ".jpg", ".jpeg", ".gif", ".tif", ".tiff", ".heic", ".webp"}:
         return "image"
-    if extension in {".docx", ".txt", ".md"}:
+    if extension in {".doc", ".docx", ".txt", ".rtf", ".md"}:
         return "document"
     if mime_type and mime_type.startswith("image/"):
         return "image"
@@ -130,4 +132,3 @@ class LocalAttachmentStorage:
             return
         if path.exists() and path.is_file():
             path.unlink()
-

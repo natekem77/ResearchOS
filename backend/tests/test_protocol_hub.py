@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.attachment_storage import AttachmentStorageError
 from app.config import Settings
 from app.general_experiments import GeneralExperimentService
 from app.protocol_hub import ProtocolHubService
@@ -190,6 +191,79 @@ class ProtocolHubTests(unittest.TestCase):
         self.assertEqual(draft["import_id"], imported["import_id"])
         self.assertEqual(saved["status"], "draft")
         self.assertTrue(any("No timed protocol events" in item for item in saved["ambiguities"]))
+
+    def test_protocol_pdf_upload_persists_source_document_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="Meyer Protocol.pdf",
+                data=b"%PDF-1.4\nprotocol",
+                mime_type="application/pdf",
+                source_type="pdf",
+            )
+            protocol = service.get_protocol(uploaded["protocol"]["protocol_id"])
+            listed = service.list_protocols()
+
+        assert protocol is not None
+        attachment = uploaded["attachment"]
+        self.assertEqual(attachment["original_filename"], "Meyer Protocol.pdf")
+        self.assertEqual(attachment["mime_type"], "application/pdf")
+        self.assertEqual(attachment["file_extension"], ".pdf")
+        self.assertEqual(attachment["size_bytes"], len(b"%PDF-1.4\nprotocol"))
+        self.assertNotIn("Meyer Protocol.pdf", attachment["storage_path"])
+        self.assertEqual(protocol["source_documents"][0]["import_id"], attachment["import_id"])
+        self.assertEqual(protocol["source_documents"][0]["original_filename"], "Meyer Protocol.pdf")
+        self.assertTrue(
+            any(
+                item["protocol_id"] == protocol["protocol_id"]
+                and item["source_document"]["original_filename"] == "Meyer Protocol.pdf"
+                for item in listed
+            )
+        )
+
+    def test_protocol_docx_upload_succeeds_and_repeated_get_returns_attachment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="Protocol Source.docx",
+                data=b"docx bytes",
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            first = service.get_protocol(uploaded["protocol"]["protocol_id"])
+            second = service.get_protocol(uploaded["protocol"]["protocol_id"])
+
+        assert first is not None
+        assert second is not None
+        self.assertEqual(first["source_document"]["attachment_type"], "docx")
+        self.assertEqual(second["source_documents"][0]["original_filename"], "Protocol Source.docx")
+        self.assertEqual(second["source_documents"][0]["checksum"], uploaded["attachment"]["checksum"])
+
+    def test_protocol_upload_rejects_unsupported_or_oversized_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            with self.assertRaisesRegex(AttachmentStorageError, "Unsupported"):
+                service.upload_protocol_document(
+                    actor_user_id="user:researcher-a",
+                    lab_id="lab:demo",
+                    filename="protocol.exe",
+                    data=b"not a protocol document",
+                    mime_type="application/octet-stream",
+                )
+            with self.assertRaisesRegex(AttachmentStorageError, "too large"):
+                service.upload_protocol_document(
+                    actor_user_id="user:researcher-a",
+                    lab_id="lab:demo",
+                    filename="large.pdf",
+                    data=b"0" * (50 * 1024 * 1024 + 1),
+                    mime_type="application/pdf",
+                )
+
+        storage_dir = Path(tmpdir) / "data" / "attachments"
+        self.assertFalse(any(storage_dir.rglob("*.*")) if storage_dir.exists() else False)
 
     def test_draft_approval_requires_confirmation_and_minimum_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
