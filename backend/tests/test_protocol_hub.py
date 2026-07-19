@@ -12,7 +12,7 @@ from unittest.mock import patch
 from app.attachment_storage import AttachmentStorageError
 from app.config import Settings
 from app.general_experiments import GeneralExperimentService
-from app.protocol_hub import ProtocolHubService
+from app.protocol_hub import ProtocolHubService, ProtocolHubValidationError
 
 
 class _FakeAIProvider:
@@ -517,6 +517,117 @@ class ProtocolHubTests(unittest.TestCase):
         methods = set().union(*(getattr(route, "methods", set()) for route in matching_routes))
 
         self.assertIn("POST", methods)
+
+    def test_protocol_delete_removes_structured_data_and_owned_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="delete-me.docx",
+                data=_docx_bytes(
+                    paragraphs=["Timeline", "Day 0 seed.", "Materials"],
+                    table_rows=[["Reagent", "Concentration"], ["BMP4", "10 ng/mL"]],
+                ),
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            protocol_id = uploaded["protocol"]["protocol_id"]
+            service.extract_uploaded_protocol_document(
+                actor_user_id="user:researcher-a",
+                protocol_id=protocol_id,
+            )
+            imported = service.imports_for_protocol(protocol_id)[0]
+            stored_path = service.import_file_path(str(imported["import_id"]))
+            self.assertTrue(stored_path.exists())
+
+            deleted = service.delete_protocol("user:researcher-a", protocol_id)
+
+            self.assertTrue(deleted["deleted"])
+            self.assertIsNone(service.get_protocol(protocol_id))
+            self.assertFalse(stored_path.exists())
+            with self.assertRaisesRegex(ProtocolHubValidationError, "not found"):
+                service.delete_protocol("user:researcher-a", protocol_id)
+
+    def test_protocol_reorder_persists_and_normalizes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            first = service.create_blank_protocol("user:researcher-a", "lab:demo", "Protocol A")
+            second = service.create_blank_protocol("user:researcher-a", "lab:demo", "Protocol B")
+            third = service.create_blank_protocol("user:researcher-a", "lab:demo", "Protocol C")
+            fourth = service.create_blank_protocol("user:researcher-a", "lab:demo", "Protocol D")
+
+            moved_to_top = service.reorder_protocols(
+                "user:researcher-a",
+                [
+                    fourth["protocol_id"],
+                    first["protocol_id"],
+                    second["protocol_id"],
+                    third["protocol_id"],
+                ],
+            )
+            moved_down = service.reorder_protocols(
+                "user:researcher-a",
+                [
+                    fourth["protocol_id"],
+                    first["protocol_id"],
+                    third["protocol_id"],
+                    second["protocol_id"],
+                ],
+            )
+            relisted = [
+                item
+                for item in service.list_protocols()
+                if item["protocol_id"]
+                in {
+                    first["protocol_id"],
+                    second["protocol_id"],
+                    third["protocol_id"],
+                    fourth["protocol_id"],
+                }
+            ]
+
+        self.assertEqual(
+            [item["protocol_id"] for item in moved_to_top],
+            [fourth["protocol_id"], first["protocol_id"], second["protocol_id"], third["protocol_id"]],
+        )
+        self.assertEqual(
+            [item["protocol_id"] for item in moved_down],
+            [fourth["protocol_id"], first["protocol_id"], third["protocol_id"], second["protocol_id"]],
+        )
+        self.assertEqual(
+            [item["protocol_id"] for item in relisted],
+            [fourth["protocol_id"], first["protocol_id"], third["protocol_id"], second["protocol_id"]],
+        )
+        self.assertEqual([item["sort_index"] for item in moved_down], [1000, 2000, 3000, 4000])
+
+    def test_protocol_reorder_rejects_duplicate_and_unknown_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            protocol = service.create_blank_protocol("user:researcher-a", "lab:demo", "Protocol A")
+            with self.assertRaisesRegex(ProtocolHubValidationError, "Duplicate"):
+                service.reorder_protocols("user:researcher-a", [protocol["protocol_id"], protocol["protocol_id"]])
+            with self.assertRaisesRegex(ProtocolHubValidationError, "Unknown"):
+                service.reorder_protocols("user:researcher-a", [protocol["protocol_id"], "protocol:missing"])
+
+    def test_existing_protocol_null_sort_indexes_are_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            protocol = service.create_blank_protocol("user:researcher-a", "lab:demo", "Protocol A")
+            with service._connect() as connection:
+                connection.execute(
+                    "UPDATE protocols_general SET sort_index = NULL WHERE protocol_id = ?",
+                    (protocol["protocol_id"],),
+                )
+
+            reloaded = self._service(tmpdir)
+            listed = [
+                item
+                for item in reloaded.list_protocols()
+                if item["protocol_id"] == protocol["protocol_id"]
+            ]
+
+        self.assertIsNotNone(listed[0]["sort_index"])
+        self.assertEqual(int(listed[0]["sort_index"]) % 1000, 0)
 
     def test_image_only_pdf_reports_ocr_required(self) -> None:
         from pypdf import PdfWriter

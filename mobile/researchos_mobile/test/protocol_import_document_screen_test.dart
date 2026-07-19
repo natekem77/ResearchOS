@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -124,6 +125,122 @@ void main() {
         find.widgetWithText(FilledButton, 'Upload Protocol'));
     expect(uploadButton.onPressed, isNull);
   });
+
+  testWidgets('protocol delete confirmation removes row after success',
+      (tester) async {
+    final requests = <http.Request>[];
+    var protocols = [_protocol('protocol:a', 'Protocol A')];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: _JsonClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/protocol-hub/protocols') {
+          return http.Response(jsonEncode(protocols), 200);
+        }
+        if (request.method == 'DELETE' &&
+            request.url.path == '/protocol-hub/protocols/protocol%3Aa') {
+          protocols = [];
+          return http.Response(jsonEncode({'deleted': true}), 200);
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ProtocolHubScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Protocol A'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Protocol A'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.more_vert).last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delete Protocol?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Protocol A'), findsNothing);
+    expect(
+      requests.any((request) =>
+          request.method == 'DELETE' &&
+          request.url.path == '/protocol-hub/protocols/protocol%3Aa'),
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('protocol Move Down persists reordered protocol list',
+      (tester) async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: _JsonClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/protocol-hub/protocols') {
+          return http.Response(
+            jsonEncode([
+              _protocol('protocol:a', 'Protocol A'),
+              _protocol('protocol:b', 'Protocol B'),
+              _protocol('protocol:c', 'Protocol C'),
+            ]),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/protocol-hub/protocols/reorder') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          return http.Response(
+            jsonEncode({
+              'protocols': [
+                for (final id in body['protocol_ids'] as List)
+                  _protocol(id as String,
+                      'Protocol ${id.split(':').last.toUpperCase()}'),
+              ],
+            }),
+            200,
+          );
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ProtocolHubScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Protocol A'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Protocol A'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.more_vert).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Move Down'));
+    await tester.pumpAndSettle();
+
+    final reorder = requests.singleWhere(
+      (request) => request.url.path == '/protocol-hub/protocols/reorder',
+    );
+    expect(jsonDecode(reorder.body)['protocol_ids'], [
+      'protocol:b',
+      'protocol:a',
+      'protocol:c',
+    ]);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 class _ProtocolImportHost extends StatefulWidget {
@@ -199,3 +316,38 @@ class _CapturingClient extends http.BaseClient {
     return _handler(request);
   }
 }
+
+class _JsonClient extends http.BaseClient {
+  _JsonClient(this._handler);
+
+  final Future<http.Response> Function(http.Request request) _handler;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) async {
+    final normal = http.Request(request.method, request.url);
+    normal.headers.addAll(request.headers);
+    if (request is http.Request) {
+      normal.bodyBytes = request.bodyBytes;
+    }
+    final response = await _handler(normal);
+    return http.StreamedResponse(
+      Stream.value(response.bodyBytes),
+      response.statusCode,
+      headers: response.headers,
+      reasonPhrase: response.reasonPhrase,
+      request: request,
+    );
+  }
+}
+
+Map<String, dynamic> _protocol(String id, String title) => {
+      'protocol_id': id,
+      'title': title,
+      'status': 'draft',
+      'description': 'Protocol fixture',
+      'event_count': 0,
+      'material_count': 0,
+      'expected_result_count': 0,
+      'can_delete': true,
+      'can_reorder': true,
+    };

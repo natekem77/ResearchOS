@@ -18,12 +18,17 @@ class ProtocolHubScreen extends StatefulWidget {
 
 class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
   final _query = TextEditingController();
-  late Future<List<Map<String, dynamic>>> _future;
+  var _protocols = <Map<String, dynamic>>[];
+  var _loading = true;
+  Object? _error;
+  var _reordering = false;
+  var _requestGeneration = 0;
+  final _deleting = <String>{};
 
   @override
   void initState() {
     super.initState();
-    _future = widget.api.protocolHubProtocols();
+    _reload();
   }
 
   @override
@@ -32,111 +37,297 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
     super.dispose();
   }
 
-  void _reload() {
+  Future<void> _reload() async {
+    final generation = ++_requestGeneration;
     setState(() {
-      _future = widget.api.protocolHubProtocols(query: _query.text);
+      _loading = true;
+      _error = null;
     });
+    try {
+      final protocols =
+          await widget.api.protocolHubProtocols(query: _query.text);
+      if (!mounted || generation != _requestGeneration) return;
+      setState(() {
+        _protocols = protocols;
+        _loading = false;
+      });
+    } catch (error) {
+      if (!mounted || generation != _requestGeneration) return;
+      setState(() {
+        _error = error;
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _confirmDelete(Map<String, dynamic> protocol) async {
+    final protocolId = _text(protocol['protocol_id']);
+    if (protocolId.isEmpty || _deleting.contains(protocolId)) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Protocol?'),
+        content: const Text(
+          'This will delete the protocol and its structured data.\n\n'
+          'The source document and associated protocol data cannot be recovered.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    setState(() => _deleting.add(protocolId));
+    try {
+      await widget.api.deleteProtocolHubProtocol(protocolId);
+      if (!mounted) return;
+      setState(() {
+        _protocols = _protocols
+            .where((item) => _text(item['protocol_id']) != protocolId)
+            .toList();
+        _deleting.remove(protocolId);
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Protocol deleted.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _deleting.remove(protocolId));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _handleReorder(int oldIndex, int newIndex) {
+    return _moveProtocol(oldIndex, newIndex);
+  }
+
+  Future<void> _moveProtocol(int oldIndex, int targetIndex) async {
+    if (_reordering || oldIndex == targetIndex) return;
+    if (oldIndex < 0 ||
+        oldIndex >= _protocols.length ||
+        targetIndex < 0 ||
+        targetIndex >= _protocols.length) {
+      return;
+    }
+    final previous = List<Map<String, dynamic>>.from(_protocols);
+    final next = List<Map<String, dynamic>>.from(_protocols);
+    final item = next.removeAt(oldIndex);
+    next.insert(targetIndex, item);
+    final payload = next.map((item) => _text(item['protocol_id'])).toList();
+    final generation = ++_requestGeneration;
+    setState(() {
+      _protocols = next;
+      _reordering = true;
+    });
+    try {
+      final canonical = await widget.api.reorderProtocolHubProtocols(payload);
+      if (!mounted || generation != _requestGeneration) return;
+      final byId = {
+        for (final item in _protocols) _text(item['protocol_id']): item
+      };
+      final ordered = [
+        for (final item in canonical)
+          if (byId.containsKey(_text(item['protocol_id']))) item,
+      ];
+      setState(() {
+        _protocols = ordered.isEmpty ? next : ordered;
+        _reordering = false;
+      });
+    } catch (error) {
+      if (!mounted || generation != _requestGeneration) return;
+      setState(() {
+        _protocols = previous;
+        _reordering = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Reorder failed: $error')),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return RefreshIndicator(
       onRefresh: () async => _reload(),
-      child: ListView(
+      child: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) {
+      return ListView(
+        padding: ResearchOsSpacing.screen,
+        children: [_buildHeader(), const ResearchOsLoadingSkeleton(rows: 5)],
+      );
+    }
+    if (_error != null) {
+      return ListView(
         padding: ResearchOsSpacing.screen,
         children: [
-          ResearchOsCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    CircleAvatar(
-                      backgroundColor:
-                          Theme.of(context).colorScheme.primaryContainer,
-                      foregroundColor:
-                          Theme.of(context).colorScheme.onPrimaryContainer,
-                      child: const Icon(Icons.account_tree_outlined),
-                    ),
-                    const SizedBox(width: ResearchOsSpacing.md),
-                    Expanded(
-                      child: Text('Protocol Hub',
-                          style: Theme.of(context).textTheme.headlineSmall),
-                    ),
-                    IconButton.filledTonal(
-                      tooltip: 'Add protocol',
-                      onPressed: _showAddProtocolSheet,
-                      icon: const Icon(Icons.add),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: ResearchOsSpacing.sm),
-                const Text(
-                    'Structured, versioned scientific workflows for experiment creation, timelines, materials, QC, and reproducibility.'),
-                const SizedBox(height: ResearchOsSpacing.md),
-                TextField(
-                  controller: _query,
-                  onSubmitted: (_) => _reload(),
-                  decoration: InputDecoration(
-                    hintText: 'Search protocols, events, media, materials...',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: IconButton(
-                      tooltip: 'Search protocols',
-                      onPressed: _reload,
-                      icon: const Icon(Icons.keyboard_return),
-                    ),
+          _buildHeader(),
+          ResearchOsErrorState(message: _error.toString(), onRetry: _reload),
+        ],
+      );
+    }
+    if (_protocols.isEmpty) {
+      return ListView(
+        padding: ResearchOsSpacing.screen,
+        children: [
+          _buildHeader(),
+          _ProtocolOnboardingState(
+            onImportDocument: () => _openImportDocument(),
+            onPasteText: () => _openTextDraft(origin: 'pasted_text'),
+            onDescribe: () => _openTextDraft(origin: 'manual'),
+            onCreateBlank: () => _openBlankProtocol(),
+            onBrowseTemplates: () => _openTemplates(),
+            onScanPrinted: () => _showComingSoon('Scan Printed Protocol'),
+          ),
+        ],
+      );
+    }
+    if (_protocols.length == 1) {
+      final protocol = _protocols.first;
+      return ListView(
+        padding: ResearchOsSpacing.screen,
+        children: [
+          _buildHeader(),
+          const SizedBox(height: ResearchOsSpacing.md),
+          _ProtocolLibrarySections(protocols: _protocols),
+          const SizedBox(height: ResearchOsSpacing.md),
+          _ProtocolCard(
+            protocol: protocol,
+            trailing: _ProtocolEntryMenu(
+              index: 0,
+              deleting: _deleting.contains(_text(protocol['protocol_id'])),
+              reordering: _reordering,
+              canDelete: protocol['can_delete'] != false,
+              canReorder: false,
+              capabilityReason: _text(protocol['capability_reason']),
+              onDelete: () => _confirmDelete(protocol),
+              onMoveUp: null,
+              onMoveDown: null,
+            ),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ProtocolHubDetailScreen(
+                    api: widget.api,
+                    protocolId: _text(protocol['protocol_id']),
                   ),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: ResearchOsSpacing.md),
-          FutureBuilder<List<Map<String, dynamic>>>(
-            future: _future,
-            builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) {
-                return const ResearchOsLoadingSkeleton(rows: 5);
-              }
-              if (snapshot.hasError) {
-                return ResearchOsErrorState(
-                  message: snapshot.error.toString(),
-                  onRetry: _reload,
-                );
-              }
-              final protocols = snapshot.data ?? const [];
-              if (protocols.isEmpty) {
-                return _ProtocolOnboardingState(
-                  onImportDocument: () => _openImportDocument(),
-                  onPasteText: () => _openTextDraft(origin: 'pasted_text'),
-                  onDescribe: () => _openTextDraft(origin: 'manual'),
-                  onCreateBlank: () => _openBlankProtocol(),
-                  onBrowseTemplates: () => _openTemplates(),
-                  onScanPrinted: () => _showComingSoon('Scan Printed Protocol'),
-                );
-              }
-              return Column(
-                children: [
-                  _ProtocolLibrarySections(protocols: protocols),
-                  const SizedBox(height: ResearchOsSpacing.md),
-                  for (final protocol in protocols) ...[
-                    _ProtocolCard(
-                      protocol: protocol,
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (_) => ProtocolHubDetailScreen(
-                              api: widget.api,
-                              protocolId: _text(protocol['protocol_id']),
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-                    const SizedBox(height: ResearchOsSpacing.md),
-                  ],
-                ],
               );
             },
+          ),
+        ],
+      );
+    }
+    return ReorderableListView.builder(
+      padding: ResearchOsSpacing.screen,
+      header: Padding(
+        padding: const EdgeInsets.only(bottom: ResearchOsSpacing.md),
+        child: Column(
+          children: [
+            _buildHeader(),
+            _ProtocolLibrarySections(protocols: _protocols),
+          ],
+        ),
+      ),
+      itemCount: _protocols.length,
+      onReorderItem: _handleReorder,
+      itemBuilder: (context, index) {
+        final protocol = _protocols[index];
+        final canDelete = protocol['can_delete'] != false;
+        final canReorder =
+            _protocols.length > 1 && protocol['can_reorder'] != false;
+        return Padding(
+          key: ValueKey('protocol-card-${_text(protocol['protocol_id'])}'),
+          padding: const EdgeInsets.only(bottom: ResearchOsSpacing.md),
+          child: _ProtocolCard(
+            protocol: protocol,
+            trailing: _ProtocolEntryMenu(
+              index: index,
+              deleting: _deleting.contains(_text(protocol['protocol_id'])),
+              reordering: _reordering,
+              canDelete: canDelete,
+              canReorder: canReorder,
+              capabilityReason: _text(protocol['capability_reason']),
+              onDelete: () => _confirmDelete(protocol),
+              onMoveUp:
+                  index == 0 ? null : () => _moveProtocol(index, index - 1),
+              onMoveDown: index == _protocols.length - 1
+                  ? null
+                  : () => _moveProtocol(index, index + 1),
+            ),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ProtocolHubDetailScreen(
+                    api: widget.api,
+                    protocolId: _text(protocol['protocol_id']),
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildHeader() {
+    return ResearchOsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+                foregroundColor:
+                    Theme.of(context).colorScheme.onPrimaryContainer,
+                child: const Icon(Icons.account_tree_outlined),
+              ),
+              const SizedBox(width: ResearchOsSpacing.md),
+              Expanded(
+                child: Text('Protocol Hub',
+                    style: Theme.of(context).textTheme.headlineSmall),
+              ),
+              IconButton.filledTonal(
+                tooltip: 'Add protocol',
+                onPressed: _showAddProtocolSheet,
+                icon: const Icon(Icons.add),
+              ),
+            ],
+          ),
+          const SizedBox(height: ResearchOsSpacing.sm),
+          const Text(
+              'Structured, versioned scientific workflows for experiment creation, timelines, materials, QC, and reproducibility.'),
+          const SizedBox(height: ResearchOsSpacing.md),
+          TextField(
+            controller: _query,
+            onSubmitted: (_) => _reload(),
+            decoration: InputDecoration(
+              hintText: 'Search protocols, events, media, materials...',
+              prefixIcon: const Icon(Icons.search),
+              suffixIcon: IconButton(
+                tooltip: 'Search protocols',
+                onPressed: _reload,
+                icon: const Icon(Icons.keyboard_return),
+              ),
+            ),
           ),
         ],
       ),
@@ -1508,10 +1699,15 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
 }
 
 class _ProtocolCard extends StatelessWidget {
-  const _ProtocolCard({required this.protocol, required this.onTap});
+  const _ProtocolCard({
+    required this.protocol,
+    required this.onTap,
+    this.trailing,
+  });
 
   final Map<String, dynamic> protocol;
   final VoidCallback onTap;
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -1532,6 +1728,7 @@ class _ProtocolCard extends StatelessWidget {
                 ),
               ),
               _Badge(_text(protocol['status'], fallback: 'draft')),
+              if (trailing != null) trailing!,
             ],
           ),
           const SizedBox(height: ResearchOsSpacing.sm),
@@ -1573,6 +1770,119 @@ class _ProtocolCard extends StatelessWidget {
     );
   }
 }
+
+class _ProtocolEntryMenu extends StatelessWidget {
+  const _ProtocolEntryMenu({
+    required this.index,
+    required this.deleting,
+    required this.reordering,
+    required this.canDelete,
+    required this.canReorder,
+    required this.onDelete,
+    required this.onMoveUp,
+    required this.onMoveDown,
+    this.capabilityReason,
+  });
+
+  final int index;
+  final bool deleting;
+  final bool reordering;
+  final bool canDelete;
+  final bool canReorder;
+  final VoidCallback onDelete;
+  final VoidCallback? onMoveUp;
+  final VoidCallback? onMoveDown;
+  final String? capabilityReason;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Semantics(
+          label: canReorder
+              ? 'Reorder protocol'
+              : 'Reorder unavailable for this protocol',
+          button: canReorder,
+          child: canReorder
+              ? ReorderableDelayedDragStartListener(
+                  index: index,
+                  child: const Padding(
+                    padding: EdgeInsets.all(ResearchOsSpacing.xs),
+                    child: Icon(Icons.drag_handle),
+                  ),
+                )
+              : Padding(
+                  padding: const EdgeInsets.all(ResearchOsSpacing.xs),
+                  child: Icon(
+                    Icons.drag_handle,
+                    color: Theme.of(context).disabledColor,
+                  ),
+                ),
+        ),
+        if (deleting)
+          const SizedBox.square(
+            dimension: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        else
+          PopupMenuButton<_ProtocolMenuAction>(
+            tooltip: 'Protocol actions',
+            enabled: !reordering,
+            onSelected: (action) {
+              switch (action) {
+                case _ProtocolMenuAction.moveUp:
+                  onMoveUp?.call();
+                  break;
+                case _ProtocolMenuAction.moveDown:
+                  onMoveDown?.call();
+                  break;
+                case _ProtocolMenuAction.delete:
+                  onDelete();
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              if ((!canDelete || !canReorder) &&
+                  capabilityReason != null &&
+                  capabilityReason!.isNotEmpty) ...[
+                PopupMenuItem(
+                  enabled: false,
+                  child: Text(capabilityReason!),
+                ),
+                const PopupMenuDivider(),
+              ],
+              PopupMenuItem(
+                value: _ProtocolMenuAction.moveUp,
+                enabled: canReorder && onMoveUp != null,
+                child: const Text('Move Up'),
+              ),
+              PopupMenuItem(
+                value: _ProtocolMenuAction.moveDown,
+                enabled: canReorder && onMoveDown != null,
+                child: const Text('Move Down'),
+              ),
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: _ProtocolMenuAction.delete,
+                enabled: canDelete,
+                child: Text(
+                  'Delete',
+                  style: TextStyle(
+                    color: canDelete
+                        ? Theme.of(context).colorScheme.error
+                        : Theme.of(context).disabledColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+}
+
+enum _ProtocolMenuAction { moveUp, moveDown, delete }
 
 class _ProtocolSourceDocumentsSection extends StatelessWidget {
   const _ProtocolSourceDocumentsSection({

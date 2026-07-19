@@ -481,6 +481,10 @@ class ExperimentReorderRequest(BaseModel):
     experiment_ids: list[str]
 
 
+class ProtocolReorderRequest(BaseModel):
+    protocol_ids: list[str]
+
+
 class NotebookSaveRequest(BaseModel):
     current_version: int
     content: str
@@ -9515,7 +9519,11 @@ def general_protocols() -> list[dict[str, object]]:
 
 
 def _protocol_hub_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, PermissionError):
+        return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, ProtocolHubValidationError):
+        if "not found" in str(exc).lower():
+            return HTTPException(status_code=404, detail=str(exc))
         return HTTPException(status_code=400, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -9525,6 +9533,32 @@ def protocol_hub_protocols(q: str | None = Query(default=None)) -> list[dict[str
     """List structured, versioned Protocol Hub protocols."""
 
     return _protocol_hub_service().list_protocols(query=q)
+
+
+@app.post("/protocol-hub/protocols/reorder", tags=["protocol-hub"])
+def reorder_protocol_hub_protocols(
+    request_body: ProtocolReorderRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        protocols = _protocol_hub_service().reorder_protocols(
+            _request_user_id(request),
+            request_body.protocol_ids,
+        )
+        return {"protocols": protocols}
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.delete("/protocol-hub/protocols/{protocol_id}", tags=["protocol-hub"])
+def delete_protocol_hub_protocol(protocol_id: str, request: Request) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().delete_protocol(
+            _request_user_id(request),
+            protocol_id,
+        )
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
 
 
 @app.get("/protocol-hub/templates", tags=["protocol-hub"])

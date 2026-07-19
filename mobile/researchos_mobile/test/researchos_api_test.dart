@@ -307,6 +307,57 @@ void main() {
         'protocol-extraction:test');
   });
 
+  test('deleteProtocolHubProtocol sends canonical DELETE route', () async {
+    late http.Request captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(jsonEncode({'deleted': true}), 200);
+      }),
+    );
+
+    await api.deleteProtocolHubProtocol('protocol:test');
+
+    expect(captured.method, 'DELETE');
+    expect(captured.url.path, '/protocol-hub/protocols/protocol%3Atest');
+  });
+
+  test('reorderProtocolHubProtocols posts ordered protocol IDs', () async {
+    late http.Request captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured = request;
+        return http.Response(
+          jsonEncode({
+            'protocols': [
+              {'protocol_id': 'protocol:c'},
+              {'protocol_id': 'protocol:a'},
+              {'protocol_id': 'protocol:b'},
+            ],
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    final response = await api.reorderProtocolHubProtocols(
+      ['protocol:c', 'protocol:a', 'protocol:b'],
+    );
+    final body = jsonDecode(captured.body) as Map<String, dynamic>;
+
+    expect(captured.method, 'POST');
+    expect(captured.url.path, '/protocol-hub/protocols/reorder');
+    expect(body['protocol_ids'], ['protocol:c', 'protocol:a', 'protocol:b']);
+    expect(response.map((item) => item['protocol_id']), [
+      'protocol:c',
+      'protocol:a',
+      'protocol:b',
+    ]);
+  });
+
   test('approveProtocolHubExtraction posts explicit confirmation', () async {
     late http.Request captured;
     final api = ResearchOsApi(

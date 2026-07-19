@@ -49,6 +49,9 @@ class ProtocolHubService:
             self._ensure_column(connection, "protocols_general", "short_name", "TEXT")
             self._ensure_column(connection, "protocols_general", "category", "TEXT")
             self._ensure_column(connection, "protocols_general", "owner_user_id", "TEXT")
+            self._ensure_column(connection, "protocols_general", "sort_index", "INTEGER")
+            self._ensure_column(connection, "protocols_general", "archived_at", "TEXT")
+            self._ensure_column(connection, "protocols_general", "archived_by", "TEXT")
             self._ensure_column(connection, "protocol_versions_general", "version_number", "TEXT")
             self._ensure_column(connection, "protocol_versions_general", "summary_of_changes", "TEXT")
             self._ensure_column(connection, "protocol_versions_general", "status", "TEXT NOT NULL DEFAULT 'draft'")
@@ -215,11 +218,26 @@ class ProtocolHubService:
             self._ensure_column(connection, "protocol_imports", "size_bytes", "INTEGER")
             self._ensure_column(connection, "protocol_imports", "checksum", "TEXT")
             self._ensure_column(connection, "protocol_imports", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._normalize_protocol_order(connection)
 
     def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _normalize_protocol_order(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT protocol_id FROM protocols_general
+            WHERE archived_at IS NULL
+            ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
+            """
+        ).fetchall()
+        for index, row in enumerate(rows):
+            connection.execute(
+                "UPDATE protocols_general SET sort_index = ? WHERE protocol_id = ? AND sort_index IS NULL",
+                ((index + 1) * 1000, row["protocol_id"]),
+            )
 
     def ensure_demo_protocols(self) -> None:
         demos = [
@@ -385,8 +403,8 @@ class ProtocolHubService:
                 """
                 INSERT INTO protocols_general
                     (protocol_id, lab_id, title, short_name, description, category, biological_system,
-                     default_sample_unit, owner_user_id, current_version_id, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     default_sample_unit, owner_user_id, current_version_id, status, sort_index)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_index) + 1000 FROM protocols_general WHERE lab_id = ?), 1000))
                 ON CONFLICT(protocol_id) DO UPDATE SET
                     short_name = excluded.short_name,
                     description = excluded.description,
@@ -398,7 +416,7 @@ class ProtocolHubService:
                     status = excluded.status,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (protocol_id, lab_id, title, short_name, description, category, biological_system, sample_unit, actor_user_id, version_id, status),
+                (protocol_id, lab_id, title, short_name, description, category, biological_system, sample_unit, actor_user_id, version_id, status, lab_id),
             )
             connection.execute(
                 """
@@ -437,7 +455,17 @@ class ProtocolHubService:
         return protocol
 
     def list_protocols(self, query: str | None = None) -> list[dict[str, Any]]:
-        protocols = self.general.list_protocols()
+        with self._connect() as connection:
+            protocols = [
+                _decode(row)
+                for row in connection.execute(
+                    """
+                    SELECT * FROM protocols_general
+                    WHERE archived_at IS NULL
+                    ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
+                    """
+                ).fetchall()
+            ]
         enriched = [self._protocol_summary(protocol["protocol_id"]) for protocol in protocols]
         if query:
             q = query.lower()
@@ -593,6 +621,88 @@ class ProtocolHubService:
 
     def search(self, query: str) -> dict[str, Any]:
         return {"query": query, "results": self.list_protocols(query=query)}
+
+    def delete_protocol(self, actor_user_id: str, protocol_id: str) -> dict[str, Any]:
+        protocol = self.general.get_protocol(protocol_id)
+        if protocol is None or protocol.get("archived_at"):
+            raise ProtocolHubValidationError("Protocol not found.")
+        if not self._can_manage_protocol(actor_user_id, protocol):
+            raise PermissionError("Protocol deletion requires manage access.")
+        imports = self.imports_for_protocol(protocol_id)
+        storage_refs = [str(item.get("storage_reference") or "") for item in imports if item.get("storage_reference")]
+        version_ids = [str(item.get("protocol_version_id")) for item in protocol.get("versions") or []]
+        with self._connect() as connection:
+            if version_ids:
+                placeholders = ",".join("?" for _ in version_ids)
+                connection.execute(f"DELETE FROM protocol_materials WHERE protocol_version_id IN ({placeholders})", version_ids)
+                connection.execute(f"DELETE FROM protocol_media WHERE protocol_version_id IN ({placeholders})", version_ids)
+                connection.execute(f"DELETE FROM protocol_expected_results WHERE protocol_version_id IN ({placeholders})", version_ids)
+                connection.execute(f"DELETE FROM protocol_troubleshooting WHERE protocol_version_id IN ({placeholders})", version_ids)
+                connection.execute(f"DELETE FROM protocol_linked_papers WHERE protocol_version_id IN ({placeholders})", version_ids)
+                connection.execute(f"DELETE FROM protocol_notebook_documents WHERE protocol_version_id IN ({placeholders})", version_ids)
+                connection.execute(f"DELETE FROM protocol_events_general WHERE protocol_version_id IN ({placeholders})", version_ids)
+            run_rows = connection.execute(
+                "SELECT run_id FROM protocol_extraction_runs WHERE protocol_id = ?",
+                (protocol_id,),
+            ).fetchall()
+            run_ids = [str(row["run_id"]) for row in run_rows]
+            if run_ids:
+                placeholders = ",".join("?" for _ in run_ids)
+                connection.execute(f"DELETE FROM protocol_extraction_items WHERE extraction_run_id IN ({placeholders})", run_ids)
+            connection.execute("DELETE FROM protocol_extraction_runs WHERE protocol_id = ?", (protocol_id,))
+            connection.execute("DELETE FROM protocol_extraction_drafts WHERE protocol_id = ?", (protocol_id,))
+            connection.execute("DELETE FROM protocol_imports WHERE protocol_id = ?", (protocol_id,))
+            connection.execute("DELETE FROM protocol_versions_general WHERE protocol_id = ?", (protocol_id,))
+            connection.execute("DELETE FROM protocols_general WHERE protocol_id = ?", (protocol_id,))
+        storage = ProtocolFileStorage(self.settings)
+        for storage_ref in storage_refs:
+            storage.delete(storage_ref)
+        return {"deleted": True, "protocol_id": protocol_id, "attachment_policy": "protocol_imports_deleted"}
+
+    def reorder_protocols(self, actor_user_id: str, ordered_protocol_ids: list[str]) -> list[dict[str, Any]]:
+        if not ordered_protocol_ids:
+            raise ProtocolHubValidationError("At least one protocol id is required.")
+        requested_ids = [str(item).strip() for item in ordered_protocol_ids if str(item).strip()]
+        if len(requested_ids) != len(ordered_protocol_ids):
+            raise ProtocolHubValidationError("Protocol ids must be non-empty.")
+        if len(set(requested_ids)) != len(requested_ids):
+            raise ProtocolHubValidationError("Duplicate protocol ids are not allowed.")
+        with self._connect() as connection:
+            placeholders = ",".join("?" for _ in requested_ids)
+            rows = connection.execute(
+                f"""
+                SELECT * FROM protocols_general
+                WHERE protocol_id IN ({placeholders}) AND archived_at IS NULL
+                """,
+                requested_ids,
+            ).fetchall()
+        protocols = [_decode(row) for row in rows]
+        if len(protocols) != len(requested_ids):
+            raise ProtocolHubValidationError("Unknown protocol id in reorder request.")
+        lab_ids = {str(protocol.get("lab_id") or "") for protocol in protocols}
+        if len(lab_ids) != 1:
+            raise ProtocolHubValidationError("Protocols must belong to the same lab.")
+        for protocol in protocols:
+            if not self._can_manage_protocol(actor_user_id, protocol):
+                raise PermissionError("Protocol reorder requires manage access.")
+        with self._connect() as connection:
+            for index, protocol_id in enumerate(requested_ids):
+                connection.execute(
+                    """
+                    UPDATE protocols_general
+                    SET sort_index = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE protocol_id = ?
+                    """,
+                    ((index + 1) * 1000, protocol_id),
+                )
+        by_id = {str(item["protocol_id"]): item for item in self.list_protocols()}
+        return [by_id[protocol_id] for protocol_id in requested_ids if protocol_id in by_id]
+
+    def _can_manage_protocol(self, actor_user_id: str, protocol: dict[str, Any]) -> bool:
+        if actor_user_id == str(protocol.get("owner_user_id") or ""):
+            return True
+        access = self.general.authz.user_access(actor_user_id, str(protocol.get("lab_id") or "lab:demo"))
+        return access.get("role") == "owner"
 
     def protocol_templates(self) -> list[dict[str, Any]]:
         """Return section-only templates. They intentionally avoid scientific details."""
@@ -1343,6 +1453,8 @@ class ProtocolHubService:
         protocol = self.general.get_protocol(protocol_id)
         if protocol is None:
             return None
+        if protocol.get("archived_at"):
+            return None
         current_version_id = str(protocol.get("current_version_id") or "")
         imports = self.imports_for_protocol(protocol_id)
         return protocol | {
@@ -1353,6 +1465,9 @@ class ProtocolHubService:
             "unresolved_clarification_count": self._unresolved_drafts_for_protocol(protocol_id),
             "source_documents": [self._import_attachment_payload(item) for item in imports],
             "source_document": self._import_attachment_payload(imports[0]) if imports else None,
+            "can_delete": True,
+            "can_reorder": True,
+            "capability_reason": None,
         }
 
     def imports_for_protocol(self, protocol_id: str) -> list[dict[str, Any]]:

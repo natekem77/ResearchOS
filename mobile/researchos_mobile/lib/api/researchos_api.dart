@@ -246,6 +246,21 @@ class ResearchOsApi {
         '/protocol-hub/protocols/${Uri.encodeComponent(protocolId)}');
   }
 
+  Future<void> deleteProtocolHubProtocol(String protocolId) {
+    return _delete(
+        '/protocol-hub/protocols/${Uri.encodeComponent(protocolId)}');
+  }
+
+  Future<List<Map<String, dynamic>>> reorderProtocolHubProtocols(
+      List<String> protocolIds) async {
+    final json = await _postMap('/protocol-hub/protocols/reorder', {
+      'protocol_ids': protocolIds,
+    });
+    final protocols = json['protocols'];
+    if (protocols is! List) return const [];
+    return protocols.whereType<Map<String, dynamic>>().toList();
+  }
+
   Future<Map<String, dynamic>> protocolHubVersion(String protocolVersionId) {
     return _getMap(
         '/protocol-hub/versions/${Uri.encodeComponent(protocolVersionId)}');
