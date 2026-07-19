@@ -458,6 +458,93 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets(
+      'drag callback moves B below C using adjusted onReorderItem index',
+      (tester) async {
+    final requests = <http.Request>[];
+    final api = _reorderApiForInitialOrder(
+      ['experiment:a', 'experiment:b', 'experiment:c', 'experiment:d'],
+      requests: requests,
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    final reorderable =
+        tester.widget<ReorderableListView>(find.byType(ReorderableListView));
+    reorderable.onReorderItem!(1, 2);
+    await tester.pumpAndSettle();
+
+    _expectVisibleOrder(tester, ['Entry A', 'Entry C', 'Entry B', 'Entry D']);
+    final reorder = requests.singleWhere(
+      (request) => request.url.path == '/mobile/experiments/reorder',
+    );
+    expect(jsonDecode(reorder.body)['experiment_ids'], [
+      'experiment:a',
+      'experiment:c',
+      'experiment:b',
+      'experiment:d',
+    ]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('drag callback moves A to bottom using adjusted index',
+      (tester) async {
+    final requests = <http.Request>[];
+    final api = _reorderApiForInitialOrder(
+      ['experiment:a', 'experiment:b', 'experiment:c', 'experiment:d'],
+      requests: requests,
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    final reorderable =
+        tester.widget<ReorderableListView>(find.byType(ReorderableListView));
+    reorderable.onReorderItem!(0, 3);
+    await tester.pumpAndSettle();
+
+    _expectVisibleOrder(tester, ['Entry B', 'Entry C', 'Entry D', 'Entry A']);
+    final reorder = requests.singleWhere(
+      (request) => request.url.path == '/mobile/experiments/reorder',
+    );
+    expect(jsonDecode(reorder.body)['experiment_ids'], [
+      'experiment:b',
+      'experiment:c',
+      'experiment:d',
+      'experiment:a',
+    ]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('drag callback moves D to top', (tester) async {
+    final requests = <http.Request>[];
+    final api = _reorderApiForInitialOrder(
+      ['experiment:a', 'experiment:b', 'experiment:c', 'experiment:d'],
+      requests: requests,
+    );
+
+    await tester.pumpWidget(_experimentsApp(api));
+    await tester.pumpAndSettle();
+
+    final reorderable =
+        tester.widget<ReorderableListView>(find.byType(ReorderableListView));
+    reorderable.onReorderItem!(3, 0);
+    await tester.pumpAndSettle();
+
+    _expectVisibleOrder(tester, ['Entry D', 'Entry A', 'Entry B', 'Entry C']);
+    final reorder = requests.singleWhere(
+      (request) => request.url.path == '/mobile/experiments/reorder',
+    );
+    expect(jsonDecode(reorder.body)['experiment_ids'], [
+      'experiment:d',
+      'experiment:a',
+      'experiment:b',
+      'experiment:c',
+    ]);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Move to Bottom and Move to Top preserve exact target positions',
       (tester) async {
     final requests = <http.Request>[];
@@ -824,6 +911,57 @@ void main() {
 
 Widget _experimentsApp(ResearchOsApi api) {
   return MaterialApp(home: Scaffold(body: ExperimentsScreen(api: api)));
+}
+
+ResearchOsApi _reorderApiForInitialOrder(
+  List<String> initialIds, {
+  required List<http.Request> requests,
+}) {
+  return ResearchOsApi(
+    baseUrl: 'http://example.test',
+    client: MockClient((request) async {
+      requests.add(request);
+      if (request.method == 'GET' &&
+          request.url.path == '/mobile/experiments') {
+        return http.Response(
+          jsonEncode({
+            'experiments': [
+              for (final id in initialIds)
+                _experimentJson(id, _titleForExperimentId(id)),
+            ],
+            'count': initialIds.length,
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+      if (request.method == 'POST' &&
+          request.url.path == '/mobile/experiments/reorder') {
+        final ids = (jsonDecode(request.body)
+            as Map<String, dynamic>)['experiment_ids'] as List<dynamic>;
+        return http.Response(
+          jsonEncode({
+            'experiments': [
+              for (final id in ids)
+                _experimentJson(id as String, _titleForExperimentId(id)),
+            ],
+            'count': ids.length,
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }
+      return http.Response('{}', 200,
+          headers: {'Content-Type': 'application/json'});
+    }),
+  );
+}
+
+void _expectVisibleOrder(WidgetTester tester, List<String> titles) {
+  for (var index = 0; index < titles.length - 1; index += 1) {
+    expect(tester.getTopLeft(find.text(titles[index])).dy,
+        lessThan(tester.getTopLeft(find.text(titles[index + 1])).dy));
+  }
 }
 
 Map<String, Object?> _experimentJson(

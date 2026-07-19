@@ -150,14 +150,10 @@ class _ExperimentsScreenState extends State<ExperimentsScreen> {
   }
 
   Future<void> _handleReorder(int oldIndex, int newIndex) async {
-    var targetIndex = newIndex;
-    if (targetIndex > oldIndex) {
-      targetIndex -= 1;
-    }
     _logOrder(
-      'reorder indices oldIndex=$oldIndex rawNewIndex=$newIndex correctedNewIndex=$targetIndex',
+      'reorder indices oldIndex=$oldIndex newIndex=$newIndex source=onReorderItem_adjusted',
     );
-    await _commitReorder(oldIndex, targetIndex);
+    await _commitReorder(oldIndex, newIndex);
   }
 
   Future<void> _commitReorder(int oldIndex, int targetIndex) async {
