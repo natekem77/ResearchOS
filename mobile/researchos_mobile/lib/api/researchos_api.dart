@@ -373,11 +373,16 @@ class ResearchOsApi {
   Future<Map<String, dynamic>> extractProtocolHubProtocol({
     required String protocolId,
     String? importId,
+    String? mode,
+    String? userInstruction,
   }) {
     return _postMap(
-        '/mobile/protocols/${Uri.encodeComponent(protocolId)}/extract', {
+        '/mobile/protocols/${Uri.encodeComponent(protocolId)}/extractions', {
       if (importId != null && importId.trim().isNotEmpty)
         'import_id': importId.trim(),
+      if (mode != null && mode.trim().isNotEmpty) 'mode': mode.trim(),
+      if (userInstruction != null && userInstruction.trim().isNotEmpty)
+        'user_instruction': userInstruction.trim(),
     });
   }
 

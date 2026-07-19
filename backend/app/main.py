@@ -618,6 +618,14 @@ class ProtocolHubDraftApproveRequest(BaseModel):
 
 class ProtocolHubExtractRequest(BaseModel):
     import_id: str | None = None
+    mode: Literal["auto", "rules_only", "ai_assisted", "compare_results"] | None = None
+    user_instruction: str | None = None
+
+
+class ProtocolExtractionItemUpdateRequest(BaseModel):
+    section: str | None = None
+    normalized: dict[str, object] | None = None
+    review_status: Literal["needs_review", "approved", "rejected"] | None = None
 
 
 class ProtocolNotebookSaveRequest(BaseModel):
@@ -9710,8 +9718,86 @@ def extract_mobile_protocol(
             actor_user_id=_request_user_id(request),
             protocol_id=protocol_id,
             import_id=request_body.import_id,
+            mode=request_body.mode,
+            user_instruction=request_body.user_instruction,
         )
         return {"status": "extraction_complete", "draft": draft}
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/mobile/protocols/{protocol_id}/extractions", tags=["mobile", "protocol-hub"])
+def create_mobile_protocol_extraction(
+    protocol_id: str,
+    request_body: ProtocolHubExtractRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        run = _protocol_hub_service().create_protocol_extraction_run(
+            actor_user_id=_request_user_id(request),
+            protocol_id=protocol_id,
+            import_id=request_body.import_id,
+            mode=request_body.mode,
+            user_instruction=request_body.user_instruction,
+        )
+        return {"status": run.get("status") or "completed", "run": run, "draft": run.get("draft")}
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.get("/mobile/protocols/{protocol_id}/extractions", tags=["mobile", "protocol-hub"])
+def list_mobile_protocol_extractions(protocol_id: str) -> dict[str, object]:
+    try:
+        return {"runs": _protocol_hub_service().list_protocol_extraction_runs(protocol_id)}
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.get("/mobile/protocols/{protocol_id}/extractions/{run_id}", tags=["mobile", "protocol-hub"])
+def get_mobile_protocol_extraction_run(protocol_id: str, run_id: str) -> dict[str, object]:
+    try:
+        run = _protocol_hub_service().get_protocol_extraction_run(protocol_id, run_id)
+        return {"status": run.get("status") or "completed", "run": run, "draft": run.get("draft")}
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.put("/mobile/protocols/{protocol_id}/extractions/{run_id}/items/{item_id}", tags=["mobile", "protocol-hub"])
+def update_mobile_protocol_extraction_item(
+    protocol_id: str,
+    run_id: str,
+    item_id: str,
+    request_body: ProtocolExtractionItemUpdateRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        run = _protocol_hub_service().update_protocol_extraction_item(
+            protocol_id=protocol_id,
+            run_id=run_id,
+            item_id=item_id,
+            updates={key: value for key, value in request_body.model_dump().items() if value is not None},
+            reviewer=_request_user_id(request),
+        )
+        return {"status": run.get("status") or "completed", "run": run}
+    except ProtocolHubValidationError as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/mobile/protocols/{protocol_id}/extractions/{run_id}/approve", tags=["mobile", "protocol-hub"])
+def approve_mobile_protocol_extraction_run(
+    protocol_id: str,
+    run_id: str,
+    request_body: ProtocolHubDraftApproveRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().approve_protocol_extraction_run(
+            actor_user_id=_request_user_id(request),
+            protocol_id=protocol_id,
+            run_id=run_id,
+            version_label=request_body.version_label,
+            confirmed=request_body.confirmed,
+        )
     except ProtocolHubValidationError as exc:
         raise _protocol_hub_http_error(exc)
 

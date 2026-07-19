@@ -135,6 +135,21 @@ class Settings(BaseSettings):
         description="Chat model name for the configured AI provider.",
         validation_alias=AliasChoices("AI_MODEL", "RESEARCHOS_AI_MODEL"),
     )
+    protocol_extraction_ai_enabled: bool = Field(
+        default=True,
+        description="Enable AI-assisted protocol extraction when an AI provider is configured.",
+        validation_alias=AliasChoices("PROTOCOL_EXTRACTION_AI_ENABLED", "RESEARCHOS_PROTOCOL_EXTRACTION_AI_ENABLED"),
+    )
+    protocol_extraction_timeout_seconds: int = Field(
+        default=60,
+        description="Maximum provider wait for protocol extraction calls.",
+        validation_alias=AliasChoices("PROTOCOL_EXTRACTION_TIMEOUT_SECONDS", "RESEARCHOS_PROTOCOL_EXTRACTION_TIMEOUT_SECONDS"),
+    )
+    protocol_extraction_max_source_chars: int = Field(
+        default=120000,
+        description="Maximum canonical source payload size sent to AI-assisted protocol extraction.",
+        validation_alias=AliasChoices("PROTOCOL_EXTRACTION_MAX_SOURCE_CHARS", "RESEARCHOS_PROTOCOL_EXTRACTION_MAX_SOURCE_CHARS"),
+    )
 
     @property
     def graph_scope_list(self) -> list[str]:

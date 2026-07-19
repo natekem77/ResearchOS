@@ -292,12 +292,16 @@ void main() {
     final response = await api.extractProtocolHubProtocol(
       protocolId: 'protocol:test',
       importId: 'protocol-import:test',
+      mode: 'compare_results',
+      userInstruction: 'Treat D0-D30 as timeline events.',
     );
     final body = jsonDecode(captured.body) as Map<String, dynamic>;
 
     expect(captured.method, 'POST');
-    expect(captured.url.path, '/mobile/protocols/protocol%3Atest/extract');
+    expect(captured.url.path, '/mobile/protocols/protocol%3Atest/extractions');
     expect(body['import_id'], 'protocol-import:test');
+    expect(body['mode'], 'compare_results');
+    expect(body['user_instruction'], 'Treat D0-D30 as timeline events.');
     expect(response['status'], 'extraction_complete');
     expect((response['draft'] as Map)['extraction_id'],
         'protocol-extraction:test');

@@ -14,6 +14,13 @@ from typing import Any
 from app.attachment_storage import StoredAttachment
 from app.config import Settings
 from app.general_experiments import GeneralExperimentService, _decode, _slug
+from app.protocol_ai_extraction import (
+    PROTOCOL_EXTRACTION_SCHEMA_VERSION,
+    ai_draft_to_legacy_draft,
+    ai_extraction_enabled,
+    classify_protocol_with_ai,
+    extraction_items_from_draft,
+)
 from app.protocol_document_extractor import extract_protocol_document
 from app.protocol_file_storage import ProtocolFileStorage
 from app.storage import SQLiteStore
@@ -163,6 +170,42 @@ class ProtocolHubService:
                     status TEXT NOT NULL DEFAULT 'draft',
                     created_by TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS protocol_extraction_runs (
+                    run_id TEXT PRIMARY KEY,
+                    protocol_id TEXT NOT NULL,
+                    source_attachment_id TEXT,
+                    linked_draft_id TEXT,
+                    mode TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'rules',
+                    model TEXT,
+                    parser_version TEXT NOT NULL,
+                    user_instruction TEXT,
+                    status TEXT NOT NULL DEFAULT 'completed',
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    error TEXT,
+                    canonical_document_json TEXT NOT NULL DEFAULT '{}',
+                    deterministic_draft_json TEXT NOT NULL DEFAULT '{}',
+                    ai_draft_json TEXT,
+                    merged_draft_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS protocol_extraction_items (
+                    item_id TEXT PRIMARY KEY,
+                    extraction_run_id TEXT NOT NULL,
+                    section TEXT NOT NULL,
+                    source_ids_json TEXT NOT NULL DEFAULT '[]',
+                    raw_source_text TEXT,
+                    normalized_json TEXT NOT NULL DEFAULT '{}',
+                    confidence TEXT NOT NULL DEFAULT 'unknown',
+                    origin TEXT NOT NULL DEFAULT 'rules',
+                    review_status TEXT NOT NULL DEFAULT 'needs_review',
+                    reviewer TEXT,
+                    reviewed_at TEXT,
+                    FOREIGN KEY(extraction_run_id) REFERENCES protocol_extraction_runs(run_id)
                 );
                 """
             )
@@ -744,6 +787,38 @@ class ProtocolHubService:
         actor_user_id: str,
         protocol_id: str,
         import_id: str | None = None,
+        mode: str | None = None,
+        user_instruction: str | None = None,
+    ) -> dict[str, Any]:
+        run = self.create_protocol_extraction_run(
+            actor_user_id=actor_user_id,
+            protocol_id=protocol_id,
+            import_id=import_id,
+            mode=mode,
+            user_instruction=user_instruction,
+        )
+        draft = dict(run["draft"])
+        draft["extraction_run"] = {
+            "run_id": run["run_id"],
+            "mode": run["mode"],
+            "provider": run["provider"],
+            "model": run.get("model"),
+            "parser_version": run["parser_version"],
+            "status": run["status"],
+            "error": run.get("error"),
+            "user_instruction": run.get("user_instruction"),
+        }
+        draft["extraction_items"] = run["items"]
+        return draft
+
+    def create_protocol_extraction_run(
+        self,
+        *,
+        actor_user_id: str,
+        protocol_id: str,
+        import_id: str | None = None,
+        mode: str | None = None,
+        user_instruction: str | None = None,
     ) -> dict[str, Any]:
         protocol = self.get_protocol(protocol_id)
         if protocol is None:
@@ -773,33 +848,208 @@ class ProtocolHubService:
             proposed_category=str(protocol.get("category") or ""),
             source_citation=str(imported.get("original_filename") or ""),
         )
+        canonical_document = self._canonical_protocol_document(imported, extracted, source_text)
+        resolved_mode = self._resolve_extraction_mode(mode)
+        provider_name = "rules"
+        model = None
+        ai_draft: dict[str, Any] | None = None
+        ai_error: str | None = None
+        if resolved_mode in {"ai_assisted", "compare_results"} and self.settings.protocol_extraction_ai_enabled:
+            ai_result = classify_protocol_with_ai(
+                settings=self.settings,
+                canonical_blocks=list(canonical_document.get("blocks") or []),
+                deterministic_draft=draft,
+                user_instruction=user_instruction,
+            )
+            provider_name = ai_result.provider
+            model = ai_result.model
+            ai_draft = ai_result.draft
+            ai_error = ai_result.error
+            if ai_draft is not None:
+                draft = ai_draft_to_legacy_draft(
+                    ai_draft=ai_draft,
+                    deterministic_draft=draft,
+                    canonical_blocks=list(canonical_document.get("blocks") or []),
+                )
         draft["warnings"] = [
             *list(draft.get("warnings") or []),
             *extracted.warnings,
         ]
+        if resolved_mode in {"ai_assisted", "compare_results"} and ai_draft is None:
+            draft["warnings"].append(
+                f"AI-assisted extraction was unavailable; rules-only extraction was used. {ai_error or ''}".strip()
+            )
+        if resolved_mode in {"ai_assisted", "compare_results"}:
+            draft["warnings"].append("AI-assisted extraction may contain errors. Verify all protocol details before use.")
         draft["extraction_evidence"] = {
             **dict(draft.get("extraction_evidence") or {}),
             "source_document": {
                 "import_id": imported.get("import_id"),
                 "original_filename": imported.get("original_filename"),
                 "mime_type": imported.get("mime_type"),
-                "parser_version": "deterministic-protocol-document-v1",
+                "parser_version": PROTOCOL_EXTRACTION_SCHEMA_VERSION,
                 "source_type": extracted.source_type,
                 "metadata": extracted.metadata,
                 "tables": extracted.tables,
+                "canonical_blocks": canonical_document.get("blocks") or [],
                 "confidence": "high" if extracted.text.strip() else "unknown",
             },
+            "extraction_mode": resolved_mode,
+            "user_instruction": user_instruction,
+            "ai_provider": {"provider": provider_name, "model": model, "error": ai_error},
         }
         confidence = dict(draft.get("confidence_by_field") or {})
         confidence["source_document"] = "high" if extracted.text.strip() else "unknown"
         draft["confidence_by_field"] = confidence
-        return self._create_extraction_draft_record(
+        legacy_draft = self._create_extraction_draft_record(
             actor_user_id=actor_user_id,
             lab_id=str(protocol.get("lab_id") or "lab:demo"),
             source_text=source_text,
             draft=draft,
             import_id=str(imported["import_id"]),
             protocol_id=protocol_id,
+        )
+        run_id = f"protocol-extraction-run:{uuid.uuid4().hex[:16]}"
+        items = extraction_items_from_draft(
+            extraction_run_id=run_id,
+            draft=legacy_draft,
+            origin="ai" if ai_draft is not None else "rules",
+        )
+        now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO protocol_extraction_runs
+                    (run_id, protocol_id, source_attachment_id, linked_draft_id, mode, provider, model,
+                     parser_version, user_instruction, status, created_by, completed_at, error,
+                     canonical_document_json, deterministic_draft_json, ai_draft_json, merged_draft_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run_id,
+                    protocol_id,
+                    str(imported["import_id"]),
+                    str(legacy_draft["extraction_id"]),
+                    resolved_mode,
+                    provider_name,
+                    model,
+                    PROTOCOL_EXTRACTION_SCHEMA_VERSION,
+                    user_instruction,
+                    actor_user_id,
+                    now,
+                    ai_error,
+                    json.dumps(canonical_document),
+                    json.dumps(self._extract_protocol_draft(
+                        source_text=source_text,
+                        origin="document",
+                        proposed_title=str(protocol.get("title") or ""),
+                        proposed_category=str(protocol.get("category") or ""),
+                        source_citation=str(imported.get("original_filename") or ""),
+                    )),
+                    json.dumps(ai_draft) if ai_draft is not None else None,
+                    json.dumps(legacy_draft),
+                ),
+            )
+            for item in items:
+                connection.execute(
+                    """
+                    INSERT INTO protocol_extraction_items
+                        (item_id, extraction_run_id, section, source_ids_json, raw_source_text,
+                         normalized_json, confidence, origin, review_status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["item_id"],
+                        run_id,
+                        item["section"],
+                        json.dumps(item.get("source_ids") or []),
+                        item.get("raw_source_text"),
+                        json.dumps(item.get("normalized") or {}),
+                        item.get("confidence") or "unknown",
+                        item.get("origin") or "rules",
+                        item.get("review_status") or "needs_review",
+                    ),
+                )
+        return self.get_protocol_extraction_run(protocol_id, run_id) | {"draft": self.get_extraction_draft(str(legacy_draft["extraction_id"]))}
+
+    def list_protocol_extraction_runs(self, protocol_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM protocol_extraction_runs
+                WHERE protocol_id = ?
+                ORDER BY created_at DESC
+                """,
+                (protocol_id,),
+            ).fetchall()
+        return [self._decode_extraction_run_row(row, include_payload=False) for row in rows]
+
+    def get_protocol_extraction_run(self, protocol_id: str, run_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM protocol_extraction_runs WHERE protocol_id = ? AND run_id = ?",
+                (protocol_id, run_id),
+            ).fetchone()
+            if row is None:
+                raise ProtocolHubValidationError("Protocol extraction run not found.")
+            item_rows = connection.execute(
+                "SELECT * FROM protocol_extraction_items WHERE extraction_run_id = ? ORDER BY item_id",
+                (run_id,),
+            ).fetchall()
+        run = self._decode_extraction_run_row(row, include_payload=True)
+        run["items"] = [self._decode_extraction_item_row(item) for item in item_rows]
+        run["draft"] = self.get_extraction_draft(str(run.get("linked_draft_id"))) if run.get("linked_draft_id") else run.get("merged_draft")
+        return run
+
+    def update_protocol_extraction_item(
+        self,
+        *,
+        protocol_id: str,
+        run_id: str,
+        item_id: str,
+        updates: dict[str, Any],
+        reviewer: str | None = None,
+    ) -> dict[str, Any]:
+        self.get_protocol_extraction_run(protocol_id, run_id)
+        assignments: list[str] = []
+        values: list[Any] = []
+        if "review_status" in updates:
+            assignments.extend(["review_status = ?", "reviewer = ?", "reviewed_at = ?"])
+            values.extend([updates["review_status"], reviewer, datetime.now(timezone.utc).replace(microsecond=0).isoformat()])
+        if "normalized" in updates:
+            assignments.append("normalized_json = ?")
+            values.append(json.dumps(updates["normalized"]))
+        if "section" in updates:
+            assignments.append("section = ?")
+            values.append(updates["section"])
+        if assignments:
+            values.extend([run_id, item_id])
+            with self._connect() as connection:
+                connection.execute(
+                    f"UPDATE protocol_extraction_items SET {', '.join(assignments)} WHERE extraction_run_id = ? AND item_id = ?",
+                    values,
+                )
+        return self.get_protocol_extraction_run(protocol_id, run_id)
+
+    def approve_protocol_extraction_run(
+        self,
+        *,
+        actor_user_id: str,
+        protocol_id: str,
+        run_id: str,
+        version_label: str,
+        confirmed: bool,
+    ) -> dict[str, Any]:
+        run = self.get_protocol_extraction_run(protocol_id, run_id)
+        draft_id = str(run.get("linked_draft_id") or "")
+        if not draft_id:
+            raise ProtocolHubValidationError("Extraction run is not linked to a review draft.")
+        return self.approve_extraction_draft(
+            actor_user_id=actor_user_id,
+            extraction_id=draft_id,
+            version_label=version_label,
+            confirmed=confirmed,
+            target_protocol_id=protocol_id,
         )
 
     def latest_extraction_for_protocol(self, protocol_id: str) -> dict[str, Any] | None:
@@ -1242,6 +1492,65 @@ class ProtocolHubService:
             "narrative_or_event": bool(str(payload.get("source_text") or "").strip() or payload.get("proposed_events")),
             "explicit_researcher_confirmation": "required at approval",
         }
+        return payload
+
+    def _canonical_protocol_document(
+        self,
+        imported: dict[str, Any],
+        extracted: Any,
+        source_text: str,
+    ) -> dict[str, Any]:
+        blocks = list(getattr(extracted, "blocks", None) or [])
+        if not blocks:
+            blocks = [
+                {
+                    "block_id": f"p-{index}",
+                    "type": "paragraph",
+                    "heading_path": [],
+                    "text": line,
+                    "order": index,
+                    "metadata": {},
+                }
+                for index, line in enumerate([line.strip() for line in source_text.splitlines() if line.strip()], start=1)
+            ]
+        return {
+            "schema_version": PROTOCOL_EXTRACTION_SCHEMA_VERSION,
+            "source_attachment_id": imported.get("import_id"),
+            "source_type": getattr(extracted, "source_type", None),
+            "original_filename": imported.get("original_filename"),
+            "mime_type": imported.get("mime_type"),
+            "metadata": getattr(extracted, "metadata", {}) or {},
+            "warnings": getattr(extracted, "warnings", []) or [],
+            "blocks": blocks,
+        }
+
+    def _resolve_extraction_mode(self, requested: str | None) -> str:
+        normalized = (requested or "auto").strip().lower().replace("-", "_")
+        if normalized in {"rules", "rules_only", "deterministic"}:
+            return "rules_only"
+        if normalized in {"ai", "ai_assisted"}:
+            return "ai_assisted" if ai_extraction_enabled(self.settings) and self.settings.protocol_extraction_ai_enabled else "rules_only"
+        if normalized in {"compare", "compare_results"}:
+            return "compare_results" if ai_extraction_enabled(self.settings) and self.settings.protocol_extraction_ai_enabled else "rules_only"
+        return "ai_assisted" if ai_extraction_enabled(self.settings) and self.settings.protocol_extraction_ai_enabled else "rules_only"
+
+    def _decode_extraction_run_row(self, row: sqlite3.Row, *, include_payload: bool) -> dict[str, Any]:
+        payload = _decode(row)
+        payload["canonical_document"] = _json_load(payload.pop("canonical_document_json", None), {}) if include_payload else None
+        payload["deterministic_draft"] = _json_load(payload.pop("deterministic_draft_json", None), {}) if include_payload else None
+        payload["ai_draft"] = _json_load(payload.pop("ai_draft_json", None), None) if include_payload else None
+        payload["merged_draft"] = _json_load(payload.pop("merged_draft_json", None), {}) if include_payload else None
+        if not include_payload:
+            payload.pop("canonical_document_json", None)
+            payload.pop("deterministic_draft_json", None)
+            payload.pop("ai_draft_json", None)
+            payload.pop("merged_draft_json", None)
+        return payload
+
+    def _decode_extraction_item_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = _decode(row)
+        payload["source_ids"] = _json_load(payload.pop("source_ids_json", None), [])
+        payload["normalized"] = _json_load(payload.pop("normalized_json", None), {})
         return payload
 
     def _extract_protocol_draft(

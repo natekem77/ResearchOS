@@ -5,12 +5,26 @@ from __future__ import annotations
 import tempfile
 import unittest
 import zipfile
+import json
 from pathlib import Path
+from unittest.mock import patch
 
 from app.attachment_storage import AttachmentStorageError
 from app.config import Settings
 from app.general_experiments import GeneralExperimentService
 from app.protocol_hub import ProtocolHubService
+
+
+class _FakeAIProvider:
+    provider_name = "fake-ai"
+
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.messages: list[str] = []
+
+    def chat(self, message: str, context: str | None = None) -> str:
+        self.messages.append(message)
+        return self.response
 
 
 def _docx_bytes(*, paragraphs: list[str], table_rows: list[list[str]]) -> bytes:
@@ -38,6 +52,14 @@ def _docx_bytes(*, paragraphs: list[str], table_rows: list[list[str]]) -> bytes:
 class ProtocolHubTests(unittest.TestCase):
     def _settings(self, tmpdir: str) -> Settings:
         return Settings(database_url=f"sqlite:///{Path(tmpdir) / 'researchos.db'}")
+
+    def _ai_settings(self, tmpdir: str) -> Settings:
+        return Settings(
+            database_url=f"sqlite:///{Path(tmpdir) / 'researchos.db'}",
+            ai_provider="openai-compatible",
+            ai_base_url="http://example.invalid",
+            ai_model="protocol-test-model",
+        )
 
     def _service(self, tmpdir: str) -> ProtocolHubService:
         return ProtocolHubService(settings=self._settings(tmpdir))
@@ -307,11 +329,194 @@ class ProtocolHubTests(unittest.TestCase):
         self.assertEqual(draft["status"], "awaiting_review")
         self.assertTrue(any(event["relative_day"] == 0 for event in draft["proposed_events"]))
         self.assertTrue(any(material["name"] == "BMP4" for material in draft["proposed_materials"]))
-        self.assertEqual(draft["extraction_evidence"]["source_document"]["parser_version"], "deterministic-protocol-document-v1")
+        self.assertEqual(draft["extraction_evidence"]["source_document"]["parser_version"], "protocol-extraction-hybrid-v1")
         self.assertEqual(draft["extraction_evidence"]["source_document"]["metadata"]["table_count"], 1)
         self.assertFalse(before_approval["workspace"]["materials"])
         self.assertTrue(any(material["name"] == "BMP4" for material in after_approval["workspace"]["materials"]))
         self.assertEqual(approved["draft"]["status"], "approved")
+
+    def test_canonical_docx_structure_preserves_headings_and_tables(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="structured.docx",
+                data=_docx_bytes(
+                    paragraphs=["Protocol title", "Materials", "Timeline", "Day 1 incubate at 37 C."],
+                    table_rows=[["Reagent", "Concentration"], ["BMP4", "10 ng/mL"]],
+                ),
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            run = service.create_protocol_extraction_run(
+                actor_user_id="user:researcher-a",
+                protocol_id=uploaded["protocol"]["protocol_id"],
+                mode="rules_only",
+            )
+
+        blocks = run["canonical_document"]["blocks"]
+        self.assertTrue(any(block["type"] == "heading" and block["text"] == "Materials" for block in blocks))
+        table_blocks = [block for block in blocks if block["type"] == "table_row"]
+        self.assertEqual(table_blocks[1]["columns"]["Reagent"], "BMP4")
+        self.assertEqual(run["mode"], "rules_only")
+        self.assertTrue(run["items"])
+
+    def test_ai_assisted_extraction_uses_valid_provider_output(self) -> None:
+        ai_payload = {
+            "protocol_title": "AI classified protocol",
+            "timeline": [
+                {
+                    "source_ids": ["p-4"],
+                    "day_or_time": "D1",
+                    "step_title": "Incubate cells",
+                    "instructions": "Incubate cells at 37 C.",
+                    "duration": None,
+                    "temperature": "37 C",
+                    "incubation": True,
+                    "notes": None,
+                    "confidence": "high",
+                }
+            ],
+            "materials": [
+                {
+                    "source_ids": ["table-1-row-2"],
+                    "name": "BMP4",
+                    "supplier": None,
+                    "catalog_number": None,
+                    "stock_concentration": None,
+                    "working_concentration": "10 ng/mL",
+                    "amount": None,
+                    "unit": None,
+                    "storage": None,
+                    "notes": None,
+                    "confidence": "high",
+                }
+            ],
+            "media_recipes": [],
+            "expected_results_qc": [],
+            "troubleshooting": [],
+            "unclassified_notes": [],
+        }
+        fake = _FakeAIProvider(json.dumps(ai_payload))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ProtocolHubService(settings=self._ai_settings(tmpdir))
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="ai.docx",
+                data=_docx_bytes(
+                    paragraphs=["Protocol title", "Materials", "Timeline", "Day 1 incubate cells at 37 C."],
+                    table_rows=[["Reagent", "Concentration"], ["BMP4", "10 ng/mL"]],
+                ),
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            with patch("app.protocol_ai_extraction.get_ai_provider", return_value=fake):
+                run = service.create_protocol_extraction_run(
+                    actor_user_id="user:researcher-a",
+                    protocol_id=uploaded["protocol"]["protocol_id"],
+                    mode="ai_assisted",
+                    user_instruction="Treat D entries as timeline events.",
+                )
+
+        self.assertEqual(run["provider"], "fake-ai")
+        self.assertEqual(run["model"], "protocol-test-model")
+        self.assertEqual(run["user_instruction"], "Treat D entries as timeline events.")
+        self.assertEqual(run["draft"]["proposed_title"], "AI classified protocol")
+        self.assertTrue(any(item["origin"] == "ai" for item in run["items"]))
+        self.assertIn("Treat D entries", fake.messages[0])
+
+    def test_malformed_ai_output_falls_back_to_rules_only_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ProtocolHubService(settings=self._ai_settings(tmpdir))
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="fallback.docx",
+                data=_docx_bytes(
+                    paragraphs=["Fallback protocol", "Timeline", "Day 2 change media."],
+                    table_rows=[["Reagent", "Concentration"], ["SAG", "300 nM"]],
+                ),
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            with patch("app.protocol_ai_extraction.get_ai_provider", return_value=_FakeAIProvider("{bad json")):
+                run = service.create_protocol_extraction_run(
+                    actor_user_id="user:researcher-a",
+                    protocol_id=uploaded["protocol"]["protocol_id"],
+                    mode="ai_assisted",
+                )
+
+        self.assertEqual(run["mode"], "ai_assisted")
+        self.assertIsNotNone(run["error"])
+        self.assertTrue(any("rules-only extraction was used" in warning for warning in run["draft"]["warnings"]))
+        self.assertTrue(any(event["relative_day"] == 2 for event in run["draft"]["proposed_events"]))
+
+    def test_unknown_ai_source_ids_are_rejected(self) -> None:
+        bad_payload = {
+            "protocol_title": None,
+            "timeline": [{"source_ids": ["missing"], "step_title": "Invented", "confidence": "high"}],
+            "materials": [],
+            "media_recipes": [],
+            "expected_results_qc": [],
+            "troubleshooting": [],
+            "unclassified_notes": [],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ProtocolHubService(settings=self._ai_settings(tmpdir))
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="bad-source.docx",
+                data=_docx_bytes(paragraphs=["Timeline", "Day 3 collect."], table_rows=[]),
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            with patch("app.protocol_ai_extraction.get_ai_provider", return_value=_FakeAIProvider(json.dumps(bad_payload))):
+                run = service.create_protocol_extraction_run(
+                    actor_user_id="user:researcher-a",
+                    protocol_id=uploaded["protocol"]["protocol_id"],
+                    mode="ai_assisted",
+                )
+
+        self.assertIn("referenced no valid source IDs", run["error"])
+        self.assertFalse(any(item["normalized"].get("title") == "Invented" for item in run["items"]))
+
+    def test_extraction_reruns_create_separate_versions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            uploaded = service.upload_protocol_document(
+                actor_user_id="user:researcher-a",
+                lab_id="lab:demo",
+                filename="rerun.docx",
+                data=_docx_bytes(paragraphs=["Timeline", "Day 0 seed."], table_rows=[]),
+                mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            first = service.create_protocol_extraction_run(
+                actor_user_id="user:researcher-a",
+                protocol_id=uploaded["protocol"]["protocol_id"],
+                mode="rules_only",
+            )
+            second = service.create_protocol_extraction_run(
+                actor_user_id="user:researcher-a",
+                protocol_id=uploaded["protocol"]["protocol_id"],
+                mode="rules_only",
+                user_instruction="Second pass.",
+            )
+            runs = service.list_protocol_extraction_runs(uploaded["protocol"]["protocol_id"])
+
+        self.assertNotEqual(first["run_id"], second["run_id"])
+        self.assertEqual(len(runs), 2)
+        self.assertEqual(second["user_instruction"], "Second pass.")
+
+    def test_mobile_protocol_extractions_route_matches_flutter_request(self) -> None:
+        from app.main import app
+
+        matching_routes = [
+            route
+            for route in app.routes
+            if getattr(route, "path", None) == "/mobile/protocols/{protocol_id}/extractions"
+        ]
+        methods = set().union(*(getattr(route, "methods", set()) for route in matching_routes))
+
+        self.assertIn("POST", methods)
 
     def test_image_only_pdf_reports_ocr_required(self) -> None:
         from pypdf import PdfWriter

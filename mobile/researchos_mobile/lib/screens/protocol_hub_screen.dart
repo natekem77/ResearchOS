@@ -1113,6 +1113,22 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
               ),
             ),
             const SizedBox(height: ResearchOsSpacing.md),
+            ResearchOsCard(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.verified_user_outlined,
+                      color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: ResearchOsSpacing.sm),
+                  const Expanded(
+                    child: Text(
+                      'AI-assisted extraction may contain errors. Verify all protocol details before use.',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
             _ReviewListSection(
               title: 'Clarification Questions',
               icon: Icons.help_outline,
@@ -1149,7 +1165,7 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
                 for (final material in materials)
                   ResearchOsInfoCard(
                     title: _text(material['name']),
-                    subtitle: _text(material['notes']),
+                    subtitle: _draftItemSubtitle(material),
                     icon: Icons.science_outlined,
                   ),
               ],
@@ -1161,6 +1177,7 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
                   .map((item) => [
                         _text(item['recipe'], fallback: 'Media recipe'),
                         _text(item['preparation']),
+                        _draftItemSubtitle(item),
                       ].where((value) => value.isNotEmpty).join(' — '))
                   .toList(),
               empty: 'No proposed media details. Unknown remains unknown.',
@@ -1175,10 +1192,16 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
               title: 'Expected Results and QC',
               icon: Icons.fact_check_outlined,
               items: [
-                ...expected.map((item) =>
-                    _text(item['title'], fallback: _text(item['description']))),
-                ...qc.map((item) =>
-                    _text(item['title'], fallback: _text(item['description']))),
+                ...expected.map((item) => [
+                      _text(item['title'],
+                          fallback: _text(item['description'])),
+                      _draftItemSubtitle(item),
+                    ].where((value) => value.isNotEmpty).join(' — ')),
+                ...qc.map((item) => [
+                      _text(item['title'],
+                          fallback: _text(item['description'])),
+                      _draftItemSubtitle(item),
+                    ].where((value) => value.isNotEmpty).join(' — ')),
               ],
               empty:
                   'No expected results were inferred. Add source-supported details before approval if needed.',
@@ -1187,8 +1210,11 @@ class _ProtocolDraftReviewScreenState extends State<ProtocolDraftReviewScreen> {
               title: 'Troubleshooting',
               icon: Icons.build_circle_outlined,
               items: troubleshooting
-                  .map((item) => _text(item['issue'],
-                      fallback: _text(item['recommended_action'])))
+                  .map((item) => [
+                        _text(item['issue'],
+                            fallback: _text(item['recommended_action'])),
+                        _draftItemSubtitle(item),
+                      ].where((value) => value.isNotEmpty).join(' — '))
                   .toList(),
               empty: 'No troubleshooting entries were inferred.',
             ),
@@ -1305,6 +1331,8 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
   late Future<Map<String, dynamic>> _future;
   String? _selectedVersionId;
   String? _extractingImportId;
+  String _extractionMode = 'ai_assisted';
+  final _extractionInstruction = TextEditingController();
 
   @override
   void initState() {
@@ -1318,6 +1346,12 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
     });
   }
 
+  @override
+  void dispose() {
+    _extractionInstruction.dispose();
+    super.dispose();
+  }
+
   Future<void> _extractProtocol(Map<String, dynamic> document) async {
     final importId = _text(document['import_id'],
         fallback: _text(document['attachment_id']));
@@ -1327,6 +1361,8 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
       final response = await widget.api.extractProtocolHubProtocol(
         protocolId: widget.protocolId,
         importId: importId,
+        mode: _extractionMode,
+        userInstruction: _extractionInstruction.text,
       );
       if (!mounted) return;
       final draft = _map(response['draft']);
@@ -1403,6 +1439,10 @@ class _ProtocolHubDetailScreenState extends State<ProtocolHubDetailScreen> {
                       api: widget.api,
                       documents: _maps(protocol['source_documents']),
                       extractingImportId: _extractingImportId,
+                      extractionMode: _extractionMode,
+                      instructionController: _extractionInstruction,
+                      onModeChanged: (value) =>
+                          setState(() => _extractionMode = value),
                       onExtract: _extractProtocol,
                     ),
                     if (versions.isNotEmpty)
@@ -1539,12 +1579,18 @@ class _ProtocolSourceDocumentsSection extends StatelessWidget {
     required this.api,
     required this.documents,
     required this.onExtract,
+    required this.extractionMode,
+    required this.instructionController,
+    required this.onModeChanged,
     this.extractingImportId,
   });
 
   final ResearchOsApi api;
   final List<Map<String, dynamic>> documents;
   final ValueChanged<Map<String, dynamic>> onExtract;
+  final String extractionMode;
+  final TextEditingController instructionController;
+  final ValueChanged<String> onModeChanged;
   final String? extractingImportId;
 
   @override
@@ -1592,6 +1638,44 @@ class _ProtocolSourceDocumentsSection extends StatelessWidget {
                       icon: const Icon(Icons.open_in_new),
                     ),
                   ],
+                ),
+                const SizedBox(height: ResearchOsSpacing.sm),
+                DropdownButtonFormField<String>(
+                  initialValue: extractionMode,
+                  decoration: const InputDecoration(
+                    labelText: 'Extraction mode',
+                  ),
+                  items: const [
+                    DropdownMenuItem(
+                      value: 'ai_assisted',
+                      child: Text('AI assisted'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'rules_only',
+                      child: Text('Rules only'),
+                    ),
+                    DropdownMenuItem(
+                      value: 'compare_results',
+                      child: Text('Compare results'),
+                    ),
+                  ],
+                  onChanged: extractingImportId == null
+                      ? (value) {
+                          if (value != null) onModeChanged(value);
+                        }
+                      : null,
+                ),
+                const SizedBox(height: ResearchOsSpacing.sm),
+                TextField(
+                  controller: instructionController,
+                  minLines: 1,
+                  maxLines: 3,
+                  enabled: extractingImportId == null,
+                  decoration: const InputDecoration(
+                    labelText: 'Tell Mundi how to interpret this protocol',
+                    hintText:
+                        'Example: Treat D0-D30 entries as timeline events.',
+                  ),
                 ),
                 const SizedBox(height: ResearchOsSpacing.sm),
                 SizedBox(
@@ -2042,6 +2126,20 @@ String _listText(Object? value) {
 String _prefixedList(String prefix, Object? value) {
   final text = _listText(value);
   return text.isEmpty ? '' : '$prefix: $text';
+}
+
+String _draftItemSubtitle(Map<String, dynamic> item) {
+  final parts = [
+    if (_text(item['confidence']).isNotEmpty)
+      'Confidence: ${_text(item['confidence'])}',
+    if (_text(item['origin']).isNotEmpty) 'Origin: ${_text(item['origin'])}',
+    if (_text(item['source_location']).isNotEmpty)
+      'Source: ${_text(item['source_location'])}',
+    if (_text(item['source_excerpt']).isNotEmpty)
+      'Excerpt: ${_text(item['source_excerpt'])}',
+    if (_text(item['notes']).isNotEmpty) _text(item['notes']),
+  ];
+  return parts.join('\n');
 }
 
 String _extensionForFile(String filename) {
