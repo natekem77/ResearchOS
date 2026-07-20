@@ -6,7 +6,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from app.ai_providers import AIProviderError, get_ai_provider
+from app.ai.provider_manager import get_ai_provider
+from app.ai_providers import AIProviderError
 from app.config import Settings
 
 

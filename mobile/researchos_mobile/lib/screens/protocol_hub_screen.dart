@@ -17,6 +17,8 @@ class ProtocolHubScreen extends StatefulWidget {
 }
 
 class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
+  static const _ungroupedGroupId = '__protocols_ungrouped__';
+
   final _query = TextEditingController();
   var _protocols = <Map<String, dynamic>>[];
   var _groups = <Map<String, dynamic>>[];
@@ -57,6 +59,12 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
       setState(() {
         _groups = groups;
         _protocols = protocols;
+        if (protocols.any((item) => _nullableText(item['group_id']) == null)) {
+          _expandedGroups.add(_ungroupedGroupId);
+        }
+        if (_query.text.trim().isNotEmpty) {
+          _expandMatchedProtocolParents(protocols);
+        }
         _reordering = false;
         _loading = false;
       });
@@ -241,12 +249,17 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
   }
 
   Future<void> _deleteGroup(Map<String, dynamic> group) async {
+    final groupId = _text(group['group_id']);
+    final nestedGroupCount = _countDescendantGroups(groupId);
+    final protocolCount = _countProtocolsInGroupTree(groupId);
     final choice = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Group?'),
         content: Text(
           'Delete "${_text(group['name'])}"?\n\n'
+          'Nested groups: $nestedGroupCount\n'
+          'Protocols: $protocolCount\n\n'
           'Choose whether to keep protocols and subgroups by moving them to the parent, or delete the whole nested group tree.',
         ),
         actions: [
@@ -272,7 +285,7 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
     if (choice == null || choice == 'cancel') return;
     try {
       await widget.api.deleteProtocolHubGroup(
-        groupId: _text(group['group_id']),
+        groupId: groupId,
         mode: choice,
       );
       if (!mounted) return;
@@ -285,15 +298,63 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
     }
   }
 
+  int _countDescendantGroups(String groupId) {
+    var count = 0;
+    void visit(String parentId) {
+      for (final group in _groups) {
+        if (_nullableText(group['parent_group_id']) == parentId) {
+          count += 1;
+          visit(_text(group['group_id']));
+        }
+      }
+    }
+
+    visit(groupId);
+    return count;
+  }
+
+  int _countProtocolsInGroupTree(String groupId) {
+    final groupIds = <String>{groupId};
+    void visit(String parentId) {
+      for (final group in _groups) {
+        if (_nullableText(group['parent_group_id']) == parentId) {
+          final childId = _text(group['group_id']);
+          groupIds.add(childId);
+          visit(childId);
+        }
+      }
+    }
+
+    visit(groupId);
+    return _protocols
+        .where((protocol) =>
+            groupIds.contains(_nullableText(protocol['group_id'])))
+        .length;
+  }
+
   Future<void> _moveProtocolToGroup(Map<String, dynamic> protocol) async {
     final destination = await _chooseGroup(title: 'Move Protocol');
     if (destination.isCancelled) return;
+    await _moveProtocolToGroupId(
+      _text(protocol['protocol_id']),
+      destination.groupId,
+    );
+  }
+
+  Future<void> _moveProtocolToGroupId(
+      String protocolId, String? groupId) async {
+    if (protocolId.isEmpty) return;
     try {
       await widget.api.moveProtocolHubProtocolToGroup(
-        protocolId: _text(protocol['protocol_id']),
-        groupId: destination.groupId,
+        protocolId: protocolId,
+        groupId: groupId,
       );
       if (!mounted) return;
+      if (groupId == null) {
+        _expandedGroups.add(_ungroupedGroupId);
+      } else {
+        _expandedGroups.add(groupId);
+      }
       await _reload();
     } catch (error) {
       if (!mounted) return;
@@ -380,14 +441,35 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
     final rows = _protocolTreeRows();
     return ListView.builder(
       padding: ResearchOsSpacing.screen,
-      itemCount: rows.length + 3,
+      itemCount: rows.length + 2,
       itemBuilder: (context, index) {
         if (index == 0) return _buildHeader();
-        if (index == 1) return _ProtocolLibrarySections(protocols: _protocols);
-        if (index == 2) return const SizedBox(height: ResearchOsSpacing.md);
-        return rows[index - 3];
+        if (index == 1) return const SizedBox(height: ResearchOsSpacing.md);
+        return rows[index - 2];
       },
     );
+  }
+
+  void _expandMatchedProtocolParents(List<Map<String, dynamic>> protocols) {
+    for (final protocol in protocols) {
+      final groupId = _nullableText(protocol['group_id']);
+      if (groupId == null) {
+        _expandedGroups.add(_ungroupedGroupId);
+      } else {
+        String? current = groupId;
+        while (current != null) {
+          _expandedGroups.add(current);
+          String? parent;
+          for (final group in _groups) {
+            if (_text(group['group_id']) == current) {
+              parent = _nullableText(group['parent_group_id']);
+              break;
+            }
+          }
+          current = parent;
+        }
+      }
+    }
   }
 
   List<Widget> _protocolTreeRows() {
@@ -438,57 +520,116 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
           onMoveDown: index == groups.length - 1
               ? null
               : () => _moveGroupFallback(group, 1),
+          onProtocolDropped: (protocolId) =>
+              _moveProtocolToGroupId(protocolId, groupId),
           onDelete: () => _deleteGroup(group),
         ));
         if (expanded) addScope(groupId, depth + 1);
       }
       final protocols = protocolsByGroup[parentId] ?? const [];
+      if (parentId == null) return;
       for (var index = 0; index < protocols.length; index++) {
         final protocol = protocols[index];
-        rows.add(Padding(
-          key: ValueKey('protocol-card-${_text(protocol['protocol_id'])}'),
-          padding: EdgeInsets.only(
-            left: depth * 20,
-            bottom: ResearchOsSpacing.md,
-          ),
-          child: _ProtocolCard(
-            protocol: protocol,
-            trailing: _ProtocolEntryMenu(
-              index: index,
-              deleting: _deleting.contains(_text(protocol['protocol_id'])),
-              reordering: _reordering,
-              canDelete: protocol['can_delete'] != false,
-              canReorder:
-                  protocols.length > 1 && protocol['can_reorder'] != false,
-              capabilityReason: _text(protocol['capability_reason']),
-              onDelete: () => _confirmDelete(protocol),
-              onMoveToGroup: () => _moveProtocolToGroup(protocol),
-              onMoveUp: index == 0
-                  ? null
-                  : () =>
-                      _moveProtocolWithinSiblings(protocols, index, index - 1),
-              onMoveDown: index == protocols.length - 1
-                  ? null
-                  : () =>
-                      _moveProtocolWithinSiblings(protocols, index, index + 1),
-            ),
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => ProtocolHubDetailScreen(
-                    api: widget.api,
-                    protocolId: _text(protocol['protocol_id']),
-                  ),
-                ),
-              );
-            },
-          ),
-        ));
+        rows.add(_buildProtocolTreeRow(protocols, protocol, index, depth));
       }
     }
 
     addScope(null, 0);
+    final rootProtocols = protocolsByGroup[null] ?? const [];
+    if (rootProtocols.isNotEmpty) {
+      final expanded = _expandedGroups.contains(_ungroupedGroupId);
+      rows.add(_ProtocolGroupRow(
+        key: const ValueKey('protocol-group-ungrouped'),
+        group: {
+          'group_id': _ungroupedGroupId,
+          'name': 'Ungrouped',
+          'item_count': rootProtocols.length,
+          'virtual': true,
+        },
+        depth: 0,
+        expanded: expanded,
+        onToggle: () {
+          setState(() {
+            if (expanded) {
+              _expandedGroups.remove(_ungroupedGroupId);
+            } else {
+              _expandedGroups.add(_ungroupedGroupId);
+            }
+          });
+        },
+        onRename: null,
+        onNewSubgroup: null,
+        onMoveGroup: null,
+        onMoveUp: null,
+        onMoveDown: null,
+        onProtocolDropped: (protocolId) =>
+            _moveProtocolToGroupId(protocolId, null),
+        onDelete: null,
+      ));
+      if (expanded) {
+        for (var index = 0; index < rootProtocols.length; index++) {
+          rows.add(_buildProtocolTreeRow(
+              rootProtocols, rootProtocols[index], index, 1));
+        }
+      }
+    }
     return rows;
+  }
+
+  Widget _buildProtocolTreeRow(
+    List<Map<String, dynamic>> siblings,
+    Map<String, dynamic> protocol,
+    int index,
+    int depth,
+  ) {
+    final protocolId = _text(protocol['protocol_id']);
+    final row = Padding(
+      key: ValueKey('protocol-card-$protocolId'),
+      padding: EdgeInsets.only(
+        left: depth * 24,
+        bottom: ResearchOsSpacing.xs,
+      ),
+      child: _ProtocolCard(
+        protocol: protocol,
+        trailing: _ProtocolEntryMenu(
+          deleting: _deleting.contains(protocolId),
+          reordering: _reordering,
+          canDelete: protocol['can_delete'] != false,
+          canReorder: siblings.length > 1 && protocol['can_reorder'] != false,
+          capabilityReason: _text(protocol['capability_reason']),
+          onDelete: () => _confirmDelete(protocol),
+          onMoveToGroup: () => _moveProtocolToGroup(protocol),
+          onMoveUp: index == 0
+              ? null
+              : () => _moveProtocolWithinSiblings(siblings, index, index - 1),
+          onMoveDown: index == siblings.length - 1
+              ? null
+              : () => _moveProtocolWithinSiblings(siblings, index, index + 1),
+        ),
+        onTap: () {
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => ProtocolHubDetailScreen(
+                api: widget.api,
+                protocolId: protocolId,
+              ),
+            ),
+          );
+        },
+      ),
+    );
+    return LongPressDraggable<String>(
+      data: protocolId,
+      feedback: Material(
+        color: Colors.transparent,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 320),
+          child: _ProtocolDragPreview(title: _text(protocol['title'])),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.45, child: row),
+      child: row,
+    );
   }
 
   Future<void> _moveProtocolWithinSiblings(
@@ -733,10 +874,42 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
     required String title,
     String? excludeGroupId,
   }) async {
-    final groups = _groups
-        .where((group) => _text(group['group_id']) != excludeGroupId)
-        .toList()
-      ..sort(_compareSortThenId);
+    final groupsByParent = <String?, List<Map<String, dynamic>>>{};
+    for (final group in _groups) {
+      groupsByParent
+          .putIfAbsent(_nullableText(group['parent_group_id']), () => [])
+          .add(group);
+    }
+    for (final entry in groupsByParent.entries) {
+      entry.value.sort(_compareSortThenId);
+    }
+    final destinationRows = <Widget>[];
+    void addDestinationRows(String? parentId, int depth) {
+      for (final group in groupsByParent[parentId] ?? const []) {
+        final groupId = _text(group['group_id']);
+        final disabled = groupId == excludeGroupId ||
+            (excludeGroupId != null &&
+                _isGroupDescendant(groupId, excludeGroupId));
+        destinationRows.add(Padding(
+          padding: EdgeInsets.only(left: depth * 20),
+          child: ListTile(
+            enabled: !disabled,
+            leading: const Icon(Icons.folder_outlined),
+            title: Text(_text(group['name'], fallback: 'Group')),
+            subtitle: Text(_groupPath(group)),
+            onTap: disabled
+                ? null
+                : () => Navigator.pop(
+                      context,
+                      _MoveSelection.group(groupId),
+                    ),
+          ),
+        ));
+        addDestinationRows(groupId, depth + 1);
+      }
+    }
+
+    addDestinationRows(null, 0);
     final result = await showModalBottomSheet<_MoveSelection>(
       context: context,
       showDragHandle: true,
@@ -749,19 +922,10 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
             const SizedBox(height: ResearchOsSpacing.sm),
             ListTile(
               leading: const Icon(Icons.account_tree_outlined),
-              title: const Text('Root level'),
+              title: const Text('Root / Ungrouped'),
               onTap: () => Navigator.pop(context, const _MoveSelection.root()),
             ),
-            for (final group in groups)
-              ListTile(
-                leading: const Icon(Icons.folder_outlined),
-                title: Text(_text(group['name'], fallback: 'Group')),
-                subtitle: Text(_groupPath(group)),
-                onTap: () => Navigator.pop(
-                  context,
-                  _MoveSelection.group(_text(group['group_id'])),
-                ),
-              ),
+            ...destinationRows,
             const SizedBox(height: ResearchOsSpacing.sm),
             TextButton(
               onPressed: () => Navigator.pop(context, _MoveSelection.cancelled),
@@ -772,6 +936,19 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
       ),
     );
     return result ?? _MoveSelection.cancelled;
+  }
+
+  bool _isGroupDescendant(String groupId, String ancestorGroupId) {
+    final parentsById = {
+      for (final item in _groups)
+        _text(item['group_id']): _nullableText(item['parent_group_id'])
+    };
+    var current = parentsById[groupId];
+    while (current != null && current.isNotEmpty) {
+      if (current == ancestorGroupId) return true;
+      current = parentsById[current];
+    }
+    return false;
   }
 
   String _groupPath(Map<String, dynamic> group) {
@@ -850,43 +1027,6 @@ class _ProtocolOnboardingState extends StatelessWidget {
           ]),
         ],
       ),
-    );
-  }
-}
-
-class _ProtocolLibrarySections extends StatelessWidget {
-  const _ProtocolLibrarySections({required this.protocols});
-
-  final List<Map<String, dynamic>> protocols;
-
-  @override
-  Widget build(BuildContext context) {
-    final drafts = protocols
-        .where((item) => _text(item['status'], fallback: 'draft') == 'draft')
-        .length;
-    final approved = protocols
-        .where((item) => _text(item['status'], fallback: 'draft') == 'approved')
-        .length;
-    return Wrap(
-      spacing: ResearchOsSpacing.md,
-      runSpacing: ResearchOsSpacing.md,
-      children: [
-        ResearchOsSummaryCard(
-          label: 'Drafts Needing Review',
-          value: '$drafts',
-          icon: Icons.rate_review_outlined,
-        ),
-        ResearchOsSummaryCard(
-          label: 'Approved Protocols',
-          value: '$approved',
-          icon: Icons.verified_outlined,
-        ),
-        const ResearchOsSummaryCard(
-          label: 'Templates',
-          value: '8',
-          icon: Icons.dashboard_customize_outlined,
-        ),
-      ],
     );
   }
 }
@@ -2039,61 +2179,100 @@ class _ProtocolCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ResearchOsCard(
-      onTap: onTap,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    final metadata = <String>[
+      if (_text(protocol['category']).isNotEmpty) _text(protocol['category']),
+      if (_text(protocol['biological_system']).isNotEmpty)
+        _text(protocol['biological_system']),
+      if (_map(protocol['source_document']).isNotEmpty)
+        _text(
+          _map(protocol['source_document'])['original_filename'],
+          fallback: 'source file',
+        ),
+    ];
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      borderRadius: BorderRadius.circular(ResearchOsTokens.radiusSm),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusSm),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: ResearchOsSpacing.sm,
+            vertical: ResearchOsSpacing.sm,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              Icon(
+                Icons.description_outlined,
+                size: 20,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(width: ResearchOsSpacing.sm),
               Expanded(
-                child: Text(
-                  _text(protocol['title'], fallback: 'Untitled protocol'),
-                  style: Theme.of(context).textTheme.titleMedium,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _text(protocol['title'], fallback: 'Untitled protocol'),
+                      style: Theme.of(context).textTheme.bodyLarge,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if (metadata.isNotEmpty)
+                      Text(
+                        metadata.join(' • '),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                  ],
                 ),
               ),
+              const SizedBox(width: ResearchOsSpacing.xs),
               _Badge(_text(protocol['status'], fallback: 'draft')),
               if (trailing != null) trailing!,
             ],
           ),
-          const SizedBox(height: ResearchOsSpacing.sm),
-          Text(
-            _text(protocol['description'],
-                fallback: 'Structured protocol workspace.'),
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-          ),
-          const SizedBox(height: ResearchOsSpacing.md),
-          Wrap(
-            spacing: ResearchOsSpacing.sm,
-            runSpacing: ResearchOsSpacing.sm,
-            children: [
-              _MetricChip(
-                  icon: Icons.timeline,
-                  label: '${protocol['event_count'] ?? 0} events'),
-              _MetricChip(
-                  icon: Icons.inventory_2_outlined,
-                  label: '${protocol['material_count'] ?? 0} materials'),
-              _MetricChip(
-                  icon: Icons.fact_check_outlined,
-                  label: '${protocol['expected_result_count'] ?? 0} expected'),
-              if (_text(protocol['biological_system']).isNotEmpty)
-                _MetricChip(
-                    icon: Icons.science_outlined,
-                    label: _text(protocol['biological_system'])),
-              if (_map(protocol['source_document']).isNotEmpty)
-                _MetricChip(
-                    icon: _protocolFileIcon(_text(
-                        _map(protocol['source_document'])['attachment_type'])),
-                    label: _text(
-                        _map(protocol['source_document'])['original_filename'],
-                        fallback: 'source file')),
-            ],
-          ),
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProtocolDragPreview extends StatelessWidget {
+  const _ProtocolDragPreview({required this.title});
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 6,
+      borderRadius: BorderRadius.circular(ResearchOsTokens.radiusSm),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: ResearchOsSpacing.md,
+          vertical: ResearchOsSpacing.sm,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.description_outlined, size: 18),
+            const SizedBox(width: ResearchOsSpacing.sm),
+            Flexible(
+              child: Text(
+                title.isEmpty ? 'Protocol' : title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2101,7 +2280,6 @@ class _ProtocolCard extends StatelessWidget {
 
 class _ProtocolEntryMenu extends StatelessWidget {
   const _ProtocolEntryMenu({
-    required this.index,
     required this.deleting,
     required this.reordering,
     required this.canDelete,
@@ -2113,7 +2291,6 @@ class _ProtocolEntryMenu extends StatelessWidget {
     this.capabilityReason,
   });
 
-  final int index;
   final bool deleting;
   final bool reordering;
   final bool canDelete;
@@ -2134,21 +2311,15 @@ class _ProtocolEntryMenu extends StatelessWidget {
               ? 'Reorder protocol'
               : 'Reorder unavailable for this protocol',
           button: canReorder,
-          child: canReorder
-              ? ReorderableDelayedDragStartListener(
-                  index: index,
-                  child: const Padding(
-                    padding: EdgeInsets.all(ResearchOsSpacing.xs),
-                    child: Icon(Icons.drag_handle),
-                  ),
-                )
-              : Padding(
-                  padding: const EdgeInsets.all(ResearchOsSpacing.xs),
-                  child: Icon(
-                    Icons.drag_handle,
-                    color: Theme.of(context).disabledColor,
-                  ),
-                ),
+          child: Padding(
+            padding: const EdgeInsets.all(ResearchOsSpacing.xs),
+            child: Icon(
+              Icons.drag_handle,
+              color: canReorder
+                  ? Theme.of(context).colorScheme.onSurfaceVariant
+                  : Theme.of(context).disabledColor,
+            ),
+          ),
         ),
         if (deleting)
           const SizedBox.square(
@@ -2231,6 +2402,7 @@ class _ProtocolGroupRow extends StatelessWidget {
     required this.onMoveGroup,
     required this.onMoveUp,
     required this.onMoveDown,
+    required this.onProtocolDropped,
     required this.onDelete,
   });
 
@@ -2238,105 +2410,155 @@ class _ProtocolGroupRow extends StatelessWidget {
   final int depth;
   final bool expanded;
   final VoidCallback onToggle;
-  final VoidCallback onRename;
-  final VoidCallback onNewSubgroup;
-  final VoidCallback onMoveGroup;
+  final VoidCallback? onRename;
+  final VoidCallback? onNewSubgroup;
+  final VoidCallback? onMoveGroup;
   final VoidCallback? onMoveUp;
   final VoidCallback? onMoveDown;
-  final VoidCallback onDelete;
+  final ValueChanged<String>? onProtocolDropped;
+  final VoidCallback? onDelete;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        left: depth * 20,
-        bottom: ResearchOsSpacing.sm,
-      ),
-      child: Material(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
-        child: ListTile(
-          minLeadingWidth: 24,
-          leading: IconButton(
-            tooltip: expanded ? 'Collapse group' : 'Expand group',
-            onPressed: onToggle,
-            icon: Icon(expanded
-                ? Icons.keyboard_arrow_down
-                : Icons.keyboard_arrow_right),
-          ),
-          title: Row(
-            children: [
-              const Icon(Icons.folder_outlined, size: 20),
-              const SizedBox(width: ResearchOsSpacing.xs),
-              Expanded(
-                child: Text(
-                  _text(group['name'], fallback: 'Protocol group'),
-                  overflow: TextOverflow.ellipsis,
+    Widget row({required bool hovering}) {
+      return Padding(
+        padding: EdgeInsets.only(
+          left: depth * 24,
+          bottom: ResearchOsSpacing.xs,
+        ),
+        child: Material(
+          color: hovering
+              ? Theme.of(context).colorScheme.primaryContainer
+              : Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(ResearchOsTokens.radiusSm),
+          child: ListTile(
+            dense: true,
+            minLeadingWidth: 24,
+            onTap: onToggle,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: ResearchOsSpacing.sm,
+              vertical: 2,
+            ),
+            leading: IconButton(
+              tooltip: expanded ? 'Collapse group' : 'Expand group',
+              onPressed: onToggle,
+              icon: Icon(expanded
+                  ? Icons.keyboard_arrow_down
+                  : Icons.keyboard_arrow_right),
+            ),
+            title: Row(
+              children: [
+                Icon(
+                  _text(group['group_id']) == '__protocols_ungrouped__'
+                      ? Icons.inbox_outlined
+                      : Icons.folder_outlined,
+                  size: 20,
                 ),
-              ),
-            ],
-          ),
-          subtitle: Text('${group['item_count'] ?? 0} items'),
-          trailing: PopupMenuButton<_ProtocolGroupAction>(
-            tooltip: 'Group actions',
-            onSelected: (action) {
-              switch (action) {
-                case _ProtocolGroupAction.rename:
-                  onRename();
-                  break;
-                case _ProtocolGroupAction.newSubgroup:
-                  onNewSubgroup();
-                  break;
-                case _ProtocolGroupAction.moveGroup:
-                  onMoveGroup();
-                  break;
-                case _ProtocolGroupAction.moveUp:
-                  onMoveUp?.call();
-                  break;
-                case _ProtocolGroupAction.moveDown:
-                  onMoveDown?.call();
-                  break;
-                case _ProtocolGroupAction.delete:
-                  onDelete();
-                  break;
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: _ProtocolGroupAction.rename,
-                child: Text('Rename'),
-              ),
-              const PopupMenuItem(
-                value: _ProtocolGroupAction.newSubgroup,
-                child: Text('New Subgroup'),
-              ),
-              const PopupMenuItem(
-                value: _ProtocolGroupAction.moveGroup,
-                child: Text('Move Group'),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: _ProtocolGroupAction.moveUp,
-                enabled: onMoveUp != null,
-                child: const Text('Move Up'),
-              ),
-              PopupMenuItem(
-                value: _ProtocolGroupAction.moveDown,
-                enabled: onMoveDown != null,
-                child: const Text('Move Down'),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem(
-                value: _ProtocolGroupAction.delete,
-                child: Text(
-                  'Delete',
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                const SizedBox(width: ResearchOsSpacing.xs),
+                Expanded(
+                  child: Text(
+                    _text(group['name'], fallback: 'Protocol group'),
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                 ),
-              ),
-            ],
+                Text(
+                  '${group['item_count'] ?? 0}',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+              ],
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.drag_indicator,
+                  size: 20,
+                  color: onMoveUp == null && onMoveDown == null
+                      ? Theme.of(context).disabledColor
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                if (onRename != null ||
+                    onNewSubgroup != null ||
+                    onMoveGroup != null ||
+                    onDelete != null)
+                  PopupMenuButton<_ProtocolGroupAction>(
+                    tooltip: 'Group actions',
+                    onSelected: (action) {
+                      switch (action) {
+                        case _ProtocolGroupAction.rename:
+                          onRename?.call();
+                          break;
+                        case _ProtocolGroupAction.newSubgroup:
+                          onNewSubgroup?.call();
+                          break;
+                        case _ProtocolGroupAction.moveGroup:
+                          onMoveGroup?.call();
+                          break;
+                        case _ProtocolGroupAction.moveUp:
+                          onMoveUp?.call();
+                          break;
+                        case _ProtocolGroupAction.moveDown:
+                          onMoveDown?.call();
+                          break;
+                        case _ProtocolGroupAction.delete:
+                          onDelete?.call();
+                          break;
+                      }
+                    },
+                    itemBuilder: (context) => [
+                      PopupMenuItem(
+                        value: _ProtocolGroupAction.rename,
+                        enabled: onRename != null,
+                        child: const Text('Rename'),
+                      ),
+                      PopupMenuItem(
+                        value: _ProtocolGroupAction.newSubgroup,
+                        enabled: onNewSubgroup != null,
+                        child: const Text('New Subgroup'),
+                      ),
+                      PopupMenuItem(
+                        value: _ProtocolGroupAction.moveGroup,
+                        enabled: onMoveGroup != null,
+                        child: const Text('Move Group'),
+                      ),
+                      const PopupMenuDivider(),
+                      PopupMenuItem(
+                        value: _ProtocolGroupAction.moveUp,
+                        enabled: onMoveUp != null,
+                        child: const Text('Move Up'),
+                      ),
+                      PopupMenuItem(
+                        value: _ProtocolGroupAction.moveDown,
+                        enabled: onMoveDown != null,
+                        child: const Text('Move Down'),
+                      ),
+                      if (onDelete != null) ...[
+                        const PopupMenuDivider(),
+                        PopupMenuItem(
+                          value: _ProtocolGroupAction.delete,
+                          child: Text(
+                            'Delete',
+                            style: TextStyle(
+                                color: Theme.of(context).colorScheme.error),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+              ],
+            ),
           ),
         ),
-      ),
+      );
+    }
+
+    return DragTarget<String>(
+      onWillAcceptWithDetails: (_) => onProtocolDropped != null,
+      onAcceptWithDetails: (details) => onProtocolDropped?.call(details.data),
+      builder: (context, candidateData, rejectedData) {
+        return row(hovering: candidateData.isNotEmpty);
+      },
     );
   }
 }
@@ -2828,21 +3050,6 @@ class _Section extends StatelessWidget {
           ...children,
         const SizedBox(height: ResearchOsSpacing.md),
       ],
-    );
-  }
-}
-
-class _MetricChip extends StatelessWidget {
-  const _MetricChip({required this.icon, required this.label});
-
-  final IconData icon;
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Chip(
-      avatar: Icon(icon, size: 18),
-      label: Text(label, overflow: TextOverflow.ellipsis),
     );
   }
 }

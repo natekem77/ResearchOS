@@ -5,6 +5,8 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 
+import '../ai/ai_models.dart';
+import '../ai/ai_skill.dart';
 import '../models/mobile_models.dart';
 
 class ResearchOsApiException implements Exception {
@@ -33,6 +35,87 @@ class ResearchOsApi {
 
   Future<Map<String, dynamic>> connectionInfo() {
     return _getMap('/mobile/connection-info');
+  }
+
+  Future<List<MundiAiProviderSpec>> aiProviders() async {
+    final json = await _getMap('/ai/providers');
+    final providers = json['providers'];
+    if (providers is! List) return const [];
+    return providers
+        .whereType<Map<String, dynamic>>()
+        .map(MundiAiProviderSpec.fromJson)
+        .toList();
+  }
+
+  Future<List<MundiAiProviderConfig>> aiProviderConfigs() async {
+    final json = await _getMap('/ai/provider-configs');
+    final providers = json['providers'];
+    if (providers is! List) return const [];
+    return providers
+        .whereType<Map<String, dynamic>>()
+        .map(MundiAiProviderConfig.fromJson)
+        .toList();
+  }
+
+  Future<MundiAiProviderConfig> saveAiProviderConfig({
+    required String provider,
+    required String displayName,
+    required String endpoint,
+    required String defaultModel,
+    String? apiKey,
+    bool enabled = true,
+    bool isPreferred = false,
+  }) async {
+    return MundiAiProviderConfig.fromJson(
+        await _postMap('/ai/provider-configs', {
+      'provider': provider,
+      'display_name': displayName,
+      'endpoint': endpoint,
+      'default_model': defaultModel,
+      'enabled': enabled,
+      'is_preferred': isPreferred,
+      if (apiKey != null && apiKey.isNotEmpty) 'api_key': apiKey,
+    }));
+  }
+
+  Future<Map<String, dynamic>> testAiProviderConfig({
+    required String provider,
+    required String endpoint,
+    required String defaultModel,
+    String? apiKey,
+  }) {
+    return _postMap('/ai/provider-configs/test', {
+      'provider': provider,
+      'display_name': provider,
+      'endpoint': endpoint,
+      'default_model': defaultModel,
+      if (apiKey != null && apiKey.isNotEmpty) 'api_key': apiKey,
+    });
+  }
+
+  Future<List<MundiAiSkill>> aiSkills() async {
+    final json = await _getMap('/ai/skills');
+    final skills = json['skills'];
+    if (skills is! List) return const [];
+    return skills
+        .whereType<Map<String, dynamic>>()
+        .map(MundiAiSkill.fromJson)
+        .toList();
+  }
+
+  Future<MundiAiSkillRun> runAiSkill(
+    String skillId, {
+    String? question,
+    String? message,
+    Map<String, dynamic> inputs = const {},
+  }) async {
+    return MundiAiSkillRun.fromJson(
+      await _postMap('/ai/skills/${Uri.encodeComponent(skillId)}/run', {
+        if (question != null) 'question': question,
+        if (message != null) 'message': message,
+        'inputs': inputs,
+      }),
+    );
   }
 
   Future<List<DashboardCard>> dashboardCards() async {

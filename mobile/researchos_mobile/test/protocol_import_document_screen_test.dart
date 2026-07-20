@@ -294,6 +294,10 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(find.text('Cell Culture'), findsOneWidget);
+    expect(find.text('Ungrouped'), findsOneWidget);
+    expect(find.text('Drafts Needing Review'), findsNothing);
+    expect(find.text('Approved Protocols'), findsNothing);
+    expect(find.text('Templates'), findsNothing);
     await tester.tap(find.byTooltip('Group actions'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Rename'));
@@ -316,6 +320,81 @@ void main() {
         request.url.path ==
         '/protocol-hub/protocols/protocol%3Aa/move-to-group');
     expect(jsonDecode(move.body)['group_id'], 'protocol-group:cell');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('protocol tree supports nested destinations and drag to group',
+      (tester) async {
+    final requests = <http.Request>[];
+    final groups = [
+      _group('protocol-group:cell', 'Cell Culture'),
+      _group(
+        'protocol-group:organoids',
+        'Organoids',
+        parentGroupId: 'protocol-group:cell',
+      ),
+    ];
+    var protocols = [
+      _protocol('protocol:a', 'Protocol A'),
+    ];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: _JsonClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/protocol-hub/tree') {
+          return http.Response(
+            jsonEncode(_tree(groups: groups, protocols: protocols)),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path ==
+                '/protocol-hub/protocols/protocol%3Aa/move-to-group') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          protocols = [
+            _protocol('protocol:a', 'Protocol A')
+              ..['group_id'] = body['group_id'],
+          ];
+          return http.Response(jsonEncode(protocols.first), 200);
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ProtocolHubScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Cell Culture'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_vert).last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Move to Group'));
+    await tester.pumpAndSettle();
+    expect(find.text('Root / Ungrouped'), findsOneWidget);
+    expect(find.text('Cell Culture'), findsWidgets);
+    expect(find.text('Organoids'), findsWidgets);
+    await tester.tap(find.text('Root / Ungrouped'));
+    await tester.pumpAndSettle();
+
+    final protocolCenter = tester.getCenter(find.text('Protocol A'));
+    final cellCenter = tester.getCenter(find.text('Cell Culture').first);
+    final gesture = await tester.startGesture(protocolCenter);
+    await tester.pump(const Duration(seconds: 1));
+    await gesture.moveTo(cellCenter);
+    await tester.pumpAndSettle();
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    final moveRequests = requests.where((request) =>
+        request.url.path ==
+        '/protocol-hub/protocols/protocol%3Aa/move-to-group');
+    expect(moveRequests.length, greaterThanOrEqualTo(1));
+    expect(
+        jsonDecode(moveRequests.last.body)['group_id'], 'protocol-group:cell');
     expect(tester.takeException(), isNull);
   });
 }

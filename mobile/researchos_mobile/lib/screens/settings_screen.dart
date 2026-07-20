@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../ai/ai_service.dart';
 import '../api/researchos_api.dart';
 import '../brand/mundi_brand.dart';
 import '../config/app_config.dart';
@@ -112,6 +113,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             const SizedBox(height: ResearchOsSpacing.md),
             _ServerSettingsCard(api: widget.api),
+            const SizedBox(height: ResearchOsSpacing.md),
+            _AiProvidersCard(api: widget.api),
             InfoCard(
               title: 'OneNote',
               subtitle: 'Read-only status: ${data.settings.oneNoteStatus}',
@@ -379,6 +382,215 @@ class _ServerSettingsCardState extends State<_ServerSettingsCard> {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _AiProvidersCard extends StatefulWidget {
+  const _AiProvidersCard({required this.api});
+
+  final ResearchOsApi api;
+
+  @override
+  State<_AiProvidersCard> createState() => _AiProvidersCardState();
+}
+
+class _AiProvidersCardState extends State<_AiProvidersCard> {
+  late final MundiAiService _ai = MundiAiService(widget.api);
+  late Future<dynamic> _future;
+  final _endpoint = TextEditingController();
+  final _model = TextEditingController(text: 'gpt-4o-mini');
+  final _apiKey = TextEditingController();
+  final _question = TextEditingController(text: 'How do I create a subgroup?');
+  String _provider = 'openai';
+  String? _message;
+  String? _answer;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _ai.providerState();
+  }
+
+  @override
+  void dispose() {
+    _endpoint.dispose();
+    _model.dispose();
+    _apiKey.dispose();
+    _question.dispose();
+    super.dispose();
+  }
+
+  void _reload() {
+    setState(() {
+      _future = _ai.providerState();
+    });
+  }
+
+  Future<void> _testAndSave({required bool save}) async {
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    try {
+      final result = await _ai.testProvider(
+        provider: _provider,
+        endpoint: _endpoint.text.trim(),
+        defaultModel: _model.text.trim(),
+        apiKey: _apiKey.text.trim(),
+      );
+      if (save && result['ok'] == true) {
+        await _ai.saveProvider(
+          provider: _provider,
+          displayName: _provider,
+          endpoint: _endpoint.text.trim(),
+          defaultModel: _model.text.trim(),
+          apiKey: _apiKey.text.trim(),
+          isPreferred: true,
+        );
+        _reload();
+      }
+      setState(() {
+        _message = result['message']?.toString() ?? 'Provider checked.';
+      });
+    } catch (error) {
+      setState(() => _message = 'AI provider check failed: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _askMundi() async {
+    setState(() {
+      _busy = true;
+      _answer = null;
+    });
+    try {
+      final result = await _ai.teachMundi(_question.text.trim());
+      setState(() => _answer = result.response);
+    } catch (error) {
+      setState(() => _answer = 'Ask Mundi failed: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<dynamic>(
+      future: _future,
+      builder: (context, snapshot) {
+        final state = snapshot.data;
+        final providers = state?.availableProviders ?? const [];
+        final configs = state?.configuredProviders ?? const [];
+        if (providers.isNotEmpty &&
+            !providers.any((item) => item.providerId == _provider)) {
+          _provider = providers.first.providerId;
+        }
+        return ResearchOsCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.auto_awesome_outlined),
+                  const SizedBox(width: ResearchOsSpacing.sm),
+                  Expanded(
+                    child: Text('AI Providers',
+                        style: Theme.of(context).textTheme.titleMedium),
+                  ),
+                  if (snapshot.connectionState == ConnectionState.waiting)
+                    const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                ],
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              Text(
+                configs.isEmpty
+                    ? 'No provider is required. Add one when AI-assisted features should use a model.'
+                    : '${configs.length} configured provider${configs.length == 1 ? '' : 's'}. Preferred: ${configs.firstWhere((item) => item.isPreferred, orElse: () => configs.first).displayName}.',
+              ),
+              const SizedBox(height: ResearchOsSpacing.md),
+              DropdownButtonFormField<String>(
+                initialValue: _provider,
+                decoration: const InputDecoration(labelText: 'Provider'),
+                items: [
+                  for (final provider in providers)
+                    DropdownMenuItem(
+                      value: provider.providerId,
+                      child: Text(provider.displayName),
+                    ),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+                  final provider = providers.firstWhere(
+                    (item) => item.providerId == value,
+                    orElse: () => providers.first,
+                  );
+                  setState(() {
+                    _provider = value;
+                    _endpoint.text = provider.defaultEndpoint ?? '';
+                  });
+                },
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              TextField(
+                controller: _endpoint,
+                decoration: const InputDecoration(labelText: 'Endpoint'),
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              TextField(
+                controller: _model,
+                decoration: const InputDecoration(labelText: 'Default model'),
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              TextField(
+                controller: _apiKey,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'API key'),
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              Wrap(
+                spacing: ResearchOsSpacing.sm,
+                children: [
+                  OutlinedButton(
+                    onPressed: _busy ? null : () => _testAndSave(save: false),
+                    child: const Text('Test Connection'),
+                  ),
+                  FilledButton(
+                    onPressed: _busy ? null : () => _testAndSave(save: true),
+                    child: const Text('Set Default'),
+                  ),
+                ],
+              ),
+              if (_message != null) ...[
+                const SizedBox(height: ResearchOsSpacing.sm),
+                Text(_message!),
+              ],
+              const Divider(height: ResearchOsSpacing.xl),
+              Text('Ask Mundi', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              TextField(
+                controller: _question,
+                decoration:
+                    const InputDecoration(labelText: 'Mundi help question'),
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              FilledButton.tonal(
+                onPressed: _busy ? null : _askMundi,
+                child: const Text('Ask Mundi'),
+              ),
+              if (_answer != null) ...[
+                const SizedBox(height: ResearchOsSpacing.sm),
+                Text(_answer!),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 }

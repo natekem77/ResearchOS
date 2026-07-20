@@ -488,6 +488,132 @@ void main() {
     expect(body['confirmed'], true);
     expect((response['draft'] as Map)['status'], 'approved');
   });
+
+  test('AI platform API methods use canonical routes and decode responses',
+      () async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' && request.url.path == '/ai/providers') {
+          return http.Response(
+            jsonEncode({
+              'providers': [
+                {
+                  'provider_id': 'openai',
+                  'display_name': 'OpenAI',
+                  'provider_type': 'cloud',
+                  'requires_api_key': true,
+                }
+              ],
+              'health': {'configured': false},
+            }),
+            200,
+          );
+        }
+        if (request.method == 'GET' &&
+            request.url.path == '/ai/provider-configs') {
+          return http.Response(
+            jsonEncode({
+              'providers': [
+                {
+                  'provider_config_id': 'ai-provider:openai',
+                  'provider': 'openai',
+                  'display_name': 'OpenAI',
+                  'enabled': true,
+                  'api_key_configured': true,
+                  'is_preferred': true,
+                }
+              ],
+            }),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/ai/provider-configs') {
+          return http.Response(
+            jsonEncode({
+              'provider_config_id': 'ai-provider:openai',
+              'provider': 'openai',
+              'display_name': 'OpenAI',
+              'enabled': true,
+              'api_key_configured': true,
+              'is_preferred': true,
+            }),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/ai/provider-configs/test') {
+          return http.Response(
+            jsonEncode({'ok': true, 'message': 'valid'}),
+            200,
+          );
+        }
+        if (request.method == 'GET' && request.url.path == '/ai/skills') {
+          return http.Response(
+            jsonEncode({
+              'skills': [
+                {
+                  'skill_id': 'teach_mundi',
+                  'title': 'Teach Mundi',
+                  'description': 'Help users operate the app.',
+                }
+              ],
+            }),
+            200,
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/ai/skills/teach_mundi/run') {
+          return http.Response(
+            jsonEncode({
+              'conversation_id': 'ai-conversation:test',
+              'provider': 'mundi-help-rules',
+              'response': 'Use New Subgroup.',
+            }),
+            200,
+          );
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    expect((await api.aiProviders()).single.displayName, 'OpenAI');
+    expect((await api.aiProviderConfigs()).single.isPreferred, isTrue);
+    await api.saveAiProviderConfig(
+      provider: 'openai',
+      displayName: 'OpenAI',
+      endpoint: 'https://api.openai.com/v1',
+      defaultModel: 'gpt-test',
+      apiKey: 'secret',
+      isPreferred: true,
+    );
+    expect(
+        (await api.testAiProviderConfig(
+          provider: 'openai',
+          endpoint: 'https://api.openai.com/v1',
+          defaultModel: 'gpt-test',
+          apiKey: 'secret',
+        ))['ok'],
+        isTrue);
+    expect((await api.aiSkills()).single.skillId, 'teach_mundi');
+    expect(
+        (await api.runAiSkill('teach_mundi',
+                question: 'How do I create a subgroup?'))
+            .response,
+        contains('Subgroup'));
+
+    expect(requests.map((request) => '${request.method} ${request.url.path}'), [
+      'GET /ai/providers',
+      'GET /ai/provider-configs',
+      'POST /ai/provider-configs',
+      'POST /ai/provider-configs/test',
+      'GET /ai/skills',
+      'POST /ai/skills/teach_mundi/run',
+    ]);
+  });
 }
 
 class _CapturingClient extends http.BaseClient {

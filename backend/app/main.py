@@ -16,8 +16,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.agents.manager import create_default_agent_manager
+from app.ai.provider_manager import AIService, get_ai_provider
 from app.attachment_storage import AttachmentStorageError, LocalAttachmentStorage
-from app.ai_providers import AIProviderError, get_ai_provider
+from app.ai_providers import AIProviderError
 from app.authorization import AuthorizationService
 from app.config import get_settings
 from app.dashboard_service import DashboardService
@@ -147,6 +148,7 @@ dashboard_service = DashboardService(settings=settings, knowledge_graph=knowledg
 lab_intelligence_service = LaboratoryIntelligenceService(settings=settings, knowledge_graph=knowledge_graph_service)
 overnight_intelligence_service = OvernightIntelligenceService(settings=settings, knowledge_graph=knowledge_graph_service)
 protocol_service = ProtocolService(settings=settings)
+ai_service = AIService(settings=settings)
 quantification_workspace_service = QuantificationWorkspaceService(settings=settings, knowledge_graph=knowledge_graph_service)
 universal_search_service = UniversalSearchService(settings=settings, knowledge_graph=knowledge_graph_service)
 event_bus = get_event_bus()
@@ -921,6 +923,25 @@ class ChatResponse(BaseModel):
     provider: str
     answer: str
     sources: list[SearchResultResponse]
+
+
+class AIProviderConfigRequest(BaseModel):
+    provider_config_id: str | None = None
+    provider: str
+    display_name: str | None = None
+    enabled: bool = True
+    endpoint: str | None = None
+    default_model: str | None = None
+    api_key: str | None = None
+    is_preferred: bool = False
+
+
+class AIRunSkillRequest(BaseModel):
+    message: str | None = None
+    question: str | None = None
+    inputs: dict[str, object] = Field(default_factory=dict)
+    provider_config_id: str | None = None
+    conversation_id: str | None = None
 
 
 class AssistantRequest(BaseModel):
@@ -4697,6 +4718,99 @@ def search(request: SearchRequest) -> list[SearchResultResponse]:
     results = _search_local_documents(request.query, limit=limit)
 
     return [SearchResultResponse(**result) for result in results]
+
+
+@app.get("/ai/catalog", tags=["ai"])
+def ai_catalog() -> dict[str, object]:
+    return ai_service.catalog()
+
+
+@app.get("/ai/providers", tags=["ai"])
+def ai_providers() -> dict[str, object]:
+    return {
+        "providers": [item.__dict__ for item in ai_service.providers.list()],
+        "health": ai_service.health(),
+    }
+
+
+@app.get("/ai/provider-configs", tags=["ai"])
+def ai_provider_configs() -> dict[str, object]:
+    return {"providers": ai_service.conversations.list_provider_configs()}
+
+
+@app.post("/ai/provider-configs", tags=["ai"])
+def upsert_ai_provider_config(request_body: AIProviderConfigRequest) -> dict[str, object]:
+    try:
+        payload = request_body.model_dump(exclude_none=True)
+        if not payload.get("display_name"):
+            payload["display_name"] = payload.get("provider")
+        return ai_service.conversations.upsert_provider_config(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/ai/provider-configs/test", tags=["ai"])
+def test_ai_provider_config(request_body: AIProviderConfigRequest) -> dict[str, object]:
+    payload = request_body.model_dump(exclude_none=True)
+    provider_id = str(payload.get("provider") or "")
+    spec = ai_service.providers.get(provider_id)
+    if spec is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {provider_id}")
+    configured = bool(payload.get("endpoint") or spec.default_endpoint)
+    if spec.requires_api_key and not payload.get("api_key"):
+        return {"ok": False, "provider": provider_id, "message": "API key is required for this provider."}
+    return {
+        "ok": configured,
+        "provider": provider_id,
+        "message": "Provider configuration is structurally valid." if configured else "Endpoint is required.",
+        "network_tested": False,
+    }
+
+
+@app.get("/ai/prompts", tags=["ai"])
+def ai_prompts() -> dict[str, object]:
+    return {"prompts": [item.__dict__ for item in ai_service.prompts.list()]}
+
+
+@app.get("/ai/tools", tags=["ai"])
+def ai_tools() -> dict[str, object]:
+    return {"tools": [item.__dict__ for item in ai_service.tools.list()]}
+
+
+@app.get("/ai/skills", tags=["ai"])
+def ai_skills() -> dict[str, object]:
+    return {"skills": [item.__dict__ for item in ai_service.skills.list()]}
+
+
+@app.post("/ai/skills/{skill_id}/run", tags=["ai"])
+def run_ai_skill(skill_id: str, request_body: AIRunSkillRequest, request: Request) -> dict[str, object]:
+    inputs = dict(request_body.inputs)
+    if request_body.message is not None:
+        inputs["message"] = request_body.message
+    if request_body.question is not None:
+        inputs["question"] = request_body.question
+    try:
+        return ai_service.run_skill(
+            actor_user_id=_request_user_id(request),
+            skill_id=skill_id,
+            inputs=inputs,
+            provider_config_id=request_body.provider_config_id,
+            conversation_id=request_body.conversation_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Unknown AI skill: {skill_id}") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/ai/conversations/{conversation_id}", tags=["ai"])
+def ai_conversation(conversation_id: str, request: Request) -> dict[str, object]:
+    try:
+        return ai_service.conversations.get_conversation(_request_user_id(request), conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["ai"])
