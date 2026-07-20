@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import time
 from typing import Any
 
 from app.ai.context_builder import ContextBuilder
@@ -17,6 +19,8 @@ from app.ai.skills import SkillRegistry
 from app.ai.tool_registry import ToolRegistry
 from app.ai_providers import AIProvider, AIProviderError, OpenAICompatibleProvider
 from app.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def get_ai_provider(settings: Settings | None = None) -> AIProvider:
@@ -138,11 +142,66 @@ class AIService:
         message: str,
         conversation_id: str | None = None,
         context_ids: list[str] | None = None,
+        client_message_id: str | None = None,
     ) -> dict[str, Any]:
+        started = time.perf_counter()
         text = message.strip()
         if not text:
             raise ValueError("Message is required.")
+        logger.debug(
+            "mundi_ai_timing stage=request_received user_id=%s conversation_id=%s client_message_id=%s",
+            actor_user_id,
+            conversation_id,
+            client_message_id,
+        )
+        if client_message_id:
+            existing = self.conversations.conversation_for_client_message(
+                actor_user_id,
+                client_message_id,
+            )
+            if existing is not None:
+                logger.debug(
+                    "mundi_ai_timing stage=idempotent_replay user_id=%s conversation_id=%s client_message_id=%s elapsed_ms=%s",
+                    actor_user_id,
+                    existing.get("conversation_id"),
+                    client_message_id,
+                    int((time.perf_counter() - started) * 1000),
+                )
+                last_assistant = next(
+                    (
+                        item
+                        for item in reversed(existing.get("messages", []))
+                        if item.get("role") == "assistant"
+                    ),
+                    None,
+                )
+                metadata = last_assistant.get("metadata", {}) if last_assistant else {}
+                return {
+                    "conversation": existing,
+                    "user_message": next(
+                        (
+                            item
+                            for item in reversed(existing.get("messages", []))
+                            if item.get("role") == "user"
+                        ),
+                        None,
+                    ),
+                    "assistant_message": last_assistant,
+                    "chosen_skill": metadata.get("skill_id") or existing.get("skill_id"),
+                    "provider": metadata.get("provider"),
+                    "model": metadata.get("model"),
+                    "sources": metadata.get("sources") or [],
+                    "tool_calls": metadata.get("tool_calls") or [],
+                    "warnings": [],
+                    "idempotent_replay": True,
+                }
         route = self.route_intent(text)
+        logger.debug(
+            "mundi_ai_timing stage=intent_routed user_id=%s skill_id=%s elapsed_ms=%s",
+            actor_user_id,
+            route["skill_id"],
+            int((time.perf_counter() - started) * 1000),
+        )
         preferred = self.conversations.preferred_provider_config(actor_user_id)
         provider_config_id = str(preferred["provider_config_id"]) if preferred else None
         if not conversation_id:
@@ -164,11 +223,14 @@ class AIService:
                 conversation_id,
                 context_ids=context_ids,
             )
+        user_metadata: dict[str, Any] = {"router": route}
+        if client_message_id:
+            user_metadata["client_message_id"] = client_message_id
         user_message = self.conversations.append_message(
             conversation_id,
             "user",
             text,
-            {"router": route},
+            user_metadata,
         )
         if route["skill_id"] == "teach_mundi":
             response_text = self._teach_mundi(text)
@@ -184,7 +246,19 @@ class AIService:
             provider_name = "mundi-data-tools"
             model = None
         else:
+            logger.debug(
+                "mundi_ai_timing stage=provider_request_started user_id=%s skill_id=%s elapsed_ms=%s",
+                actor_user_id,
+                route["skill_id"],
+                int((time.perf_counter() - started) * 1000),
+            )
             response_text, provider_name, model = self._answer_science(actor_user_id, text)
+            logger.debug(
+                "mundi_ai_timing stage=provider_response_received user_id=%s skill_id=%s elapsed_ms=%s",
+                actor_user_id,
+                route["skill_id"],
+                int((time.perf_counter() - started) * 1000),
+            )
             sources = []
             tool_calls = []
         assistant_message = self.conversations.append_message(
@@ -200,6 +274,13 @@ class AIService:
             },
         )
         conversation = self.conversations.get_conversation(actor_user_id, conversation_id)
+        logger.debug(
+            "mundi_ai_timing stage=response_returned user_id=%s conversation_id=%s skill_id=%s elapsed_ms=%s",
+            actor_user_id,
+            conversation_id,
+            route["skill_id"],
+            int((time.perf_counter() - started) * 1000),
+        )
         return {
             "conversation": conversation,
             "user_message": user_message,

@@ -628,6 +628,28 @@ class AIPlatformTests(unittest.TestCase):
         self.assertEqual(result["chosen_skill"], "teach_mundi")
         self.assertEqual([item["role"] for item in conversation["messages"]], ["user", "assistant"])
         self.assertNotIn("api_key", str(conversation).lower())
+
+    def test_ask_mundi_client_message_id_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            first = service.ask_mundi(
+                actor_user_id="user:pi-owner",
+                message="How do I create a subgroup?",
+                client_message_id="client-message:test",
+            )
+            second = service.ask_mundi(
+                actor_user_id="user:pi-owner",
+                message="How do I create a subgroup?",
+                client_message_id="client-message:test",
+            )
+            conversation = service.conversations.get_conversation(
+                "user:pi-owner",
+                first["conversation"]["conversation_id"],
+            )
+
+        self.assertTrue(second["idempotent_replay"])
+        self.assertEqual(first["conversation"]["conversation_id"], second["conversation"]["conversation_id"])
+        self.assertEqual([item["role"] for item in conversation["messages"]], ["user", "assistant"])
         self.assertNotIn("secret", str(conversation).lower())
 
     def test_navigation_preferences_validate_five_unique_destinations(self) -> None:

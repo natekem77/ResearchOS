@@ -23,11 +23,13 @@ class ResearchOsApi {
     required this.baseUrl,
     http.Client? client,
     this.requestTimeout = const Duration(seconds: 10),
+    this.aiRequestTimeout = const Duration(seconds: 90),
   }) : _client = client ?? http.Client();
 
   String baseUrl;
   final http.Client _client;
   final Duration requestTimeout;
+  final Duration aiRequestTimeout;
 
   Future<MobileStatus> status() async {
     return MobileStatus.fromJson(await _getMap('/mobile/status'));
@@ -137,11 +139,19 @@ class ResearchOsApi {
     return _jsonObjectList(json['conversations']);
   }
 
-  Future<Map<String, dynamic>> createAiConversation({String? message}) {
-    return _postMap('/mobile/ai/conversations', {
-      if (message != null && message.trim().isNotEmpty)
-        'message': message.trim(),
-    });
+  Future<Map<String, dynamic>> createAiConversation({
+    String? message,
+    String? clientMessageId,
+  }) {
+    return _postMap(
+        '/mobile/ai/conversations',
+        {
+          if (message != null && message.trim().isNotEmpty)
+            'message': message.trim(),
+          if (clientMessageId != null && clientMessageId.trim().isNotEmpty)
+            'client_message_id': clientMessageId.trim(),
+        },
+        timeout: aiRequestTimeout);
   }
 
   Future<Map<String, dynamic>> getAiConversation(String conversationId) {
@@ -153,10 +163,16 @@ class ResearchOsApi {
   Future<Map<String, dynamic>> sendAiConversationMessage({
     required String conversationId,
     required String message,
+    String? clientMessageId,
   }) {
     return _postMap(
       '/mobile/ai/conversations/${Uri.encodeComponent(conversationId)}/messages',
-      {'message': message},
+      {
+        'message': message,
+        if (clientMessageId != null && clientMessageId.trim().isNotEmpty)
+          'client_message_id': clientMessageId.trim(),
+      },
+      timeout: aiRequestTimeout,
     );
   }
 
@@ -1287,7 +1303,10 @@ class ResearchOsApi {
   }
 
   Future<Map<String, dynamic>> _postMap(
-      String path, Map<String, dynamic> body) async {
+    String path,
+    Map<String, dynamic> body, {
+    Duration? timeout,
+  }) async {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     final response = await _client
         .post(
@@ -1295,7 +1314,7 @@ class ResearchOsApi {
           headers: const {'Content-Type': 'application/json'},
           body: jsonEncode(body),
         )
-        .timeout(requestTimeout);
+        .timeout(timeout ?? requestTimeout);
     return _decodeMapResponse(response, path: path);
   }
 

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -9,6 +10,42 @@ import 'package:researchos_mobile/ai/ai_models.dart';
 import 'package:researchos_mobile/api/researchos_api.dart';
 
 void main() {
+  test(
+      'AI conversation calls use dedicated timeout without changing CRUD timeout',
+      () async {
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      requestTimeout: const Duration(milliseconds: 1),
+      aiRequestTimeout: const Duration(milliseconds: 200),
+      client: MockClient((request) async {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        if (request.url.path == '/mobile/status') {
+          return http.Response(jsonEncode({'ok': true}), 200);
+        }
+        return http.Response(
+          jsonEncode({
+            'conversation': {
+              'conversation_id': 'ai-conversation:test',
+              'messages': const [
+                {'role': 'user', 'content': 'hello'},
+                {'role': 'assistant', 'content': 'hi'},
+              ],
+            },
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    final conversation = await api.createAiConversation(
+      message: 'hello',
+      clientMessageId: 'client-message:test',
+    );
+    expect(conversation['conversation'], isA<Map<String, dynamic>>());
+    await expectLater(api.status(), throwsA(isA<TimeoutException>()));
+  });
+
   test('createNotebookFirstExperiment posts JSON title and decodes response',
       () async {
     late http.Request captured;

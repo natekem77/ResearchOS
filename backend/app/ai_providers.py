@@ -175,7 +175,7 @@ class OpenAICompatibleProvider:
 
         request = Request(url=endpoint, data=body, headers=headers, method="POST")
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=75) as response:
                 raw_body = response.read().decode("utf-8")
         except HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")

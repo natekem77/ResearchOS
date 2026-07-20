@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
@@ -21,6 +23,8 @@ class _AskMundiScreenState extends State<AskMundiScreen> {
   String? _model;
   String? _skill;
   String? _error;
+  String? _lastFailedText;
+  String? _lastFailedClientMessageId;
   bool _loading = false;
 
   @override
@@ -68,21 +72,44 @@ class _AskMundiScreenState extends State<AskMundiScreen> {
   Future<void> _send() async {
     final text = _controller.text.trim();
     if (text.isEmpty || _loading) return;
+    await _sendText(text, _newClientMessageId());
+  }
+
+  Future<void> _sendText(
+    String text,
+    String clientMessageId, {
+    bool appendUser = true,
+  }) async {
+    if (_loading) return;
     setState(() {
       _loading = true;
       _error = null;
+      _lastFailedText = null;
+      _lastFailedClientMessageId = null;
       _controller.clear();
       _messages = [
-        ..._messages,
-        {'role': 'user', 'content': text},
+        if (appendUser) ...[
+          ..._messages,
+          {'role': 'user', 'content': text},
+        ] else
+          ..._messages,
+        {
+          'role': 'assistant',
+          'content': 'Thinking...',
+          'pending': true,
+        },
       ];
     });
     try {
       final response = _conversationId == null
-          ? await widget.api.createAiConversation(message: text)
+          ? await widget.api.createAiConversation(
+              message: text,
+              clientMessageId: clientMessageId,
+            )
           : await widget.api.sendAiConversationMessage(
               conversationId: _conversationId!,
               message: text,
+              clientMessageId: clientMessageId,
             );
       final conversation = _object(response['conversation']);
       if (!mounted) return;
@@ -94,12 +121,43 @@ class _AskMundiScreenState extends State<AskMundiScreen> {
         _model = response['model']?.toString();
         _skill = response['chosen_skill']?.toString();
       });
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _lastFailedText = text;
+        _lastFailedClientMessageId = clientMessageId;
+        _messages = _replacePendingAssistant(
+          _messages,
+          'Ask Mundi took too long to respond. Retry the request.',
+          retryable: true,
+        );
+      });
     } catch (error) {
       if (!mounted) return;
-      setState(() => _error = error.toString());
+      setState(() {
+        _lastFailedText = text;
+        _lastFailedClientMessageId = clientMessageId;
+        _messages = _replacePendingAssistant(
+          _messages,
+          _friendlyAskMundiError(error),
+          retryable: true,
+        );
+      });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  Future<void> _retryLastFailed() async {
+    final text = _lastFailedText;
+    final clientMessageId = _lastFailedClientMessageId;
+    if (text == null || clientMessageId == null || _loading) return;
+    setState(() {
+      _messages = _messages
+          .where((Map<String, dynamic> message) => message['retryable'] != true)
+          .toList(growable: false);
+    });
+    await _sendText(text, clientMessageId, appendUser: false);
   }
 
   Future<void> _archiveConversation() async {
@@ -149,7 +207,12 @@ class _AskMundiScreenState extends State<AskMundiScreen> {
               ),
               const SizedBox(height: ResearchOsSpacing.md),
               if (_messages.isEmpty) _Suggestions(onPick: _sendSuggestion),
-              for (final message in _messages) _MessageBubble(message: message),
+              for (final message in _messages)
+                _MessageBubble(
+                  message: message,
+                  onRetry:
+                      message['retryable'] == true ? _retryLastFailed : null,
+                ),
               if (_loading)
                 const Padding(
                   padding: EdgeInsets.all(ResearchOsSpacing.md),
@@ -257,14 +320,17 @@ class _Suggestions extends StatelessWidget {
 }
 
 class _MessageBubble extends StatelessWidget {
-  const _MessageBubble({required this.message});
+  const _MessageBubble({required this.message, this.onRetry});
 
   final Map<String, dynamic> message;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
     final role = message['role']?.toString() ?? '';
     final isUser = role == 'user';
+    final pending = message['pending'] == true;
+    final retryable = message['retryable'] == true;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: ConstrainedBox(
@@ -275,12 +341,81 @@ class _MessageBubble extends StatelessWidget {
               : Theme.of(context).colorScheme.surfaceContainerHighest,
           child: Padding(
             padding: const EdgeInsets.all(ResearchOsSpacing.md),
-            child: Text(message['content']?.toString() ?? ''),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (pending) ...[
+                      const SizedBox.square(
+                        dimension: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: ResearchOsSpacing.sm),
+                    ],
+                    Flexible(
+                      child: Text(message['content']?.toString() ?? ''),
+                    ),
+                  ],
+                ),
+                if (retryable && onRetry != null) ...[
+                  const SizedBox(height: ResearchOsSpacing.sm),
+                  TextButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh_outlined),
+                    label: const Text('Retry'),
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+List<Map<String, dynamic>> _replacePendingAssistant(
+  List<Map<String, dynamic>> messages,
+  String content, {
+  bool retryable = false,
+}) {
+  final updated = [...messages];
+  for (var index = updated.length - 1; index >= 0; index--) {
+    if (updated[index]['role'] == 'assistant' &&
+        updated[index]['pending'] == true) {
+      updated[index] = {
+        'role': 'assistant',
+        'content': content,
+        if (retryable) 'retryable': true,
+      };
+      return updated;
+    }
+  }
+  return [
+    ...updated,
+    {
+      'role': 'assistant',
+      'content': content,
+      if (retryable) 'retryable': true,
+    },
+  ];
+}
+
+String _newClientMessageId() =>
+    'mobile-ai-message:${DateTime.now().microsecondsSinceEpoch}';
+
+String _friendlyAskMundiError(Object error) {
+  final text = error.toString();
+  if (text.contains('TimeoutException')) {
+    return 'Ask Mundi took too long to respond. Retry the request.';
+  }
+  if (text.contains('SocketException') || text.contains('Connection refused')) {
+    return 'Mundi could not be reached from this device. Check the server connection and retry.';
+  }
+  return text.split('\n').first;
 }
 
 Map<String, dynamic> _object(Object? value) {

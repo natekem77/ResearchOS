@@ -949,11 +949,13 @@ class AIRunSkillRequest(BaseModel):
 class MobileAiConversationCreateRequest(BaseModel):
     message: str | None = None
     context_ids: list[str] = Field(default_factory=list)
+    client_message_id: str | None = None
 
 
 class MobileAiMessageRequest(BaseModel):
     message: str
     context_ids: list[str] = Field(default_factory=list)
+    client_message_id: str | None = None
 
 
 class MobileAiConversationUpdateRequest(BaseModel):
@@ -4879,6 +4881,7 @@ def create_mobile_ai_conversation(
             actor_user_id=user_id,
             message=request_body.message,
             context_ids=request_body.context_ids,
+            client_message_id=request_body.client_message_id,
         )
     conversation = ai_service.conversations.create_conversation(
         user_id,
@@ -4914,6 +4917,7 @@ def create_mobile_ai_message(
             conversation_id=conversation_id,
             message=request_body.message,
             context_ids=request_body.context_ids,
+            client_message_id=request_body.client_message_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

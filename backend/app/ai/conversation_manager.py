@@ -383,6 +383,36 @@ class ConversationManager:
             ).fetchall()
         return [self._conversation_payload(row, include_messages=False) for row in rows]
 
+    def conversation_for_client_message(
+        self,
+        actor_user_id: str,
+        client_message_id: str,
+    ) -> dict[str, Any] | None:
+        needle = client_message_id.strip()
+        if not needle:
+            return None
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.conversation_id, m.metadata_json
+                FROM ai_messages m
+                JOIN ai_conversations c ON c.conversation_id = m.conversation_id
+                WHERE c.actor_user_id = ?
+                  AND m.role = 'user'
+                  AND m.metadata_json LIKE ?
+                ORDER BY m.created_at DESC
+                """,
+                (actor_user_id, f"%{needle}%"),
+            ).fetchall()
+        for row in rows:
+            try:
+                metadata = json.loads(row["metadata_json"] or "{}")
+            except json.JSONDecodeError:
+                continue
+            if metadata.get("client_message_id") == needle:
+                return self.get_conversation(actor_user_id, str(row["conversation_id"]))
+        return None
+
     def update_conversation(
         self,
         actor_user_id: str,

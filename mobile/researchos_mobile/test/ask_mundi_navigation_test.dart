@@ -120,6 +120,55 @@ void main() {
     expect(find.textContaining('invalid_api_key'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('Ask Mundi timeout preserves user message and offers retry',
+      (tester) async {
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      aiRequestTimeout: const Duration(milliseconds: 30),
+      client: MockClient((request) async {
+        if (request.url.path == '/mobile/ai/conversations' &&
+            request.method == 'GET') {
+          return http.Response(
+            jsonEncode({'conversations': const []}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 80));
+        return http.Response('{}', 200);
+      }),
+    );
+
+    await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: AskMundiScreen(api: api))));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'Ask Mundi'),
+        'What model are you using?');
+    await tester.tap(find.byTooltip('Send'));
+    await tester.pump();
+
+    expect(find.text('What model are you using?'), findsOneWidget);
+    expect(find.text('Thinking...'), findsOneWidget);
+    final sendIconButton = find.ancestor(
+      of: find.byIcon(Icons.send_outlined),
+      matching: find.byType(IconButton),
+    );
+    expect(
+      tester.widget<IconButton>(sendIconButton).onPressed,
+      isNull,
+    );
+
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pumpAndSettle();
+
+    expect(find.text('What model are you using?'), findsOneWidget);
+    expect(find.textContaining('Ask Mundi took too long'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
+    expect(find.text('Mundi is unreachable'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 ResearchOsApi _api({
