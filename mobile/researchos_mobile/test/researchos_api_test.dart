@@ -559,6 +559,35 @@ void main() {
     ]);
   });
 
+  test('uploadImagingAsset posts native-picked file as multipart data',
+      () async {
+    final temp = await File('${Directory.systemTemp.path}/mundi_cells.tif')
+        .writeAsBytes([1, 2, 3]);
+    late http.BaseRequest captured;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: _CapturingClient((request) async {
+        captured = request;
+        return http.StreamedResponse(
+          Stream.value(utf8.encode(jsonEncode({
+            'asset': {'id': 'imaging-asset:test'}
+          }))),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }),
+    );
+
+    await api.uploadImagingAsset(temp);
+
+    expect(captured, isA<http.MultipartRequest>());
+    final multipart = captured as http.MultipartRequest;
+    expect(multipart.method, 'POST');
+    expect(multipart.url.path, '/mobile/imaging/assets');
+    expect(multipart.files.single.field, 'file');
+    expect(multipart.files.single.filename, 'mundi_cells.tif');
+  });
+
   test('approveProtocolHubExtraction posts explicit confirmation', () async {
     late http.Request captured;
     final api = ResearchOsApi(

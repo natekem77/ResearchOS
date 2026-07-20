@@ -39,6 +39,31 @@ class ImagingServiceTests(unittest.TestCase):
                     mime_type="text/plain",
                 )
 
+    def test_reject_oversized_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            service.max_file_bytes = 2
+            with self.assertRaisesRegex(ImagingValidationError, "too large"):
+                service.create_asset(
+                    user_id="user:pi-owner",
+                    filename="large.png",
+                    data=b"123",
+                    mime_type="image/png",
+                )
+
+    def test_upload_tiff_keeps_metadata_unavailable_nonfatal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="cells.ome.tif",
+                data=b"tiff",
+                mime_type="image/tiff",
+            )
+
+        self.assertEqual(asset["format"], "OME.TIF")
+        self.assertEqual(asset["metadata"]["metadata_status"], "unavailable")
+
     def test_job_worker_outputs_measurements_and_preserves_raw(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = ImagingService(self._settings(tmpdir))
@@ -63,9 +88,69 @@ class ImagingServiceTests(unittest.TestCase):
 
         self.assertEqual(processed["status"], "complete")
         self.assertEqual(raw_after, original_bytes)
-        self.assertIn("preview_png", {item["output_type"] for item in outputs})
+        self.assertIn("mask_tiff", {item["output_type"] for item in outputs})
+        self.assertIn("overlay_preview_png", {item["output_type"] for item in outputs})
         self.assertIn("measurements_csv", {item["output_type"] for item in outputs})
+        self.assertIn("total_positive_area", {item["name"] for item in measurements})
         self.assertIn("percent_positive_area", {item["name"] for item in measurements})
+
+    def test_allowlisted_workflows_create_expected_outputs(self) -> None:
+        expectations = {
+            "generate_preview": {"preview_png"},
+            "max_intensity_projection": {"projected_tiff", "preview_png"},
+            "split_channels": {"channel_tiff", "channel_preview_png"},
+            "background_subtraction": {"processed_tiff", "preview_png"},
+        }
+        for workflow_key, expected_outputs in expectations.items():
+            with self.subTest(workflow_key=workflow_key):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    service = ImagingService(self._settings(tmpdir))
+                    asset = service.create_asset(
+                        user_id="user:pi-owner",
+                        filename="cells.tif",
+                        data=b"raw-tiff-bytes",
+                        mime_type="image/tiff",
+                    )
+                    job = service.create_job(
+                        user_id="user:pi-owner",
+                        asset_id=asset["id"],
+                        workflow_key=workflow_key,
+                    )
+                    processed = service.run_job_once("test-worker")
+                    outputs = service.outputs_for_job("user:pi-owner", job["id"])
+
+                self.assertEqual(processed["status"], "complete")
+                self.assertTrue(expected_outputs.issubset({item["output_type"] for item in outputs}))
+                self.assertIn("provenance", {item["output_type"] for item in outputs})
+
+    def test_output_provenance_and_authorization(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="cells.tif",
+                data=b"raw-tiff-bytes",
+                mime_type="image/tiff",
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                asset_id=asset["id"],
+                workflow_key="max_intensity_projection",
+            )
+            service.run_job_once("test-worker")
+            outputs = service.outputs_for_job("user:pi-owner", job["id"])
+            provenance = next(item for item in outputs if item["output_type"] == "provenance")
+            provenance_path = service.output_path("user:pi-owner", provenance["id"])
+
+            with self.assertRaisesRegex(ImagingValidationError, "not found"):
+                service.get_asset("user:other", asset["id"])
+            with self.assertRaisesRegex(ImagingValidationError, "not found"):
+                service.output_path("user:other", provenance["id"])
+
+            self.assertEqual(provenance["filename"], "provenance.json")
+            provenance_text = provenance_path.read_text(encoding="utf-8")
+            self.assertIn("source_checksum", provenance_text)
+            self.assertIn("checksum", provenance_text)
 
     def test_parameter_validation_and_worker_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

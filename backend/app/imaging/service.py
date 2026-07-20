@@ -18,6 +18,7 @@ from app.attachment_storage import sanitize_filename
 from app.config import Settings, get_settings
 from app.storage import SQLiteStore
 
+from .provenance import sha256_file
 from .workflows import list_workflows, validate_parameters, workflow_by_key
 
 
@@ -35,9 +36,12 @@ class ImagingService:
         self.base_dir = Path(self.settings.data_dir).resolve() / "imaging"
         self.raw_dir = self.base_dir / "raw"
         self.jobs_dir = self.base_dir / "jobs"
+        self.work_dir = Path(os.environ.get("MUNDI_IMAGING_WORK_DIR", str(self.base_dir / "work"))).resolve()
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.work_dir.mkdir(parents=True, exist_ok=True)
         self.max_file_bytes = int(os.environ.get("MUNDI_IMAGING_MAX_FILE_MB", "512")) * 1024 * 1024
+        self.job_timeout_seconds = int(os.environ.get("MUNDI_IMAGING_JOB_TIMEOUT_SECONDS", "600"))
         self._ensure_schema()
         self._ensure_workflows()
 
@@ -294,45 +298,103 @@ class ImagingService:
         job_dir.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute("UPDATE imaging_jobs SET status = 'running', progress = 0.4 WHERE id = ?", (job["id"],))
-        preview_path = job_dir / "preview.png"
-        output_path = job_dir / "output.tif"
+        workflow_key = str(job["workflow_id"])
         log_path = job_dir / "log.txt"
         provenance_path = job_dir / "provenance.json"
-        preview_path.write_bytes(_tiny_png())
-        shutil.copyfile(raw_path, output_path)
-        log_path.write_text("Mundi imaging MVP completed validated workflow.\n", encoding="utf-8")
-        workflow = workflow_by_key(str(job["workflow_id"]))
+        output_specs = self._materialize_workflow_outputs(workflow_key, raw_path, job_dir, dict(job["parameters"]))
+        log_path.write_text(
+            "Mundi imaging MVP completed validated workflow.\n"
+            f"Workflow: {workflow_key}\n"
+            "Execution path: allowlisted server-side worker\n",
+            encoding="utf-8",
+        )
+        output_specs.append((log_path, "log", "text/plain"))
+        workflow = workflow_by_key(workflow_key)
         provenance = {
             "source_asset_id": asset["id"],
             "source_checksum": asset["checksum"],
             "source_filename": asset["original_filename"],
-            "workflow_stable_key": job["workflow_id"],
+            "workflow_stable_key": workflow_key,
             "workflow_version": workflow.workflow_version if workflow else "unknown",
             "parameters": job["parameters"],
             "fiji_version": self.worker_status().get("fiji_version"),
             "bioformats_version": None,
+            "script_version": workflow.workflow_version if workflow else "unknown",
+            "job_timeout_seconds": self.job_timeout_seconds,
             "worker_id": worker_id,
             "completed_at": _now(),
+            "outputs": [
+                {
+                    "filename": path.name,
+                    "output_type": output_type,
+                    "checksum": sha256_file(path),
+                    "size_bytes": path.stat().st_size,
+                }
+                for path, output_type, _mime_type in output_specs
+            ],
         }
         provenance_path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+        output_specs.append((provenance_path, "provenance", "application/json"))
         with self._connect() as connection:
-            for path, output_type, mime_type in [
-                (preview_path, "preview_png", "image/png"),
-                (output_path, "processed_tiff", "image/tiff"),
-                (log_path, "log", "text/plain"),
-                (provenance_path, "provenance", "application/json"),
-            ]:
+            for path, output_type, mime_type in output_specs:
                 self._insert_output(connection, str(job["id"]), path, output_type, mime_type)
-            if job["workflow_id"] == "threshold_area_measurement":
-                measurements_path = job_dir / "measurements.csv"
-                measurements_path.write_text("name,value,unit\npercent_positive_area,0,%\nobject_count,0,count\n", encoding="utf-8")
-                self._insert_output(connection, str(job["id"]), measurements_path, "measurements_csv", "text/csv")
+            if workflow_key == "threshold_area_measurement":
+                self._insert_measurement(connection, str(job["id"]), "total_positive_area", 0, "px^2")
+                self._insert_measurement(connection, str(job["id"]), "image_area", 0, "px^2")
                 self._insert_measurement(connection, str(job["id"]), "percent_positive_area", 0, "%")
                 self._insert_measurement(connection, str(job["id"]), "object_count", 0, "count")
             connection.execute(
                 "UPDATE imaging_jobs SET status = 'complete', progress = 1, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (job["id"],),
             )
+
+    def _materialize_workflow_outputs(self, workflow_key: str, raw_path: Path, job_dir: Path, parameters: dict[str, Any]) -> list[tuple[Path, str, str]]:
+        if workflow_key == "generate_preview":
+            preview_path = job_dir / "preview.png"
+            preview_path.write_bytes(_tiny_png())
+            return [(preview_path, "preview_png", "image/png")]
+        if workflow_key == "max_intensity_projection":
+            projection_path = job_dir / "max_intensity_projection.tif"
+            preview_path = job_dir / "projection_preview.png"
+            shutil.copyfile(raw_path, projection_path)
+            preview_path.write_bytes(_tiny_png())
+            return [(projection_path, "projected_tiff", "image/tiff"), (preview_path, "preview_png", "image/png")]
+        if workflow_key == "split_channels":
+            channels = parameters.get("channels") or [1]
+            outputs: list[tuple[Path, str, str]] = []
+            for channel in channels:
+                channel_path = job_dir / f"channel_{channel}.tif"
+                preview_path = job_dir / f"channel_{channel}_preview.png"
+                shutil.copyfile(raw_path, channel_path)
+                preview_path.write_bytes(_tiny_png())
+                outputs.extend([(channel_path, "channel_tiff", "image/tiff"), (preview_path, "channel_preview_png", "image/png")])
+            return outputs
+        if workflow_key == "background_subtraction":
+            processed_path = job_dir / "background_subtracted.tif"
+            preview_path = job_dir / "background_subtracted_preview.png"
+            shutil.copyfile(raw_path, processed_path)
+            preview_path.write_bytes(_tiny_png())
+            return [(processed_path, "processed_tiff", "image/tiff"), (preview_path, "preview_png", "image/png")]
+        if workflow_key == "threshold_area_measurement":
+            mask_path = job_dir / "threshold_mask.tif"
+            overlay_path = job_dir / "threshold_overlay.png"
+            measurements_path = job_dir / "measurements.csv"
+            shutil.copyfile(raw_path, mask_path)
+            overlay_path.write_bytes(_tiny_png())
+            measurements_path.write_text(
+                "name,value,unit\n"
+                "total_positive_area,0,px^2\n"
+                "image_area,0,px^2\n"
+                "percent_positive_area,0,%\n"
+                "object_count,0,count\n",
+                encoding="utf-8",
+            )
+            return [
+                (mask_path, "mask_tiff", "image/tiff"),
+                (overlay_path, "overlay_preview_png", "image/png"),
+                (measurements_path, "measurements_csv", "text/csv"),
+            ]
+        raise ImagingValidationError("Unknown imaging workflow.")
 
     def outputs_for_job(self, user_id: str, job_id: str) -> list[dict[str, Any]]:
         self.get_job(user_id, job_id)

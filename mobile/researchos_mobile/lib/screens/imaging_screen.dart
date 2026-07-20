@@ -19,6 +19,7 @@ class _ImagingScreenState extends State<ImagingScreen> {
   late Future<_ImagingState> _future;
   bool _uploading = false;
   String? _message;
+  String _query = '';
 
   @override
   void initState() {
@@ -122,6 +123,18 @@ class _ImagingScreenState extends State<ImagingScreen> {
       future: _future,
       builder: (context, snapshot) {
         final state = snapshot.data;
+        final assets = (state?.assets ?? const <Map<String, dynamic>>[])
+            .where((asset) => (asset['original_filename']?.toString() ?? '')
+                .toLowerCase()
+                .contains(_query.toLowerCase()))
+            .toList(growable: false);
+        final jobs = state?.jobs ?? const <Map<String, dynamic>>[];
+        final completedJobs = jobs
+            .where((job) => job['status']?.toString() == 'complete')
+            .toList(growable: false);
+        final failedJobs = jobs
+            .where((job) => job['status']?.toString() == 'failed')
+            .toList(growable: false);
         return RefreshIndicator(
           onRefresh: () async => _reload(),
           child: ListView(
@@ -150,6 +163,15 @@ class _ImagingScreenState extends State<ImagingScreen> {
                 Text(_message!),
               ],
               const SizedBox(height: ResearchOsSpacing.md),
+              TextField(
+                decoration: const InputDecoration(
+                  prefixIcon: Icon(Icons.search),
+                  labelText: 'Search imaging datasets',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (value) => setState(() => _query = value),
+              ),
+              const SizedBox(height: ResearchOsSpacing.md),
               if (snapshot.connectionState == ConnectionState.waiting)
                 const Center(child: CircularProgressIndicator())
               else if (snapshot.hasError)
@@ -162,9 +184,9 @@ class _ImagingScreenState extends State<ImagingScreen> {
                 const SizedBox(height: ResearchOsSpacing.md),
                 _SectionHeader(
                   title: 'Recent image datasets',
-                  count: state?.assets.length ?? 0,
+                  count: assets.length,
                 ),
-                if ((state?.assets ?? const []).isEmpty)
+                if (assets.isEmpty)
                   const ResearchOsEmptyState(
                     icon: Icons.photo_library_outlined,
                     title: 'No imaging assets yet',
@@ -172,18 +194,26 @@ class _ImagingScreenState extends State<ImagingScreen> {
                         'Upload a TIFF, OME-TIFF, PNG, JPEG, CZI, LIF, or ND2 file.',
                   )
                 else
-                  for (final asset in state!.assets)
+                  for (final asset in assets)
                     _AssetCard(
                       asset: asset,
-                      onRun: () => _runWorkflow(asset, state.workflows),
+                      onRun: () => _runWorkflow(asset, state!.workflows),
                     ),
                 const SizedBox(height: ResearchOsSpacing.md),
                 _SectionHeader(
                   title: 'Processing jobs',
-                  count: state?.jobs.length ?? 0,
+                  count: jobs.length,
                 ),
-                for (final job in state?.jobs ?? const <Map<String, dynamic>>[])
-                  _JobCard(api: widget.api, job: job),
+                if (completedJobs.isNotEmpty || failedJobs.isNotEmpty)
+                  Padding(
+                    padding:
+                        const EdgeInsets.only(bottom: ResearchOsSpacing.sm),
+                    child: Text(
+                      '${completedJobs.length} completed • ${failedJobs.length} failed',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                for (final job in jobs) _JobCard(api: widget.api, job: job),
               ],
             ],
           ),
@@ -254,6 +284,9 @@ class _AssetCard extends StatelessWidget {
           _bytes(asset['size_bytes']),
           if (metadata['width'] != null && metadata['height'] != null)
             '${metadata['width']} × ${metadata['height']}',
+          if (metadata['channels'] != null) '${metadata['channels']} channels',
+          if (metadata['z_slices'] != null) '${metadata['z_slices']} Z',
+          if (metadata['timepoints'] != null) '${metadata['timepoints']} T',
           metadata['metadata_status']?.toString() ?? 'Metadata unavailable',
         ].join(' • ')),
         trailing: TextButton.icon(
