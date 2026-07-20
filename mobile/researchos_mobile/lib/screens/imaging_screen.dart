@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
+import 'scientific_image_viewer_screen.dart';
 
 class ImagingScreen extends StatefulWidget {
   const ImagingScreen({super.key, required this.api});
@@ -190,6 +191,31 @@ class _ImagingScreenState extends State<ImagingScreen> {
     }
   }
 
+  void _openAssetViewer(Map<String, dynamic> asset) {
+    final metadata = <String, dynamic>{
+      'Filename': asset['original_filename'],
+      'Format': asset['format'],
+      'Size': _bytes(asset['size_bytes']),
+      'Dimensions': _dimensions(asset),
+      'Channels': (asset['metadata'] as Map?)?['channels'] ?? 'Unavailable',
+      'Pixel size': 'Unavailable',
+      'Microscope metadata':
+          (asset['metadata'] as Map?)?['metadata_status'] ?? 'Unavailable',
+      'Upload date': asset['created_at'] ?? 'Unavailable',
+      'Experiment link': asset['experiment_id'] ?? 'None',
+    };
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ScientificImageViewerScreen(
+          title: asset['original_filename']?.toString() ?? 'Image Viewer',
+          imageUrl:
+              widget.api.imagingAssetViewerImageUrl(asset['id'].toString()),
+          metadata: metadata,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<_ImagingState>(
@@ -275,6 +301,7 @@ class _ImagingScreenState extends State<ImagingScreen> {
                   for (final asset in assets)
                     _AssetCard(
                       asset: asset,
+                      onOpen: () => _openAssetViewer(asset),
                       onRun: () => _runWorkflow(asset, state!.workflows),
                     ),
                 const SizedBox(height: ResearchOsSpacing.md),
@@ -349,33 +376,43 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _AssetCard extends StatelessWidget {
-  const _AssetCard({required this.asset, required this.onRun});
+  const _AssetCard({
+    required this.asset,
+    required this.onOpen,
+    required this.onRun,
+  });
 
   final Map<String, dynamic> asset;
+  final VoidCallback onOpen;
   final VoidCallback onRun;
 
   @override
   Widget build(BuildContext context) {
     final metadata = (asset['metadata'] as Map?) ?? const {};
     return ResearchOsCard(
-      child: ListTile(
-        contentPadding: EdgeInsets.zero,
-        leading: const Icon(Icons.image_outlined),
-        title: Text(asset['original_filename']?.toString() ?? 'Image'),
-        subtitle: Text([
-          asset['format']?.toString() ?? 'format unknown',
-          _bytes(asset['size_bytes']),
-          if (metadata['width'] != null && metadata['height'] != null)
-            '${metadata['width']} × ${metadata['height']}',
-          if (metadata['channels'] != null) '${metadata['channels']} channels',
-          if (metadata['z_slices'] != null) '${metadata['z_slices']} Z',
-          if (metadata['timepoints'] != null) '${metadata['timepoints']} T',
-          metadata['metadata_status']?.toString() ?? 'Metadata unavailable',
-        ].join(' • ')),
-        trailing: TextButton.icon(
-          onPressed: onRun,
-          icon: const Icon(Icons.play_arrow_outlined),
-          label: const Text('Run'),
+      child: Material(
+        type: MaterialType.transparency,
+        child: ListTile(
+          contentPadding: EdgeInsets.zero,
+          onTap: onOpen,
+          leading: const Icon(Icons.image_outlined),
+          title: Text(asset['original_filename']?.toString() ?? 'Image'),
+          subtitle: Text([
+            asset['format']?.toString() ?? 'format unknown',
+            _bytes(asset['size_bytes']),
+            if (metadata['width'] != null && metadata['height'] != null)
+              '${metadata['width']} × ${metadata['height']}',
+            if (metadata['channels'] != null)
+              '${metadata['channels']} channels',
+            if (metadata['z_slices'] != null) '${metadata['z_slices']} Z',
+            if (metadata['timepoints'] != null) '${metadata['timepoints']} T',
+            metadata['metadata_status']?.toString() ?? 'Metadata unavailable',
+          ].join(' • ')),
+          trailing: TextButton.icon(
+            onPressed: onRun,
+            icon: const Icon(Icons.play_arrow_outlined),
+            label: const Text('Run'),
+          ),
         ),
       ),
     );
@@ -450,12 +487,33 @@ class _JobCardState extends State<_JobCard> {
                 title: Text(output['filename']?.toString() ?? 'Output'),
                 subtitle: Text(output['output_type']?.toString() ?? ''),
                 onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(widget.api
-                          .imagingOutputDownloadUrl(output['id'].toString())),
-                    ),
-                  );
+                  if ((output['mime_type']?.toString() ?? '')
+                      .startsWith('image/')) {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => ScientificImageViewerScreen(
+                          title:
+                              output['filename']?.toString() ?? 'Image Viewer',
+                          imageUrl: widget.api.imagingOutputDownloadUrl(
+                            output['id'].toString(),
+                          ),
+                          metadata: {
+                            'Filename': output['filename'],
+                            'Output type': output['output_type'],
+                            'Size': _bytes(output['size_bytes']),
+                            'Workflow provenance': output['metadata'],
+                          },
+                        ),
+                      ),
+                    );
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(widget.api
+                            .imagingOutputDownloadUrl(output['id'].toString())),
+                      ),
+                    );
+                  }
                 },
               ),
             if (_measurements.isNotEmpty) ...[
@@ -480,6 +538,14 @@ String _bytes(Object? value) {
   }
   if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
   return '$bytes B';
+}
+
+String _dimensions(Map<String, dynamic> asset) {
+  final metadata = (asset['metadata'] as Map?) ?? const {};
+  final width = asset['width'] ?? metadata['width'];
+  final height = asset['height'] ?? metadata['height'];
+  if (width == null || height == null) return 'Unavailable';
+  return '$width × $height';
 }
 
 Map<String, dynamic> _workerPayload(Map<String, dynamic> response) {

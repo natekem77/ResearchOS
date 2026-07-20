@@ -1,0 +1,679 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import '../design_system/researchos_design_system.dart';
+
+class ScientificImageViewerScreen extends StatefulWidget {
+  const ScientificImageViewerScreen({
+    super.key,
+    required this.title,
+    required this.imageUrl,
+    required this.metadata,
+    this.provenance,
+  });
+
+  final String title;
+  final String imageUrl;
+  final Map<String, dynamic> metadata;
+  final Map<String, dynamic>? provenance;
+
+  @override
+  State<ScientificImageViewerScreen> createState() =>
+      _ScientificImageViewerScreenState();
+}
+
+class _ScientificImageViewerScreenState
+    extends State<ScientificImageViewerScreen> {
+  final TransformationController _transform = TransformationController();
+  double _brightness = 0;
+  double _contrast = 1;
+  double _gamma = 1;
+  bool _invert = false;
+  String _lut = 'Grayscale';
+  bool _displayExpanded = true;
+  bool _metadataExpanded = false;
+  bool _compare = false;
+  double _comparePosition = 0.5;
+  final List<_ViewerAnnotation> _annotations = <_ViewerAnnotation>[];
+  final List<_ViewerMeasurement> _measurements = <_ViewerMeasurement>[];
+
+  static const List<String> _luts = <String>[
+    'Grayscale',
+    'Green',
+    'Red',
+    'Blue',
+    'Cyan',
+    'Magenta',
+    'Yellow',
+    'Orange',
+    'White',
+    'Fire',
+    'Ice',
+    'Viridis',
+    'Turbo',
+    'Inferno',
+    'Magma',
+    'Plasma',
+  ];
+
+  @override
+  void dispose() {
+    _transform.dispose();
+    super.dispose();
+  }
+
+  void _resetDisplay() {
+    setState(() {
+      _brightness = 0;
+      _contrast = 1;
+      _gamma = 1;
+      _invert = false;
+      _lut = 'Grayscale';
+    });
+  }
+
+  void _fitToScreen() {
+    setState(() {
+      _transform.value = Matrix4.identity();
+    });
+  }
+
+  void _zoom100() {
+    setState(() {
+      _transform.value = Matrix4.identity();
+    });
+  }
+
+  void _doubleTapZoom() {
+    final currentScale = _transform.value.getMaxScaleOnAxis();
+    setState(() {
+      _transform.value = currentScale > 1.1
+          ? Matrix4.identity()
+          : (Matrix4.identity()..scaleByDouble(2, 2, 1, 1));
+    });
+  }
+
+  void _addAnnotation(String type) {
+    setState(() {
+      _annotations.add(_ViewerAnnotation(type));
+    });
+  }
+
+  void _addMeasurement(String type) {
+    setState(() {
+      _measurements.add(_ViewerMeasurement(type));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final image = _FilteredImage(
+      imageUrl: widget.imageUrl,
+      brightness: _brightness,
+      contrast: _contrast,
+      gamma: _gamma,
+      invert: _invert,
+      lut: _lut,
+    );
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.title),
+        actions: [
+          IconButton(
+            tooltip: 'Fit to screen',
+            onPressed: _fitToScreen,
+            icon: const Icon(Icons.fit_screen_outlined),
+          ),
+          TextButton(onPressed: _zoom100, child: const Text('100%')),
+        ],
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onDoubleTap: _doubleTapZoom,
+              child: ColoredBox(
+                color: Colors.black,
+                child: InteractiveViewer(
+                  transformationController: _transform,
+                  minScale: 0.5,
+                  maxScale: 12,
+                  child: Center(
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        if (_compare)
+                          _ComparisonView(
+                            image: image,
+                            position: _comparePosition,
+                          )
+                        else
+                          image,
+                        IgnorePointer(
+                          child: CustomPaint(
+                            size: const Size(280, 220),
+                            painter: _AnnotationPainter(
+                              annotations: _annotations,
+                              measurements: _measurements,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          _ViewerControls(
+            displayExpanded: _displayExpanded,
+            metadataExpanded: _metadataExpanded,
+            brightness: _brightness,
+            contrast: _contrast,
+            gamma: _gamma,
+            invert: _invert,
+            lut: _lut,
+            luts: _luts,
+            compare: _compare,
+            comparePosition: _comparePosition,
+            annotationCount: _annotations.length,
+            measurementCount: _measurements.length,
+            metadata: widget.metadata,
+            provenance: widget.provenance,
+            onDisplayExpanded: (value) =>
+                setState(() => _displayExpanded = value),
+            onMetadataExpanded: (value) =>
+                setState(() => _metadataExpanded = value),
+            onBrightness: (value) => setState(() => _brightness = value),
+            onContrast: (value) => setState(() => _contrast = value),
+            onGamma: (value) => setState(() => _gamma = value),
+            onInvert: (value) => setState(() => _invert = value),
+            onLut: (value) => setState(() => _lut = value),
+            onAutoContrast: () => setState(() {
+              _brightness = 0.05;
+              _contrast = 1.35;
+              _gamma = 1;
+            }),
+            onReset: _resetDisplay,
+            onCompare: (value) => setState(() => _compare = value),
+            onComparePosition: (value) =>
+                setState(() => _comparePosition = value),
+            onAnnotation: _addAnnotation,
+            onMeasurement: _addMeasurement,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FilteredImage extends StatelessWidget {
+  const _FilteredImage({
+    required this.imageUrl,
+    required this.brightness,
+    required this.contrast,
+    required this.gamma,
+    required this.invert,
+    required this.lut,
+  });
+
+  final String imageUrl;
+  final double brightness;
+  final double contrast;
+  final double gamma;
+  final bool invert;
+  final String lut;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _lutColor(lut);
+    final opacity = lut == 'Grayscale' || lut == 'White' ? 0.0 : 0.38;
+    Widget child = Image.network(
+      imageUrl,
+      fit: BoxFit.contain,
+      filterQuality: FilterQuality.high,
+      errorBuilder: (context, error, stackTrace) => const Padding(
+        padding: EdgeInsets.all(ResearchOsSpacing.lg),
+        child: Text(
+          'Display image unavailable. Generate Preview for TIFF/OME-TIFF assets before viewing.',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white),
+        ),
+      ),
+    );
+    child = ColorFiltered(
+      colorFilter: ColorFilter.matrix(
+        _displayMatrix(
+          brightness: brightness,
+          contrast: contrast,
+          gamma: gamma,
+          invert: invert,
+        ),
+      ),
+      child: child,
+    );
+    if (opacity > 0) {
+      child = ColorFiltered(
+        colorFilter:
+            ColorFilter.mode(color.withValues(alpha: opacity), BlendMode.color),
+        child: child,
+      );
+    }
+    return child;
+  }
+}
+
+class _ComparisonView extends StatelessWidget {
+  const _ComparisonView({required this.image, required this.position});
+
+  final Widget image;
+  final double position;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Opacity(opacity: 0.35, child: image),
+        ClipRect(
+          child: Align(
+            alignment: Alignment.centerLeft,
+            widthFactor: position.clamp(0.05, 0.95),
+            child: image,
+          ),
+        ),
+        Positioned.fill(
+          child: FractionallySizedBox(
+            widthFactor: 0.01,
+            alignment: Alignment(-1 + 2 * position, 0),
+            child: const ColoredBox(color: Colors.white),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ViewerControls extends StatelessWidget {
+  const _ViewerControls({
+    required this.displayExpanded,
+    required this.metadataExpanded,
+    required this.brightness,
+    required this.contrast,
+    required this.gamma,
+    required this.invert,
+    required this.lut,
+    required this.luts,
+    required this.compare,
+    required this.comparePosition,
+    required this.annotationCount,
+    required this.measurementCount,
+    required this.metadata,
+    required this.provenance,
+    required this.onDisplayExpanded,
+    required this.onMetadataExpanded,
+    required this.onBrightness,
+    required this.onContrast,
+    required this.onGamma,
+    required this.onInvert,
+    required this.onLut,
+    required this.onAutoContrast,
+    required this.onReset,
+    required this.onCompare,
+    required this.onComparePosition,
+    required this.onAnnotation,
+    required this.onMeasurement,
+  });
+
+  final bool displayExpanded;
+  final bool metadataExpanded;
+  final double brightness;
+  final double contrast;
+  final double gamma;
+  final bool invert;
+  final String lut;
+  final List<String> luts;
+  final bool compare;
+  final double comparePosition;
+  final int annotationCount;
+  final int measurementCount;
+  final Map<String, dynamic> metadata;
+  final Map<String, dynamic>? provenance;
+  final ValueChanged<bool> onDisplayExpanded;
+  final ValueChanged<bool> onMetadataExpanded;
+  final ValueChanged<double> onBrightness;
+  final ValueChanged<double> onContrast;
+  final ValueChanged<double> onGamma;
+  final ValueChanged<bool> onInvert;
+  final ValueChanged<String> onLut;
+  final VoidCallback onAutoContrast;
+  final VoidCallback onReset;
+  final ValueChanged<bool> onCompare;
+  final ValueChanged<double> onComparePosition;
+  final ValueChanged<String> onAnnotation;
+  final ValueChanged<String> onMeasurement;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 8,
+      child: SafeArea(
+        top: false,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                ExpansionTile(
+                  initiallyExpanded: displayExpanded,
+                  onExpansionChanged: onDisplayExpanded,
+                  title: const Text('Display'),
+                  children: [
+                    _SliderRow(
+                        label: 'Brightness',
+                        value: brightness,
+                        min: -1,
+                        max: 1,
+                        onChanged: onBrightness),
+                    _SliderRow(
+                        label: 'Contrast',
+                        value: contrast,
+                        min: 0.2,
+                        max: 3,
+                        onChanged: onContrast),
+                    _SliderRow(
+                        label: 'Gamma',
+                        value: gamma,
+                        min: 0.2,
+                        max: 3,
+                        onChanged: onGamma),
+                    SwitchListTile(
+                      title: const Text('Invert'),
+                      value: invert,
+                      onChanged: onInvert,
+                    ),
+                    ListTile(
+                      title: const Text('LUT'),
+                      trailing: DropdownButton<String>(
+                        value: lut,
+                        items: [
+                          for (final item in luts)
+                            DropdownMenuItem(value: item, child: Text(item)),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) onLut(value);
+                        },
+                      ),
+                    ),
+                    OverflowBar(
+                      children: [
+                        TextButton(
+                            onPressed: onAutoContrast,
+                            child: const Text('Auto Contrast')),
+                        TextButton(
+                            onPressed: onReset,
+                            child: const Text('Reset Display')),
+                      ],
+                    ),
+                    const _Histogram(),
+                  ],
+                ),
+                ExpansionTile(
+                  title: const Text('Channels'),
+                  children: [
+                    for (final channel in ['GFP', 'DAPI', 'RFP'])
+                      CheckboxListTile(
+                        title: Text(channel),
+                        subtitle: Text('LUT: $lut • opacity 100%'),
+                        value: true,
+                        onChanged: (_) {},
+                      ),
+                  ],
+                ),
+                ExpansionTile(
+                  title: const Text('Compare'),
+                  children: [
+                    SwitchListTile(
+                      title: const Text('Swipe slider'),
+                      value: compare,
+                      onChanged: onCompare,
+                    ),
+                    _SliderRow(
+                        label: 'Position',
+                        value: comparePosition,
+                        min: 0,
+                        max: 1,
+                        onChanged: onComparePosition),
+                  ],
+                ),
+                ExpansionTile(
+                  title: Text('Annotations ($annotationCount)'),
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        for (final type in [
+                          'Arrow',
+                          'Text',
+                          'Rectangle',
+                          'Circle',
+                          'Freehand',
+                          'Scale bar'
+                        ])
+                          OutlinedButton(
+                              onPressed: () => onAnnotation(type),
+                              child: Text(type)),
+                      ],
+                    ),
+                  ],
+                ),
+                ExpansionTile(
+                  title: Text('Measurements ($measurementCount)'),
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        for (final type in [
+                          'Distance',
+                          'Polyline',
+                          'Angle',
+                          'Rectangle',
+                          'Circle',
+                          'Area'
+                        ])
+                          OutlinedButton(
+                              onPressed: () => onMeasurement(type),
+                              child: Text(type)),
+                      ],
+                    ),
+                    const Padding(
+                      padding: EdgeInsets.all(ResearchOsSpacing.sm),
+                      child: Text('Intensity profile placeholder'),
+                    ),
+                  ],
+                ),
+                ExpansionTile(
+                  initiallyExpanded: metadataExpanded,
+                  onExpansionChanged: onMetadataExpanded,
+                  title: const Text('Metadata'),
+                  children: [
+                    for (final entry in metadata.entries)
+                      ListTile(
+                        dense: true,
+                        title: Text(entry.key),
+                        subtitle:
+                            Text(entry.value?.toString() ?? 'Unavailable'),
+                      ),
+                    if (provenance != null)
+                      ListTile(
+                        dense: true,
+                        title: const Text('Workflow provenance'),
+                        subtitle: Text(provenance.toString()),
+                      ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SliderRow extends StatelessWidget {
+  const _SliderRow({
+    required this.label,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  final String label;
+  final double value;
+  final double min;
+  final double max;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        SizedBox(width: 96, child: Text(label)),
+        Expanded(
+            child:
+                Slider(value: value, min: min, max: max, onChanged: onChanged)),
+        SizedBox(width: 48, child: Text(value.toStringAsFixed(2))),
+      ],
+    );
+  }
+}
+
+class _Histogram extends StatelessWidget {
+  const _Histogram();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 52,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          for (var index = 0; index < 24; index++)
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 1),
+                child: ColoredBox(
+                  color: Theme.of(context).colorScheme.primary,
+                  child:
+                      SizedBox(height: 8 + 38 * math.sin(index / 24 * math.pi)),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AnnotationPainter extends CustomPainter {
+  const _AnnotationPainter({
+    required this.annotations,
+    required this.measurements,
+  });
+
+  final List<_ViewerAnnotation> annotations;
+  final List<_ViewerMeasurement> measurements;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final annotationPaint = Paint()
+      ..color = Colors.amber
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+    for (var index = 0; index < annotations.length; index++) {
+      final inset = 12.0 + index * 6;
+      canvas.drawRect(Rect.fromLTWH(inset, inset, 80, 48), annotationPaint);
+    }
+    final measurementPaint = Paint()
+      ..color = Colors.lightBlueAccent
+      ..strokeWidth = 2;
+    for (var index = 0; index < measurements.length; index++) {
+      final y = size.height - 20 - index * 8;
+      canvas.drawLine(Offset(20, y), Offset(130, y), measurementPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _AnnotationPainter oldDelegate) =>
+      oldDelegate.annotations.length != annotations.length ||
+      oldDelegate.measurements.length != measurements.length;
+}
+
+class _ViewerAnnotation {
+  const _ViewerAnnotation(this.type);
+
+  final String type;
+}
+
+class _ViewerMeasurement {
+  const _ViewerMeasurement(this.type);
+
+  final String type;
+}
+
+List<double> _displayMatrix({
+  required double brightness,
+  required double contrast,
+  required double gamma,
+  required bool invert,
+}) {
+  final c = contrast * gamma;
+  final b = brightness * 255 + 128 * (1 - c);
+  final sign = invert ? -1.0 : 1.0;
+  final offset = invert ? 255.0 - b : b;
+  return <double>[
+    sign * c,
+    0,
+    0,
+    0,
+    offset,
+    0,
+    sign * c,
+    0,
+    0,
+    offset,
+    0,
+    0,
+    sign * c,
+    0,
+    offset,
+    0,
+    0,
+    0,
+    1,
+    0,
+  ];
+}
+
+Color _lutColor(String lut) {
+  return switch (lut) {
+    'Green' => Colors.greenAccent,
+    'Red' => Colors.redAccent,
+    'Blue' => Colors.blueAccent,
+    'Cyan' => Colors.cyanAccent,
+    'Magenta' => Colors.pinkAccent,
+    'Yellow' => Colors.yellowAccent,
+    'Orange' => Colors.orangeAccent,
+    'Fire' => Colors.deepOrange,
+    'Ice' => Colors.lightBlueAccent,
+    'Viridis' => const Color(0xff35b779),
+    'Turbo' => const Color(0xfff9ba38),
+    'Inferno' => const Color(0xfff1605d),
+    'Magma' => const Color(0xffb5367a),
+    'Plasma' => const Color(0xffcc4778),
+    _ => Colors.white,
+  };
+}

@@ -548,6 +548,15 @@ void main() {
     await api.imagingOutputs('imaging-job:test');
     await api.imagingMeasurements('imaging-job:test');
 
+    expect(
+      api.imagingAssetViewerImageUrl('imaging-asset:test'),
+      'http://example.test/mobile/imaging/assets/imaging-asset%3Atest/viewer-image',
+    );
+    expect(
+      api.imagingAssetDownloadUrl('imaging-asset:test'),
+      'http://example.test/mobile/imaging/assets/imaging-asset%3Atest/download',
+    );
+
     expect(requests.map((request) => '${request.method} ${request.url.path}'), [
       'GET /mobile/imaging/assets',
       'GET /mobile/imaging/jobs',

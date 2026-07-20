@@ -5037,6 +5037,25 @@ def delete_mobile_imaging_asset(asset_id: str, request: Request) -> dict[str, ob
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/mobile/imaging/assets/{asset_id}/download", tags=["imaging"])
+def download_mobile_imaging_asset(asset_id: str, request: Request) -> FileResponse:
+    try:
+        asset = _imaging_service().get_asset(_request_user_id(request), asset_id)
+        path = _imaging_service().asset_path(_request_user_id(request), asset_id)
+        return FileResponse(path, media_type=str(asset.get("mime_type") or "application/octet-stream"), filename=str(asset.get("original_filename") or path.name))
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/assets/{asset_id}/viewer-image", tags=["imaging"])
+def view_mobile_imaging_asset(asset_id: str, request: Request) -> FileResponse:
+    try:
+        path, media_type = _imaging_service().viewer_image_path(_request_user_id(request), asset_id)
+        return FileResponse(path, media_type=media_type)
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/mobile/imaging/workflows", tags=["imaging"])
 def list_mobile_imaging_workflows() -> dict[str, object]:
     return {"workflows": _imaging_service().list_workflows()}

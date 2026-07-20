@@ -477,6 +477,39 @@ class ImagingService:
             raise ImagingValidationError("Invalid imaging output path.")
         return path
 
+    def asset_path(self, user_id: str, asset_id: str) -> Path:
+        asset = self.get_asset(user_id, asset_id)
+        path = (self.base_dir / str(asset["storage_uri"])).resolve()
+        if not str(path).startswith(str(self.base_dir)):
+            raise ImagingValidationError("Invalid imaging asset path.")
+        return path
+
+    def viewer_image_path(self, user_id: str, asset_id: str) -> tuple[Path, str]:
+        asset = self.get_asset(user_id, asset_id)
+        mime_type = str(asset.get("mime_type") or "")
+        if mime_type in {"image/png", "image/jpeg"}:
+            return self.asset_path(user_id, asset_id), mime_type
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT o.* FROM imaging_outputs o
+                JOIN imaging_jobs j ON j.id = o.job_id
+                WHERE j.asset_id = ?
+                  AND j.user_id = ?
+                  AND j.status = 'complete'
+                  AND o.output_type = 'preview_png'
+                ORDER BY o.created_at DESC
+                LIMIT 1
+                """,
+                (asset_id, user_id),
+            ).fetchone()
+        if row is None:
+            raise ImagingValidationError("No displayable preview is available for this image yet.")
+        path = (self.base_dir / str(row["storage_uri"])).resolve()
+        if not str(path).startswith(str(self.base_dir)):
+            raise ImagingValidationError("Invalid imaging preview path.")
+        return path, "image/png"
+
     def record_worker_heartbeat(self, worker_id: str, status: str = "ready") -> dict[str, Any]:
         fiji_path = os.environ.get("MUNDI_FIJI_PATH", "")
         executable_found = bool(fiji_path and Path(fiji_path).exists())

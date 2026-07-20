@@ -252,6 +252,12 @@ class ResearchOsApi {
   String imagingOutputDownloadUrl(String outputId) =>
       '$baseUrl/mobile/imaging/outputs/${Uri.encodeComponent(outputId)}/download';
 
+  String imagingAssetDownloadUrl(String assetId) =>
+      '$baseUrl/mobile/imaging/assets/${Uri.encodeComponent(assetId)}/download';
+
+  String imagingAssetViewerImageUrl(String assetId) =>
+      '$baseUrl/mobile/imaging/assets/${Uri.encodeComponent(assetId)}/viewer-image';
+
   Future<List<DashboardCard>> dashboardCards() async {
     final json = await _getMap('/mobile/dashboard');
     final cards = json['cards'];

@@ -89,6 +89,12 @@ void main() {
     expect(find.textContaining('Connected / Ready'), findsOneWidget);
     expect(find.text('Search imaging datasets'), findsOneWidget);
 
+    await tester.tap(find.text('cells.ome.tif'));
+    await tester.pumpAndSettle();
+    expect(find.text('Display'), findsOneWidget);
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
     await tester.tap(find.text('Run').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Generate Preview'));

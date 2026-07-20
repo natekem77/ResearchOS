@@ -68,6 +68,35 @@ class ImagingServiceTests(unittest.TestCase):
         self.assertEqual(asset["format"], "OME.TIF")
         self.assertEqual(asset["metadata"]["metadata_status"], "unavailable")
 
+    def test_viewer_image_for_png_is_raw_and_does_not_create_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="preview.png",
+                data=_tiny_png(),
+                mime_type="image/png",
+            )
+            path, mime_type = service.viewer_image_path("user:pi-owner", asset["id"])
+            jobs = service.list_jobs("user:pi-owner")
+
+        self.assertEqual(path.name, asset["stored_filename"])
+        self.assertEqual(mime_type, "image/png")
+        self.assertEqual(jobs, [])
+
+    def test_viewer_image_for_tiff_requires_existing_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="cells.tif",
+                data=tiny_tiff(),
+                mime_type="image/tiff",
+            )
+
+            with self.assertRaisesRegex(ImagingValidationError, "No displayable preview"):
+                service.viewer_image_path("user:pi-owner", asset["id"])
+
     def test_generate_preview_job_fails_explicitly_without_fiji(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = ImagingService(self._settings(tmpdir))
