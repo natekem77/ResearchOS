@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import sqlite3
@@ -14,7 +15,7 @@ from typing import Any
 
 from app.attachment_storage import sanitize_filename
 from app.config import Settings, get_settings
-from app.storage import SQLiteStore
+from app.storage import PROJECT_ROOT, SQLiteStore
 from imaging_worker.fiji_runner import FijiRunner, FijiRunnerError
 
 from .provenance import sha256_file
@@ -22,6 +23,7 @@ from .workflows import list_workflows, validate_parameters, workflow_by_key
 
 
 ALLOWED_IMAGE_EXTENSIONS = {".tif", ".tiff", ".ome.tif", ".ome.tiff", ".png", ".jpg", ".jpeg", ".czi", ".lif", ".nd2"}
+logger = logging.getLogger(__name__)
 
 
 class ImagingValidationError(ValueError):
@@ -32,7 +34,8 @@ class ImagingService:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self.store = SQLiteStore(self.settings)
-        self.base_dir = Path(self.settings.data_dir).resolve() / "imaging"
+        self.data_dir = _resolve_data_dir(self.settings.data_dir)
+        self.base_dir = self.data_dir / "imaging"
         self.raw_dir = self.base_dir / "raw"
         self.jobs_dir = self.base_dir / "jobs"
         self.work_dir = Path(os.environ.get("MUNDI_IMAGING_WORK_DIR", str(self.base_dir / "work"))).resolve()
@@ -43,6 +46,7 @@ class ImagingService:
         self.job_timeout_seconds = int(os.environ.get("MUNDI_IMAGING_JOB_TIMEOUT_SECONDS", "600"))
         self._ensure_schema()
         self._ensure_workflows()
+        logger.debug("imaging paths database=%s storage=%s", self.store.path, self.base_dir)
 
     def _connect(self) -> sqlite3.Connection:
         return self.store._connect()
@@ -271,7 +275,16 @@ class ImagingService:
 
     def claim_next_job(self, worker_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
+            queued_count = connection.execute("SELECT COUNT(*) FROM imaging_jobs WHERE status = 'queued'").fetchone()[0]
             row = connection.execute("SELECT * FROM imaging_jobs WHERE status = 'queued' ORDER BY queued_at ASC LIMIT 1").fetchone()
+            logger.debug(
+                "imaging worker queue worker_id=%s database=%s storage=%s queued_jobs=%s claimed_job=%s",
+                worker_id,
+                self.store.path,
+                self.base_dir,
+                queued_count,
+                row["id"] if row is not None else None,
+            )
             if row is None:
                 return None
             connection.execute(
@@ -451,6 +464,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _resolve_data_dir(data_dir: str) -> Path:
+    path = Path(data_dir)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    path.mkdir(parents=True, exist_ok=True)
+    return path.resolve()
+
+
 def _imaging_extension(filename: str) -> str:
     lower = filename.lower()
     if lower.endswith(".ome.tif"):
@@ -470,4 +491,3 @@ def _basic_metadata(filename: str, data: bytes) -> dict[str, Any]:
 
 def _safe_error(exc: Exception) -> str:
     return str(exc).split("\n")[0][:240]
-

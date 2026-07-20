@@ -68,6 +68,7 @@ void main() {
           return _json({
             'worker': {
               'status': 'ready',
+              'connected': true,
               'fiji_version': 'ImageJ 2.x',
             },
           });
@@ -85,6 +86,7 @@ void main() {
     expect(find.text('Upload Image'), findsOneWidget);
     expect(find.text('cells.ome.tif'), findsOneWidget);
     expect(find.text('Imaging Worker'), findsOneWidget);
+    expect(find.textContaining('Connected / Ready'), findsOneWidget);
     expect(find.text('Search imaging datasets'), findsOneWidget);
 
     await tester.tap(find.text('Run').first);
@@ -93,6 +95,52 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(calls, contains('POST /mobile/imaging/jobs'));
+    expect(find.textContaining('Could not queue imaging job'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('queued jobs show waiting state when worker is unavailable',
+      (tester) async {
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        if (request.url.path == '/mobile/imaging/assets') {
+          return _json({'assets': const []});
+        }
+        if (request.url.path == '/mobile/imaging/jobs') {
+          return _json({
+            'jobs': [
+              {
+                'id': 'imaging-job:queued',
+                'workflow_id': 'generate_preview',
+                'status': 'queued',
+                'progress': 0.0,
+              }
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/imaging/workflows') {
+          return _json({'workflows': const []});
+        }
+        if (request.url.path == '/mobile/imaging/worker-status') {
+          return _json({
+            'worker': {
+              'status': 'unavailable',
+              'connected': false,
+            },
+          });
+        }
+        return _json({});
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ImagingScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Unavailable'), findsOneWidget);
+    expect(find.text('Waiting for imaging worker'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -18,13 +19,21 @@ class ImagingScreen extends StatefulWidget {
 class _ImagingScreenState extends State<ImagingScreen> {
   late Future<_ImagingState> _future;
   bool _uploading = false;
+  bool _polling = false;
+  Timer? _jobPollTimer;
   String? _message;
   String _query = '';
 
   @override
   void initState() {
     super.initState();
-    _future = _load();
+    _future = _loadAndTrack();
+  }
+
+  @override
+  void dispose() {
+    _jobPollTimer?.cancel();
+    super.dispose();
   }
 
   Future<_ImagingState> _load() async {
@@ -38,12 +47,60 @@ class _ImagingScreenState extends State<ImagingScreen> {
       assets: results[0] as List<Map<String, dynamic>>,
       jobs: results[1] as List<Map<String, dynamic>>,
       workflows: results[2] as List<Map<String, dynamic>>,
-      worker: results[3] as Map<String, dynamic>,
+      worker: _workerPayload(results[3] as Map<String, dynamic>),
     );
   }
 
-  void _reload() {
-    setState(() => _future = _load());
+  Future<_ImagingState> _loadAndTrack() async {
+    final state = await _load();
+    if (mounted) _syncJobPolling(state);
+    return state;
+  }
+
+  Future<void> _reload({bool quiet = false}) async {
+    final next = _loadAndTrack();
+    if (mounted) {
+      setState(() {
+        _future = next;
+      });
+    }
+    try {
+      await next;
+    } catch (error) {
+      if (!quiet && mounted) {
+        setState(() {
+          _message = 'Imaging data refresh failed: $error';
+        });
+      }
+    }
+  }
+
+  void _syncJobPolling(_ImagingState state) {
+    final shouldPoll = state.jobs.any((job) {
+      final status = job['status']?.toString() ?? 'queued';
+      return status == 'queued' ||
+          status == 'preparing' ||
+          status == 'running' ||
+          status == 'saving_outputs';
+    });
+    if (!shouldPoll) {
+      _jobPollTimer?.cancel();
+      _jobPollTimer = null;
+      return;
+    }
+    _jobPollTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
+      if (!_polling) unawaited(_pollJobs());
+    });
+  }
+
+  Future<void> _pollJobs() async {
+    if (_polling || !mounted) return;
+    _polling = true;
+    try {
+      await _reload(quiet: true);
+    } finally {
+      _polling = false;
+    }
   }
 
   Future<void> _uploadImage() async {
@@ -69,12 +126,22 @@ class _ImagingScreenState extends State<ImagingScreen> {
     });
     try {
       await widget.api.uploadImagingAsset(File(path));
-      setState(() => _message = 'Image uploaded.');
-      _reload();
+      if (!mounted) return;
+      setState(() {
+        _message = 'Image uploaded.';
+      });
+      await _reload(quiet: true);
     } catch (error) {
-      setState(() => _message = 'Image upload failed: $error');
+      if (!mounted) return;
+      setState(() {
+        _message = 'Image upload failed: $error';
+      });
     } finally {
-      if (mounted) setState(() => _uploading = false);
+      if (mounted) {
+        setState(() {
+          _uploading = false;
+        });
+      }
     }
   }
 
@@ -110,10 +177,16 @@ class _ImagingScreenState extends State<ImagingScreen> {
         assetId: asset['id'].toString(),
         workflowKey: selected['stable_key'].toString(),
       );
-      setState(() => _message = 'Imaging job queued.');
-      _reload();
+      if (!mounted) return;
+      setState(() {
+        _message = 'Imaging job queued.';
+      });
+      await _reload(quiet: true);
     } catch (error) {
-      setState(() => _message = 'Could not queue imaging job: $error');
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not queue imaging job: $error';
+      });
     }
   }
 
@@ -135,8 +208,9 @@ class _ImagingScreenState extends State<ImagingScreen> {
         final failedJobs = jobs
             .where((job) => job['status']?.toString() == 'failed')
             .toList(growable: false);
+        final workerConnected = _workerConnected(state?.worker ?? const {});
         return RefreshIndicator(
-          onRefresh: () async => _reload(),
+          onRefresh: _reload,
           child: ListView(
             padding: ResearchOsSpacing.screen,
             children: [
@@ -169,7 +243,11 @@ class _ImagingScreenState extends State<ImagingScreen> {
                   labelText: 'Search imaging datasets',
                   border: OutlineInputBorder(),
                 ),
-                onChanged: (value) => setState(() => _query = value),
+                onChanged: (value) {
+                  setState(() {
+                    _query = value;
+                  });
+                },
               ),
               const SizedBox(height: ResearchOsSpacing.md),
               if (snapshot.connectionState == ConnectionState.waiting)
@@ -177,7 +255,7 @@ class _ImagingScreenState extends State<ImagingScreen> {
               else if (snapshot.hasError)
                 ResearchOsErrorState(
                   message: snapshot.error.toString(),
-                  onRetry: _reload,
+                  onRetry: () => unawaited(_reload()),
                 )
               else ...[
                 _WorkerStatusCard(worker: state?.worker ?? const {}),
@@ -213,7 +291,12 @@ class _ImagingScreenState extends State<ImagingScreen> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
-                for (final job in jobs) _JobCard(api: widget.api, job: job),
+                for (final job in jobs)
+                  _JobCard(
+                    api: widget.api,
+                    job: job,
+                    workerConnected: workerConnected,
+                  ),
               ],
             ],
           ),
@@ -230,16 +313,16 @@ class _WorkerStatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final status = worker['status']?.toString() ?? 'unavailable';
+    final connected = _workerConnected(worker);
+    final label = _workerLabel(worker);
     return ResearchOsCard(
       child: ListTile(
         contentPadding: EdgeInsets.zero,
-        leading: Icon(status == 'unavailable'
-            ? Icons.cloud_off_outlined
-            : Icons.memory_outlined),
+        leading:
+            Icon(!connected ? Icons.cloud_off_outlined : Icons.memory_outlined),
         title: const Text('Imaging Worker'),
         subtitle: Text([
-          status,
+          label,
           if (worker['fiji_version'] != null) 'Fiji: ${worker['fiji_version']}',
           if (worker['last_heartbeat'] != null)
             'Last heartbeat: ${worker['last_heartbeat']}',
@@ -300,10 +383,15 @@ class _AssetCard extends StatelessWidget {
 }
 
 class _JobCard extends StatefulWidget {
-  const _JobCard({required this.api, required this.job});
+  const _JobCard({
+    required this.api,
+    required this.job,
+    required this.workerConnected,
+  });
 
   final ResearchOsApi api;
   final Map<String, dynamic> job;
+  final bool workerConnected;
 
   @override
   State<_JobCard> createState() => _JobCardState();
@@ -330,6 +418,7 @@ class _JobCardState extends State<_JobCard> {
   @override
   Widget build(BuildContext context) {
     final status = widget.job['status']?.toString() ?? 'queued';
+    final waitingForWorker = status == 'queued' && !widget.workerConnected;
     return ResearchOsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -342,8 +431,9 @@ class _JobCardState extends State<_JobCard> {
                     ? Icons.error_outline
                     : Icons.hourglass_top_outlined),
             title: Text(widget.job['workflow_id']?.toString() ?? 'Workflow'),
-            subtitle:
-                Text('Status: $status • Progress: ${widget.job['progress']}'),
+            subtitle: Text(waitingForWorker
+                ? 'Waiting for imaging worker'
+                : 'Status: $status • Progress: ${widget.job['progress']}'),
             trailing: TextButton(
               onPressed: status == 'complete' ? _loadDetails : null,
               child: const Text('Results'),
@@ -390,6 +480,35 @@ String _bytes(Object? value) {
   }
   if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
   return '$bytes B';
+}
+
+Map<String, dynamic> _workerPayload(Map<String, dynamic> response) {
+  final worker = response['worker'];
+  if (worker is Map) return Map<String, dynamic>.from(worker);
+  return response;
+}
+
+bool _workerConnected(Map<String, dynamic> worker) {
+  if (worker['connected'] != true) return false;
+  final heartbeat =
+      DateTime.tryParse(worker['last_heartbeat']?.toString() ?? '');
+  if (heartbeat == null) return true;
+  return DateTime.now().toUtc().difference(heartbeat.toUtc()) <
+      const Duration(seconds: 45);
+}
+
+String _workerLabel(Map<String, dynamic> worker) {
+  if (worker['connected'] != true) return 'Unavailable';
+  final heartbeat =
+      DateTime.tryParse(worker['last_heartbeat']?.toString() ?? '');
+  if (heartbeat != null &&
+      DateTime.now().toUtc().difference(heartbeat.toUtc()) >=
+          const Duration(seconds: 45)) {
+    return 'Stale';
+  }
+  final status = worker['status']?.toString() ?? 'ready';
+  if (status == 'running' || status == 'busy') return 'Busy';
+  return status == 'ready' ? 'Connected / Ready' : status;
 }
 
 class _ImagingState {
