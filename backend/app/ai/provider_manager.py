@@ -142,7 +142,7 @@ class AIService:
         if not text:
             raise ValueError("Message is required.")
         route = self.route_intent(text)
-        preferred = self.conversations.preferred_provider_config()
+        preferred = self.conversations.preferred_provider_config(actor_user_id)
         provider_config_id = str(preferred["provider_config_id"]) if preferred else None
         if not conversation_id:
             conversation = self.conversations.create_conversation(
@@ -183,7 +183,7 @@ class AIService:
             provider_name = "mundi-data-tools"
             model = None
         else:
-            response_text, provider_name, model = self._answer_science(text)
+            response_text, provider_name, model = self._answer_science(actor_user_id, text)
             sources = []
             tool_calls = []
         assistant_message = self.conversations.append_message(
@@ -243,10 +243,13 @@ class AIService:
             return {"skill_id": "mundi_data_assistant", "reason": "mundi_record_query"}
         return {"skill_id": "scientific_assistant", "reason": "scientific_question"}
 
-    def _answer_science(self, message: str) -> tuple[str, str, str | None]:
-        preferred = self.conversations.preferred_provider_config()
+    def _answer_science(self, actor_user_id: str, message: str) -> tuple[str, str, str | None]:
+        preferred = self.conversations.preferred_provider_config(actor_user_id)
         if preferred:
-            raw = self.conversations.provider_config_with_secret(str(preferred["provider_config_id"]))
+            raw = self.conversations.provider_config_with_secret(
+                str(preferred["provider_config_id"]),
+                actor_user_id,
+            )
             if raw:
                 provider = OpenAICompatibleProvider(
                     base_url=str(raw.get("endpoint") or ""),
@@ -265,8 +268,14 @@ class AIService:
                     )
                     return answer, str(raw.get("provider") or "configured-provider"), str(raw.get("default_model") or "")
                 except AIProviderError as exc:
+                    safe_error = _redact_ai_provider_error(str(exc))
+                    if safe_error == "Invalid API key.":
+                        safe_error = (
+                            "OpenAI authentication failed. The saved API key is invalid or unavailable. "
+                            "Update it in Settings → AI Providers."
+                        )
                     return (
-                        f"Scientific Assistant could not reach the configured provider. {exc}",
+                        safe_error,
                         "provider-error",
                         str(raw.get("default_model") or ""),
                     )
@@ -333,9 +342,9 @@ class AIService:
         lines.append("These are Mundi source records, not external literature citations.")
         return "\n".join(lines), sources, tool_calls
 
-    def health(self) -> dict[str, Any]:
-        configs = self.conversations.list_provider_configs()
-        preferred = self.conversations.preferred_provider_config()
+    def health(self, actor_user_id: str | None = None) -> dict[str, Any]:
+        configs = self.conversations.list_provider_configs(actor_user_id) if actor_user_id else self.conversations.list_provider_configs()
+        preferred = self.conversations.preferred_provider_config(actor_user_id) if actor_user_id else self.conversations.preferred_provider_config()
         return {
             "configured": bool(preferred),
             "preferred_provider": preferred,
@@ -343,7 +352,11 @@ class AIService:
             "available_provider_count": len(self.providers.list()),
         }
 
-    def test_provider_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def test_provider_connection(
+        self,
+        payload: dict[str, Any],
+        actor_user_id: str | None = None,
+    ) -> dict[str, Any]:
         provider_id = str(payload.get("provider") or "")
         spec = self.providers.get(provider_id)
         if spec is None:
@@ -351,7 +364,8 @@ class AIService:
         saved_config = None
         if payload.get("provider_config_id"):
             saved_config = self.conversations.provider_config_with_secret(
-                str(payload["provider_config_id"])
+                str(payload["provider_config_id"]),
+                actor_user_id or "user:pi-owner",
             )
             if saved_config is None:
                 raise ValueError("AI provider configuration not found.")
@@ -478,7 +492,12 @@ def _redact_ai_provider_error(message: str) -> str:
     redacted = re.sub(r"Bearer\s+[A-Za-z0-9._\-]+", "Bearer [redacted]", message)
     redacted = re.sub(r"sk-[A-Za-z0-9._\-]+", "sk-[redacted]", redacted)
     lower = redacted.lower()
-    if "401" in redacted or "unauthorized" in lower or "invalid api key" in lower:
+    if (
+        "401" in redacted
+        or "unauthorized" in lower
+        or "invalid api key" in lower
+        or "invalid_api_key" in lower
+    ):
         return "Invalid API key."
     if "404" in redacted or ("model" in lower and "not found" in lower):
         return "Model unavailable."

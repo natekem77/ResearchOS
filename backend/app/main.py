@@ -4747,47 +4747,52 @@ def ai_catalog() -> dict[str, object]:
 
 
 @app.get("/ai/providers", tags=["ai"])
-def ai_providers() -> dict[str, object]:
+def ai_providers(request: Request) -> dict[str, object]:
     return {
         "providers": [item.__dict__ for item in ai_service.providers.list()],
-        "health": ai_service.health(),
+        "health": ai_service.health(_request_user_id(request)),
     }
 
 
 @app.get("/ai/provider-configs", tags=["ai"])
-def ai_provider_configs() -> dict[str, object]:
-    return {"providers": ai_service.conversations.list_provider_configs()}
+def ai_provider_configs(request: Request) -> dict[str, object]:
+    return {"providers": ai_service.conversations.list_provider_configs(_request_user_id(request))}
 
 
 @app.post("/ai/provider-configs", tags=["ai"])
-def upsert_ai_provider_config(request_body: AIProviderConfigRequest) -> dict[str, object]:
+def upsert_ai_provider_config(request_body: AIProviderConfigRequest, request: Request) -> dict[str, object]:
     try:
         payload = request_body.model_dump(exclude_none=True)
         if not payload.get("display_name"):
             payload["display_name"] = payload.get("provider")
-        return ai_service.conversations.upsert_provider_config(payload)
+        return ai_service.conversations.upsert_provider_config(
+            payload,
+            _request_user_id(request),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/ai/provider-configs/{provider_config_id}/default", tags=["ai"])
-def set_default_ai_provider_config(provider_config_id: str) -> dict[str, object]:
+def set_default_ai_provider_config(provider_config_id: str, request: Request) -> dict[str, object]:
+    user_id = _request_user_id(request)
     try:
         return {
             "provider": ai_service.conversations.set_preferred_provider_config(
-                provider_config_id
+                provider_config_id,
+                user_id,
             ),
-            "providers": ai_service.conversations.list_provider_configs(),
+            "providers": ai_service.conversations.list_provider_configs(user_id),
         }
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/ai/provider-configs/test", tags=["ai"])
-def test_ai_provider_config(request_body: AIProviderConfigRequest) -> dict[str, object]:
+def test_ai_provider_config(request_body: AIProviderConfigRequest, request: Request) -> dict[str, object]:
     payload = request_body.model_dump(exclude_none=True)
     try:
-        return ai_service.test_provider_connection(payload)
+        return ai_service.test_provider_connection(payload, _request_user_id(request))
     except ValueError as exc:
         detail = str(exc)
         status_code = 404 if "not found" in detail.lower() else 400

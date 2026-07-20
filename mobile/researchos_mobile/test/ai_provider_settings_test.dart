@@ -265,6 +265,46 @@ void main() {
     expect(find.text('API key removed.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('failed provider save does not show success', (tester) async {
+    final api = _settingsApi(
+      aiProviders: const [
+        {
+          'provider_id': 'openai',
+          'display_name': 'OpenAI',
+          'provider_type': 'cloud',
+          'requires_api_key': true,
+          'default_endpoint': 'https://api.openai.com/v1',
+        },
+      ],
+      aiConfigs: const [],
+      onRequest: (request) async {
+        if (request.url.path == '/ai/provider-configs' &&
+            request.method == 'POST') {
+          return http.Response(
+            jsonEncode({'detail': 'Secret persistence failed'}),
+            500,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return null;
+      },
+    );
+
+    await tester.pumpWidget(_settingsHost(api));
+    await tester.pumpAndSettle();
+    await _scrollToText(tester, 'API key');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'API key'),
+      'sk-test',
+    );
+    await tester.tap(find.text('Save Provider'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Provider saved.'), findsNothing);
+    expect(find.textContaining('Provider save failed'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 Widget _settingsHost(ResearchOsApi api) {

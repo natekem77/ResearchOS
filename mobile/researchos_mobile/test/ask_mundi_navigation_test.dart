@@ -96,9 +96,45 @@ void main() {
     expect(find.text('protocol: Retinal BMP4 protocol'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('Ask Mundi shows sanitized provider authentication failure',
+      (tester) async {
+    final api = _api(
+      assistantContent:
+          'OpenAI authentication failed. The saved API key is invalid or unavailable. Update it in Settings → AI Providers.',
+      provider: 'provider-error',
+      sources: const [],
+    );
+
+    await tester.pumpWidget(
+        MaterialApp(home: Scaffold(body: AskMundiScreen(api: api))));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.widgetWithText(TextField, 'Ask Mundi'),
+        'Why is BMP4 added near day 7?');
+    await tester.tap(find.byTooltip('Send'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('OpenAI authentication failed'), findsOneWidget);
+    expect(find.textContaining('sk-'), findsNothing);
+    expect(find.textContaining('invalid_api_key'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
 
-ResearchOsApi _api({List<http.Request>? requests}) {
+ResearchOsApi _api({
+  List<http.Request>? requests,
+  String assistantContent =
+      'I searched permitted Mundi records for “BMP4” and found:',
+  String provider = 'mundi-data-tools',
+  List<Map<String, dynamic>> sources = const [
+    {
+      'type': 'protocol',
+      'id': 'protocol:bmp4',
+      'title': 'Retinal BMP4 protocol',
+    }
+  ],
+}) {
   return ResearchOsApi(
     baseUrl: 'http://example.test',
     client: MockClient((request) async {
@@ -156,20 +192,13 @@ ResearchOsApi _api({List<http.Request>? requests}) {
                 },
                 {
                   'role': 'assistant',
-                  'content':
-                      'I searched permitted Mundi records for “BMP4” and found:'
+                  'content': assistantContent,
                 },
               ],
             },
             'chosen_skill': 'mundi_data_assistant',
-            'provider': 'mundi-data-tools',
-            'sources': [
-              {
-                'type': 'protocol',
-                'id': 'protocol:bmp4',
-                'title': 'Retinal BMP4 protocol',
-              }
-            ],
+            'provider': provider,
+            'sources': sources,
           }),
           200,
           headers: {'content-type': 'application/json'},

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import uuid
 from typing import Any
@@ -10,6 +11,11 @@ from typing import Any
 from app.ai.models import AIProviderConfig
 from app.config import Settings, get_settings
 from app.storage import SQLiteStore
+
+
+_DEFAULT_AI_USER_ID = "user:pi-owner"
+_MASKED_SECRET_VALUES = {"********", "••••••••", "••••", "api key configured"}
+logger = logging.getLogger(__name__)
 
 
 class ConversationManager:
@@ -27,6 +33,7 @@ class ConversationManager:
                 """
                 CREATE TABLE IF NOT EXISTS ai_provider_configs (
                     provider_config_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL DEFAULT 'user:pi-owner',
                     provider TEXT NOT NULL,
                     display_name TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
@@ -59,6 +66,13 @@ class ConversationManager:
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
 
+                CREATE TABLE IF NOT EXISTS ai_provider_secrets (
+                    secret_ref TEXT PRIMARY KEY,
+                    secret_value TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS mobile_navigation_preferences (
                     user_id TEXT PRIMARY KEY,
                     destination_ids_json TEXT NOT NULL,
@@ -67,18 +81,30 @@ class ConversationManager:
                 );
                 """
             )
+            self._ensure_column(connection, "ai_provider_configs", "user_id", "TEXT")
             self._ensure_column(connection, "ai_conversations", "title", "TEXT")
+            connection.execute(
+                "UPDATE ai_provider_configs SET user_id = ? WHERE user_id IS NULL OR user_id = ''",
+                (_DEFAULT_AI_USER_ID,),
+            )
+            self._migrate_legacy_provider_secrets(connection)
             self._repair_provider_config_duplicates(connection)
 
-    def list_provider_configs(self) -> list[dict[str, Any]]:
+    def list_provider_configs(self, user_id: str = _DEFAULT_AI_USER_ID) -> list[dict[str, Any]]:
         with self._connect() as connection:
             self._repair_provider_config_duplicates(connection)
             rows = connection.execute(
-                "SELECT * FROM ai_provider_configs ORDER BY is_preferred DESC, display_name ASC"
+                """
+                SELECT *
+                FROM ai_provider_configs
+                WHERE user_id = ?
+                ORDER BY is_preferred DESC, api_key_secret IS NOT NULL DESC, display_name ASC
+                """,
+                (user_id,),
             ).fetchall()
         return [self._provider_config_payload(row) for row in rows]
 
-    def upsert_provider_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def upsert_provider_config(self, payload: dict[str, Any], user_id: str = _DEFAULT_AI_USER_ID) -> dict[str, Any]:
         provider = str(payload.get("provider") or "").strip()
         display_name = str(payload.get("display_name") or provider or "AI Provider").strip()
         if not provider:
@@ -89,13 +115,15 @@ class ConversationManager:
         enabled = 1 if payload.get("enabled", True) else 0
         preferred = 1 if payload.get("is_preferred") else 0
         api_key = payload.get("api_key")
-        api_key_secret = str(api_key) if api_key is not None and str(api_key).strip() else None
+        api_key_text = str(api_key).strip() if api_key is not None else ""
+        api_key_secret = api_key_text if api_key_text and not _is_masked_secret(api_key_text) else None
         remove_api_key = bool(payload.get("remove_api_key"))
         with self._connect() as connection:
             self._repair_provider_config_duplicates(connection)
             if not provider_config_id:
                 existing = self._find_provider_config(
                     connection,
+                    user_id=user_id,
                     provider=provider,
                     endpoint=endpoint,
                     display_name=display_name,
@@ -103,83 +131,152 @@ class ConversationManager:
                 provider_config_id = (
                     str(existing["provider_config_id"])
                     if existing is not None
-                    else self._stable_provider_config_id(provider, endpoint, display_name)
+                    else self._stable_provider_config_id(user_id, provider, endpoint, display_name)
                 )
+            existing_row = connection.execute(
+                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ? AND user_id = ?",
+                (provider_config_id, user_id),
+            ).fetchone()
+            if existing_row is None:
+                conflicting_row = connection.execute(
+                    "SELECT user_id FROM ai_provider_configs WHERE provider_config_id = ?",
+                    (provider_config_id,),
+                ).fetchone()
+                if conflicting_row is not None:
+                    raise ValueError("AI provider configuration not found.")
             if preferred:
-                connection.execute("UPDATE ai_provider_configs SET is_preferred = 0")
+                connection.execute(
+                    "UPDATE ai_provider_configs SET is_preferred = 0 WHERE user_id = ?",
+                    (user_id,),
+                )
             if remove_api_key:
-                api_key_sql = "NULL"
+                secret_ref_value = None
+                if existing_row is not None and existing_row["api_key_secret"]:
+                    connection.execute(
+                        "DELETE FROM ai_provider_secrets WHERE secret_ref = ?",
+                        (existing_row["api_key_secret"],),
+                    )
             elif api_key_secret is not None:
-                api_key_sql = "excluded.api_key_secret"
+                secret_ref_value = self._store_secret(
+                    connection,
+                    provider_config_id,
+                    api_key_secret,
+                )
             else:
-                api_key_sql = "ai_provider_configs.api_key_secret"
+                secret_ref_value = (
+                    existing_row["api_key_secret"]
+                    if existing_row is not None
+                    else None
+                )
+            logger.debug(
+                "mundi_ai_provider_save user_id=%s provider_id=%s secret_ref=%s has_secret=%s is_default=%s",
+                user_id,
+                provider_config_id,
+                secret_ref_value,
+                bool(secret_ref_value),
+                bool(preferred),
+            )
             connection.execute(
-                f"""
+                """
                 INSERT INTO ai_provider_configs
-                    (provider_config_id, provider, display_name, enabled, endpoint, default_model, api_key_secret, is_preferred)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (provider_config_id, user_id, provider, display_name, enabled, endpoint, default_model, api_key_secret, is_preferred)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(provider_config_id) DO UPDATE SET
+                    user_id = excluded.user_id,
                     provider = excluded.provider,
                     display_name = excluded.display_name,
                     enabled = excluded.enabled,
                     endpoint = excluded.endpoint,
                     default_model = excluded.default_model,
-                    api_key_secret = {api_key_sql},
+                    api_key_secret = excluded.api_key_secret,
                     is_preferred = excluded.is_preferred,
                     updated_at = CURRENT_TIMESTAMP
                 """,
                 (
                     provider_config_id,
+                    user_id,
                     provider,
                     display_name,
                     enabled,
                     endpoint,
                     default_model,
-                    api_key_secret,
+                    secret_ref_value,
                     preferred,
                 ),
             )
             row = connection.execute(
-                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ?",
-                (provider_config_id,),
+                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ? AND user_id = ?",
+                (provider_config_id, user_id),
             ).fetchone()
         assert row is not None
         return self._provider_config_payload(row)
 
-    def set_preferred_provider_config(self, provider_config_id: str) -> dict[str, Any]:
+    def set_preferred_provider_config(
+        self,
+        provider_config_id: str,
+        user_id: str = _DEFAULT_AI_USER_ID,
+    ) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ?",
-                (provider_config_id,),
+                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ? AND user_id = ?",
+                (provider_config_id, user_id),
             ).fetchone()
             if row is None:
                 raise ValueError("AI provider configuration not found.")
-            connection.execute("UPDATE ai_provider_configs SET is_preferred = 0")
+            connection.execute(
+                "UPDATE ai_provider_configs SET is_preferred = 0 WHERE user_id = ?",
+                (user_id,),
+            )
             connection.execute(
                 """
                 UPDATE ai_provider_configs
                 SET is_preferred = 1, enabled = 1, updated_at = CURRENT_TIMESTAMP
-                WHERE provider_config_id = ?
+                WHERE provider_config_id = ? AND user_id = ?
                 """,
-                (provider_config_id,),
+                (provider_config_id, user_id),
             )
             row = connection.execute(
-                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ?",
-                (provider_config_id,),
+                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ? AND user_id = ?",
+                (provider_config_id, user_id),
             ).fetchone()
+            logger.debug(
+                "mundi_ai_provider_default user_id=%s provider_id=%s secret_ref=%s has_secret=%s is_default=true",
+                user_id,
+                provider_config_id,
+                row["api_key_secret"] if row is not None else None,
+                bool(row["api_key_secret"]) if row is not None else False,
+            )
         assert row is not None
         return self._provider_config_payload(row)
 
-    def provider_config_with_secret(self, provider_config_id: str) -> dict[str, Any] | None:
+    def provider_config_with_secret(
+        self,
+        provider_config_id: str,
+        user_id: str = _DEFAULT_AI_USER_ID,
+    ) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ?",
-                (provider_config_id,),
+                "SELECT * FROM ai_provider_configs WHERE provider_config_id = ? AND user_id = ?",
+                (provider_config_id, user_id),
             ).fetchone()
-        return dict(row) if row is not None else None
+            if row is None:
+                return None
+            payload = dict(row)
+            secret_ref = payload.get("api_key_secret")
+            payload["api_key_secret_ref"] = secret_ref
+            payload["api_key_secret"] = self._load_secret(connection, secret_ref)
+            logger.debug(
+                "mundi_ai_provider_secret_lookup user_id=%s provider_id=%s secret_ref=%s has_secret=%s is_default=%s",
+                user_id,
+                provider_config_id,
+                secret_ref,
+                bool(payload["api_key_secret"]),
+                bool(payload.get("is_preferred")),
+            )
+        return payload
 
-    def preferred_provider_config(self) -> dict[str, Any] | None:
-        configs = self.list_provider_configs()
+    def preferred_provider_config(self, user_id: str = _DEFAULT_AI_USER_ID) -> dict[str, Any] | None:
+        configs = self.list_provider_configs(user_id)
         return next((item for item in configs if item.get("enabled") and item.get("is_preferred")), None) or next(
             (item for item in configs if item.get("enabled")), None
         )
@@ -324,14 +421,18 @@ class ConversationManager:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _provider_config_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+        has_secret = bool(row["api_key_secret"])
         return {
             "provider_config_id": row["provider_config_id"],
+            "provider_id": row["provider_config_id"],
+            "user_id": row["user_id"],
             "provider": row["provider"],
             "display_name": row["display_name"],
             "enabled": bool(row["enabled"]),
             "endpoint": row["endpoint"],
             "default_model": row["default_model"],
-            "api_key_configured": bool(row["api_key_secret"]),
+            "api_key_configured": has_secret,
+            "has_api_key": has_secret,
             "is_preferred": bool(row["is_preferred"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
@@ -386,6 +487,7 @@ class ConversationManager:
         self,
         connection: sqlite3.Connection,
         *,
+        user_id: str,
         provider: str,
         endpoint: str | None,
         display_name: str,
@@ -394,17 +496,19 @@ class ConversationManager:
             """
             SELECT *
             FROM ai_provider_configs
-            WHERE lower(provider) = lower(?)
+            WHERE user_id = ?
+              AND lower(provider) = lower(?)
               AND lower(COALESCE(endpoint, '')) = lower(?)
               AND lower(display_name) = lower(?)
             ORDER BY is_preferred DESC, api_key_secret IS NOT NULL DESC, updated_at DESC, created_at DESC
             LIMIT 1
             """,
-            (provider, endpoint or "", display_name),
+            (user_id, provider, endpoint or "", display_name),
         ).fetchone()
 
     def _stable_provider_config_id(
         self,
+        user_id: str,
         provider: str,
         endpoint: str | None,
         display_name: str,
@@ -413,12 +517,74 @@ class ConversationManager:
 
         identity = "|".join(
             [
+                user_id.strip().lower(),
                 provider.strip().lower(),
                 (endpoint or "").strip().lower(),
                 display_name.strip().lower(),
             ]
         )
         return f"ai-provider:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
+
+    def _secret_ref(self, provider_config_id: str) -> str:
+        return f"ai-secret:{provider_config_id.removeprefix('ai-provider:')}"
+
+    def _store_secret(
+        self,
+        connection: sqlite3.Connection,
+        provider_config_id: str,
+        secret_value: str,
+    ) -> str:
+        secret_ref = self._secret_ref(provider_config_id)
+        connection.execute(
+            """
+            INSERT INTO ai_provider_secrets (secret_ref, secret_value)
+            VALUES (?, ?)
+            ON CONFLICT(secret_ref) DO UPDATE SET
+                secret_value = excluded.secret_value,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (secret_ref, secret_value),
+        )
+        return secret_ref
+
+    def _load_secret(
+        self,
+        connection: sqlite3.Connection,
+        secret_ref: object,
+    ) -> str | None:
+        if secret_ref is None:
+            return None
+        ref = str(secret_ref)
+        if not ref:
+            return None
+        if not ref.startswith("ai-secret:"):
+            return ref
+        row = connection.execute(
+            "SELECT secret_value FROM ai_provider_secrets WHERE secret_ref = ?",
+            (ref,),
+        ).fetchone()
+        return str(row["secret_value"]) if row is not None else None
+
+    def _migrate_legacy_provider_secrets(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT provider_config_id, api_key_secret
+            FROM ai_provider_configs
+            WHERE api_key_secret IS NOT NULL
+              AND api_key_secret != ''
+              AND api_key_secret NOT LIKE 'ai-secret:%'
+            """
+        ).fetchall()
+        for row in rows:
+            secret_ref = self._store_secret(
+                connection,
+                str(row["provider_config_id"]),
+                str(row["api_key_secret"]),
+            )
+            connection.execute(
+                "UPDATE ai_provider_configs SET api_key_secret = ? WHERE provider_config_id = ?",
+                (secret_ref, row["provider_config_id"]),
+            )
 
     def _repair_provider_config_duplicates(self, connection: sqlite3.Connection) -> None:
         rows = connection.execute(
@@ -427,9 +593,9 @@ class ConversationManager:
         groups: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
         for row in rows:
             key = (
+                str(row["user_id"] or _DEFAULT_AI_USER_ID).strip(),
                 str(row["provider"] or "").strip().lower(),
                 str(row["endpoint"] or "").strip().lower(),
-                str(row["display_name"] or "").strip().lower(),
             )
             groups.setdefault(key, []).append(row)
 
@@ -439,16 +605,23 @@ class ConversationManager:
             keep = sorted(
                 duplicate_rows,
                 key=lambda row: (
+                    1 if self._load_secret(connection, row["api_key_secret"]) else 0,
                     1 if row["is_preferred"] else 0,
-                    1 if row["api_key_secret"] else 0,
                     str(row["updated_at"] or ""),
                     str(row["created_at"] or ""),
                 ),
                 reverse=True,
             )[0]
             secret = keep["api_key_secret"]
-            if not secret:
-                secret_row = next((row for row in duplicate_rows if row["api_key_secret"]), None)
+            if not self._load_secret(connection, secret):
+                secret_row = next(
+                    (
+                        row
+                        for row in duplicate_rows
+                        if self._load_secret(connection, row["api_key_secret"])
+                    ),
+                    None,
+                )
                 secret = secret_row["api_key_secret"] if secret_row is not None else None
             preferred = 1 if any(row["is_preferred"] for row in duplicate_rows) else 0
             connection.execute(
@@ -461,6 +634,13 @@ class ConversationManager:
                 """,
                 (secret, preferred, keep["provider_config_id"]),
             )
+            delete_refs = [
+                row["api_key_secret"]
+                for row in duplicate_rows
+                if row["provider_config_id"] != keep["provider_config_id"]
+                and row["api_key_secret"]
+                and row["api_key_secret"] != secret
+            ]
             connection.execute(
                 """
                 DELETE FROM ai_provider_configs
@@ -472,21 +652,40 @@ class ConversationManager:
                     if row["provider_config_id"] != keep["provider_config_id"]
                 ],
             )
+            if delete_refs:
+                connection.execute(
+                    """
+                    DELETE FROM ai_provider_secrets
+                    WHERE secret_ref IN ({})
+                    """.format(",".join("?" for _ in delete_refs)),
+                    delete_refs,
+                )
 
-        preferred_rows = connection.execute(
+        preferred_by_user: dict[str, list[sqlite3.Row]] = {}
+        for row in connection.execute(
             """
-            SELECT provider_config_id
+            SELECT provider_config_id, user_id
             FROM ai_provider_configs
             WHERE is_preferred = 1
             ORDER BY updated_at DESC, created_at DESC
             """
-        ).fetchall()
-        if len(preferred_rows) > 1:
-            keep_id = preferred_rows[0]["provider_config_id"]
+        ).fetchall():
+            preferred_by_user.setdefault(str(row["user_id"]), []).append(row)
+        for rows_for_user in preferred_by_user.values():
+            if len(rows_for_user) <= 1:
+                continue
+            keep_id = rows_for_user[0]["provider_config_id"]
             connection.execute(
-                "UPDATE ai_provider_configs SET is_preferred = 0 WHERE provider_config_id != ?",
-                (keep_id,),
+                "UPDATE ai_provider_configs SET is_preferred = 0 WHERE user_id = ? AND provider_config_id != ?",
+                (rows_for_user[0]["user_id"], keep_id),
             )
+
+
+def _is_masked_secret(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in _MASKED_SECRET_VALUES:
+        return True
+    return bool(normalized) and set(normalized) <= {"*", "•", "x"}
 
 
 def _normal_text(value: object) -> str | None:

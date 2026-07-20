@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from app.ai_providers import AIProviderError
 from app.ai.models import AIMessage, AIRequest
 from app.ai.provider_manager import AIService
 from app.config import Settings
@@ -60,6 +61,34 @@ class AIPlatformTests(unittest.TestCase):
         self.assertEqual(len(preferred), 1)
         self.assertEqual(preferred[0]["provider"], "anthropic")
 
+    def test_provider_key_survives_service_reconstruction_and_uses_secret_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "sk-durable-secret",
+                    "is_preferred": True,
+                },
+                "user:pi-owner",
+            )
+            reloaded = AIService(self._settings(tmpdir))
+            configs = reloaded.conversations.list_provider_configs("user:pi-owner")
+            raw = reloaded.conversations.provider_config_with_secret(
+                saved["provider_config_id"],
+                "user:pi-owner",
+            )
+
+        self.assertEqual(len(configs), 1)
+        self.assertTrue(configs[0]["api_key_configured"])
+        self.assertTrue(configs[0]["has_api_key"])
+        self.assertNotIn("sk-durable-secret", str(configs))
+        self.assertEqual(raw["api_key_secret"], "sk-durable-secret")
+        self.assertTrue(str(raw["api_key_secret_ref"]).startswith("ai-secret:"))
+
     def test_provider_save_is_idempotent_and_preserves_blank_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = AIService(self._settings(tmpdir))
@@ -90,6 +119,37 @@ class AIPlatformTests(unittest.TestCase):
         self.assertTrue(second["api_key_configured"])
         self.assertNotIn("secret-one", str(second))
         self.assertEqual(stored["api_key_secret"], "secret-one")
+
+    def test_masked_placeholder_update_preserves_saved_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            first = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "sk-original",
+                },
+                "user:pi-owner",
+            )
+            service.conversations.upsert_provider_config(
+                {
+                    "provider_config_id": first["provider_config_id"],
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "••••••••",
+                },
+                "user:pi-owner",
+            )
+            stored = service.conversations.provider_config_with_secret(
+                first["provider_config_id"],
+                "user:pi-owner",
+            )
+
+        self.assertEqual(stored["api_key_secret"], "sk-original")
 
     def test_provider_secret_replacement_and_removal(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -178,6 +238,56 @@ class AIPlatformTests(unittest.TestCase):
         self.assertTrue(configs[0]["api_key_configured"])
         self.assertTrue(configs[0]["is_preferred"])
 
+    def test_duplicate_cleanup_selects_provider_with_valid_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            with service.conversations._connect() as connection:
+                service.conversations._store_secret(connection, "ai-provider:keyed", "sk-valid")
+                connection.execute(
+                    """
+                    INSERT INTO ai_provider_configs
+                        (provider_config_id, user_id, provider, display_name, endpoint, default_model, api_key_secret, is_preferred)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ai-provider:stale",
+                        "user:pi-owner",
+                        "openai",
+                        "openai",
+                        "https://api.openai.com/v1",
+                        "gpt-4o-mini",
+                        None,
+                        1,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO ai_provider_configs
+                        (provider_config_id, user_id, provider, display_name, endpoint, default_model, api_key_secret, is_preferred)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ai-provider:keyed",
+                        "user:pi-owner",
+                        "openai",
+                        "OpenAI",
+                        "https://api.openai.com/v1",
+                        "gpt-5-mini",
+                        "ai-secret:keyed",
+                        0,
+                    ),
+                )
+            configs = service.conversations.list_provider_configs("user:pi-owner")
+            raw = service.conversations.provider_config_with_secret(
+                configs[0]["provider_config_id"],
+                "user:pi-owner",
+            )
+
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0]["provider_config_id"], "ai-provider:keyed")
+        self.assertTrue(configs[0]["is_preferred"])
+        self.assertEqual(raw["api_key_secret"], "sk-valid")
+
     def test_set_default_marks_exactly_one_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = AIService(self._settings(tmpdir))
@@ -233,7 +343,8 @@ class AIPlatformTests(unittest.TestCase):
                         "display_name": "OpenAI",
                         "endpoint": "https://api.openai.com/v1",
                         "default_model": "gpt-5-mini",
-                    }
+                    },
+                    "user:pi-owner",
                 )
                 provider_instance = chat.call_args.args[0] if chat.call_args.args else None
 
@@ -243,8 +354,6 @@ class AIPlatformTests(unittest.TestCase):
         self.assertEqual(provider_instance.api_key, "stored-secret")
 
     def test_provider_connection_error_redacts_secret(self) -> None:
-        from app.ai_providers import AIProviderError
-
         with tempfile.TemporaryDirectory() as tmpdir:
             service = AIService(self._settings(tmpdir))
             saved = service.conversations.upsert_provider_config(
@@ -267,12 +376,76 @@ class AIPlatformTests(unittest.TestCase):
                         "display_name": "OpenAI",
                         "endpoint": "https://api.openai.com/v1",
                         "default_model": "gpt-5-mini",
-                    }
+                    },
+                    "user:pi-owner",
                 )
 
         self.assertFalse(response["ok"])
         self.assertEqual(response["message"], "Invalid API key.")
         self.assertNotIn("sk-secret", str(response))
+
+    def test_ask_mundi_uses_stored_default_provider_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "sk-ask-mundi",
+                    "is_preferred": True,
+                },
+                "user:pi-owner",
+            )
+            with patch(
+                "app.ai_providers.OpenAICompatibleProvider.chat",
+                autospec=True,
+                return_value="Scientific answer",
+            ) as chat:
+                result = service.ask_mundi(
+                    actor_user_id="user:pi-owner",
+                    message="Why is BMP4 added near day 7?",
+                )
+                provider_instance = chat.call_args.args[0] if chat.call_args.args else None
+
+        self.assertEqual(result["chosen_skill"], "scientific_assistant")
+        self.assertEqual(result["provider"], "openai")
+        self.assertEqual(provider_instance.api_key, "sk-ask-mundi")
+        self.assertEqual(
+            result["conversation"]["provider_config_id"],
+            saved["provider_config_id"],
+        )
+
+    def test_ask_mundi_401_is_sanitized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "sk-secret-ending-4w8A",
+                    "is_preferred": True,
+                },
+                "user:pi-owner",
+            )
+            with patch(
+                "app.ai_providers.OpenAICompatibleProvider.chat",
+                side_effect=AIProviderError(
+                    'AI provider returned HTTP 401: {"error":{"message":"Incorrect API key provided: sk-secret-ending-4w8A","type":"invalid_request_error","code":"invalid_api_key"}}'
+                ),
+            ):
+                result = service.ask_mundi(
+                    actor_user_id="user:pi-owner",
+                    message="Why is BMP4 added near day 7?",
+                )
+
+        text = str(result)
+        self.assertIn("OpenAI authentication failed", result["assistant_message"]["content"])
+        self.assertNotIn("sk-secret-ending-4w8A", text)
+        self.assertNotIn("invalid_api_key", text)
 
     def test_prompt_tool_and_skill_registration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
