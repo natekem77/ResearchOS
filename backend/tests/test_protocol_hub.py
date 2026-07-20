@@ -609,6 +609,94 @@ class ProtocolHubTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolHubValidationError, "Unknown"):
                 service.reorder_protocols("user:researcher-a", [protocol["protocol_id"], "protocol:missing"])
 
+    def test_protocol_groups_create_rename_reorder_and_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            cell = service.create_group("user:pi-owner", "lab:demo", "Cell Culture")
+            molecular = service.create_group("user:pi-owner", "lab:demo", "Molecular Biology")
+            renamed = service.rename_group("user:pi-owner", molecular["group_id"], "Molecular & Cellular Biology")
+            reordered = service.reorder_groups(
+                "user:pi-owner",
+                [renamed["group_id"], cell["group_id"]],
+            )
+            tree = service.protocol_tree()
+
+        self.assertEqual(renamed["name"], "Molecular & Cellular Biology")
+        self.assertEqual([item["group_id"] for item in reordered], [renamed["group_id"], cell["group_id"]])
+        root_groups = [item for item in tree["groups"] if item.get("parent_group_id") is None]
+        self.assertEqual([item["group_id"] for item in root_groups[:2]], [renamed["group_id"], cell["group_id"]])
+        self.assertEqual(tree["ordering"], "groups_first")
+
+    def test_protocol_subgroups_reorder_move_and_cycle_prevention(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            cell = service.create_group("user:pi-owner", "lab:demo", "Cell Culture")
+            organoids = service.create_group("user:pi-owner", "lab:demo", "Organoids", parent_group_id=cell["group_id"])
+            neurons = service.create_group("user:pi-owner", "lab:demo", "Neurons", parent_group_id=cell["group_id"])
+            reordered = service.reorder_groups("user:pi-owner", [neurons["group_id"], organoids["group_id"]])
+            moved = service.move_group("user:pi-owner", neurons["group_id"], None)
+            with self.assertRaisesRegex(ProtocolHubValidationError, "own parent"):
+                service.move_group("user:pi-owner", cell["group_id"], cell["group_id"])
+            with self.assertRaisesRegex(ProtocolHubValidationError, "descendant"):
+                service.move_group("user:pi-owner", cell["group_id"], organoids["group_id"])
+
+        self.assertEqual([item["group_id"] for item in reordered], [neurons["group_id"], organoids["group_id"]])
+        self.assertIsNone(moved["parent_group_id"])
+
+    def test_protocol_move_to_group_root_and_group_scoped_ordering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            organoids = service.create_group("user:pi-owner", "lab:demo", "Organoids")
+            first = service.create_blank_protocol("user:researcher-a", "lab:demo", "Group Protocol A")
+            second = service.create_blank_protocol("user:researcher-a", "lab:demo", "Group Protocol B")
+            service.move_protocol_to_group("user:researcher-a", first["protocol_id"], organoids["group_id"])
+            moved_second = service.move_protocol_to_group("user:researcher-a", second["protocol_id"], organoids["group_id"])
+            ordered = service.reorder_protocols("user:researcher-a", [moved_second["protocol_id"], first["protocol_id"]])
+            rooted = service.move_protocol_to_group("user:researcher-a", first["protocol_id"], None)
+            tree = service.protocol_tree()
+
+        self.assertEqual(moved_second["group_id"], organoids["group_id"])
+        self.assertEqual([item["protocol_id"] for item in ordered], [second["protocol_id"], first["protocol_id"]])
+        self.assertIsNone(rooted["group_id"])
+        by_id = {item["protocol_id"]: item for item in tree["protocols"]}
+        self.assertIsNone(by_id[first["protocol_id"]]["group_id"])
+        self.assertEqual(by_id[second["protocol_id"]]["group_id"], organoids["group_id"])
+
+    def test_delete_group_moves_contents_to_parent_without_losing_protocols(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            cell = service.create_group("user:pi-owner", "lab:demo", "Cell Culture")
+            organoids = service.create_group("user:pi-owner", "lab:demo", "Organoids", parent_group_id=cell["group_id"])
+            protocol = service.create_blank_protocol("user:researcher-a", "lab:demo", "Organoid Protocol")
+            service.move_protocol_to_group("user:researcher-a", protocol["protocol_id"], cell["group_id"])
+
+            deleted = service.delete_group("user:pi-owner", cell["group_id"], mode="move_contents_to_parent")
+            tree = service.protocol_tree()
+
+        self.assertTrue(deleted["deleted"])
+        groups = {item["group_id"]: item for item in tree["groups"]}
+        protocols = {item["protocol_id"]: item for item in tree["protocols"]}
+        self.assertNotIn(cell["group_id"], groups)
+        self.assertIsNone(groups[organoids["group_id"]]["parent_group_id"])
+        self.assertIsNone(protocols[protocol["protocol_id"]]["group_id"])
+
+    def test_protocol_group_authorization_and_reorder_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = self._service(tmpdir)
+            cell = service.create_group("user:pi-owner", "lab:demo", "Cell Culture")
+            other = service.create_group("user:pi-owner", "lab:demo", "Other")
+            child = service.create_group("user:pi-owner", "lab:demo", "Child", parent_group_id=cell["group_id"])
+            protocol = service.create_blank_protocol("user:researcher-a", "lab:demo", "Scoped Protocol A")
+            grouped = service.create_blank_protocol("user:researcher-a", "lab:demo", "Scoped Protocol B")
+            service.move_protocol_to_group("user:researcher-a", grouped["protocol_id"], cell["group_id"])
+
+            with self.assertRaises(PermissionError):
+                service.create_group("user:guest", "lab:demo", "No Access")
+            with self.assertRaisesRegex(ProtocolHubValidationError, "share one parent"):
+                service.reorder_groups("user:pi-owner", [other["group_id"], child["group_id"]])
+            with self.assertRaisesRegex(ProtocolHubValidationError, "same group"):
+                service.reorder_protocols("user:researcher-a", [protocol["protocol_id"], grouped["protocol_id"]])
+
     def test_existing_protocol_null_sort_indexes_are_normalized(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = self._service(tmpdir)

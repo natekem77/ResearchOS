@@ -358,6 +358,105 @@ void main() {
     ]);
   });
 
+  test('protocol group API methods use canonical routes', () async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/protocol-hub/tree') {
+          return http.Response(
+            jsonEncode(
+                {'groups': [], 'protocols': [], 'ordering': 'groups_first'}),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/protocol-hub/groups') {
+          return http.Response(
+            jsonEncode(
+                {'group_id': 'protocol-group:cell', 'name': 'Cell Culture'}),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'PATCH' &&
+            request.url.path == '/protocol-hub/groups/protocol-group%3Acell') {
+          return http.Response(
+            jsonEncode({'group_id': 'protocol-group:cell', 'name': 'Updated'}),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path == '/protocol-hub/groups/reorder') {
+          return http.Response(
+            jsonEncode({
+              'groups': [
+                {'group_id': 'protocol-group:cell'}
+              ]
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path ==
+                '/protocol-hub/groups/protocol-group%3Acell/move') {
+          return http.Response(
+            jsonEncode(
+                {'group_id': 'protocol-group:cell', 'parent_group_id': null}),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'POST' &&
+            request.url.path ==
+                '/protocol-hub/protocols/protocol%3Aa/move-to-group') {
+          return http.Response(
+            jsonEncode({
+              'protocol_id': 'protocol:a',
+              'group_id': 'protocol-group:cell'
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        if (request.method == 'DELETE' &&
+            request.url.path == '/protocol-hub/groups/protocol-group%3Acell') {
+          return http.Response(jsonEncode({'deleted': true}), 200);
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await api.protocolHubTree();
+    await api.createProtocolHubGroup(name: 'Cell Culture');
+    await api.renameProtocolHubGroup(
+      groupId: 'protocol-group:cell',
+      name: 'Updated',
+    );
+    await api.reorderProtocolHubGroups(['protocol-group:cell']);
+    await api.moveProtocolHubGroup(groupId: 'protocol-group:cell');
+    await api.moveProtocolHubProtocolToGroup(
+      protocolId: 'protocol:a',
+      groupId: 'protocol-group:cell',
+    );
+    await api.deleteProtocolHubGroup(groupId: 'protocol-group:cell');
+
+    expect(requests.map((request) => '${request.method} ${request.url.path}'), [
+      'GET /protocol-hub/tree',
+      'POST /protocol-hub/groups',
+      'PATCH /protocol-hub/groups/protocol-group%3Acell',
+      'POST /protocol-hub/groups/reorder',
+      'POST /protocol-hub/groups/protocol-group%3Acell/move',
+      'POST /protocol-hub/protocols/protocol%3Aa/move-to-group',
+      'DELETE /protocol-hub/groups/protocol-group%3Acell',
+    ]);
+  });
+
   test('approveProtocolHubExtraction posts explicit confirmation', () async {
     late http.Request captured;
     final api = ResearchOsApi(

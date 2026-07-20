@@ -485,6 +485,32 @@ class ProtocolReorderRequest(BaseModel):
     protocol_ids: list[str]
 
 
+class ProtocolGroupCreateRequest(BaseModel):
+    lab_id: str = "lab:demo"
+    name: str
+    parent_group_id: str | None = None
+
+
+class ProtocolGroupUpdateRequest(BaseModel):
+    name: str | None = None
+
+
+class ProtocolGroupReorderRequest(BaseModel):
+    group_ids: list[str]
+
+
+class ProtocolGroupMoveRequest(BaseModel):
+    parent_group_id: str | None = None
+
+
+class ProtocolGroupDeleteRequest(BaseModel):
+    mode: Literal["move_contents_to_parent", "recursive"] = "move_contents_to_parent"
+
+
+class ProtocolMoveToGroupRequest(BaseModel):
+    group_id: str | None = None
+
+
 class NotebookSaveRequest(BaseModel):
     current_version: int
     content: str
@@ -9535,6 +9561,102 @@ def protocol_hub_protocols(q: str | None = Query(default=None)) -> list[dict[str
     return _protocol_hub_service().list_protocols(query=q)
 
 
+@app.get("/protocol-hub/tree", tags=["protocol-hub"])
+def protocol_hub_tree(
+    lab_id: str = Query(default="lab:demo"),
+    q: str | None = Query(default=None),
+) -> dict[str, object]:
+    """Return protocol groups and protocols for deterministic tree rendering."""
+
+    return _protocol_hub_service().protocol_tree(lab_id=lab_id, query=q)
+
+
+@app.get("/protocol-hub/groups", tags=["protocol-hub"])
+def protocol_hub_groups(lab_id: str = Query(default="lab:demo")) -> list[dict[str, object]]:
+    return _protocol_hub_service().list_protocol_groups(lab_id=lab_id)
+
+
+@app.post("/protocol-hub/groups", tags=["protocol-hub"])
+def create_protocol_hub_group(
+    request_body: ProtocolGroupCreateRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().create_group(
+            actor_user_id=_request_user_id(request),
+            lab_id=request_body.lab_id,
+            name=request_body.name,
+            parent_group_id=request_body.parent_group_id,
+        )
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.patch("/protocol-hub/groups/{group_id}", tags=["protocol-hub"])
+def update_protocol_hub_group(
+    group_id: str,
+    request_body: ProtocolGroupUpdateRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        if request_body.name is None:
+            raise ProtocolHubValidationError("Group name is required.")
+        return _protocol_hub_service().rename_group(
+            _request_user_id(request),
+            group_id,
+            request_body.name,
+        )
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.delete("/protocol-hub/groups/{group_id}", tags=["protocol-hub"])
+def delete_protocol_hub_group(
+    group_id: str,
+    request: Request,
+    mode: Literal["move_contents_to_parent", "recursive"] = Query(default="move_contents_to_parent"),
+) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().delete_group(
+            _request_user_id(request),
+            group_id,
+            mode=mode,
+        )
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/protocol-hub/groups/reorder", tags=["protocol-hub"])
+def reorder_protocol_hub_groups(
+    request_body: ProtocolGroupReorderRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        groups = _protocol_hub_service().reorder_groups(
+            _request_user_id(request),
+            request_body.group_ids,
+        )
+        return {"groups": groups}
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/protocol-hub/groups/{group_id}/move", tags=["protocol-hub"])
+def move_protocol_hub_group(
+    group_id: str,
+    request_body: ProtocolGroupMoveRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().move_group(
+            _request_user_id(request),
+            group_id,
+            request_body.parent_group_id,
+        )
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
 @app.post("/protocol-hub/protocols/reorder", tags=["protocol-hub"])
 def reorder_protocol_hub_protocols(
     request_body: ProtocolReorderRequest,
@@ -9546,6 +9668,22 @@ def reorder_protocol_hub_protocols(
             request_body.protocol_ids,
         )
         return {"protocols": protocols}
+    except (ProtocolHubValidationError, PermissionError) as exc:
+        raise _protocol_hub_http_error(exc)
+
+
+@app.post("/protocol-hub/protocols/{protocol_id}/move-to-group", tags=["protocol-hub"])
+def move_protocol_hub_protocol_to_group(
+    protocol_id: str,
+    request_body: ProtocolMoveToGroupRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return _protocol_hub_service().move_protocol_to_group(
+            _request_user_id(request),
+            protocol_id,
+            request_body.group_id,
+        )
     except (ProtocolHubValidationError, PermissionError) as exc:
         raise _protocol_hub_http_error(exc)
 

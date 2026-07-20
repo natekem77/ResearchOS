@@ -19,6 +19,8 @@ class ProtocolHubScreen extends StatefulWidget {
 class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
   final _query = TextEditingController();
   var _protocols = <Map<String, dynamic>>[];
+  var _groups = <Map<String, dynamic>>[];
+  final _expandedGroups = <String>{};
   var _loading = true;
   Object? _error;
   var _reordering = false;
@@ -44,17 +46,25 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
       _error = null;
     });
     try {
-      final protocols =
-          await widget.api.protocolHubProtocols(query: _query.text);
+      final tree = await widget.api.protocolHubTree(query: _query.text);
       if (!mounted || generation != _requestGeneration) return;
+      final groups = (tree['groups'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+      final protocols = (tree['protocols'] as List? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
       setState(() {
+        _groups = groups;
         _protocols = protocols;
+        _reordering = false;
         _loading = false;
       });
     } catch (error) {
       if (!mounted || generation != _requestGeneration) return;
       setState(() {
         _error = error;
+        _reordering = false;
         _loading = false;
       });
     }
@@ -110,52 +120,221 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
     }
   }
 
-  Future<void> _handleReorder(int oldIndex, int newIndex) {
-    return _moveProtocol(oldIndex, newIndex);
+  Future<void> _createGroup({String? parentGroupId}) async {
+    final name = await _promptForText(
+      title: parentGroupId == null ? 'New Group' : 'New Subgroup',
+      label: 'Group name',
+    );
+    if (name == null) return;
+    try {
+      final group = await widget.api.createProtocolHubGroup(
+        name: name,
+        parentGroupId: parentGroupId,
+      );
+      if (!mounted) return;
+      setState(() {
+        _groups = [..._groups, group];
+        if (parentGroupId != null) _expandedGroups.add(parentGroupId);
+      });
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Create group failed: $error')),
+      );
+    }
   }
 
-  Future<void> _moveProtocol(int oldIndex, int targetIndex) async {
-    if (_reordering || oldIndex == targetIndex) return;
-    if (oldIndex < 0 ||
-        oldIndex >= _protocols.length ||
-        targetIndex < 0 ||
-        targetIndex >= _protocols.length) {
-      return;
+  Future<void> _renameGroup(Map<String, dynamic> group) async {
+    final groupId = _text(group['group_id']);
+    final name = await _promptForText(
+      title: 'Rename Group',
+      label: 'Group name',
+      initialValue: _text(group['name']),
+    );
+    if (name == null || groupId.isEmpty) return;
+    try {
+      final renamed =
+          await widget.api.renameProtocolHubGroup(groupId: groupId, name: name);
+      if (!mounted) return;
+      setState(() {
+        _groups = [
+          for (final item in _groups)
+            if (_text(item['group_id']) == groupId) renamed else item,
+        ];
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Rename failed: $error')),
+      );
     }
-    final previous = List<Map<String, dynamic>>.from(_protocols);
-    final next = List<Map<String, dynamic>>.from(_protocols);
-    final item = next.removeAt(oldIndex);
-    next.insert(targetIndex, item);
-    final payload = next.map((item) => _text(item['protocol_id'])).toList();
+  }
+
+  Future<void> _moveGroupFallback(
+    Map<String, dynamic> group,
+    int direction,
+  ) async {
+    final parentId = _nullableText(group['parent_group_id']);
+    final siblings = _groups
+        .where((item) => _nullableText(item['parent_group_id']) == parentId)
+        .toList()
+      ..sort(_compareSortThenId);
+    final index = siblings.indexWhere(
+        (item) => _text(item['group_id']) == _text(group['group_id']));
+    final target = index + direction;
+    if (index < 0 || target < 0 || target >= siblings.length) return;
+    final previous = List<Map<String, dynamic>>.from(_groups);
+    final nextSiblings = List<Map<String, dynamic>>.from(siblings);
+    final moved = nextSiblings.removeAt(index);
+    nextSiblings.insert(target, moved);
+    final payload =
+        nextSiblings.map((item) => _text(item['group_id'])).toList();
     final generation = ++_requestGeneration;
     setState(() {
-      _protocols = next;
-      _reordering = true;
+      _groups = [
+        ..._groups.where(
+            (item) => _nullableText(item['parent_group_id']) != parentId),
+        ...nextSiblings,
+      ];
     });
     try {
-      final canonical = await widget.api.reorderProtocolHubProtocols(payload);
+      final canonical = await widget.api.reorderProtocolHubGroups(payload);
       if (!mounted || generation != _requestGeneration) return;
-      final byId = {
-        for (final item in _protocols) _text(item['protocol_id']): item
-      };
-      final ordered = [
-        for (final item in canonical)
-          if (byId.containsKey(_text(item['protocol_id']))) item,
-      ];
+      final canonicalIds =
+          canonical.map((item) => _text(item['group_id'])).toSet();
       setState(() {
-        _protocols = ordered.isEmpty ? next : ordered;
-        _reordering = false;
+        _groups = [
+          ..._groups
+              .where((item) => !canonicalIds.contains(_text(item['group_id']))),
+          ...canonical,
+        ];
       });
     } catch (error) {
       if (!mounted || generation != _requestGeneration) return;
-      setState(() {
-        _protocols = previous;
-        _reordering = false;
-      });
+      setState(() => _groups = previous);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Reorder failed: $error')),
+        SnackBar(content: Text('Group reorder failed: $error')),
       );
     }
+  }
+
+  Future<void> _moveGroupToParent(Map<String, dynamic> group) async {
+    final destination = await _chooseGroup(
+      title: 'Move Group',
+      excludeGroupId: _text(group['group_id']),
+    );
+    if (destination.isCancelled) return;
+    try {
+      await widget.api.moveProtocolHubGroup(
+        groupId: _text(group['group_id']),
+        parentGroupId: destination.groupId,
+      );
+      if (!mounted) return;
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Move group failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _deleteGroup(Map<String, dynamic> group) async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Group?'),
+        content: Text(
+          'Delete "${_text(group['name'])}"?\n\n'
+          'Choose whether to keep protocols and subgroups by moving them to the parent, or delete the whole nested group tree.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'cancel'),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'move_contents_to_parent'),
+            child: const Text('Move contents to parent'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.pop(context, 'recursive'),
+            child: const Text('Delete all'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || choice == 'cancel') return;
+    try {
+      await widget.api.deleteProtocolHubGroup(
+        groupId: _text(group['group_id']),
+        mode: choice,
+      );
+      if (!mounted) return;
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Delete group failed: $error')),
+      );
+    }
+  }
+
+  Future<void> _moveProtocolToGroup(Map<String, dynamic> protocol) async {
+    final destination = await _chooseGroup(title: 'Move Protocol');
+    if (destination.isCancelled) return;
+    try {
+      await widget.api.moveProtocolHubProtocolToGroup(
+        protocolId: _text(protocol['protocol_id']),
+        groupId: destination.groupId,
+      );
+      if (!mounted) return;
+      await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Move protocol failed: $error')),
+      );
+    }
+  }
+
+  Future<String?> _promptForText({
+    required String title,
+    required String label,
+    String initialValue = '',
+  }) async {
+    final controller = TextEditingController(text: initialValue);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(labelText: label),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isEmpty) return;
+              Navigator.pop(context, value);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    return result;
   }
 
   @override
@@ -182,7 +361,7 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
         ],
       );
     }
-    if (_protocols.isEmpty) {
+    if (_protocols.isEmpty && _groups.isEmpty) {
       return ListView(
         padding: ResearchOsSpacing.screen,
         children: [
@@ -198,78 +377,100 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
         ],
       );
     }
-    if (_protocols.length == 1) {
-      final protocol = _protocols.first;
-      return ListView(
-        padding: ResearchOsSpacing.screen,
-        children: [
-          _buildHeader(),
-          const SizedBox(height: ResearchOsSpacing.md),
-          _ProtocolLibrarySections(protocols: _protocols),
-          const SizedBox(height: ResearchOsSpacing.md),
-          _ProtocolCard(
-            protocol: protocol,
-            trailing: _ProtocolEntryMenu(
-              index: 0,
-              deleting: _deleting.contains(_text(protocol['protocol_id'])),
-              reordering: _reordering,
-              canDelete: protocol['can_delete'] != false,
-              canReorder: false,
-              capabilityReason: _text(protocol['capability_reason']),
-              onDelete: () => _confirmDelete(protocol),
-              onMoveUp: null,
-              onMoveDown: null,
-            ),
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => ProtocolHubDetailScreen(
-                    api: widget.api,
-                    protocolId: _text(protocol['protocol_id']),
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
-      );
-    }
-    return ReorderableListView.builder(
+    final rows = _protocolTreeRows();
+    return ListView.builder(
       padding: ResearchOsSpacing.screen,
-      header: Padding(
-        padding: const EdgeInsets.only(bottom: ResearchOsSpacing.md),
-        child: Column(
-          children: [
-            _buildHeader(),
-            _ProtocolLibrarySections(protocols: _protocols),
-          ],
-        ),
-      ),
-      itemCount: _protocols.length,
-      onReorderItem: _handleReorder,
+      itemCount: rows.length + 3,
       itemBuilder: (context, index) {
-        final protocol = _protocols[index];
-        final canDelete = protocol['can_delete'] != false;
-        final canReorder =
-            _protocols.length > 1 && protocol['can_reorder'] != false;
-        return Padding(
+        if (index == 0) return _buildHeader();
+        if (index == 1) return _ProtocolLibrarySections(protocols: _protocols);
+        if (index == 2) return const SizedBox(height: ResearchOsSpacing.md);
+        return rows[index - 3];
+      },
+    );
+  }
+
+  List<Widget> _protocolTreeRows() {
+    final rows = <Widget>[];
+    final groupsByParent = <String?, List<Map<String, dynamic>>>{};
+    for (final group in _groups) {
+      groupsByParent
+          .putIfAbsent(_nullableText(group['parent_group_id']), () => [])
+          .add(group);
+    }
+    for (final entry in groupsByParent.entries) {
+      entry.value.sort(_compareSortThenId);
+    }
+    final protocolsByGroup = <String?, List<Map<String, dynamic>>>{};
+    for (final protocol in _protocols) {
+      protocolsByGroup
+          .putIfAbsent(_nullableText(protocol['group_id']), () => [])
+          .add(protocol);
+    }
+    for (final entry in protocolsByGroup.entries) {
+      entry.value.sort(_compareSortThenId);
+    }
+
+    void addScope(String? parentId, int depth) {
+      final groups = groupsByParent[parentId] ?? const [];
+      for (var index = 0; index < groups.length; index++) {
+        final group = groups[index];
+        final groupId = _text(group['group_id']);
+        final expanded = _expandedGroups.contains(groupId);
+        rows.add(_ProtocolGroupRow(
+          key: ValueKey('protocol-group-$groupId'),
+          group: group,
+          depth: depth,
+          expanded: expanded,
+          onToggle: () {
+            setState(() {
+              if (expanded) {
+                _expandedGroups.remove(groupId);
+              } else {
+                _expandedGroups.add(groupId);
+              }
+            });
+          },
+          onRename: () => _renameGroup(group),
+          onNewSubgroup: () => _createGroup(parentGroupId: groupId),
+          onMoveGroup: () => _moveGroupToParent(group),
+          onMoveUp: index == 0 ? null : () => _moveGroupFallback(group, -1),
+          onMoveDown: index == groups.length - 1
+              ? null
+              : () => _moveGroupFallback(group, 1),
+          onDelete: () => _deleteGroup(group),
+        ));
+        if (expanded) addScope(groupId, depth + 1);
+      }
+      final protocols = protocolsByGroup[parentId] ?? const [];
+      for (var index = 0; index < protocols.length; index++) {
+        final protocol = protocols[index];
+        rows.add(Padding(
           key: ValueKey('protocol-card-${_text(protocol['protocol_id'])}'),
-          padding: const EdgeInsets.only(bottom: ResearchOsSpacing.md),
+          padding: EdgeInsets.only(
+            left: depth * 20,
+            bottom: ResearchOsSpacing.md,
+          ),
           child: _ProtocolCard(
             protocol: protocol,
             trailing: _ProtocolEntryMenu(
               index: index,
               deleting: _deleting.contains(_text(protocol['protocol_id'])),
               reordering: _reordering,
-              canDelete: canDelete,
-              canReorder: canReorder,
+              canDelete: protocol['can_delete'] != false,
+              canReorder:
+                  protocols.length > 1 && protocol['can_reorder'] != false,
               capabilityReason: _text(protocol['capability_reason']),
               onDelete: () => _confirmDelete(protocol),
-              onMoveUp:
-                  index == 0 ? null : () => _moveProtocol(index, index - 1),
-              onMoveDown: index == _protocols.length - 1
+              onMoveToGroup: () => _moveProtocolToGroup(protocol),
+              onMoveUp: index == 0
                   ? null
-                  : () => _moveProtocol(index, index + 1),
+                  : () =>
+                      _moveProtocolWithinSiblings(protocols, index, index - 1),
+              onMoveDown: index == protocols.length - 1
+                  ? null
+                  : () =>
+                      _moveProtocolWithinSiblings(protocols, index, index + 1),
             ),
             onTap: () {
               Navigator.of(context).push(
@@ -282,9 +483,58 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
               );
             },
           ),
-        );
-      },
-    );
+        ));
+      }
+    }
+
+    addScope(null, 0);
+    return rows;
+  }
+
+  Future<void> _moveProtocolWithinSiblings(
+    List<Map<String, dynamic>> siblings,
+    int oldIndex,
+    int targetIndex,
+  ) async {
+    final previous = List<Map<String, dynamic>>.from(_protocols);
+    final nextSiblings = List<Map<String, dynamic>>.from(siblings);
+    final item = nextSiblings.removeAt(oldIndex);
+    nextSiblings.insert(targetIndex, item);
+    final payload =
+        nextSiblings.map((item) => _text(item['protocol_id'])).toList();
+    final generation = ++_requestGeneration;
+    setState(() {
+      final siblingIds = payload.toSet();
+      _protocols = [
+        ..._protocols
+            .where((item) => !siblingIds.contains(_text(item['protocol_id']))),
+        ...nextSiblings,
+      ];
+      _reordering = true;
+    });
+    try {
+      final canonical = await widget.api.reorderProtocolHubProtocols(payload);
+      if (!mounted || generation != _requestGeneration) return;
+      final canonicalIds =
+          canonical.map((item) => _text(item['protocol_id'])).toSet();
+      setState(() {
+        _protocols = [
+          ..._protocols.where(
+              (item) => !canonicalIds.contains(_text(item['protocol_id']))),
+          ...canonical,
+        ];
+        _reordering = false;
+      });
+    } catch (error) {
+      if (!mounted || generation != _requestGeneration) return;
+      setState(() {
+        _protocols = previous;
+        _reordering = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Reorder failed: $error')),
+      );
+    }
   }
 
   Widget _buildHeader() {
@@ -305,6 +555,12 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
                 child: Text('Protocol Hub',
                     style: Theme.of(context).textTheme.headlineSmall),
               ),
+              IconButton.filledTonal(
+                tooltip: 'New group',
+                onPressed: () => _createGroup(),
+                icon: const Icon(Icons.create_new_folder_outlined),
+              ),
+              const SizedBox(width: ResearchOsSpacing.xs),
               IconButton.filledTonal(
                 tooltip: 'Add protocol',
                 onPressed: _showAddProtocolSheet,
@@ -472,6 +728,78 @@ class _ProtocolHubScreenState extends State<ProtocolHubScreen> {
       ),
     );
   }
+
+  Future<_MoveSelection> _chooseGroup({
+    required String title,
+    String? excludeGroupId,
+  }) async {
+    final groups = _groups
+        .where((group) => _text(group['group_id']) != excludeGroupId)
+        .toList()
+      ..sort(_compareSortThenId);
+    final result = await showModalBottomSheet<_MoveSelection>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          padding: ResearchOsSpacing.screen,
+          children: [
+            Text(title, style: Theme.of(context).textTheme.headlineSmall),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            ListTile(
+              leading: const Icon(Icons.account_tree_outlined),
+              title: const Text('Root level'),
+              onTap: () => Navigator.pop(context, const _MoveSelection.root()),
+            ),
+            for (final group in groups)
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(_text(group['name'], fallback: 'Group')),
+                subtitle: Text(_groupPath(group)),
+                onTap: () => Navigator.pop(
+                  context,
+                  _MoveSelection.group(_text(group['group_id'])),
+                ),
+              ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            TextButton(
+              onPressed: () => Navigator.pop(context, _MoveSelection.cancelled),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+    return result ?? _MoveSelection.cancelled;
+  }
+
+  String _groupPath(Map<String, dynamic> group) {
+    final namesById = {
+      for (final item in _groups) _text(item['group_id']): _text(item['name'])
+    };
+    final parentsById = {
+      for (final item in _groups)
+        _text(item['group_id']): _nullableText(item['parent_group_id'])
+    };
+    final path = <String>[];
+    var current = _nullableText(group['parent_group_id']);
+    while (current != null && current.isNotEmpty) {
+      path.insert(0, namesById[current] ?? current);
+      current = parentsById[current];
+    }
+    return path.isEmpty ? 'Root group' : path.join(' / ');
+  }
+}
+
+class _MoveSelection {
+  const _MoveSelection._(this.groupId, this.isCancelled);
+  const _MoveSelection.root() : this._(null, false);
+  const _MoveSelection.group(String groupId) : this._(groupId, false);
+  static const cancelled = _MoveSelection._(null, true);
+
+  final String? groupId;
+  final bool isCancelled;
 }
 
 class _ProtocolOnboardingState extends StatelessWidget {
@@ -1779,6 +2107,7 @@ class _ProtocolEntryMenu extends StatelessWidget {
     required this.canDelete,
     required this.canReorder,
     required this.onDelete,
+    required this.onMoveToGroup,
     required this.onMoveUp,
     required this.onMoveDown,
     this.capabilityReason,
@@ -1793,6 +2122,7 @@ class _ProtocolEntryMenu extends StatelessWidget {
   final VoidCallback? onMoveUp;
   final VoidCallback? onMoveDown;
   final String? capabilityReason;
+  final VoidCallback onMoveToGroup;
 
   @override
   Widget build(BuildContext context) {
@@ -1837,6 +2167,9 @@ class _ProtocolEntryMenu extends StatelessWidget {
                 case _ProtocolMenuAction.moveDown:
                   onMoveDown?.call();
                   break;
+                case _ProtocolMenuAction.moveToGroup:
+                  onMoveToGroup();
+                  break;
                 case _ProtocolMenuAction.delete:
                   onDelete();
                   break;
@@ -1862,6 +2195,10 @@ class _ProtocolEntryMenu extends StatelessWidget {
                 enabled: canReorder && onMoveDown != null,
                 child: const Text('Move Down'),
               ),
+              const PopupMenuItem(
+                value: _ProtocolMenuAction.moveToGroup,
+                child: Text('Move to Group'),
+              ),
               const PopupMenuDivider(),
               PopupMenuItem(
                 value: _ProtocolMenuAction.delete,
@@ -1882,7 +2219,138 @@ class _ProtocolEntryMenu extends StatelessWidget {
   }
 }
 
-enum _ProtocolMenuAction { moveUp, moveDown, delete }
+class _ProtocolGroupRow extends StatelessWidget {
+  const _ProtocolGroupRow({
+    super.key,
+    required this.group,
+    required this.depth,
+    required this.expanded,
+    required this.onToggle,
+    required this.onRename,
+    required this.onNewSubgroup,
+    required this.onMoveGroup,
+    required this.onMoveUp,
+    required this.onMoveDown,
+    required this.onDelete,
+  });
+
+  final Map<String, dynamic> group;
+  final int depth;
+  final bool expanded;
+  final VoidCallback onToggle;
+  final VoidCallback onRename;
+  final VoidCallback onNewSubgroup;
+  final VoidCallback onMoveGroup;
+  final VoidCallback? onMoveUp;
+  final VoidCallback? onMoveDown;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: depth * 20,
+        bottom: ResearchOsSpacing.sm,
+      ),
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+        child: ListTile(
+          minLeadingWidth: 24,
+          leading: IconButton(
+            tooltip: expanded ? 'Collapse group' : 'Expand group',
+            onPressed: onToggle,
+            icon: Icon(expanded
+                ? Icons.keyboard_arrow_down
+                : Icons.keyboard_arrow_right),
+          ),
+          title: Row(
+            children: [
+              const Icon(Icons.folder_outlined, size: 20),
+              const SizedBox(width: ResearchOsSpacing.xs),
+              Expanded(
+                child: Text(
+                  _text(group['name'], fallback: 'Protocol group'),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          subtitle: Text('${group['item_count'] ?? 0} items'),
+          trailing: PopupMenuButton<_ProtocolGroupAction>(
+            tooltip: 'Group actions',
+            onSelected: (action) {
+              switch (action) {
+                case _ProtocolGroupAction.rename:
+                  onRename();
+                  break;
+                case _ProtocolGroupAction.newSubgroup:
+                  onNewSubgroup();
+                  break;
+                case _ProtocolGroupAction.moveGroup:
+                  onMoveGroup();
+                  break;
+                case _ProtocolGroupAction.moveUp:
+                  onMoveUp?.call();
+                  break;
+                case _ProtocolGroupAction.moveDown:
+                  onMoveDown?.call();
+                  break;
+                case _ProtocolGroupAction.delete:
+                  onDelete();
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: _ProtocolGroupAction.rename,
+                child: Text('Rename'),
+              ),
+              const PopupMenuItem(
+                value: _ProtocolGroupAction.newSubgroup,
+                child: Text('New Subgroup'),
+              ),
+              const PopupMenuItem(
+                value: _ProtocolGroupAction.moveGroup,
+                child: Text('Move Group'),
+              ),
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: _ProtocolGroupAction.moveUp,
+                enabled: onMoveUp != null,
+                child: const Text('Move Up'),
+              ),
+              PopupMenuItem(
+                value: _ProtocolGroupAction.moveDown,
+                enabled: onMoveDown != null,
+                child: const Text('Move Down'),
+              ),
+              const PopupMenuDivider(),
+              PopupMenuItem(
+                value: _ProtocolGroupAction.delete,
+                child: Text(
+                  'Delete',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _ProtocolGroupAction {
+  rename,
+  newSubgroup,
+  moveGroup,
+  moveUp,
+  moveDown,
+  delete,
+}
+
+enum _ProtocolMenuAction { moveUp, moveDown, moveToGroup, delete }
 
 class _ProtocolSourceDocumentsSection extends StatelessWidget {
   const _ProtocolSourceDocumentsSection({
@@ -2394,6 +2862,23 @@ String _text(Object? value, {String fallback = ''}) {
   if (value == null) return fallback;
   final text = value.toString().trim();
   return text.isEmpty ? fallback : text;
+}
+
+String? _nullableText(Object? value) {
+  final text = _text(value);
+  return text.isEmpty ? null : text;
+}
+
+int _compareSortThenId(Map<String, dynamic> left, Map<String, dynamic> right) {
+  final leftSort =
+      int.tryParse(left['sort_index']?.toString() ?? '') ?? 2147483647;
+  final rightSort =
+      int.tryParse(right['sort_index']?.toString() ?? '') ?? 2147483647;
+  if (leftSort != rightSort) return leftSort.compareTo(rightSort);
+  final leftId = _text(left['group_id'], fallback: _text(left['protocol_id']));
+  final rightId =
+      _text(right['group_id'], fallback: _text(right['protocol_id']));
+  return leftId.compareTo(rightId);
 }
 
 Map<String, dynamic> _map(Object? value) {

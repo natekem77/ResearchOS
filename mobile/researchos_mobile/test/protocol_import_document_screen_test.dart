@@ -135,8 +135,8 @@ void main() {
       client: _JsonClient((request) async {
         requests.add(request);
         if (request.method == 'GET' &&
-            request.url.path == '/protocol-hub/protocols') {
-          return http.Response(jsonEncode(protocols), 200);
+            request.url.path == '/protocol-hub/tree') {
+          return http.Response(jsonEncode(_tree(protocols: protocols)), 200);
         }
         if (request.method == 'DELETE' &&
             request.url.path == '/protocol-hub/protocols/protocol%3Aa') {
@@ -186,13 +186,13 @@ void main() {
       client: _JsonClient((request) async {
         requests.add(request);
         if (request.method == 'GET' &&
-            request.url.path == '/protocol-hub/protocols') {
+            request.url.path == '/protocol-hub/tree') {
           return http.Response(
-            jsonEncode([
+            jsonEncode(_tree(protocols: [
               _protocol('protocol:a', 'Protocol A'),
               _protocol('protocol:b', 'Protocol B'),
               _protocol('protocol:c', 'Protocol C'),
-            ]),
+            ])),
             200,
           );
         }
@@ -239,6 +239,83 @@ void main() {
       'protocol:a',
       'protocol:c',
     ]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('protocol groups expand rename and move protocol to group',
+      (tester) async {
+    final requests = <http.Request>[];
+    var groups = [
+      _group('protocol-group:cell', 'Cell Culture'),
+    ];
+    var protocols = [
+      _protocol('protocol:a', 'Protocol A'),
+    ];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: _JsonClient((request) async {
+        requests.add(request);
+        if (request.method == 'GET' &&
+            request.url.path == '/protocol-hub/tree') {
+          return http.Response(
+            jsonEncode(_tree(groups: groups, protocols: protocols)),
+            200,
+          );
+        }
+        if (request.method == 'PATCH' &&
+            request.url.path == '/protocol-hub/groups/protocol-group%3Acell') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          groups = [_group('protocol-group:cell', body['name'] as String)];
+          return http.Response(jsonEncode(groups.first), 200);
+        }
+        if (request.method == 'POST' &&
+            request.url.path ==
+                '/protocol-hub/protocols/protocol%3Aa/move-to-group') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          protocols = [
+            _protocol('protocol:a', 'Protocol A')
+              ..['group_id'] = body['group_id'],
+          ];
+          return http.Response(jsonEncode(protocols.first), 200);
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ProtocolHubScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Cell Culture'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Cell Culture'), findsOneWidget);
+    await tester.tap(find.byTooltip('Group actions'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Rename'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Group name'), 'Cell Culture Updated');
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Cell Culture Updated'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.more_vert).last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Move to Group'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cell Culture Updated').last);
+    await tester.pumpAndSettle();
+
+    final move = requests.singleWhere((request) =>
+        request.url.path ==
+        '/protocol-hub/protocols/protocol%3Aa/move-to-group');
+    expect(jsonDecode(move.body)['group_id'], 'protocol-group:cell');
     expect(tester.takeException(), isNull);
   });
 }
@@ -350,4 +427,25 @@ Map<String, dynamic> _protocol(String id, String title) => {
       'expected_result_count': 0,
       'can_delete': true,
       'can_reorder': true,
+    };
+
+Map<String, dynamic> _group(String id, String name,
+        {String? parentGroupId, int sortIndex = 1000}) =>
+    {
+      'group_id': id,
+      'id': id,
+      'name': name,
+      'parent_group_id': parentGroupId,
+      'sort_index': sortIndex,
+      'item_count': 0,
+    };
+
+Map<String, dynamic> _tree({
+  List<Map<String, dynamic>> groups = const [],
+  List<Map<String, dynamic>> protocols = const [],
+}) =>
+    {
+      'groups': groups,
+      'protocols': protocols,
+      'ordering': 'groups_first',
     };

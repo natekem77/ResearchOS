@@ -50,6 +50,7 @@ class ProtocolHubService:
             self._ensure_column(connection, "protocols_general", "category", "TEXT")
             self._ensure_column(connection, "protocols_general", "owner_user_id", "TEXT")
             self._ensure_column(connection, "protocols_general", "sort_index", "INTEGER")
+            self._ensure_column(connection, "protocols_general", "group_id", "TEXT")
             self._ensure_column(connection, "protocols_general", "archived_at", "TEXT")
             self._ensure_column(connection, "protocols_general", "archived_by", "TEXT")
             self._ensure_column(connection, "protocol_versions_general", "version_number", "TEXT")
@@ -210,6 +211,16 @@ class ProtocolHubService:
                     reviewed_at TEXT,
                     FOREIGN KEY(extraction_run_id) REFERENCES protocol_extraction_runs(run_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS protocol_groups (
+                    group_id TEXT PRIMARY KEY,
+                    lab_id TEXT NOT NULL,
+                    parent_group_id TEXT,
+                    name TEXT NOT NULL,
+                    sort_index INTEGER NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
             self._ensure_column(connection, "protocol_imports", "protocol_id", "TEXT")
@@ -218,6 +229,7 @@ class ProtocolHubService:
             self._ensure_column(connection, "protocol_imports", "size_bytes", "INTEGER")
             self._ensure_column(connection, "protocol_imports", "checksum", "TEXT")
             self._ensure_column(connection, "protocol_imports", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+            self._normalize_group_order(connection)
             self._normalize_protocol_order(connection)
 
     def _ensure_column(self, connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -226,18 +238,67 @@ class ProtocolHubService:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _normalize_protocol_order(self, connection: sqlite3.Connection) -> None:
-        rows = connection.execute(
+        scopes = connection.execute(
             """
-            SELECT protocol_id FROM protocols_general
+            SELECT DISTINCT lab_id, group_id FROM protocols_general
             WHERE archived_at IS NULL
-            ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
             """
         ).fetchall()
-        for index, row in enumerate(rows):
-            connection.execute(
-                "UPDATE protocols_general SET sort_index = ? WHERE protocol_id = ? AND sort_index IS NULL",
-                ((index + 1) * 1000, row["protocol_id"]),
-            )
+        for scope in scopes:
+            group_id = scope["group_id"]
+            if group_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT protocol_id FROM protocols_general
+                    WHERE archived_at IS NULL AND lab_id = ? AND group_id IS NULL
+                    ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
+                    """,
+                    (scope["lab_id"],),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT protocol_id FROM protocols_general
+                    WHERE archived_at IS NULL AND lab_id = ? AND group_id = ?
+                    ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
+                    """,
+                    (scope["lab_id"], group_id),
+                ).fetchall()
+            for index, row in enumerate(rows):
+                connection.execute(
+                    "UPDATE protocols_general SET sort_index = ? WHERE protocol_id = ?",
+                    ((index + 1) * 1000, row["protocol_id"]),
+                )
+
+    def _normalize_group_order(self, connection: sqlite3.Connection) -> None:
+        scopes = connection.execute(
+            "SELECT DISTINCT lab_id, parent_group_id FROM protocol_groups"
+        ).fetchall()
+        for scope in scopes:
+            parent_id = scope["parent_group_id"]
+            if parent_id is None:
+                rows = connection.execute(
+                    """
+                    SELECT group_id FROM protocol_groups
+                    WHERE lab_id = ? AND parent_group_id IS NULL
+                    ORDER BY COALESCE(sort_index, 2147483647), group_id ASC
+                    """,
+                    (scope["lab_id"],),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT group_id FROM protocol_groups
+                    WHERE lab_id = ? AND parent_group_id = ?
+                    ORDER BY COALESCE(sort_index, 2147483647), group_id ASC
+                    """,
+                    (scope["lab_id"], parent_id),
+                ).fetchall()
+            for index, row in enumerate(rows):
+                connection.execute(
+                    "UPDATE protocol_groups SET sort_index = ? WHERE group_id = ?",
+                    ((index + 1) * 1000, row["group_id"]),
+                )
 
     def ensure_demo_protocols(self) -> None:
         demos = [
@@ -403,8 +464,8 @@ class ProtocolHubService:
                 """
                 INSERT INTO protocols_general
                     (protocol_id, lab_id, title, short_name, description, category, biological_system,
-                     default_sample_unit, owner_user_id, current_version_id, status, sort_index)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_index) + 1000 FROM protocols_general WHERE lab_id = ?), 1000))
+                     default_sample_unit, owner_user_id, current_version_id, status, sort_index, group_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT MAX(sort_index) + 1000 FROM protocols_general WHERE lab_id = ? AND group_id IS NULL), 1000), NULL)
                 ON CONFLICT(protocol_id) DO UPDATE SET
                     short_name = excluded.short_name,
                     description = excluded.description,
@@ -456,13 +517,15 @@ class ProtocolHubService:
 
     def list_protocols(self, query: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as connection:
+            self._normalize_group_order(connection)
+            self._normalize_protocol_order(connection)
             protocols = [
                 _decode(row)
                 for row in connection.execute(
                     """
                     SELECT * FROM protocols_general
                     WHERE archived_at IS NULL
-                    ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
+                    ORDER BY COALESCE(group_id, ''), COALESCE(sort_index, 2147483647), protocol_id ASC
                     """
                 ).fetchall()
             ]
@@ -471,6 +534,235 @@ class ProtocolHubService:
             q = query.lower()
             enriched = [item for item in enriched if q in json.dumps(item).lower()]
         return [item for item in enriched if item is not None]
+
+    def list_protocol_groups(self, lab_id: str = "lab:demo") -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            self._normalize_group_order(connection)
+            rows = connection.execute(
+                """
+                SELECT * FROM protocol_groups
+                WHERE lab_id = ?
+                ORDER BY COALESCE(parent_group_id, ''), sort_index ASC, group_id ASC
+                """,
+                (lab_id,),
+            ).fetchall()
+            return [_decode(row) for row in rows]
+
+    def protocol_tree(self, lab_id: str = "lab:demo", query: str | None = None) -> dict[str, Any]:
+        protocols = [
+            item for item in self.list_protocols(query=query)
+            if str(item.get("lab_id") or lab_id) == lab_id
+        ]
+        groups = self.list_protocol_groups(lab_id=lab_id)
+        protocol_counts: dict[str, int] = {}
+        for protocol in protocols:
+            group_id = protocol.get("group_id")
+            if group_id:
+                protocol_counts[str(group_id)] = protocol_counts.get(str(group_id), 0) + 1
+        children_by_parent: dict[str | None, list[dict[str, Any]]] = {}
+        for group in groups:
+            children_by_parent.setdefault(group.get("parent_group_id"), []).append(group)
+        def subtree_count(group_id: str) -> int:
+            total = protocol_counts.get(group_id, 0)
+            for child in children_by_parent.get(group_id, []):
+                total += subtree_count(str(child["group_id"]))
+            return total
+        group_payloads = []
+        for group in groups:
+            payload = dict(group)
+            payload["item_count"] = subtree_count(str(group["group_id"]))
+            group_payloads.append(payload)
+        return {
+            "groups": group_payloads,
+            "protocols": protocols,
+            "ordering": "groups_first",
+        }
+
+    def create_group(
+        self,
+        actor_user_id: str,
+        lab_id: str,
+        name: str,
+        parent_group_id: str | None = None,
+    ) -> dict[str, Any]:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ProtocolHubValidationError("Group name is required.")
+        with self._connect() as connection:
+            if parent_group_id:
+                parent = self._group_row(connection, parent_group_id)
+                if parent is None:
+                    raise ProtocolHubValidationError("Parent group not found.")
+                lab_id = str(parent["lab_id"])
+            self._require_lab_manage(actor_user_id, lab_id, "Protocol group creation requires manage access.")
+            group_id = f"protocol-group:{uuid.uuid4().hex[:16]}"
+            sort_index = self._next_group_sort_index(connection, lab_id, parent_group_id)
+            connection.execute(
+                """
+                INSERT INTO protocol_groups
+                    (group_id, lab_id, parent_group_id, name, sort_index)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (group_id, lab_id, parent_group_id, clean_name, sort_index),
+            )
+            row = self._group_row(connection, group_id)
+            assert row is not None
+            return _decode(row)
+
+    def rename_group(self, actor_user_id: str, group_id: str, name: str) -> dict[str, Any]:
+        clean_name = name.strip()
+        if not clean_name:
+            raise ProtocolHubValidationError("Group name is required.")
+        with self._connect() as connection:
+            group = self._group_row(connection, group_id)
+            if group is None:
+                raise ProtocolHubValidationError("Protocol group not found.")
+            self._require_lab_manage(actor_user_id, str(group["lab_id"]), "Protocol group rename requires manage access.")
+            connection.execute(
+                "UPDATE protocol_groups SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE group_id = ?",
+                (clean_name, group_id),
+            )
+            row = self._group_row(connection, group_id)
+            assert row is not None
+            return _decode(row)
+
+    def move_group(self, actor_user_id: str, group_id: str, parent_group_id: str | None) -> dict[str, Any]:
+        with self._connect() as connection:
+            group = self._group_row(connection, group_id)
+            if group is None:
+                raise ProtocolHubValidationError("Protocol group not found.")
+            lab_id = str(group["lab_id"])
+            self._require_lab_manage(actor_user_id, lab_id, "Protocol group move requires manage access.")
+            if parent_group_id == group_id:
+                raise ProtocolHubValidationError("A group cannot be its own parent.")
+            if parent_group_id:
+                parent = self._group_row(connection, parent_group_id)
+                if parent is None:
+                    raise ProtocolHubValidationError("Parent group not found.")
+                if str(parent["lab_id"]) != lab_id:
+                    raise ProtocolHubValidationError("Protocol groups must belong to the same lab.")
+                if self._is_group_descendant(connection, parent_group_id, group_id):
+                    raise ProtocolHubValidationError("A group cannot be moved into its descendant.")
+            next_index = self._next_group_sort_index(connection, lab_id, parent_group_id)
+            connection.execute(
+                """
+                UPDATE protocol_groups
+                SET parent_group_id = ?, sort_index = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE group_id = ?
+                """,
+                (parent_group_id, next_index, group_id),
+            )
+            self._normalize_group_order(connection)
+            row = self._group_row(connection, group_id)
+            assert row is not None
+            return _decode(row)
+
+    def reorder_groups(self, actor_user_id: str, ordered_group_ids: list[str]) -> list[dict[str, Any]]:
+        requested_ids = self._clean_order_ids(ordered_group_ids, label="group")
+        with self._connect() as connection:
+            placeholders = ",".join("?" for _ in requested_ids)
+            rows = connection.execute(
+                f"SELECT * FROM protocol_groups WHERE group_id IN ({placeholders})",
+                requested_ids,
+            ).fetchall()
+            groups = [_decode(row) for row in rows]
+            if len(groups) != len(requested_ids):
+                raise ProtocolHubValidationError("Unknown protocol group id in reorder request.")
+            lab_ids = {str(group.get("lab_id") or "") for group in groups}
+            parent_ids = {str(group.get("parent_group_id") or "") for group in groups}
+            if len(lab_ids) != 1 or len(parent_ids) != 1:
+                raise ProtocolHubValidationError("Protocol groups must share one parent to reorder.")
+            self._require_lab_manage(actor_user_id, next(iter(lab_ids)), "Protocol group reorder requires manage access.")
+            for index, group_id in enumerate(requested_ids):
+                connection.execute(
+                    "UPDATE protocol_groups SET sort_index = ?, updated_at = CURRENT_TIMESTAMP WHERE group_id = ?",
+                    ((index + 1) * 1000, group_id),
+                )
+        by_id = {str(item["group_id"]): item for item in self.list_protocol_groups(lab_id=next(iter(lab_ids)))}
+        return [by_id[group_id] for group_id in requested_ids if group_id in by_id]
+
+    def delete_group(self, actor_user_id: str, group_id: str, mode: str = "move_contents_to_parent") -> dict[str, Any]:
+        with self._connect() as connection:
+            group = self._group_row(connection, group_id)
+            if group is None:
+                raise ProtocolHubValidationError("Protocol group not found.")
+            lab_id = str(group["lab_id"])
+            parent_id = group["parent_group_id"]
+            self._require_lab_manage(actor_user_id, lab_id, "Protocol group deletion requires manage access.")
+            descendants = self._descendant_group_ids(connection, group_id)
+            if mode == "move_contents_to_parent":
+                next_group_index = self._next_group_sort_index(connection, lab_id, parent_id)
+                direct_children = connection.execute(
+                    "SELECT group_id FROM protocol_groups WHERE parent_group_id = ? ORDER BY sort_index ASC, group_id ASC",
+                    (group_id,),
+                ).fetchall()
+                for index, child in enumerate(direct_children):
+                    connection.execute(
+                        "UPDATE protocol_groups SET parent_group_id = ?, sort_index = ?, updated_at = CURRENT_TIMESTAMP WHERE group_id = ?",
+                        (parent_id, next_group_index + (index * 1000), child["group_id"]),
+                    )
+                next_protocol_index = self._next_protocol_sort_index(connection, lab_id, parent_id)
+                protocols = connection.execute(
+                    "SELECT protocol_id FROM protocols_general WHERE group_id = ? AND archived_at IS NULL ORDER BY sort_index ASC, protocol_id ASC",
+                    (group_id,),
+                ).fetchall()
+                for index, protocol in enumerate(protocols):
+                    connection.execute(
+                        "UPDATE protocols_general SET group_id = ?, sort_index = ?, updated_at = CURRENT_TIMESTAMP WHERE protocol_id = ?",
+                        (parent_id, next_protocol_index + (index * 1000), protocol["protocol_id"]),
+                    )
+                connection.execute("DELETE FROM protocol_groups WHERE group_id = ?", (group_id,))
+            elif mode == "recursive":
+                protocol_rows = connection.execute(
+                    f"""
+                    SELECT protocol_id FROM protocols_general
+                    WHERE archived_at IS NULL AND group_id IN ({','.join('?' for _ in [group_id, *descendants])})
+                    """,
+                    [group_id, *descendants],
+                ).fetchall()
+                protocol_ids = [str(row["protocol_id"]) for row in protocol_rows]
+                connection.execute(
+                    f"DELETE FROM protocol_groups WHERE group_id IN ({','.join('?' for _ in [group_id, *descendants])})",
+                    [group_id, *descendants],
+                )
+            else:
+                raise ProtocolHubValidationError("Unsupported protocol group delete mode.")
+            self._normalize_group_order(connection)
+            self._normalize_protocol_order(connection)
+        deleted_protocols = 0
+        if mode == "recursive":
+            for protocol_id in protocol_ids:
+                self.delete_protocol(actor_user_id, protocol_id)
+                deleted_protocols += 1
+        return {"deleted": True, "group_id": group_id, "mode": mode, "deleted_protocol_count": deleted_protocols if mode == "recursive" else 0}
+
+    def move_protocol_to_group(self, actor_user_id: str, protocol_id: str, group_id: str | None) -> dict[str, Any]:
+        protocol = self.general.get_protocol(protocol_id)
+        if protocol is None or protocol.get("archived_at"):
+            raise ProtocolHubValidationError("Protocol not found.")
+        if not self._can_manage_protocol(actor_user_id, protocol):
+            raise PermissionError("Protocol move requires manage access.")
+        lab_id = str(protocol.get("lab_id") or "lab:demo")
+        with self._connect() as connection:
+            if group_id:
+                group = self._group_row(connection, group_id)
+                if group is None:
+                    raise ProtocolHubValidationError("Protocol group not found.")
+                if str(group["lab_id"]) != lab_id:
+                    raise ProtocolHubValidationError("Protocol and group must belong to the same lab.")
+            sort_index = self._next_protocol_sort_index(connection, lab_id, group_id)
+            connection.execute(
+                """
+                UPDATE protocols_general
+                SET group_id = ?, sort_index = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE protocol_id = ?
+                """,
+                (group_id, sort_index, protocol_id),
+            )
+            self._normalize_protocol_order(connection)
+        moved = self.get_protocol(protocol_id)
+        assert moved is not None
+        return moved
 
     def get_protocol(self, protocol_id: str) -> dict[str, Any] | None:
         summary = self._protocol_summary(protocol_id)
@@ -660,13 +952,7 @@ class ProtocolHubService:
         return {"deleted": True, "protocol_id": protocol_id, "attachment_policy": "protocol_imports_deleted"}
 
     def reorder_protocols(self, actor_user_id: str, ordered_protocol_ids: list[str]) -> list[dict[str, Any]]:
-        if not ordered_protocol_ids:
-            raise ProtocolHubValidationError("At least one protocol id is required.")
-        requested_ids = [str(item).strip() for item in ordered_protocol_ids if str(item).strip()]
-        if len(requested_ids) != len(ordered_protocol_ids):
-            raise ProtocolHubValidationError("Protocol ids must be non-empty.")
-        if len(set(requested_ids)) != len(requested_ids):
-            raise ProtocolHubValidationError("Duplicate protocol ids are not allowed.")
+        requested_ids = self._clean_order_ids(ordered_protocol_ids, label="protocol")
         with self._connect() as connection:
             placeholders = ",".join("?" for _ in requested_ids)
             rows = connection.execute(
@@ -682,11 +968,44 @@ class ProtocolHubService:
         lab_ids = {str(protocol.get("lab_id") or "") for protocol in protocols}
         if len(lab_ids) != 1:
             raise ProtocolHubValidationError("Protocols must belong to the same lab.")
+        group_ids = {str(protocol.get("group_id") or "") for protocol in protocols}
+        if len(group_ids) != 1:
+            raise ProtocolHubValidationError("Protocols must belong to the same group to reorder.")
         for protocol in protocols:
             if not self._can_manage_protocol(actor_user_id, protocol):
                 raise PermissionError("Protocol reorder requires manage access.")
         with self._connect() as connection:
-            for index, protocol_id in enumerate(requested_ids):
+            first_protocol = protocols[0]
+            sibling_group_id = first_protocol.get("group_id")
+            lab_id = str(first_protocol.get("lab_id") or "")
+            if sibling_group_id is None:
+                sibling_rows = connection.execute(
+                    """
+                    SELECT protocol_id FROM protocols_general
+                    WHERE archived_at IS NULL AND lab_id = ? AND group_id IS NULL
+                    ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
+                    """,
+                    (lab_id,),
+                ).fetchall()
+            else:
+                sibling_rows = connection.execute(
+                    """
+                    SELECT protocol_id FROM protocols_general
+                    WHERE archived_at IS NULL AND lab_id = ? AND group_id = ?
+                    ORDER BY COALESCE(sort_index, 2147483647), protocol_id ASC
+                    """,
+                    (lab_id, sibling_group_id),
+                ).fetchall()
+            requested_set = set(requested_ids)
+            full_order = [
+                *requested_ids,
+                *[
+                    str(row["protocol_id"])
+                    for row in sibling_rows
+                    if str(row["protocol_id"]) not in requested_set
+                ],
+            ]
+            for index, protocol_id in enumerate(full_order):
                 connection.execute(
                     """
                     UPDATE protocols_general
@@ -703,6 +1022,89 @@ class ProtocolHubService:
             return True
         access = self.general.authz.user_access(actor_user_id, str(protocol.get("lab_id") or "lab:demo"))
         return access.get("role") == "owner"
+
+    def _require_lab_manage(self, actor_user_id: str, lab_id: str, message: str) -> None:
+        access = self.general.authz.user_access(actor_user_id, lab_id)
+        if access.get("role") != "owner":
+            raise PermissionError(message)
+
+    def _clean_order_ids(self, ordered_ids: list[str], *, label: str) -> list[str]:
+        if not ordered_ids:
+            raise ProtocolHubValidationError(f"At least one {label} id is required.")
+        requested_ids = [str(item).strip() for item in ordered_ids if str(item).strip()]
+        if len(requested_ids) != len(ordered_ids):
+            raise ProtocolHubValidationError(f"{label.capitalize()} ids must be non-empty.")
+        if len(set(requested_ids)) != len(requested_ids):
+            raise ProtocolHubValidationError(f"Duplicate {label} ids are not allowed.")
+        return requested_ids
+
+    def _group_row(self, connection: sqlite3.Connection, group_id: str) -> sqlite3.Row | None:
+        return connection.execute(
+            "SELECT * FROM protocol_groups WHERE group_id = ?",
+            (group_id,),
+        ).fetchone()
+
+    def _next_group_sort_index(
+        self,
+        connection: sqlite3.Connection,
+        lab_id: str,
+        parent_group_id: str | None,
+    ) -> int:
+        if parent_group_id is None:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sort_index), 0) AS max_sort FROM protocol_groups WHERE lab_id = ? AND parent_group_id IS NULL",
+                (lab_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(sort_index), 0) AS max_sort FROM protocol_groups WHERE lab_id = ? AND parent_group_id = ?",
+                (lab_id, parent_group_id),
+            ).fetchone()
+        return int(row["max_sort"] or 0) + 1000
+
+    def _next_protocol_sort_index(
+        self,
+        connection: sqlite3.Connection,
+        lab_id: str,
+        group_id: str | None,
+    ) -> int:
+        if group_id is None:
+            row = connection.execute(
+                """
+                SELECT COALESCE(MAX(sort_index), 0) AS max_sort
+                FROM protocols_general
+                WHERE lab_id = ? AND group_id IS NULL AND archived_at IS NULL
+                """,
+                (lab_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT COALESCE(MAX(sort_index), 0) AS max_sort
+                FROM protocols_general
+                WHERE lab_id = ? AND group_id = ? AND archived_at IS NULL
+                """,
+                (lab_id, group_id),
+            ).fetchone()
+        return int(row["max_sort"] or 0) + 1000
+
+    def _descendant_group_ids(self, connection: sqlite3.Connection, group_id: str) -> list[str]:
+        descendants: list[str] = []
+        pending = [group_id]
+        while pending:
+            current = pending.pop()
+            rows = connection.execute(
+                "SELECT group_id FROM protocol_groups WHERE parent_group_id = ?",
+                (current,),
+            ).fetchall()
+            for row in rows:
+                child_id = str(row["group_id"])
+                descendants.append(child_id)
+                pending.append(child_id)
+        return descendants
+
+    def _is_group_descendant(self, connection: sqlite3.Connection, candidate_group_id: str, ancestor_group_id: str) -> bool:
+        return candidate_group_id in set(self._descendant_group_ids(connection, ancestor_group_id))
 
     def protocol_templates(self) -> list[dict[str, Any]]:
         """Return section-only templates. They intentionally avoid scientific details."""

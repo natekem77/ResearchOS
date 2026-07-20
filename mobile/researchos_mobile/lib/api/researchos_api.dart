@@ -241,6 +241,13 @@ class ResearchOsApi {
     return json.whereType<Map<String, dynamic>>().toList();
   }
 
+  Future<Map<String, dynamic>> protocolHubTree({String? query}) {
+    final path = query == null || query.trim().isEmpty
+        ? '/protocol-hub/tree'
+        : '/protocol-hub/tree?q=${Uri.encodeQueryComponent(query.trim())}';
+    return _getMap(path);
+  }
+
   Future<Map<String, dynamic>> protocolHubProtocol(String protocolId) {
     return _getMap(
         '/protocol-hub/protocols/${Uri.encodeComponent(protocolId)}');
@@ -259,6 +266,62 @@ class ResearchOsApi {
     final protocols = json['protocols'];
     if (protocols is! List) return const [];
     return protocols.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> createProtocolHubGroup({
+    required String name,
+    String? parentGroupId,
+  }) {
+    return _postMap('/protocol-hub/groups', {
+      'name': name,
+      if (parentGroupId != null) 'parent_group_id': parentGroupId,
+    });
+  }
+
+  Future<Map<String, dynamic>> renameProtocolHubGroup({
+    required String groupId,
+    required String name,
+  }) {
+    return _patchMap('/protocol-hub/groups/${Uri.encodeComponent(groupId)}', {
+      'name': name,
+    });
+  }
+
+  Future<void> deleteProtocolHubGroup({
+    required String groupId,
+    String mode = 'move_contents_to_parent',
+  }) {
+    return _delete(
+      '/protocol-hub/groups/${Uri.encodeComponent(groupId)}?mode=${Uri.encodeQueryComponent(mode)}',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> reorderProtocolHubGroups(
+      List<String> groupIds) async {
+    final json = await _postMap('/protocol-hub/groups/reorder', {
+      'group_ids': groupIds,
+    });
+    final groups = json['groups'];
+    if (groups is! List) return const [];
+    return groups.whereType<Map<String, dynamic>>().toList();
+  }
+
+  Future<Map<String, dynamic>> moveProtocolHubGroup({
+    required String groupId,
+    String? parentGroupId,
+  }) {
+    return _postMap('/protocol-hub/groups/${Uri.encodeComponent(groupId)}/move',
+        {'parent_group_id': parentGroupId});
+  }
+
+  Future<Map<String, dynamic>> moveProtocolHubProtocolToGroup({
+    required String protocolId,
+    String? groupId,
+  }) {
+    return _postMap(
+      '/protocol-hub/protocols/${Uri.encodeComponent(protocolId)}/move-to-group',
+      {'group_id': groupId},
+    );
   }
 
   Future<Map<String, dynamic>> protocolHubVersion(String protocolVersionId) {
@@ -1119,6 +1182,19 @@ class ResearchOsApi {
     final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
     final response = await _client
         .put(
+          uri,
+          headers: const {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(requestTimeout);
+    return _decodeMapResponse(response, path: path);
+  }
+
+  Future<Map<String, dynamic>> _patchMap(
+      String path, Map<String, dynamic> body) async {
+    final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
+    final response = await _client
+        .patch(
           uri,
           headers: const {'Content-Type': 'application/json'},
           body: jsonEncode(body),
