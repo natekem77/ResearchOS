@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import sqlite3
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -300,6 +301,9 @@ class ImagingService:
         try:
             self._execute_job(job, worker_id)
         except Exception as exc:  # pragma: no cover - defensive worker boundary
+            traceback_text = traceback.format_exc()
+            self._write_failure_diagnostics(job, exc, traceback_text)
+            _print_worker_failure_diagnostics(job, exc, traceback_text)
             self._fail_job(job["id"], "worker_error", _safe_error(exc))
         return self.get_job(str(job["user_id"]), str(job["id"]))
 
@@ -361,10 +365,88 @@ class ImagingService:
             preview_path = job_dir / "preview.png"
             fiji_path = os.environ.get("MUNDI_FIJI_PATH", "")
             if not fiji_path:
-                raise FijiRunnerError("MUNDI_FIJI_PATH is not set; Fiji preview generation is unavailable.")
-            FijiRunner(fiji_path, timeout_seconds=self.job_timeout_seconds).generate_preview(input_path=raw_path, output_path=preview_path)
-            return [(preview_path, "preview_png", "image/png")]
+                macro_path = Path(__file__).resolve().parents[2] / "imaging_worker" / "scripts" / "generate_preview.ijm"
+                raise FijiRunnerError(
+                    "MUNDI_FIJI_PATH is not set; Fiji preview generation is unavailable.",
+                    diagnostics={
+                        "command": [],
+                        "exit_code": None,
+                        "macro_return_value": None,
+                        "input_path": str(raw_path.resolve()),
+                        "output_path": str(preview_path.resolve()),
+                        "macro_path": str(macro_path),
+                        "stdout": "",
+                        "stderr": "",
+                        "preview_exists": preview_path.exists(),
+                    },
+                )
+            result = FijiRunner(fiji_path, timeout_seconds=self.job_timeout_seconds).generate_preview(input_path=raw_path, output_path=preview_path)
+            stdout_path = job_dir / "stdout.txt"
+            stderr_path = job_dir / "stderr.txt"
+            stdout_path.write_text(result.stdout, encoding="utf-8")
+            stderr_path.write_text(result.stderr, encoding="utf-8")
+            return [
+                (preview_path, "preview_png", "image/png"),
+                (stdout_path, "stdout", "text/plain"),
+                (stderr_path, "stderr", "text/plain"),
+            ]
         raise ImagingValidationError("Unknown imaging workflow.")
+
+    def _write_failure_diagnostics(self, job: dict[str, Any], exc: Exception, traceback_text: str) -> None:
+        job_dir = self.jobs_dir / str(job["id"])
+        job_dir.mkdir(parents=True, exist_ok=True)
+        diagnostics = _exception_diagnostics(exc)
+        fallback = self._fallback_diagnostics(job)
+        merged = fallback | diagnostics
+        stdout = str(merged.get("stdout") or "")
+        stderr = str(merged.get("stderr") or "")
+        command = merged.get("command") or []
+        if isinstance(command, list):
+            command_text = "\n".join(str(part) for part in command)
+        else:
+            command_text = str(command)
+        (job_dir / "stdout.txt").write_text(stdout, encoding="utf-8")
+        (job_dir / "stderr.txt").write_text(stderr, encoding="utf-8")
+        (job_dir / "log.txt").write_text(
+            "Mundi imaging worker failure diagnostics\n"
+            f"Job ID: {job['id']}\n"
+            f"Workflow: {job.get('workflow_id')}\n"
+            f"Input path: {merged.get('input_path')}\n"
+            f"Output path: {merged.get('output_path')}\n"
+            f"Macro path: {merged.get('macro_path')}\n"
+            f"Command:\n{command_text}\n"
+            f"Exit code: {merged.get('exit_code')}\n"
+            f"Macro return value: {merged.get('macro_return_value')}\n"
+            f"Preview exists: {merged.get('preview_exists')}\n"
+            "\nstdout:\n"
+            f"{stdout}\n"
+            "\nstderr:\n"
+            f"{stderr}\n"
+            "\nTraceback:\n"
+            f"{traceback_text}",
+            encoding="utf-8",
+        )
+
+    def _fallback_diagnostics(self, job: dict[str, Any]) -> dict[str, object]:
+        output_path = self.jobs_dir / str(job["id"]) / "preview.png"
+        input_path = ""
+        try:
+            asset = self.get_asset(str(job["user_id"]), str(job["asset_id"]))
+            input_path = str((self.base_dir / str(asset["storage_uri"])).resolve())
+        except Exception:
+            input_path = ""
+        macro_path = Path(__file__).resolve().parents[2] / "imaging_worker" / "scripts" / "generate_preview.ijm"
+        return {
+            "command": [],
+            "exit_code": None,
+            "macro_return_value": None,
+            "input_path": input_path,
+            "output_path": str(output_path.resolve()),
+            "macro_path": str(macro_path),
+            "stdout": "",
+            "stderr": "",
+            "preview_exists": output_path.exists(),
+        }
 
     def outputs_for_job(self, user_id: str, job_id: str) -> list[dict[str, Any]]:
         self.get_job(user_id, job_id)
@@ -491,3 +573,38 @@ def _basic_metadata(filename: str, data: bytes) -> dict[str, Any]:
 
 def _safe_error(exc: Exception) -> str:
     return str(exc).split("\n")[0][:240]
+
+
+def _exception_diagnostics(exc: Exception) -> dict[str, object]:
+    diagnostics = getattr(exc, "diagnostics", None)
+    if isinstance(diagnostics, dict):
+        return diagnostics
+    return {}
+
+
+def _print_worker_failure_diagnostics(job: dict[str, Any], exc: Exception, traceback_text: str) -> None:
+    diagnostics = _exception_diagnostics(exc)
+    command = diagnostics.get("command") or []
+    if isinstance(command, list):
+        command_text = " ".join(str(part) for part in command)
+    else:
+        command_text = str(command)
+    print("Launching Fiji...")
+    print("Command:")
+    print(command_text or "<not launched>")
+    print("Input path:")
+    print(diagnostics.get("input_path") or "<unknown>")
+    print("Output path:")
+    print(diagnostics.get("output_path") or "<unknown>")
+    print("Macro path:")
+    print(diagnostics.get("macro_path") or "<unknown>")
+    print("Exit code:")
+    print(diagnostics.get("exit_code"))
+    print("Macro return value:")
+    print(diagnostics.get("macro_return_value"))
+    print("stdout:")
+    print(diagnostics.get("stdout") or "")
+    print("stderr:")
+    print(diagnostics.get("stderr") or "")
+    print("Traceback:")
+    print(traceback_text)

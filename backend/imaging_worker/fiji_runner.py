@@ -10,12 +10,16 @@ from pathlib import Path
 
 
 class FijiRunnerError(RuntimeError):
-    pass
+    def __init__(self, message: str, diagnostics: dict[str, object] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
 
 
 @dataclass(frozen=True)
 class FijiRunResult:
     executable: str
+    command: list[str]
+    macro_path: str
     input_path: str
     output_path: str
     returncode: int
@@ -54,11 +58,20 @@ class FijiRunner:
         input_file = Path(input_path).resolve()
         output_file = Path(output_path).resolve()
         if not self.executable.exists():
-            raise FijiRunnerError(f"Executable not found: {self.executable}")
+            raise FijiRunnerError(
+                f"Executable not found: {self.executable}",
+                diagnostics=self._diagnostics(input_file, output_file, None, None, None, None),
+            )
         if not input_file.exists():
-            raise FijiRunnerError(f"Input TIFF not found: {input_file}")
+            raise FijiRunnerError(
+                f"Input TIFF not found: {input_file}",
+                diagnostics=self._diagnostics(input_file, output_file, None, None, None, None),
+            )
         if not self.macro_path.exists():
-            raise FijiRunnerError(f"Preview macro not found: {self.macro_path}")
+            raise FijiRunnerError(
+                f"Preview macro not found: {self.macro_path}",
+                diagnostics=self._diagnostics(input_file, output_file, None, None, None, None),
+            )
         output_file.parent.mkdir(parents=True, exist_ok=True)
         if output_file.exists():
             output_file.unlink()
@@ -80,15 +93,47 @@ class FijiRunner:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise FijiRunnerError(f"Fiji timed out after {self.timeout_seconds} seconds.") from exc
+            raise FijiRunnerError(
+                f"Fiji timed out after {self.timeout_seconds} seconds.",
+                diagnostics=self._diagnostics(
+                    input_file,
+                    output_file,
+                    args,
+                    None,
+                    _decode_timeout_text(exc.output),
+                    _decode_timeout_text(exc.stderr),
+                ),
+            ) from exc
         elapsed_ms = int((time.monotonic() - started) * 1000)
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "Fiji exited with an error.").strip().splitlines()
-            raise FijiRunnerError(message[0][:240] if message else "Fiji exited with an error.")
+            raise FijiRunnerError(
+                message[0][:240] if message else "Fiji exited with an error.",
+                diagnostics=self._diagnostics(
+                    input_file,
+                    output_file,
+                    args,
+                    completed.returncode,
+                    completed.stdout,
+                    completed.stderr,
+                ),
+            )
         if not output_file.exists() or output_file.stat().st_size <= 0:
-            raise FijiRunnerError("Fiji completed but preview.png was not generated.")
+            raise FijiRunnerError(
+                "Fiji completed but preview.png was not generated.",
+                diagnostics=self._diagnostics(
+                    input_file,
+                    output_file,
+                    args,
+                    completed.returncode,
+                    completed.stdout,
+                    completed.stderr,
+                ),
+            )
         return FijiRunResult(
             executable=str(self.executable),
+            command=args,
+            macro_path=str(self.macro_path),
             input_path=str(input_file),
             output_path=str(output_file),
             returncode=completed.returncode,
@@ -96,6 +141,28 @@ class FijiRunner:
             stdout=completed.stdout,
             stderr=completed.stderr,
         )
+
+    def _diagnostics(
+        self,
+        input_file: Path,
+        output_file: Path,
+        command: list[str] | None,
+        exit_code: int | None,
+        stdout: str | None,
+        stderr: str | None,
+    ) -> dict[str, object]:
+        return {
+            "executable": str(self.executable),
+            "command": command or [],
+            "macro_path": str(self.macro_path),
+            "input_path": str(input_file),
+            "output_path": str(output_file),
+            "exit_code": exit_code,
+            "macro_return_value": exit_code,
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "preview_exists": output_file.exists(),
+        }
 
 
 def tiny_tiff() -> bytes:
@@ -107,3 +174,10 @@ def tiny_tiff() -> bytes:
         "010000001701040001000000010000001c01030001000000010000000000000000"
     ) + b"\x80"
 
+
+def _decode_timeout_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value

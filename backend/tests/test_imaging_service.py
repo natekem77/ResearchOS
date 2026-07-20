@@ -1,6 +1,8 @@
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from app.config import Settings
@@ -83,17 +85,31 @@ class ImagingServiceTests(unittest.TestCase):
                 workflow_key="generate_preview",
             )
             original_path = os.environ.pop("MUNDI_FIJI_PATH", None)
+            terminal = StringIO()
             try:
-                processed = service.run_job_once("test-worker")
+                with redirect_stdout(terminal):
+                    processed = service.run_job_once("test-worker")
             finally:
                 if original_path is not None:
                     os.environ["MUNDI_FIJI_PATH"] = original_path
             raw_after = raw_path.read_bytes()
+            job_dir = Path(tmpdir) / "imaging" / "jobs" / job["id"]
+            log_text = (job_dir / "log.txt").read_text(encoding="utf-8")
+            stdout_exists = (job_dir / "stdout.txt").exists()
+            stderr_exists = (job_dir / "stderr.txt").exists()
 
         self.assertEqual(processed["status"], "failed")
         self.assertEqual(processed["error_code"], "worker_error")
         self.assertIn("MUNDI_FIJI_PATH", processed["safe_error_message"])
         self.assertEqual(raw_after, original_bytes)
+        self.assertTrue(stdout_exists)
+        self.assertTrue(stderr_exists)
+        self.assertIn("Traceback:", log_text)
+        self.assertIn("Input path:", log_text)
+        self.assertIn("Output path:", log_text)
+        self.assertIn("Macro path:", log_text)
+        self.assertIn("Traceback:", terminal.getvalue())
+        self.assertIn("Command:", terminal.getvalue())
 
     def test_only_generate_preview_workflow_is_registered(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
