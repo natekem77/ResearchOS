@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.ai.context_builder import ContextBuilder
@@ -139,6 +140,83 @@ class AIService:
             "available_provider_count": len(self.providers.list()),
         }
 
+    def test_provider_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
+        provider_id = str(payload.get("provider") or "")
+        spec = self.providers.get(provider_id)
+        if spec is None:
+            raise ValueError(f"Unsupported AI provider: {provider_id}")
+        saved_config = None
+        if payload.get("provider_config_id"):
+            saved_config = self.conversations.provider_config_with_secret(
+                str(payload["provider_config_id"])
+            )
+            if saved_config is None:
+                raise ValueError("AI provider configuration not found.")
+        endpoint = str(
+            payload.get("endpoint")
+            or (saved_config or {}).get("endpoint")
+            or spec.default_endpoint
+            or ""
+        ).strip()
+        model = str(
+            payload.get("default_model")
+            or (saved_config or {}).get("default_model")
+            or self.settings.ai_model
+            or ""
+        ).strip()
+        api_key = str(
+            payload.get("api_key") or (saved_config or {}).get("api_key_secret") or ""
+        ).strip()
+        if not endpoint:
+            return {
+                "ok": False,
+                "provider": provider_id,
+                "message": "Endpoint is required.",
+                "network_tested": False,
+            }
+        if not model:
+            return {
+                "ok": False,
+                "provider": provider_id,
+                "message": "Model is required.",
+                "network_tested": False,
+            }
+        if spec.requires_api_key and not api_key:
+            return {
+                "ok": False,
+                "provider": provider_id,
+                "message": "API key is required for this provider.",
+                "network_tested": False,
+            }
+        if not spec.openai_compatible and provider_id not in {"openai", "openai-compatible", "openai_compatible"}:
+            return {
+                "ok": False,
+                "provider": provider_id,
+                "message": f"{spec.display_name} connection testing is not implemented yet.",
+                "network_tested": False,
+            }
+        provider = OpenAICompatibleProvider(
+            base_url=endpoint,
+            model=model,
+            api_key=api_key or None,
+            provider_name=provider_id,
+        )
+        try:
+            provider.chat("Reply with exactly: ok")
+        except AIProviderError as exc:
+            return {
+                "ok": False,
+                "provider": provider_id,
+                "message": _redact_ai_provider_error(str(exc)),
+                "network_tested": True,
+            }
+        return {
+            "ok": True,
+            "provider": provider_id,
+            "message": "Connection successful.",
+            "network_tested": True,
+        }
+
     def _teach_mundi(self, question: str) -> str:
         lower = question.lower()
         if "subgroup" in lower or "group" in lower:
@@ -152,3 +230,19 @@ class AIService:
             return "Open a protocol row's ... menu, choose Move to Group, then pick Root / Ungrouped or a folder."
         return "I can help with Mundi navigation, screens, buttons, and workflows. Ask about the current screen or a task."
 
+
+def _redact_ai_provider_error(message: str) -> str:
+    redacted = re.sub(r"Bearer\s+[A-Za-z0-9._\-]+", "Bearer [redacted]", message)
+    redacted = re.sub(r"sk-[A-Za-z0-9._\-]+", "sk-[redacted]", redacted)
+    lower = redacted.lower()
+    if "401" in redacted or "unauthorized" in lower or "invalid api key" in lower:
+        return "Invalid API key."
+    if "404" in redacted or ("model" in lower and "not found" in lower):
+        return "Model unavailable."
+    if "quota" in lower or "billing" in lower or "insufficient" in lower:
+        return "Quota or billing error."
+    if "timed out" in lower or "timeout" in lower:
+        return "Request timed out."
+    if "failed" in lower or "connection" in lower or "network" in lower:
+        return "Endpoint unreachable."
+    return redacted[:240]

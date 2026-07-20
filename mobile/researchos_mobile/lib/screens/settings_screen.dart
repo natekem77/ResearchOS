@@ -405,6 +405,8 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
   final _apiKey = TextEditingController();
   final _question = TextEditingController(text: 'How do I create a subgroup?');
   String _provider = 'openai';
+  String? _providerConfigId;
+  bool _apiKeyConfigured = false;
   String? _message;
   String? _answer;
   bool _busy = false;
@@ -450,37 +452,107 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
     return configs.isEmpty ? null : configs.first;
   }
 
-  Future<void> _testAndSave({required bool save}) async {
+  MundiAiProviderConfig? _configForProvider(
+    List<MundiAiProviderConfig> configs,
+    String providerId,
+  ) {
+    final index = configs.indexWhere(
+      (MundiAiProviderConfig config) => config.provider == providerId,
+    );
+    return index < 0 ? null : configs[index];
+  }
+
+  void _applyConfig(MundiAiProviderConfig config) {
+    _providerConfigId = config.providerConfigId;
+    _apiKeyConfigured = config.apiKeyConfigured;
+    _endpoint.text = config.endpoint ?? _endpoint.text;
+    _model.text = config.defaultModel ?? _model.text;
+    _apiKey.clear();
+  }
+
+  void _applyProviderSpec(MundiAiProviderSpec provider) {
+    _providerConfigId = null;
+    _apiKeyConfigured = false;
+    _endpoint.text = provider.defaultEndpoint ?? '';
+    _apiKey.clear();
+  }
+
+  Future<void> _saveProvider({bool removeApiKey = false}) async {
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    try {
+      final saved = await _ai.saveProvider(
+        providerConfigId: _providerConfigId,
+        provider: _provider,
+        displayName: _provider,
+        endpoint: _endpoint.text.trim(),
+        defaultModel: _model.text.trim(),
+        apiKey: removeApiKey ? null : _apiKey.text.trim(),
+        removeApiKey: removeApiKey,
+      );
+      setState(() {
+        _applyConfig(saved);
+        _message = removeApiKey ? 'API key removed.' : 'Provider saved.';
+      });
+      _reload();
+    } catch (error) {
+      setState(() => _message = 'Provider save failed: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _testProvider() async {
     setState(() {
       _busy = true;
       _message = null;
     });
     try {
       final result = await _ai.testProvider(
+        providerConfigId: _providerConfigId,
         provider: _provider,
         endpoint: _endpoint.text.trim(),
         defaultModel: _model.text.trim(),
         apiKey: _apiKey.text.trim(),
       );
-      if (save && result['ok'] == true) {
-        await _ai.saveProvider(
-          provider: _provider,
-          displayName: _provider,
-          endpoint: _endpoint.text.trim(),
-          defaultModel: _model.text.trim(),
-          apiKey: _apiKey.text.trim(),
-          isPreferred: true,
-        );
-        _reload();
-      }
       setState(() {
         _message = result['message']?.toString() ?? 'Provider checked.';
       });
     } catch (error) {
-      setState(() => _message = 'AI provider check failed: $error');
+      setState(() => _message = 'AI provider test failed: $error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _setDefaultProvider() async {
+    if (_providerConfigId == null || _providerConfigId!.isEmpty) {
+      setState(
+          () => _message = 'Save this provider before setting it as default.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    try {
+      await _ai.setDefaultProvider(_providerConfigId!);
+      setState(() {
+        _message = '${_providerLabel()} is now the default provider.';
+      });
+      _reload();
+    } catch (error) {
+      setState(() => _message = 'Set default failed: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _providerLabel() {
+    final provider = _provider.trim();
+    return provider.isEmpty ? 'Provider' : provider;
   }
 
   Future<void> _askMundi() async {
@@ -512,7 +584,15 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
             _providerById(providers, _provider) == null) {
           _provider = providers.first.providerId;
         }
+        final selectedConfig = _configForProvider(configs, _provider);
+        if (!_busy &&
+            selectedConfig != null &&
+            selectedConfig.providerConfigId != _providerConfigId) {
+          _applyConfig(selectedConfig);
+        }
         final preferredConfig = _preferredConfig(configs);
+        final selectedIsDefault =
+            selectedConfig != null && selectedConfig.isPreferred;
         return ResearchOsCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -555,7 +635,12 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
                   if (provider == null) return;
                   setState(() {
                     _provider = value;
-                    _endpoint.text = provider.defaultEndpoint ?? '';
+                    final config = _configForProvider(configs, value);
+                    if (config != null) {
+                      _applyConfig(config);
+                    } else {
+                      _applyProviderSpec(provider);
+                    }
                   });
                 },
               ),
@@ -573,20 +658,40 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
               TextField(
                 controller: _apiKey,
                 obscureText: true,
-                decoration: const InputDecoration(labelText: 'API key'),
+                decoration: InputDecoration(
+                  labelText: 'API key',
+                  helperText: _apiKeyConfigured
+                      ? 'API key configured. Leave blank to keep the saved key.'
+                      : 'No API key saved.',
+                ),
               ),
               const SizedBox(height: ResearchOsSpacing.sm),
               Wrap(
                 spacing: ResearchOsSpacing.sm,
+                runSpacing: ResearchOsSpacing.sm,
                 children: [
+                  FilledButton(
+                    onPressed: _busy ? null : () => _saveProvider(),
+                    child: const Text('Save Provider'),
+                  ),
                   OutlinedButton(
-                    onPressed: _busy ? null : () => _testAndSave(save: false),
+                    onPressed: _busy ? null : _testProvider,
                     child: const Text('Test Connection'),
                   ),
-                  FilledButton(
-                    onPressed: _busy ? null : () => _testAndSave(save: true),
-                    child: const Text('Set Default'),
+                  OutlinedButton(
+                    onPressed:
+                        _busy || selectedIsDefault ? null : _setDefaultProvider,
+                    child: Text(
+                      selectedIsDefault ? 'Default provider' : 'Set Default',
+                    ),
                   ),
+                  if (_apiKeyConfigured)
+                    TextButton(
+                      onPressed: _busy
+                          ? null
+                          : () => _saveProvider(removeApiKey: true),
+                      child: const Text('Remove Key'),
+                    ),
                 ],
               ),
               if (_message != null) ...[

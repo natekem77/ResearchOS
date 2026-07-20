@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.ai.models import AIMessage, AIRequest
 from app.ai.provider_manager import AIService
@@ -58,6 +59,220 @@ class AIPlatformTests(unittest.TestCase):
         preferred = [item for item in configs if item["is_preferred"]]
         self.assertEqual(len(preferred), 1)
         self.assertEqual(preferred[0]["provider"], "anthropic")
+
+    def test_provider_save_is_idempotent_and_preserves_blank_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            first = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "secret-one",
+                }
+            )
+            second = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                }
+            )
+            configs = service.conversations.list_provider_configs()
+            stored = service.conversations.provider_config_with_secret(
+                first["provider_config_id"]
+            )
+
+        self.assertEqual(first["provider_config_id"], second["provider_config_id"])
+        self.assertEqual(len(configs), 1)
+        self.assertTrue(second["api_key_configured"])
+        self.assertNotIn("secret-one", str(second))
+        self.assertEqual(stored["api_key_secret"], "secret-one")
+
+    def test_provider_secret_replacement_and_removal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "secret-one",
+                }
+            )
+            replaced = service.conversations.upsert_provider_config(
+                {
+                    "provider_config_id": saved["provider_config_id"],
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "secret-two",
+                }
+            )
+            stored_after_replace = service.conversations.provider_config_with_secret(
+                saved["provider_config_id"]
+            )
+            removed = service.conversations.upsert_provider_config(
+                {
+                    "provider_config_id": saved["provider_config_id"],
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "remove_api_key": True,
+                }
+            )
+            stored_after_remove = service.conversations.provider_config_with_secret(
+                saved["provider_config_id"]
+            )
+
+        self.assertTrue(replaced["api_key_configured"])
+        self.assertEqual(stored_after_replace["api_key_secret"], "secret-two")
+        self.assertFalse(removed["api_key_configured"])
+        self.assertIsNone(stored_after_remove["api_key_secret"])
+
+    def test_duplicate_provider_configs_are_repaired(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            with service.conversations._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO ai_provider_configs
+                        (provider_config_id, provider, display_name, endpoint, default_model, api_key_secret, is_preferred)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ai-provider:old",
+                        "openai",
+                        "openai",
+                        "https://api.openai.com/v1",
+                        "gpt-4o-mini",
+                        None,
+                        0,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO ai_provider_configs
+                        (provider_config_id, provider, display_name, endpoint, default_model, api_key_secret, is_preferred)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "ai-provider:new",
+                        "openai",
+                        "OpenAI",
+                        "https://api.openai.com/v1",
+                        "gpt-5-mini",
+                        "secret",
+                        1,
+                    ),
+                )
+            configs = service.conversations.list_provider_configs()
+
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0]["provider_config_id"], "ai-provider:new")
+        self.assertTrue(configs[0]["api_key_configured"])
+        self.assertTrue(configs[0]["is_preferred"])
+
+    def test_set_default_marks_exactly_one_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            openai = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                }
+            )
+            ollama = service.conversations.upsert_provider_config(
+                {
+                    "provider": "ollama",
+                    "display_name": "Ollama",
+                    "endpoint": "http://localhost:11434/v1",
+                    "default_model": "llama3",
+                }
+            )
+            service.conversations.set_preferred_provider_config(
+                openai["provider_config_id"]
+            )
+            service.conversations.set_preferred_provider_config(
+                ollama["provider_config_id"]
+            )
+            configs = service.conversations.list_provider_configs()
+
+        preferred = [item for item in configs if item["is_preferred"]]
+        self.assertEqual(len(preferred), 1)
+        self.assertEqual(preferred[0]["provider"], "ollama")
+
+    def test_provider_connection_test_uses_stored_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "stored-secret",
+                }
+            )
+            with patch(
+                "app.ai_providers.OpenAICompatibleProvider.chat",
+                autospec=True,
+                return_value="ok",
+            ) as chat:
+                response = service.test_provider_connection(
+                    {
+                        "provider_config_id": saved["provider_config_id"],
+                        "provider": "openai",
+                        "display_name": "OpenAI",
+                        "endpoint": "https://api.openai.com/v1",
+                        "default_model": "gpt-5-mini",
+                    }
+                )
+                provider_instance = chat.call_args.args[0] if chat.call_args.args else None
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["message"], "Connection successful.")
+        self.assertEqual(chat.call_count, 1)
+        self.assertEqual(provider_instance.api_key, "stored-secret")
+
+    def test_provider_connection_error_redacts_secret(self) -> None:
+        from app.ai_providers import AIProviderError
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "sk-secret",
+                }
+            )
+            with patch(
+                "app.ai_providers.OpenAICompatibleProvider.chat",
+                side_effect=AIProviderError("AI provider returned HTTP 401: sk-secret"),
+            ):
+                response = service.test_provider_connection(
+                    {
+                        "provider_config_id": saved["provider_config_id"],
+                        "provider": "openai",
+                        "display_name": "OpenAI",
+                        "endpoint": "https://api.openai.com/v1",
+                        "default_model": "gpt-5-mini",
+                    }
+                )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["message"], "Invalid API key.")
+        self.assertNotIn("sk-secret", str(response))
 
     def test_prompt_tool_and_skill_registration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

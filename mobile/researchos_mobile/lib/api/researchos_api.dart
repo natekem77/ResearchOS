@@ -56,16 +56,20 @@ class ResearchOsApi {
   }
 
   Future<MundiAiProviderConfig> saveAiProviderConfig({
+    String? providerConfigId,
     required String provider,
     required String displayName,
     required String endpoint,
     required String defaultModel,
     String? apiKey,
+    bool removeApiKey = false,
     bool enabled = true,
     bool isPreferred = false,
   }) async {
     return MundiAiProviderConfig.fromJson(
         await _postMap('/ai/provider-configs', {
+      if (providerConfigId != null && providerConfigId.isNotEmpty)
+        'provider_config_id': providerConfigId,
       'provider': provider,
       'display_name': displayName,
       'endpoint': endpoint,
@@ -73,16 +77,29 @@ class ResearchOsApi {
       'enabled': enabled,
       'is_preferred': isPreferred,
       if (apiKey != null && apiKey.isNotEmpty) 'api_key': apiKey,
+      if (removeApiKey) 'remove_api_key': true,
     }));
   }
 
+  Future<Map<String, dynamic>> setDefaultAiProviderConfig(
+    String providerConfigId,
+  ) {
+    return _postMap(
+      '/ai/provider-configs/${Uri.encodeComponent(providerConfigId)}/default',
+      const {},
+    );
+  }
+
   Future<Map<String, dynamic>> testAiProviderConfig({
+    String? providerConfigId,
     required String provider,
     required String endpoint,
     required String defaultModel,
     String? apiKey,
   }) {
     return _postMap('/ai/provider-configs/test', {
+      if (providerConfigId != null && providerConfigId.isNotEmpty)
+        'provider_config_id': providerConfigId,
       'provider': provider,
       'display_name': provider,
       'endpoint': endpoint,

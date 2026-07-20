@@ -552,6 +552,24 @@ void main() {
             200,
           );
         }
+        if (request.method == 'POST' &&
+            request.url.path ==
+                '/ai/provider-configs/ai-provider%3Aopenai/default') {
+          return http.Response(
+            jsonEncode({
+              'provider': {
+                'provider_config_id': 'ai-provider:openai',
+                'provider': 'openai',
+                'display_name': 'OpenAI',
+                'enabled': true,
+                'api_key_configured': true,
+                'is_preferred': true,
+              },
+              'providers': const [],
+            }),
+            200,
+          );
+        }
         if (request.method == 'GET' && request.url.path == '/ai/skills') {
           return http.Response(
             jsonEncode({
@@ -588,6 +606,7 @@ void main() {
     expect(providerConfigs, isA<List<MundiAiProviderConfig>>());
     expect(providerConfigs.single.isPreferred, isTrue);
     await api.saveAiProviderConfig(
+      providerConfigId: 'ai-provider:openai',
       provider: 'openai',
       displayName: 'OpenAI',
       endpoint: 'https://api.openai.com/v1',
@@ -597,12 +616,14 @@ void main() {
     );
     expect(
         (await api.testAiProviderConfig(
+          providerConfigId: 'ai-provider:openai',
           provider: 'openai',
           endpoint: 'https://api.openai.com/v1',
           defaultModel: 'gpt-test',
           apiKey: 'secret',
         ))['ok'],
         isTrue);
+    await api.setDefaultAiProviderConfig('ai-provider:openai');
     expect((await api.aiSkills()).single.skillId, 'teach_mundi');
     expect(
         (await api.runAiSkill('teach_mundi',
@@ -615,6 +636,7 @@ void main() {
       'GET /ai/provider-configs',
       'POST /ai/provider-configs',
       'POST /ai/provider-configs/test',
+      'POST /ai/provider-configs/ai-provider%3Aopenai/default',
       'GET /ai/skills',
       'POST /ai/skills/teach_mundi/run',
     ]);

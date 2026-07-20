@@ -933,6 +933,7 @@ class AIProviderConfigRequest(BaseModel):
     endpoint: str | None = None
     default_model: str | None = None
     api_key: str | None = None
+    remove_api_key: bool = False
     is_preferred: bool = False
 
 
@@ -4749,22 +4750,28 @@ def upsert_ai_provider_config(request_body: AIProviderConfigRequest) -> dict[str
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/ai/provider-configs/{provider_config_id}/default", tags=["ai"])
+def set_default_ai_provider_config(provider_config_id: str) -> dict[str, object]:
+    try:
+        return {
+            "provider": ai_service.conversations.set_preferred_provider_config(
+                provider_config_id
+            ),
+            "providers": ai_service.conversations.list_provider_configs(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/ai/provider-configs/test", tags=["ai"])
 def test_ai_provider_config(request_body: AIProviderConfigRequest) -> dict[str, object]:
     payload = request_body.model_dump(exclude_none=True)
-    provider_id = str(payload.get("provider") or "")
-    spec = ai_service.providers.get(provider_id)
-    if spec is None:
-        raise HTTPException(status_code=400, detail=f"Unsupported AI provider: {provider_id}")
-    configured = bool(payload.get("endpoint") or spec.default_endpoint)
-    if spec.requires_api_key and not payload.get("api_key"):
-        return {"ok": False, "provider": provider_id, "message": "API key is required for this provider."}
-    return {
-        "ok": configured,
-        "provider": provider_id,
-        "message": "Provider configuration is structurally valid." if configured else "Endpoint is required.",
-        "network_tested": False,
-    }
+    try:
+        return ai_service.test_provider_connection(payload)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
 
 
 @app.get("/ai/prompts", tags=["ai"])

@@ -40,9 +40,10 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('entering an API key and saving does not crash after refresh',
+  testWidgets('saving provider keeps configuration after refresh',
       (tester) async {
     var saved = false;
+    var preferred = false;
     var testConnectionCalls = 0;
     final capturedBodies = <Map<String, dynamic>>[];
     final api = _settingsApi(
@@ -56,14 +57,14 @@ void main() {
         },
       ],
       aiConfigsProvider: () => saved
-          ? const [
+          ? [
               {
                 'provider_config_id': 'provider-config:openai',
                 'provider': 'openai',
                 'display_name': 'OpenAI',
                 'enabled': true,
                 'api_key_configured': true,
-                'is_preferred': true,
+                'is_preferred': preferred,
                 'endpoint': 'https://api.openai.com/v1',
                 'default_model': 'gpt-4o-mini',
               },
@@ -90,9 +91,30 @@ void main() {
               'display_name': 'OpenAI',
               'enabled': true,
               'api_key_configured': true,
-              'is_preferred': true,
+              'is_preferred': false,
               'endpoint': 'https://api.openai.com/v1',
               'default_model': 'gpt-4o-mini',
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        if (request.url.path ==
+            '/ai/provider-configs/provider-config%3Aopenai/default') {
+          preferred = true;
+          return http.Response(
+            jsonEncode({
+              'provider': {
+                'provider_config_id': 'provider-config:openai',
+                'provider': 'openai',
+                'display_name': 'OpenAI',
+                'enabled': true,
+                'api_key_configured': true,
+                'is_preferred': true,
+                'endpoint': 'https://api.openai.com/v1',
+                'default_model': 'gpt-4o-mini',
+              },
+              'providers': const [],
             }),
             200,
             headers: {'content-type': 'application/json'},
@@ -109,13 +131,14 @@ void main() {
     await tester.ensureVisible(find.widgetWithText(TextField, 'API key'));
     await tester.enterText(
         find.widgetWithText(TextField, 'API key'), 'sk-test');
-    await tester.ensureVisible(find.text('Set Default'));
-    await tester.tap(find.text('Set Default'));
+    await tester.ensureVisible(find.text('Save Provider'));
+    await tester.tap(find.text('Save Provider'));
     await tester.pumpAndSettle();
 
     expect(saved, isTrue);
-    expect(testConnectionCalls, 1);
-    expect(find.textContaining('Preferred: OpenAI'), findsOneWidget);
+    expect(testConnectionCalls, 0);
+    expect(find.text('Provider saved.'), findsOneWidget);
+    expect(find.textContaining('API key configured'), findsOneWidget);
     expect(find.widgetWithText(Text, 'sk-test'), findsNothing);
     expect(capturedBodies.last['api_key'], 'sk-test');
     expect(tester.takeException(), isNull);
@@ -123,7 +146,16 @@ void main() {
     await tester.tap(find.text('Test Connection').last);
     await tester.pumpAndSettle();
 
-    expect(testConnectionCalls, 2);
+    expect(testConnectionCalls, 1);
+    expect(capturedBodies.last['provider_config_id'], 'provider-config:openai');
+    expect(find.text('Connection successful.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.tap(find.text('Set Default'));
+    await tester.pumpAndSettle();
+
+    expect(preferred, isTrue);
+    expect(find.text('openai is now the default provider.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -159,6 +191,78 @@ void main() {
 
     expect(find.textContaining('Preferred: OpenRouter'), findsOneWidget);
     expect(find.text('OpenRouter'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('blank key update preserves saved key and Remove Key is explicit',
+      (tester) async {
+    var keyConfigured = true;
+    final savedBodies = <Map<String, dynamic>>[];
+    final api = _settingsApi(
+      aiProviders: const [
+        {
+          'provider_id': 'openai',
+          'display_name': 'OpenAI',
+          'provider_type': 'cloud',
+          'requires_api_key': true,
+          'default_endpoint': 'https://api.openai.com/v1',
+        },
+      ],
+      aiConfigsProvider: () => [
+        {
+          'provider_config_id': 'provider-config:openai',
+          'provider': 'openai',
+          'display_name': 'OpenAI',
+          'enabled': true,
+          'api_key_configured': keyConfigured,
+          'is_preferred': false,
+          'endpoint': 'https://api.openai.com/v1',
+          'default_model': 'gpt-5-mini',
+        },
+      ],
+      onRequest: (request) async {
+        if (request.url.path == '/ai/provider-configs' &&
+            request.method == 'POST') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          savedBodies.add(body);
+          if (body['remove_api_key'] == true) {
+            keyConfigured = false;
+          }
+          return http.Response(
+            jsonEncode({
+              'provider_config_id': 'provider-config:openai',
+              'provider': 'openai',
+              'display_name': 'OpenAI',
+              'enabled': true,
+              'api_key_configured': keyConfigured,
+              'is_preferred': false,
+              'endpoint': 'https://api.openai.com/v1',
+              'default_model': 'gpt-5-mini',
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        return null;
+      },
+    );
+
+    await tester.pumpWidget(_settingsHost(api));
+    await tester.pumpAndSettle();
+    await _scrollToText(tester, 'API key');
+
+    expect(find.textContaining('API key configured'), findsOneWidget);
+    await tester.tap(find.text('Save Provider'));
+    await tester.pumpAndSettle();
+
+    expect(savedBodies.single.containsKey('api_key'), isFalse);
+    expect(savedBodies.single.containsKey('remove_api_key'), isFalse);
+
+    await tester.tap(find.text('Remove Key'));
+    await tester.pumpAndSettle();
+
+    expect(savedBodies.last['remove_api_key'], isTrue);
+    expect(find.text('API key removed.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

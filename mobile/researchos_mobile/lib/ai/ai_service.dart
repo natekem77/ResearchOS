@@ -18,30 +18,40 @@ class MundiAiService {
   }
 
   Future<MundiAiProviderConfig> saveProvider({
+    String? providerConfigId,
     required String provider,
     required String displayName,
     required String endpoint,
     required String defaultModel,
     String? apiKey,
+    bool removeApiKey = false,
     bool isPreferred = false,
   }) {
     return api.saveAiProviderConfig(
+      providerConfigId: providerConfigId,
       provider: provider,
       displayName: displayName,
       endpoint: endpoint,
       defaultModel: defaultModel,
       apiKey: apiKey,
+      removeApiKey: removeApiKey,
       isPreferred: isPreferred,
     );
   }
 
+  Future<Map<String, dynamic>> setDefaultProvider(String providerConfigId) {
+    return api.setDefaultAiProviderConfig(providerConfigId);
+  }
+
   Future<Map<String, dynamic>> testProvider({
+    String? providerConfigId,
     required String provider,
     required String endpoint,
     required String defaultModel,
     String? apiKey,
   }) {
     return api.testAiProviderConfig(
+      providerConfigId: providerConfigId,
       provider: provider,
       endpoint: endpoint,
       defaultModel: defaultModel,
