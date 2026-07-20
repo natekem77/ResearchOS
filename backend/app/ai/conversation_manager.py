@@ -102,7 +102,7 @@ class ConversationManager:
                 """,
                 (user_id,),
             ).fetchall()
-        return [self._provider_config_payload(row) for row in rows]
+            return [self._provider_config_payload(row, connection) for row in rows]
 
     def upsert_provider_config(self, payload: dict[str, Any], user_id: str = _DEFAULT_AI_USER_ID) -> dict[str, Any]:
         provider = str(payload.get("provider") or "").strip()
@@ -204,12 +204,14 @@ class ConversationManager:
                     preferred,
                 ),
             )
+            if secret_ref_value is not None and self._load_secret(connection, secret_ref_value) is None:
+                raise ValueError("AI provider secret could not be saved.")
             row = connection.execute(
                 "SELECT * FROM ai_provider_configs WHERE provider_config_id = ? AND user_id = ?",
                 (provider_config_id, user_id),
             ).fetchone()
-        assert row is not None
-        return self._provider_config_payload(row)
+            assert row is not None
+            return self._provider_config_payload(row, connection)
 
     def set_preferred_provider_config(
         self,
@@ -246,8 +248,8 @@ class ConversationManager:
                 row["api_key_secret"] if row is not None else None,
                 bool(row["api_key_secret"]) if row is not None else False,
             )
-        assert row is not None
-        return self._provider_config_payload(row)
+            assert row is not None
+            return self._provider_config_payload(row, connection)
 
     def provider_config_with_secret(
         self,
@@ -280,6 +282,72 @@ class ConversationManager:
         return next((item for item in configs if item.get("enabled") and item.get("is_preferred")), None) or next(
             (item for item in configs if item.get("enabled")), None
         )
+
+    def resolve_active_provider(
+        self,
+        user_id: str = _DEFAULT_AI_USER_ID,
+        provider_config_id: str | None = None,
+        *,
+        flow: str = "ai_provider_resolution",
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            self._repair_provider_config_duplicates(connection)
+            if provider_config_id:
+                row = connection.execute(
+                    "SELECT * FROM ai_provider_configs WHERE provider_config_id = ? AND user_id = ?",
+                    (provider_config_id, user_id),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("AI provider configuration not found.")
+            else:
+                preferred_rows = connection.execute(
+                    """
+                    SELECT *
+                    FROM ai_provider_configs
+                    WHERE user_id = ? AND enabled = 1 AND is_preferred = 1
+                    ORDER BY updated_at DESC, created_at DESC
+                    """,
+                    (user_id,),
+                ).fetchall()
+                if len(preferred_rows) > 1:
+                    raise ValueError("Multiple preferred AI providers are configured.")
+                row = preferred_rows[0] if preferred_rows else connection.execute(
+                    """
+                    SELECT *
+                    FROM ai_provider_configs
+                    WHERE user_id = ? AND enabled = 1
+                    ORDER BY api_key_secret IS NOT NULL DESC, updated_at DESC, created_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,),
+                ).fetchone()
+                if row is None:
+                    raise ValueError("No saved AI provider is configured.")
+            payload = dict(row)
+            secret_ref = payload.get("api_key_secret")
+            secret_value = self._load_secret(connection, secret_ref)
+            payload["provider_config_id"] = payload["provider_config_id"]
+            payload["provider_id"] = payload["provider_config_id"]
+            payload["provider_type"] = payload["provider"]
+            payload["api_key_secret_ref"] = secret_ref
+            payload["api_key_secret"] = secret_value
+            payload["has_secret"] = bool(secret_value)
+            payload["is_default"] = bool(payload.get("is_preferred"))
+            logger.debug(
+                "mundi_ai_provider_resolve flow=%s provider_id=%s provider_type=%s user_id=%s endpoint=%s model=%s secret_reference_id=%s has_secret=%s is_default=%s",
+                flow,
+                payload["provider_config_id"],
+                payload["provider"],
+                user_id,
+                payload.get("endpoint"),
+                payload.get("default_model"),
+                secret_ref,
+                bool(secret_value),
+                bool(payload.get("is_preferred")),
+            )
+        if not payload["has_secret"]:
+            raise ValueError("Saved AI provider secret is missing.")
+        return payload
 
     def create_conversation(self, actor_user_id: str, skill_id: str, provider_config_id: str | None, context_ids: list[str] | None = None) -> dict[str, Any]:
         conversation_id = f"ai-conversation:{uuid.uuid4().hex[:16]}"
@@ -420,8 +488,16 @@ class ConversationManager:
         if column not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
-    def _provider_config_payload(self, row: sqlite3.Row) -> dict[str, Any]:
-        has_secret = bool(row["api_key_secret"])
+    def _provider_config_payload(
+        self,
+        row: sqlite3.Row,
+        connection: sqlite3.Connection | None = None,
+    ) -> dict[str, Any]:
+        has_secret = bool(
+            self._load_secret(connection, row["api_key_secret"])
+            if connection is not None
+            else row["api_key_secret"]
+        )
         return {
             "provider_config_id": row["provider_config_id"],
             "provider_id": row["provider_config_id"],
@@ -590,12 +666,13 @@ class ConversationManager:
         rows = connection.execute(
             "SELECT * FROM ai_provider_configs ORDER BY created_at ASC, updated_at ASC"
         ).fetchall()
-        groups: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+        groups: dict[tuple[str, str, str, str], list[sqlite3.Row]] = {}
         for row in rows:
             key = (
                 str(row["user_id"] or _DEFAULT_AI_USER_ID).strip(),
                 str(row["provider"] or "").strip().lower(),
                 str(row["endpoint"] or "").strip().lower(),
+                str(row["display_name"] or "").strip().lower(),
             )
             groups.setdefault(key, []).append(row)
 

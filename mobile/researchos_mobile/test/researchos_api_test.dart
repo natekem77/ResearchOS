@@ -620,7 +620,15 @@ void main() {
           provider: 'openai',
           endpoint: 'https://api.openai.com/v1',
           defaultModel: 'gpt-test',
-          apiKey: 'secret',
+        ))['ok'],
+        isTrue);
+    expect(
+        (await api.testAiProviderConfig(
+          provider: 'openai',
+          endpoint: 'https://api.openai.com/v1',
+          defaultModel: 'gpt-test',
+          apiKey: 'unsaved-secret',
+          testMode: 'unsaved_key',
         ))['ok'],
         isTrue);
     await api.setDefaultAiProviderConfig('ai-provider:openai');
@@ -635,6 +643,7 @@ void main() {
       'GET /ai/providers',
       'GET /ai/provider-configs',
       'POST /ai/provider-configs',
+      'POST /ai/provider-configs/test',
       'POST /ai/provider-configs/test',
       'POST /ai/provider-configs/ai-provider%3Aopenai/default',
       'GET /ai/skills',

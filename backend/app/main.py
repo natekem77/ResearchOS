@@ -935,6 +935,7 @@ class AIProviderConfigRequest(BaseModel):
     api_key: str | None = None
     remove_api_key: bool = False
     is_preferred: bool = False
+    test_mode: str | None = None
 
 
 class AIRunSkillRequest(BaseModel):

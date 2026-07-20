@@ -353,6 +353,127 @@ class AIPlatformTests(unittest.TestCase):
         self.assertEqual(chat.call_count, 1)
         self.assertEqual(provider_instance.api_key, "stored-secret")
 
+    def test_saved_provider_connection_ignores_request_field_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "persisted-secret",
+                    "is_preferred": True,
+                },
+                "user:pi-owner",
+            )
+            with patch(
+                "app.ai_providers.OpenAICompatibleProvider.chat",
+                autospec=True,
+                return_value="ok",
+            ) as chat:
+                response = service.test_provider_connection(
+                    {
+                        "provider_config_id": saved["provider_config_id"],
+                        "provider": "openai",
+                        "endpoint": "https://api.openai.com/v1",
+                        "default_model": "gpt-5-mini",
+                        "api_key": "typed-but-unsaved-secret",
+                        "test_mode": "saved_provider",
+                    },
+                    "user:pi-owner",
+                )
+                provider_instance = chat.call_args.args[0] if chat.call_args.args else None
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(provider_instance.api_key, "persisted-secret")
+
+    def test_unsaved_key_connection_requires_explicit_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            with patch(
+                "app.ai_providers.OpenAICompatibleProvider.chat",
+                autospec=True,
+                return_value="ok",
+            ) as chat:
+                response = service.test_provider_connection(
+                    {
+                        "provider": "openai",
+                        "endpoint": "https://api.openai.com/v1",
+                        "default_model": "gpt-5-mini",
+                        "api_key": "typed-secret",
+                        "test_mode": "unsaved_key",
+                    },
+                    "user:pi-owner",
+                )
+                provider_instance = chat.call_args.args[0] if chat.call_args.args else None
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(provider_instance.api_key, "typed-secret")
+
+    def test_saved_provider_test_and_ask_mundi_resolve_same_provider_and_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "shared-secret",
+                    "is_preferred": True,
+                },
+                "user:pi-owner",
+            )
+            saved_resolution = service.conversations.resolve_active_provider(
+                "user:pi-owner",
+                saved["provider_config_id"],
+                flow="test_assertion",
+            )
+            ask_resolution = service.conversations.resolve_active_provider(
+                "user:pi-owner",
+                flow="test_assertion",
+            )
+
+        self.assertEqual(saved_resolution["provider_config_id"], ask_resolution["provider_config_id"])
+        self.assertEqual(saved_resolution["api_key_secret_ref"], ask_resolution["api_key_secret_ref"])
+        self.assertEqual(saved_resolution["api_key_secret"], "shared-secret")
+
+    def test_save_fails_when_existing_secret_reference_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            saved = service.conversations.upsert_provider_config(
+                {
+                    "provider": "openai",
+                    "display_name": "OpenAI",
+                    "endpoint": "https://api.openai.com/v1",
+                    "default_model": "gpt-5-mini",
+                    "api_key": "soon-missing",
+                },
+                "user:pi-owner",
+            )
+            raw = service.conversations.provider_config_with_secret(
+                saved["provider_config_id"],
+                "user:pi-owner",
+            )
+            with service.conversations._connect() as connection:
+                connection.execute(
+                    "DELETE FROM ai_provider_secrets WHERE secret_ref = ?",
+                    (raw["api_key_secret_ref"],),
+                )
+
+            with self.assertRaisesRegex(ValueError, "secret could not be saved"):
+                service.conversations.upsert_provider_config(
+                    {
+                        "provider_config_id": saved["provider_config_id"],
+                        "provider": "openai",
+                        "display_name": "OpenAI",
+                        "endpoint": "https://api.openai.com/v1",
+                        "default_model": "gpt-5-mini",
+                    },
+                    "user:pi-owner",
+                )
+
     def test_provider_connection_error_redacts_secret(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = AIService(self._settings(tmpdir))

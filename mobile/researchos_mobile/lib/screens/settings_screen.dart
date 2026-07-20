@@ -408,19 +408,27 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
   bool _apiKeyConfigured = false;
   String? _message;
   bool _busy = false;
+  bool _updatingProviderFields = false;
 
   @override
   void initState() {
     super.initState();
+    _apiKey.addListener(_onApiKeyChanged);
     _future = _ai.providerState();
   }
 
   @override
   void dispose() {
+    _apiKey.removeListener(_onApiKeyChanged);
     _endpoint.dispose();
     _model.dispose();
     _apiKey.dispose();
     super.dispose();
+  }
+
+  void _onApiKeyChanged() {
+    if (_updatingProviderFields) return;
+    if (mounted) setState(() {});
   }
 
   void _reload() {
@@ -460,18 +468,22 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
   }
 
   void _applyConfig(MundiAiProviderConfig config) {
+    _updatingProviderFields = true;
     _providerConfigId = config.providerConfigId;
     _apiKeyConfigured = config.apiKeyConfigured;
     _endpoint.text = config.endpoint ?? _endpoint.text;
     _model.text = config.defaultModel ?? _model.text;
     _apiKey.clear();
+    _updatingProviderFields = false;
   }
 
   void _applyProviderSpec(MundiAiProviderSpec provider) {
+    _updatingProviderFields = true;
     _providerConfigId = null;
     _apiKeyConfigured = false;
     _endpoint.text = provider.defaultEndpoint ?? '';
     _apiKey.clear();
+    _updatingProviderFields = false;
   }
 
   Future<void> _saveProvider({bool removeApiKey = false}) async {
@@ -501,7 +513,11 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
     }
   }
 
-  Future<void> _testProvider() async {
+  Future<void> _testSavedProvider() async {
+    if (_providerConfigId == null || _providerConfigId!.isEmpty) {
+      setState(() => _message = 'Save this provider before testing it.');
+      return;
+    }
     setState(() {
       _busy = true;
       _message = null;
@@ -512,13 +528,42 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
         provider: _provider,
         endpoint: _endpoint.text.trim(),
         defaultModel: _model.text.trim(),
-        apiKey: _apiKey.text.trim(),
+        testMode: 'saved_provider',
       );
       setState(() {
         _message = result['message']?.toString() ?? 'Provider checked.';
       });
     } catch (error) {
       setState(() => _message = 'AI provider test failed: $error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _testEnteredKey() async {
+    final typedKey = _apiKey.text.trim();
+    if (typedKey.isEmpty) {
+      setState(() => _message = 'Enter an API key before testing it.');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
+    try {
+      final result = await _ai.testProvider(
+        provider: _provider,
+        endpoint: _endpoint.text.trim(),
+        defaultModel: _model.text.trim(),
+        apiKey: typedKey,
+        testMode: 'unsaved_key',
+      );
+      setState(() {
+        _message =
+            '${result['message']?.toString() ?? 'Entered key checked.'} Save Provider to persist this key.';
+      });
+    } catch (error) {
+      setState(() => _message = 'Entered key test failed: $error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -575,6 +620,7 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
         final preferredConfig = _preferredConfig(configs);
         final selectedIsDefault =
             selectedConfig != null && selectedConfig.isPreferred;
+        final hasTypedKey = _apiKey.text.trim().isNotEmpty;
         return ResearchOsCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -657,9 +703,16 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
                     child: const Text('Save Provider'),
                   ),
                   OutlinedButton(
-                    onPressed: _busy ? null : _testProvider,
+                    onPressed: _busy || _providerConfigId == null
+                        ? null
+                        : _testSavedProvider,
                     child: const Text('Test Connection'),
                   ),
+                  if (hasTypedKey)
+                    OutlinedButton(
+                      onPressed: _busy ? null : _testEnteredKey,
+                      child: const Text('Test entered key'),
+                    ),
                   OutlinedButton(
                     onPressed:
                         _busy || selectedIsDefault ? null : _setDefaultProvider,

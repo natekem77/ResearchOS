@@ -96,6 +96,7 @@ class ResearchOsApi {
     required String endpoint,
     required String defaultModel,
     String? apiKey,
+    String testMode = 'saved_provider',
   }) {
     return _postMap('/ai/provider-configs/test', {
       if (providerConfigId != null && providerConfigId.isNotEmpty)
@@ -104,6 +105,7 @@ class ResearchOsApi {
       'display_name': provider,
       'endpoint': endpoint,
       'default_model': defaultModel,
+      'test_mode': testMode,
       if (apiKey != null && apiKey.isNotEmpty) 'api_key': apiKey,
     });
   }

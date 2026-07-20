@@ -148,7 +148,23 @@ void main() {
 
     expect(testConnectionCalls, 1);
     expect(capturedBodies.last['provider_config_id'], 'provider-config:openai');
+    expect(capturedBodies.last['test_mode'], 'saved_provider');
+    expect(capturedBodies.last.containsKey('api_key'), isFalse);
     expect(find.text('Connection successful.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    await tester.enterText(
+        find.widgetWithText(TextField, 'API key'), 'sk-unsaved-replacement');
+    await tester.pumpAndSettle();
+    expect(find.text('Test entered key'), findsOneWidget);
+    await tester.tap(find.text('Test entered key'));
+    await tester.pumpAndSettle();
+
+    expect(testConnectionCalls, 2);
+    expect(capturedBodies.last['test_mode'], 'unsaved_key');
+    expect(capturedBodies.last['api_key'], 'sk-unsaved-replacement');
+    expect(find.textContaining('Save Provider to persist this key.'),
+        findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await tester.tap(find.text('Set Default'));

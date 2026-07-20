@@ -103,21 +103,22 @@ class AIService:
             model = None
         else:
             try:
-                ai_response = self.generate(
-                    AIRequest(
-                        messages=[
-                            AIMessage("system", render_system_prompt(prompt, context_summary)),
-                            AIMessage("user", message),
-                        ],
-                        provider_config_id=provider_config_id,
-                        output_mode=skill.default_output_mode,
-                    )
+                resolved = self.conversations.resolve_active_provider(
+                    actor_user_id,
+                    provider_config_id,
+                    flow=f"skill:{skill_id}",
                 )
-                response = ai_response.content
-                provider_name = ai_response.provider
-                model = ai_response.model
-            except AIProviderError as exc:
-                response = f"AI provider unavailable. Deterministic fallback used. Details: {exc}"
+                provider = self._provider_from_saved_config(resolved)
+                response = provider.chat(
+                    message,
+                    context=render_system_prompt(prompt, context_summary),
+                )
+                if skill.default_output_mode == "json":
+                    json.loads(response)
+                provider_name = str(resolved.get("provider") or "configured-provider")
+                model = str(resolved.get("default_model") or "")
+            except (AIProviderError, ValueError) as exc:
+                response = f"AI provider unavailable. Deterministic fallback used. Details: {_redact_ai_provider_error(str(exc))}"
                 provider_name = "deterministic-fallback"
                 model = None
         self.conversations.append_message(conversation_id, "assistant", response, {"provider": provider_name, "model": model})
@@ -244,41 +245,32 @@ class AIService:
         return {"skill_id": "scientific_assistant", "reason": "scientific_question"}
 
     def _answer_science(self, actor_user_id: str, message: str) -> tuple[str, str, str | None]:
-        preferred = self.conversations.preferred_provider_config(actor_user_id)
-        if preferred:
-            raw = self.conversations.provider_config_with_secret(
-                str(preferred["provider_config_id"]),
-                actor_user_id,
+        try:
+            raw = self.conversations.resolve_active_provider(actor_user_id, flow="ask_mundi")
+            provider = self._provider_from_saved_config(raw)
+            answer = provider.chat(
+                message,
+                context=(
+                    "Answer as Mundi's Scientific Assistant. Distinguish general scientific knowledge "
+                    "from facts retrieved from Mundi. Do not invent concentrations, timings, "
+                    "temperatures, or citations. State uncertainty clearly."
+                ),
             )
-            if raw:
-                provider = OpenAICompatibleProvider(
-                    base_url=str(raw.get("endpoint") or ""),
-                    model=str(raw.get("default_model") or self.settings.ai_model),
-                    api_key=str(raw.get("api_key_secret") or "") or None,
-                    provider_name=str(raw.get("provider") or "openai-compatible"),
+            return answer, str(raw.get("provider") or "configured-provider"), str(raw.get("default_model") or "")
+        except AIProviderError as exc:
+            safe_error = _redact_ai_provider_error(str(exc))
+            if safe_error == "Invalid API key.":
+                safe_error = (
+                    "OpenAI authentication failed. The saved API key is invalid or unavailable. "
+                    "Update it in Settings → AI Providers."
                 )
-                try:
-                    answer = provider.chat(
-                        message,
-                        context=(
-                            "Answer as Mundi's Scientific Assistant. Distinguish general scientific knowledge "
-                            "from facts retrieved from Mundi. Do not invent concentrations, timings, "
-                            "temperatures, or citations. State uncertainty clearly."
-                        ),
-                    )
-                    return answer, str(raw.get("provider") or "configured-provider"), str(raw.get("default_model") or "")
-                except AIProviderError as exc:
-                    safe_error = _redact_ai_provider_error(str(exc))
-                    if safe_error == "Invalid API key.":
-                        safe_error = (
-                            "OpenAI authentication failed. The saved API key is invalid or unavailable. "
-                            "Update it in Settings → AI Providers."
-                        )
-                    return (
-                        safe_error,
-                        "provider-error",
-                        str(raw.get("default_model") or ""),
-                    )
+            return (
+                safe_error,
+                "provider-error",
+                None,
+            )
+        except ValueError:
+            pass
         return (
             "Scientific Assistant needs a configured AI provider for open-ended scientific questions. "
             "I can still help with Mundi navigation and search permitted Mundi records.",
@@ -357,33 +349,33 @@ class AIService:
         payload: dict[str, Any],
         actor_user_id: str | None = None,
     ) -> dict[str, Any]:
-        provider_id = str(payload.get("provider") or "")
+        actor = actor_user_id or "user:pi-owner"
+        test_mode = str(payload.get("test_mode") or "").strip() or (
+            "unsaved_key" if payload.get("api_key") and not payload.get("provider_config_id") else "saved_provider"
+        )
+        if test_mode == "saved_provider":
+            provider_config_id = str(payload.get("provider_config_id") or "").strip()
+            if not provider_config_id:
+                raise ValueError("Save this provider before testing the saved configuration.")
+            saved_config = self.conversations.resolve_active_provider(
+                actor,
+                provider_config_id,
+                flow="saved_test_connection",
+            )
+            provider_id = str(saved_config.get("provider") or "")
+            endpoint = str(saved_config.get("endpoint") or "").strip()
+            model = str(saved_config.get("default_model") or self.settings.ai_model or "").strip()
+            api_key = str(saved_config.get("api_key_secret") or "").strip()
+        elif test_mode == "unsaved_key":
+            provider_id = str(payload.get("provider") or "")
+            endpoint = str(payload.get("endpoint") or "").strip()
+            model = str(payload.get("default_model") or self.settings.ai_model or "").strip()
+            api_key = str(payload.get("api_key") or "").strip()
+        else:
+            raise ValueError("Unsupported AI provider test mode.")
         spec = self.providers.get(provider_id)
         if spec is None:
             raise ValueError(f"Unsupported AI provider: {provider_id}")
-        saved_config = None
-        if payload.get("provider_config_id"):
-            saved_config = self.conversations.provider_config_with_secret(
-                str(payload["provider_config_id"]),
-                actor_user_id or "user:pi-owner",
-            )
-            if saved_config is None:
-                raise ValueError("AI provider configuration not found.")
-        endpoint = str(
-            payload.get("endpoint")
-            or (saved_config or {}).get("endpoint")
-            or spec.default_endpoint
-            or ""
-        ).strip()
-        model = str(
-            payload.get("default_model")
-            or (saved_config or {}).get("default_model")
-            or self.settings.ai_model
-            or ""
-        ).strip()
-        api_key = str(
-            payload.get("api_key") or (saved_config or {}).get("api_key_secret") or ""
-        ).strip()
         if not endpoint:
             return {
                 "ok": False,
@@ -433,6 +425,14 @@ class AIService:
             "message": "Connection successful.",
             "network_tested": True,
         }
+
+    def _provider_from_saved_config(self, config: dict[str, Any]) -> OpenAICompatibleProvider:
+        return OpenAICompatibleProvider(
+            base_url=str(config.get("endpoint") or ""),
+            model=str(config.get("default_model") or self.settings.ai_model),
+            api_key=str(config.get("api_key_secret") or "") or None,
+            provider_name=str(config.get("provider") or "openai-compatible"),
+        )
 
     def _teach_mundi(self, question: str) -> str:
         lower = question.lower()

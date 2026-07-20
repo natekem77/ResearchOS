@@ -49,6 +49,7 @@ class MundiAiService {
     required String endpoint,
     required String defaultModel,
     String? apiKey,
+    String testMode = 'saved_provider',
   }) {
     return api.testAiProviderConfig(
       providerConfigId: providerConfigId,
@@ -56,6 +57,7 @@ class MundiAiService {
       endpoint: endpoint,
       defaultModel: defaultModel,
       apiKey: apiKey,
+      testMode: testMode,
     );
   }
 
