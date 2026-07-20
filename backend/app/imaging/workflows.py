@@ -33,49 +33,6 @@ WORKFLOWS = [
         "Create a visualization PNG without modifying the raw image.",
         "1.0.0",
     ),
-    ImagingWorkflow(
-        "max_intensity_projection",
-        "Maximum Intensity Z-Projection",
-        "Create a maximum-intensity projection TIFF and preview PNG.",
-        "1.0.0",
-        {
-            "channel": {"type": "string", "default": "all"},
-            "start_slice": {"type": "integer", "nullable": True},
-            "end_slice": {"type": "integer", "nullable": True},
-        },
-    ),
-    ImagingWorkflow(
-        "split_channels",
-        "Split Channels",
-        "Export selected channels as separate TIFF files.",
-        "1.0.0",
-        {"channels": {"type": "array", "items": {"type": "integer"}, "default": []}},
-    ),
-    ImagingWorkflow(
-        "background_subtraction",
-        "Background Subtraction",
-        "Run rolling-ball background subtraction on a selected channel.",
-        "1.0.0",
-        {
-            "channel": {"type": "integer", "default": 1},
-            "rolling_ball_radius": {"type": "number", "default": 50},
-            "light_background": {"type": "boolean", "default": False},
-        },
-    ),
-    ImagingWorkflow(
-        "threshold_area_measurement",
-        "Threshold and Area Measurement",
-        "Create a mask, overlay, CSV, and structured area measurements.",
-        "1.0.0",
-        {
-            "channel": {"type": "integer", "default": 1},
-            "threshold_method": {"type": "string", "default": "Otsu"},
-            "manual_lower": {"type": "number", "nullable": True},
-            "manual_upper": {"type": "number", "nullable": True},
-            "minimum_object_area": {"type": "number", "nullable": True},
-            "use_pixel_calibration": {"type": "boolean", "default": True},
-        },
-    ),
 ]
 
 
@@ -101,4 +58,3 @@ def validate_parameters(stable_key: str, parameters: dict[str, Any]) -> dict[str
         if name not in clean and "default" in spec:
             clean[name] = spec["default"]
     return clean
-

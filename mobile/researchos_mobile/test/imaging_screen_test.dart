@@ -57,9 +57,9 @@ void main() {
           return _json({
             'workflows': [
               {
-                'stable_key': 'max_intensity_projection',
-                'name': 'Maximum Intensity Z-Projection',
-                'description': 'Create a projection.',
+                'stable_key': 'generate_preview',
+                'name': 'Generate Preview',
+                'description': 'Create a visualization PNG.',
               }
             ],
           });
@@ -89,7 +89,7 @@ void main() {
 
     await tester.tap(find.text('Run').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Maximum Intensity Z-Projection'));
+    await tester.tap(find.text('Generate Preview'));
     await tester.pumpAndSettle();
 
     expect(calls, contains('POST /mobile/imaging/jobs'));

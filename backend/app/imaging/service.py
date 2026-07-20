@@ -6,9 +6,7 @@ import hashlib
 import json
 import mimetypes
 import os
-import shutil
 import sqlite3
-import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +15,7 @@ from typing import Any
 from app.attachment_storage import sanitize_filename
 from app.config import Settings, get_settings
 from app.storage import SQLiteStore
+from imaging_worker.fiji_runner import FijiRunner, FijiRunnerError
 
 from .provenance import sha256_file
 from .workflows import list_workflows, validate_parameters, workflow_by_key
@@ -301,7 +300,7 @@ class ImagingService:
         workflow_key = str(job["workflow_id"])
         log_path = job_dir / "log.txt"
         provenance_path = job_dir / "provenance.json"
-        output_specs = self._materialize_workflow_outputs(workflow_key, raw_path, job_dir, dict(job["parameters"]))
+        output_specs = self._materialize_workflow_outputs(workflow_key, raw_path, job_dir)
         log_path.write_text(
             "Mundi imaging MVP completed validated workflow.\n"
             f"Workflow: {workflow_key}\n"
@@ -317,6 +316,7 @@ class ImagingService:
             "workflow_stable_key": workflow_key,
             "workflow_version": workflow.workflow_version if workflow else "unknown",
             "parameters": job["parameters"],
+            "engine": "fiji",
             "fiji_version": self.worker_status().get("fiji_version"),
             "bioformats_version": None,
             "script_version": workflow.workflow_version if workflow else "unknown",
@@ -338,62 +338,19 @@ class ImagingService:
         with self._connect() as connection:
             for path, output_type, mime_type in output_specs:
                 self._insert_output(connection, str(job["id"]), path, output_type, mime_type)
-            if workflow_key == "threshold_area_measurement":
-                self._insert_measurement(connection, str(job["id"]), "total_positive_area", 0, "px^2")
-                self._insert_measurement(connection, str(job["id"]), "image_area", 0, "px^2")
-                self._insert_measurement(connection, str(job["id"]), "percent_positive_area", 0, "%")
-                self._insert_measurement(connection, str(job["id"]), "object_count", 0, "count")
             connection.execute(
                 "UPDATE imaging_jobs SET status = 'complete', progress = 1, completed_at = CURRENT_TIMESTAMP WHERE id = ?",
                 (job["id"],),
             )
 
-    def _materialize_workflow_outputs(self, workflow_key: str, raw_path: Path, job_dir: Path, parameters: dict[str, Any]) -> list[tuple[Path, str, str]]:
+    def _materialize_workflow_outputs(self, workflow_key: str, raw_path: Path, job_dir: Path) -> list[tuple[Path, str, str]]:
         if workflow_key == "generate_preview":
             preview_path = job_dir / "preview.png"
-            preview_path.write_bytes(_tiny_png())
+            fiji_path = os.environ.get("MUNDI_FIJI_PATH", "")
+            if not fiji_path:
+                raise FijiRunnerError("MUNDI_FIJI_PATH is not set; Fiji preview generation is unavailable.")
+            FijiRunner(fiji_path, timeout_seconds=self.job_timeout_seconds).generate_preview(input_path=raw_path, output_path=preview_path)
             return [(preview_path, "preview_png", "image/png")]
-        if workflow_key == "max_intensity_projection":
-            projection_path = job_dir / "max_intensity_projection.tif"
-            preview_path = job_dir / "projection_preview.png"
-            shutil.copyfile(raw_path, projection_path)
-            preview_path.write_bytes(_tiny_png())
-            return [(projection_path, "projected_tiff", "image/tiff"), (preview_path, "preview_png", "image/png")]
-        if workflow_key == "split_channels":
-            channels = parameters.get("channels") or [1]
-            outputs: list[tuple[Path, str, str]] = []
-            for channel in channels:
-                channel_path = job_dir / f"channel_{channel}.tif"
-                preview_path = job_dir / f"channel_{channel}_preview.png"
-                shutil.copyfile(raw_path, channel_path)
-                preview_path.write_bytes(_tiny_png())
-                outputs.extend([(channel_path, "channel_tiff", "image/tiff"), (preview_path, "channel_preview_png", "image/png")])
-            return outputs
-        if workflow_key == "background_subtraction":
-            processed_path = job_dir / "background_subtracted.tif"
-            preview_path = job_dir / "background_subtracted_preview.png"
-            shutil.copyfile(raw_path, processed_path)
-            preview_path.write_bytes(_tiny_png())
-            return [(processed_path, "processed_tiff", "image/tiff"), (preview_path, "preview_png", "image/png")]
-        if workflow_key == "threshold_area_measurement":
-            mask_path = job_dir / "threshold_mask.tif"
-            overlay_path = job_dir / "threshold_overlay.png"
-            measurements_path = job_dir / "measurements.csv"
-            shutil.copyfile(raw_path, mask_path)
-            overlay_path.write_bytes(_tiny_png())
-            measurements_path.write_text(
-                "name,value,unit\n"
-                "total_positive_area,0,px^2\n"
-                "image_area,0,px^2\n"
-                "percent_positive_area,0,%\n"
-                "object_count,0,count\n",
-                encoding="utf-8",
-            )
-            return [
-                (mask_path, "mask_tiff", "image/tiff"),
-                (overlay_path, "overlay_preview_png", "image/png"),
-                (measurements_path, "measurements_csv", "text/csv"),
-            ]
         raise ImagingValidationError("Unknown imaging workflow.")
 
     def outputs_for_job(self, user_id: str, job_id: str) -> list[dict[str, Any]]:
@@ -427,7 +384,7 @@ class ImagingService:
 
     def record_worker_heartbeat(self, worker_id: str, status: str = "ready") -> dict[str, Any]:
         fiji_path = os.environ.get("MUNDI_FIJI_PATH", "")
-        fiji_version = _fiji_version(fiji_path)
+        executable_found = bool(fiji_path and Path(fiji_path).exists())
         with self._connect() as connection:
             connection.execute(
                 """
@@ -441,7 +398,15 @@ class ImagingService:
                     last_heartbeat = excluded.last_heartbeat,
                     metadata_json = excluded.metadata_json
                 """,
-                (worker_id, status, fiji_path or None, fiji_version, 1 if fiji_version else 0, _now(), json.dumps({"headless_launch": bool(fiji_version)})),
+                (
+                    worker_id,
+                    status,
+                    fiji_path or None,
+                    None,
+                    0,
+                    _now(),
+                    json.dumps({"executable_found": executable_found, "headless_preview_required": True}),
+                ),
             )
         return self.worker_status()
 
@@ -506,21 +471,3 @@ def _basic_metadata(filename: str, data: bytes) -> dict[str, Any]:
 def _safe_error(exc: Exception) -> str:
     return str(exc).split("\n")[0][:240]
 
-
-def _fiji_version(fiji_path: str) -> str | None:
-    if not fiji_path:
-        return None
-    path = Path(fiji_path)
-    if not path.exists():
-        return None
-    try:
-        result = subprocess.run([str(path), "--version"], capture_output=True, text=True, timeout=10, check=False)
-    except Exception:
-        return "Fiji executable found"
-    return (result.stdout or result.stderr or "Fiji executable found").strip().splitlines()[0][:120]
-
-
-def _tiny_png() -> bytes:
-    return bytes.fromhex(
-        "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6360000002000100ffff03000006000557bfab0000000049454e44ae426082"
-    )

@@ -30,9 +30,9 @@ export MUNDI_IMAGING_JOB_TIMEOUT_SECONDS=600
 python3 scripts/check_fiji_installation.py
 ```
 
-The MVP reports whether the executable exists and whether `--version` launches.
-Bio-Formats availability is surfaced in worker status when the Fiji runner is
-expanded beyond the deterministic MVP worker.
+The checker creates a tiny TIFF, launches Fiji headlessly, runs the bundled
+`generate_preview.ijm` macro, verifies `preview.png`, and exits. It proves real
+macro execution instead of probing the executable version.
 
 ## Start Backend
 
@@ -70,9 +70,7 @@ Derived outputs are separate:
 
 ```text
 data/imaging/jobs/{job_id}/
-  output.tif
   preview.png
-  measurements.csv
   log.txt
   provenance.json
 ```
@@ -83,13 +81,15 @@ Add workflows only in `backend/app/imaging/workflows.py`. Do not expose macro
 text fields in Flutter. Validate all parameters against the schema before a job
 is queued.
 
-Current MVP workflows:
+Current MVP workflow:
 
 - Generate Preview
-- Maximum Intensity Z-Projection
-- Split Channels
-- Background Subtraction
-- Threshold and Area Measurement
+
+This milestone intentionally proves only:
+
+```text
+input.tif -> Fiji headless macro -> preview.png
+```
 
 ## Troubleshooting
 
@@ -99,4 +99,3 @@ Current MVP workflows:
   `Metadata unavailable`.
 - Output missing: inspect the job log output and backend console for sanitized
   worker errors.
-

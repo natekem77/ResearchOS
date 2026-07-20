@@ -1,9 +1,11 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from app.config import Settings
 from app.imaging import ImagingService, ImagingValidationError
+from imaging_worker.fiji_runner import FijiRunner, tiny_tiff
 
 
 class ImagingServiceTests(unittest.TestCase):
@@ -64,13 +66,13 @@ class ImagingServiceTests(unittest.TestCase):
         self.assertEqual(asset["format"], "OME.TIF")
         self.assertEqual(asset["metadata"]["metadata_status"], "unavailable")
 
-    def test_job_worker_outputs_measurements_and_preserves_raw(self) -> None:
+    def test_generate_preview_job_fails_explicitly_without_fiji(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = ImagingService(self._settings(tmpdir))
             asset = service.create_asset(
                 user_id="user:pi-owner",
                 filename="cells.tif",
-                data=b"raw-tiff-bytes",
+                data=tiny_tiff(),
                 mime_type="image/tiff",
             )
             raw_path = Path(tmpdir) / "imaging" / asset["storage_uri"]
@@ -78,50 +80,40 @@ class ImagingServiceTests(unittest.TestCase):
             job = service.create_job(
                 user_id="user:pi-owner",
                 asset_id=asset["id"],
-                workflow_key="threshold_area_measurement",
-                parameters={"threshold_method": "Otsu"},
+                workflow_key="generate_preview",
             )
-            processed = service.run_job_once("test-worker")
-            outputs = service.outputs_for_job("user:pi-owner", job["id"])
-            measurements = service.measurements_for_job("user:pi-owner", job["id"])
+            original_path = os.environ.pop("MUNDI_FIJI_PATH", None)
+            try:
+                processed = service.run_job_once("test-worker")
+            finally:
+                if original_path is not None:
+                    os.environ["MUNDI_FIJI_PATH"] = original_path
             raw_after = raw_path.read_bytes()
 
-        self.assertEqual(processed["status"], "complete")
+        self.assertEqual(processed["status"], "failed")
+        self.assertEqual(processed["error_code"], "worker_error")
+        self.assertIn("MUNDI_FIJI_PATH", processed["safe_error_message"])
         self.assertEqual(raw_after, original_bytes)
-        self.assertIn("mask_tiff", {item["output_type"] for item in outputs})
-        self.assertIn("overlay_preview_png", {item["output_type"] for item in outputs})
-        self.assertIn("measurements_csv", {item["output_type"] for item in outputs})
-        self.assertIn("total_positive_area", {item["name"] for item in measurements})
-        self.assertIn("percent_positive_area", {item["name"] for item in measurements})
 
-    def test_allowlisted_workflows_create_expected_outputs(self) -> None:
-        expectations = {
-            "generate_preview": {"preview_png"},
-            "max_intensity_projection": {"projected_tiff", "preview_png"},
-            "split_channels": {"channel_tiff", "channel_preview_png"},
-            "background_subtraction": {"processed_tiff", "preview_png"},
-        }
-        for workflow_key, expected_outputs in expectations.items():
-            with self.subTest(workflow_key=workflow_key):
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    service = ImagingService(self._settings(tmpdir))
-                    asset = service.create_asset(
-                        user_id="user:pi-owner",
-                        filename="cells.tif",
-                        data=b"raw-tiff-bytes",
-                        mime_type="image/tiff",
-                    )
-                    job = service.create_job(
-                        user_id="user:pi-owner",
-                        asset_id=asset["id"],
-                        workflow_key=workflow_key,
-                    )
-                    processed = service.run_job_once("test-worker")
-                    outputs = service.outputs_for_job("user:pi-owner", job["id"])
+    def test_only_generate_preview_workflow_is_registered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            workflows = service.list_workflows()
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="cells.tif",
+                data=tiny_tiff(),
+                mime_type="image/tiff",
+            )
 
-                self.assertEqual(processed["status"], "complete")
-                self.assertTrue(expected_outputs.issubset({item["output_type"] for item in outputs}))
-                self.assertIn("provenance", {item["output_type"] for item in outputs})
+            with self.assertRaisesRegex(ImagingValidationError, "Unknown"):
+                service.create_job(
+                    user_id="user:pi-owner",
+                    asset_id=asset["id"],
+                    workflow_key="threshold_area_measurement",
+                )
+
+        self.assertEqual([workflow["stable_key"] for workflow in workflows], ["generate_preview"])
 
     def test_output_provenance_and_authorization(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -135,22 +127,21 @@ class ImagingServiceTests(unittest.TestCase):
             job = service.create_job(
                 user_id="user:pi-owner",
                 asset_id=asset["id"],
-                workflow_key="max_intensity_projection",
+                workflow_key="generate_preview",
             )
-            service.run_job_once("test-worker")
-            outputs = service.outputs_for_job("user:pi-owner", job["id"])
-            provenance = next(item for item in outputs if item["output_type"] == "provenance")
-            provenance_path = service.output_path("user:pi-owner", provenance["id"])
 
             with self.assertRaisesRegex(ImagingValidationError, "not found"):
                 service.get_asset("user:other", asset["id"])
-            with self.assertRaisesRegex(ImagingValidationError, "not found"):
-                service.output_path("user:other", provenance["id"])
 
-            self.assertEqual(provenance["filename"], "provenance.json")
-            provenance_text = provenance_path.read_text(encoding="utf-8")
-            self.assertIn("source_checksum", provenance_text)
-            self.assertIn("checksum", provenance_text)
+            original_path = os.environ.pop("MUNDI_FIJI_PATH", None)
+            try:
+                service.run_job_once("test-worker")
+            finally:
+                if original_path is not None:
+                    os.environ["MUNDI_FIJI_PATH"] = original_path
+            outputs = service.outputs_for_job("user:pi-owner", job["id"])
+
+        self.assertEqual(outputs, [])
 
     def test_parameter_validation_and_worker_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -172,6 +163,34 @@ class ImagingServiceTests(unittest.TestCase):
 
         self.assertTrue(status["connected"])
         self.assertEqual(status["worker_id"], "test-worker")
+
+
+@unittest.skipUnless(os.environ.get("MUNDI_FIJI_PATH"), "MUNDI_FIJI_PATH is required for real Fiji integration test.")
+class FijiRunnerIntegrationTests(unittest.TestCase):
+    def test_generate_preview_executes_real_fiji(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.tif"
+            output_path = Path(tmpdir) / "preview.png"
+            input_path.write_bytes(tiny_tiff())
+
+            result = FijiRunner(os.environ["MUNDI_FIJI_PATH"], timeout_seconds=120).generate_preview(
+                input_path=input_path,
+                output_path=output_path,
+            )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(output_path.exists())
+            self.assertGreater(output_path.stat().st_size, 0)
+            self.assertEqual(output_path.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_health_check_executes_preview_macro(self) -> None:
+        status = FijiRunner(os.environ["MUNDI_FIJI_PATH"], timeout_seconds=120).health_check()
+
+        self.assertTrue(status["executable_found"])
+        self.assertTrue(status["fiji_launched"])
+        self.assertTrue(status["macro_executed"])
+        self.assertTrue(status["preview_generated"])
+        self.assertTrue(status["fiji_exited"])
 
 
 def _tiny_png() -> bytes:
