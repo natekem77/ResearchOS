@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:html/dom.dart' as html_dom;
 import 'package:html/parser.dart' as html_parser;
 import 'package:path_provider/path_provider.dart';
@@ -28,10 +29,13 @@ class RichScientificNotebookEditor extends StatefulWidget {
     this.downloadAttachmentBytes,
     NotebookImageCache? imageCache,
     ClipboardImageReader? clipboardImageReader,
+    NotebookImageFileReader? imageFileReader,
     ClipboardRichContentReader? clipboardRichContentReader,
     this.saving = false,
   })  : clipboardImageReader =
             clipboardImageReader ?? const QuillClipboardImageReader(),
+        imageFileReader =
+            imageFileReader ?? const FilePickerNotebookImageReader(),
         clipboardRichContentReader = clipboardRichContentReader ??
             const QuillClipboardRichContentReader(),
         imageCache = imageCache ?? const NotebookImageCache();
@@ -46,6 +50,7 @@ class RichScientificNotebookEditor extends StatefulWidget {
   final AttachmentBytesDownloader? downloadAttachmentBytes;
   final NotebookImageCache imageCache;
   final ClipboardImageReader clipboardImageReader;
+  final NotebookImageFileReader imageFileReader;
   final ClipboardRichContentReader clipboardRichContentReader;
   final bool saving;
 
@@ -667,6 +672,7 @@ class _RichScientificNotebookEditorState
                   ExperimentTableEmbedBuilder(
                     imageCache: widget.imageCache,
                     clipboardImageReader: widget.clipboardImageReader,
+                    imageFileReader: widget.imageFileReader,
                     onPasteImage: widget.onPasteImage,
                     downloadAttachmentBytes: widget.downloadAttachmentBytes,
                   ),
@@ -1326,6 +1332,48 @@ abstract class ClipboardImageReader {
   const ClipboardImageReader();
 
   Future<PastedNotebookImage?> readImage();
+}
+
+abstract class NotebookImageFileReader {
+  const NotebookImageFileReader();
+
+  Future<PastedNotebookImage?> pickImage({required String source});
+}
+
+class FilePickerNotebookImageReader extends NotebookImageFileReader {
+  const FilePickerNotebookImageReader();
+
+  @override
+  Future<PastedNotebookImage?> pickImage({required String source}) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      allowMultiple: false,
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return null;
+    final file = result.files.single;
+    final bytes = file.bytes ??
+        (file.path == null ? null : await File(file.path!).readAsBytes());
+    if (bytes == null || bytes.isEmpty) return null;
+    final mimeType = _detectImageMimeType(bytes);
+    final extension = _extensionForMimeType(mimeType);
+    final name = file.name.trim().isNotEmpty
+        ? file.name
+        : '${source == 'photos' ? 'photo' : 'uploaded-image'}$extension';
+    final aspectRatio = await _readImageAspectRatio(bytes);
+    return PastedNotebookImage(
+      bytes: bytes,
+      mimeType: mimeType,
+      fileExtension: extension,
+      suggestedFilename: name,
+      metadata: {
+        'source': source,
+        'selected_representation': 'file_picker_image',
+        if (file.size > 0) 'size_bytes': file.size,
+        if (aspectRatio != null) 'aspect_ratio': aspectRatio,
+      },
+    );
+  }
 }
 
 abstract class ClipboardRichContentReader {
@@ -3057,12 +3105,14 @@ class ExperimentTableEmbedBuilder extends EmbedBuilder {
   const ExperimentTableEmbedBuilder({
     required this.imageCache,
     required this.clipboardImageReader,
+    required this.imageFileReader,
     required this.onPasteImage,
     required this.downloadAttachmentBytes,
   });
 
   final NotebookImageCache imageCache;
   final ClipboardImageReader clipboardImageReader;
+  final NotebookImageFileReader imageFileReader;
   final PastedImageUploader? onPasteImage;
   final AttachmentBytesDownloader? downloadAttachmentBytes;
 
@@ -3087,6 +3137,7 @@ class ExperimentTableEmbedBuilder extends EmbedBuilder {
       documentOffset: embedContext.node.documentOffset,
       imageCache: imageCache,
       clipboardImageReader: clipboardImageReader,
+      imageFileReader: imageFileReader,
       onPasteImage: onPasteImage,
       downloadAttachmentBytes: downloadAttachmentBytes,
     );
@@ -3112,6 +3163,8 @@ class _BrokenNotebookTable extends StatelessWidget {
 enum _TableAction {
   editCell,
   pasteImage,
+  insertFromPhotos,
+  uploadImage,
   showTableMenu,
   addRowAbove,
   addRowBelow,
@@ -3138,6 +3191,7 @@ class _NotebookTableEmbed extends StatefulWidget {
     required this.documentOffset,
     required this.imageCache,
     required this.clipboardImageReader,
+    required this.imageFileReader,
     required this.onPasteImage,
     required this.downloadAttachmentBytes,
   });
@@ -3147,6 +3201,7 @@ class _NotebookTableEmbed extends StatefulWidget {
   final int documentOffset;
   final NotebookImageCache imageCache;
   final ClipboardImageReader clipboardImageReader;
+  final NotebookImageFileReader imageFileReader;
   final PastedImageUploader? onPasteImage;
   final AttachmentBytesDownloader? downloadAttachmentBytes;
 
@@ -3191,6 +3246,10 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
         return;
       case _TableAction.pasteImage:
         await _pasteImageIntoSelectedCell(context);
+      case _TableAction.insertFromPhotos:
+        await _pickImageIntoSelectedCell(context, source: 'photos');
+      case _TableAction.uploadImage:
+        await _pickImageIntoSelectedCell(context, source: 'upload');
       case _TableAction.addRowAbove:
         _addRow(above: true);
       case _TableAction.addRowBelow:
@@ -3245,6 +3304,17 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
               onTap: () => Navigator.pop(context, _TableAction.pasteImage),
             ),
             ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Insert from Photos'),
+              onTap: () =>
+                  Navigator.pop(context, _TableAction.insertFromPhotos),
+            ),
+            ListTile(
+              leading: const Icon(Icons.upload_file_outlined),
+              title: const Text('Upload image'),
+              onTap: () => Navigator.pop(context, _TableAction.uploadImage),
+            ),
+            ListTile(
               leading: const Icon(Icons.more_horiz),
               title: const Text('Table options'),
               onTap: () => Navigator.pop(context, _TableAction.showTableMenu),
@@ -3277,6 +3347,34 @@ class _NotebookTableEmbedState extends State<_NotebookTableEmbed> {
       );
       return;
     }
+    await _confirmAndInsertImageIntoSelectedCell(context, image);
+  }
+
+  Future<void> _pickImageIntoSelectedCell(
+    BuildContext context, {
+    required String source,
+  }) async {
+    if (widget.onPasteImage == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Image upload is unavailable.')),
+      );
+      return;
+    }
+    final image = await widget.imageFileReader.pickImage(source: source);
+    if (!context.mounted) return;
+    if (image == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No image was selected.')),
+      );
+      return;
+    }
+    await _confirmAndInsertImageIntoSelectedCell(context, image);
+  }
+
+  Future<void> _confirmAndInsertImageIntoSelectedCell(
+    BuildContext context,
+    PastedNotebookImage image,
+  ) async {
     final confirmation = await showModalBottomSheet<_PasteImageConfirmation>(
       context: context,
       showDragHandle: true,

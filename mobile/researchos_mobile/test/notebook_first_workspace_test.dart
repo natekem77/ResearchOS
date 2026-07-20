@@ -1673,6 +1673,56 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('upload image action inserts image into active table cell',
+      (tester) async {
+    String? delta;
+    await pumpRichEditor(
+      tester,
+      imageFileReader: const _FakeNotebookImageFileReader(_pngBytes),
+      initialContent: _tableEmbedContent(
+        const NotebookTable(
+          tableId: 'table:upload-cell',
+          rows: 1,
+          columns: 1,
+          cells: [
+            [NotebookTableCell(text: 'Cell text')]
+          ],
+        ),
+      ),
+      onPasteImage: (
+        PastedNotebookImage image, {
+        String? displayName,
+        String? description,
+      }) async {
+        return {
+          'attachment_id': 'attachment:uploaded-cell-image',
+          'attachment_type': 'image',
+          'display_name': displayName ?? 'Uploaded cell image',
+          'mime_type': image.mimeType,
+          'original_filename': image.suggestedFilename,
+        };
+      },
+      onChanged: (edit) => delta = edit.deltaJson,
+      size: const Size(375, 667),
+    );
+
+    await tester.longPress(find.byKey(
+      const ValueKey('notebook-table-cell-table:upload-cell-0-0'),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Insert from Photos'), findsOneWidget);
+    await tester.tap(find.text('Upload image').last);
+    await tester.pumpAndSettle();
+    await _tapPasteImageInsert(tester);
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(_tableCellImageBlock(), findsOneWidget);
+    expect(delta, contains('attachment:uploaded-cell-image'));
+    expect(delta, contains('Cell text'));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('table cell image restores by attachment id after cache miss',
       (tester) async {
     var requestedAttachmentId = '';
@@ -1968,6 +2018,8 @@ void main() {
 Future<void> pumpRichEditor(
   WidgetTester tester, {
   ClipboardImageReader reader = const _FakeClipboardImageReader(null),
+  NotebookImageFileReader imageFileReader =
+      const _FakeNotebookImageFileReader(null),
   ClipboardRichContentReader richReader =
       const _FakeClipboardRichContentReader(null),
   String initialContent = '[{"insert":"\\n"}]',
@@ -1996,6 +2048,7 @@ Future<void> pumpRichEditor(
               documentFormat: documentFormat,
               documentId: documentId,
               clipboardImageReader: reader,
+              imageFileReader: imageFileReader,
               clipboardRichContentReader: richReader,
               imageCache: resolvedCache,
               downloadAttachmentBytes: downloadAttachmentBytes,
@@ -2114,6 +2167,24 @@ class _TestNotebookImageCache extends NotebookImageCache {
     final file = File('${directory.path}/$cacheKey.png');
     file.writeAsBytesSync(bytes, flush: true);
     return SynchronousFuture(file);
+  }
+}
+
+class _FakeNotebookImageFileReader extends NotebookImageFileReader {
+  const _FakeNotebookImageFileReader(this.bytes);
+
+  final List<int>? bytes;
+
+  @override
+  Future<PastedNotebookImage?> pickImage({required String source}) async {
+    if (bytes == null) return null;
+    return PastedNotebookImage(
+      bytes: Uint8List.fromList(bytes!),
+      mimeType: 'image/png',
+      fileExtension: 'png',
+      suggestedFilename: '$source-cell-image.png',
+      metadata: {'source': source},
+    );
   }
 }
 
