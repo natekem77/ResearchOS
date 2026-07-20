@@ -492,13 +492,16 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
       _message = null;
     });
     try {
+      final typedKey = _apiKey.text.trim();
       final saved = await _ai.saveProvider(
         providerConfigId: _providerConfigId,
         provider: _provider,
         displayName: _provider,
         endpoint: _endpoint.text.trim(),
         defaultModel: _model.text.trim(),
-        apiKey: removeApiKey ? null : _apiKey.text.trim(),
+        apiKey: removeApiKey || _isMaskedApiKeyPlaceholder(typedKey)
+            ? null
+            : typedKey,
         removeApiKey: removeApiKey,
       );
       setState(() {
@@ -743,6 +746,18 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
       },
     );
   }
+}
+
+bool _isMaskedApiKeyPlaceholder(String value) {
+  final normalized = value.trim().toLowerCase();
+  if (normalized.isEmpty) return false;
+  if (normalized == 'api key configured') return true;
+  if (normalized.startsWith('••••') || normalized.startsWith('****')) {
+    return true;
+  }
+  return normalized.runes.every(
+    (int rune) => rune == '*'.codeUnitAt(0) || rune == '•'.codeUnitAt(0),
+  );
 }
 
 IconData _iconForType(MobileConnectionType type) {

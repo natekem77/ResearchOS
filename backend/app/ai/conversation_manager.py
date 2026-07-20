@@ -762,6 +762,8 @@ def _is_masked_secret(value: str) -> bool:
     normalized = value.strip().lower()
     if normalized in _MASKED_SECRET_VALUES:
         return True
+    if normalized.startswith(("••••", "****")):
+        return True
     return bool(normalized) and set(normalized) <= {"*", "•", "x"}
 
 

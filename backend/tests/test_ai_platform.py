@@ -140,7 +140,7 @@ class AIPlatformTests(unittest.TestCase):
                     "display_name": "OpenAI",
                     "endpoint": "https://api.openai.com/v1",
                     "default_model": "gpt-5-mini",
-                    "api_key": "••••••••",
+                    "api_key": "••••4w8A",
                 },
                 "user:pi-owner",
             )

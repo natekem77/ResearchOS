@@ -274,6 +274,14 @@ void main() {
     expect(savedBodies.single.containsKey('api_key'), isFalse);
     expect(savedBodies.single.containsKey('remove_api_key'), isFalse);
 
+    await tester.enterText(
+        find.widgetWithText(TextField, 'API key'), '••••4w8A');
+    await tester.tap(find.text('Save Provider'));
+    await tester.pumpAndSettle();
+
+    expect(savedBodies.last.containsKey('api_key'), isFalse);
+    expect(savedBodies.last.containsKey('remove_api_key'), isFalse);
+
     await tester.tap(find.text('Remove Key'));
     await tester.pumpAndSettle();
 
