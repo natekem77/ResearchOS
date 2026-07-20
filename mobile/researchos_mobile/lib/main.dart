@@ -9,6 +9,7 @@ import 'brand/mundi_brand.dart';
 import 'config/build_info.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
+import 'screens/ask_mundi_screen.dart';
 import 'screens/chats_screen.dart';
 import 'screens/copilot_screen.dart';
 import 'screens/dashboard_screen.dart';
@@ -368,6 +369,7 @@ class ResearchOsHome extends StatelessWidget {
       WhiteboardScreen(api: api),
       ChatsScreen(api: api),
       ProtocolHubScreen(api: api),
+      AskMundiScreen(api: api),
     ];
     final titles = [
       'Home',
@@ -385,12 +387,14 @@ class ResearchOsHome extends StatelessWidget {
       'Whiteboard',
       'Chats',
       'Protocols',
+      'Ask Mundi',
     ];
     return ResearchOsScaffold(
       title: titles[selectedIndex],
       currentIndex: selectedIndex,
       onDestinationSelected: onDestinationSelected,
       body: screens[selectedIndex],
+      api: api,
     );
   }
 }

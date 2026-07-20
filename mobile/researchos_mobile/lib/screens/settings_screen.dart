@@ -403,12 +403,10 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
   final _endpoint = TextEditingController();
   final _model = TextEditingController(text: 'gpt-4o-mini');
   final _apiKey = TextEditingController();
-  final _question = TextEditingController(text: 'How do I create a subgroup?');
   String _provider = 'openai';
   String? _providerConfigId;
   bool _apiKeyConfigured = false;
   String? _message;
-  String? _answer;
   bool _busy = false;
 
   @override
@@ -422,7 +420,6 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
     _endpoint.dispose();
     _model.dispose();
     _apiKey.dispose();
-    _question.dispose();
     super.dispose();
   }
 
@@ -555,21 +552,6 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
     return provider.isEmpty ? 'Provider' : provider;
   }
 
-  Future<void> _askMundi() async {
-    setState(() {
-      _busy = true;
-      _answer = null;
-    });
-    try {
-      final result = await _ai.teachMundi(_question.text.trim());
-      setState(() => _answer = result.response);
-    } catch (error) {
-      setState(() => _answer = 'Ask Mundi failed: $error');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return FutureBuilder<MundiAiProviderState>(
@@ -699,22 +681,9 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
                 Text(_message!),
               ],
               const Divider(height: ResearchOsSpacing.xl),
-              Text('Ask Mundi', style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: ResearchOsSpacing.sm),
-              TextField(
-                controller: _question,
-                decoration:
-                    const InputDecoration(labelText: 'Mundi help question'),
+              const Text(
+                'Use the Ask Mundi destination for navigation help and scientific questions.',
               ),
-              const SizedBox(height: ResearchOsSpacing.sm),
-              FilledButton.tonal(
-                onPressed: _busy ? null : _askMundi,
-                child: const Text('Ask Mundi'),
-              ),
-              if (_answer != null) ...[
-                const SizedBox(height: ResearchOsSpacing.sm),
-                Text(_answer!),
-              ],
             ],
           ),
         );

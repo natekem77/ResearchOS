@@ -43,6 +43,7 @@ class ConversationManager:
                     actor_user_id TEXT NOT NULL,
                     provider_config_id TEXT,
                     skill_id TEXT NOT NULL,
+                    title TEXT,
                     context_ids_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL DEFAULT 'active',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -57,8 +58,16 @@ class ConversationManager:
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
+
+                CREATE TABLE IF NOT EXISTS mobile_navigation_preferences (
+                    user_id TEXT PRIMARY KEY,
+                    destination_ids_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
                 """
             )
+            self._ensure_column(connection, "ai_conversations", "title", "TEXT")
             self._repair_provider_config_duplicates(connection)
 
     def list_provider_configs(self) -> list[dict[str, Any]]:
@@ -181,11 +190,65 @@ class ConversationManager:
             connection.execute(
                 """
                 INSERT INTO ai_conversations
-                    (conversation_id, actor_user_id, provider_config_id, skill_id, context_ids_json)
-                VALUES (?, ?, ?, ?, ?)
+                    (conversation_id, actor_user_id, provider_config_id, skill_id, title, context_ids_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (conversation_id, actor_user_id, provider_config_id, skill_id, json.dumps(context_ids or [])),
+                (
+                    conversation_id,
+                    actor_user_id,
+                    provider_config_id,
+                    skill_id,
+                    "New Ask Mundi chat",
+                    json.dumps(context_ids or []),
+                ),
             )
+        return self.get_conversation(actor_user_id, conversation_id)
+
+    def list_conversations(self, actor_user_id: str, include_archived: bool = False) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            status_clause = "" if include_archived else "AND status != 'archived'"
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM ai_conversations
+                WHERE actor_user_id = ? {status_clause}
+                ORDER BY updated_at DESC, created_at DESC
+                """,
+                (actor_user_id,),
+            ).fetchall()
+        return [self._conversation_payload(row, include_messages=False) for row in rows]
+
+    def update_conversation(
+        self,
+        actor_user_id: str,
+        conversation_id: str,
+        *,
+        title: str | None = None,
+        status: str | None = None,
+        context_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM ai_conversations WHERE conversation_id = ? AND actor_user_id = ?",
+                (conversation_id, actor_user_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError("AI conversation not found.")
+            if title is not None:
+                connection.execute(
+                    "UPDATE ai_conversations SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ?",
+                    (title.strip() or "Ask Mundi chat", conversation_id),
+                )
+            if status is not None:
+                connection.execute(
+                    "UPDATE ai_conversations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ?",
+                    (status, conversation_id),
+                )
+            if context_ids is not None:
+                connection.execute(
+                    "UPDATE ai_conversations SET context_ids_json = ?, updated_at = CURRENT_TIMESTAMP WHERE conversation_id = ?",
+                    (json.dumps(context_ids), conversation_id),
+                )
         return self.get_conversation(actor_user_id, conversation_id)
 
     def append_message(self, conversation_id: str, role: str, content: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -216,8 +279,7 @@ class ConversationManager:
                 "SELECT * FROM ai_messages WHERE conversation_id = ? ORDER BY rowid ASC",
                 (conversation_id,),
             ).fetchall()
-        payload = dict(conversation)
-        payload["context_ids"] = json.loads(payload.pop("context_ids_json") or "[]")
+        payload = self._conversation_payload(conversation, include_messages=False)
         payload["messages"] = [
             {
                 "message_id": row["message_id"],
@@ -229,6 +291,37 @@ class ConversationManager:
             for row in messages
         ]
         return payload
+
+    def _conversation_payload(self, row: sqlite3.Row, *, include_messages: bool) -> dict[str, Any]:
+        payload = dict(row)
+        payload["context_ids"] = json.loads(payload.pop("context_ids_json") or "[]")
+        if not payload.get("title"):
+            payload["title"] = "Ask Mundi chat"
+        if not include_messages:
+            payload["message_count"] = self._message_count(str(payload["conversation_id"]))
+        return payload
+
+    def _message_count(self, conversation_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS count FROM ai_messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return int(row["count"] if row is not None else 0)
+
+    def _ensure_column(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        existing = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _provider_config_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -243,6 +336,51 @@ class ConversationManager:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
+
+    def get_navigation_preferences(
+        self,
+        user_id: str,
+        available_ids: list[str],
+        default_ids: list[str],
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM mobile_navigation_preferences WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        configured = json.loads(row["destination_ids_json"]) if row is not None else default_ids
+        destination_ids = _safe_navigation_ids(configured, available_ids, default_ids)
+        return {
+            "user_id": user_id,
+            "destination_ids": destination_ids,
+            "available_destinations": available_ids,
+        }
+
+    def save_navigation_preferences(
+        self,
+        user_id: str,
+        destination_ids: list[str],
+        available_ids: list[str],
+    ) -> dict[str, Any]:
+        if len(destination_ids) != 5:
+            raise ValueError("Exactly five navigation destinations are required.")
+        if len(set(destination_ids)) != len(destination_ids):
+            raise ValueError("Navigation destinations must not contain duplicates.")
+        invalid = [item for item in destination_ids if item not in available_ids]
+        if invalid:
+            raise ValueError(f"Unavailable navigation destinations: {', '.join(invalid)}")
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO mobile_navigation_preferences (user_id, destination_ids_json)
+                VALUES (?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    destination_ids_json = excluded.destination_ids_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (user_id, json.dumps(destination_ids)),
+            )
+        return self.get_navigation_preferences(user_id, available_ids, destination_ids)
 
     def _find_provider_config(
         self,
@@ -356,3 +494,26 @@ def _normal_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _safe_navigation_ids(
+    configured: list[Any],
+    available_ids: list[str],
+    default_ids: list[str],
+) -> list[str]:
+    result: list[str] = []
+    for item in configured:
+        destination_id = str(item)
+        if destination_id in available_ids and destination_id not in result:
+            result.append(destination_id)
+    for item in default_ids:
+        if len(result) >= 5:
+            break
+        if item in available_ids and item not in result:
+            result.append(item)
+    for item in available_ids:
+        if len(result) >= 5:
+            break
+        if item not in result:
+            result.append(item)
+    return result[:5]

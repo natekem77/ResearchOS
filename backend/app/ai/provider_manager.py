@@ -130,6 +130,209 @@ class AIService:
             "context_summary": context_summary,
         }
 
+    def ask_mundi(
+        self,
+        *,
+        actor_user_id: str,
+        message: str,
+        conversation_id: str | None = None,
+        context_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        text = message.strip()
+        if not text:
+            raise ValueError("Message is required.")
+        route = self.route_intent(text)
+        preferred = self.conversations.preferred_provider_config()
+        provider_config_id = str(preferred["provider_config_id"]) if preferred else None
+        if not conversation_id:
+            conversation = self.conversations.create_conversation(
+                actor_user_id,
+                route["skill_id"],
+                provider_config_id,
+                context_ids,
+            )
+            conversation_id = str(conversation["conversation_id"])
+            self.conversations.update_conversation(
+                actor_user_id,
+                conversation_id,
+                title=_conversation_title(text),
+            )
+        else:
+            self.conversations.update_conversation(
+                actor_user_id,
+                conversation_id,
+                context_ids=context_ids,
+            )
+        user_message = self.conversations.append_message(
+            conversation_id,
+            "user",
+            text,
+            {"router": route},
+        )
+        if route["skill_id"] == "teach_mundi":
+            response_text = self._teach_mundi(text)
+            provider_name = "mundi-help-rules"
+            model = None
+            sources: list[dict[str, Any]] = []
+            tool_calls: list[dict[str, Any]] = []
+        elif route["skill_id"] == "mundi_data_assistant":
+            response_text, sources, tool_calls = self._answer_with_mundi_data(
+                actor_user_id,
+                text,
+            )
+            provider_name = "mundi-data-tools"
+            model = None
+        else:
+            response_text, provider_name, model = self._answer_science(text)
+            sources = []
+            tool_calls = []
+        assistant_message = self.conversations.append_message(
+            conversation_id,
+            "assistant",
+            response_text,
+            {
+                "skill_id": route["skill_id"],
+                "provider": provider_name,
+                "model": model,
+                "sources": sources,
+                "tool_calls": tool_calls,
+            },
+        )
+        conversation = self.conversations.get_conversation(actor_user_id, conversation_id)
+        return {
+            "conversation": conversation,
+            "user_message": user_message,
+            "assistant_message": assistant_message,
+            "chosen_skill": route["skill_id"],
+            "provider": provider_name,
+            "model": model,
+            "sources": sources,
+            "tool_calls": tool_calls,
+            "warnings": _assistant_warnings(route["skill_id"], bool(preferred)),
+        }
+
+    def route_intent(self, message: str) -> dict[str, str]:
+        lower = message.lower()
+        navigation_terms = {
+            "how do i",
+            "where do i",
+            "button",
+            "screen",
+            "navigate",
+            "upload a protocol",
+            "create a subgroup",
+            "move a protocol",
+            "settings",
+        }
+        data_terms = {
+            "my protocol",
+            "my protocols",
+            "which protocol",
+            "which protocols",
+            "my experiment",
+            "my experiments",
+            "mention",
+            "mentions",
+            "find experiments",
+            "find protocols",
+            "available protocols",
+        }
+        if any(term in lower for term in navigation_terms):
+            return {"skill_id": "teach_mundi", "reason": "navigation_help"}
+        if any(term in lower for term in data_terms):
+            return {"skill_id": "mundi_data_assistant", "reason": "mundi_record_query"}
+        return {"skill_id": "scientific_assistant", "reason": "scientific_question"}
+
+    def _answer_science(self, message: str) -> tuple[str, str, str | None]:
+        preferred = self.conversations.preferred_provider_config()
+        if preferred:
+            raw = self.conversations.provider_config_with_secret(str(preferred["provider_config_id"]))
+            if raw:
+                provider = OpenAICompatibleProvider(
+                    base_url=str(raw.get("endpoint") or ""),
+                    model=str(raw.get("default_model") or self.settings.ai_model),
+                    api_key=str(raw.get("api_key_secret") or "") or None,
+                    provider_name=str(raw.get("provider") or "openai-compatible"),
+                )
+                try:
+                    answer = provider.chat(
+                        message,
+                        context=(
+                            "Answer as Mundi's Scientific Assistant. Distinguish general scientific knowledge "
+                            "from facts retrieved from Mundi. Do not invent concentrations, timings, "
+                            "temperatures, or citations. State uncertainty clearly."
+                        ),
+                    )
+                    return answer, str(raw.get("provider") or "configured-provider"), str(raw.get("default_model") or "")
+                except AIProviderError as exc:
+                    return (
+                        f"Scientific Assistant could not reach the configured provider. {exc}",
+                        "provider-error",
+                        str(raw.get("default_model") or ""),
+                    )
+        return (
+            "Scientific Assistant needs a configured AI provider for open-ended scientific questions. "
+            "I can still help with Mundi navigation and search permitted Mundi records.",
+            "no-provider",
+            None,
+        )
+
+    def _answer_with_mundi_data(
+        self,
+        actor_user_id: str,
+        message: str,
+    ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+        query = _search_query_from_message(message)
+        sources: list[dict[str, Any]] = []
+        tool_calls: list[dict[str, Any]] = []
+        try:
+            from app.protocol_hub import ProtocolHubService
+            protocols = ProtocolHubService(settings=self.settings).list_protocols(query=query)[:5]
+        except Exception as exc:  # pragma: no cover - defensive tool boundary
+            protocols = []
+            tool_calls.append({"tool": "search_protocols", "status": "error", "message": str(exc)})
+        else:
+            tool_calls.append({"tool": "search_protocols", "status": "ok", "result_count": len(protocols)})
+        for item in protocols:
+            sources.append(
+                {
+                    "type": "protocol",
+                    "id": item.get("protocol_id"),
+                    "title": item.get("title") or item.get("name") or "Protocol",
+                }
+            )
+        try:
+            from app.general_experiments import GeneralExperimentService
+            experiments = GeneralExperimentService(settings=self.settings).list_experiments(user_id=actor_user_id)[:20]
+            filtered = [
+                item for item in experiments
+                if query.lower() in json.dumps(item).lower()
+            ][:5]
+        except Exception as exc:  # pragma: no cover - defensive tool boundary
+            filtered = []
+            tool_calls.append({"tool": "search_experiments", "status": "error", "message": str(exc)})
+        else:
+            tool_calls.append({"tool": "search_experiments", "status": "ok", "result_count": len(filtered)})
+        for item in filtered:
+            sources.append(
+                {
+                    "type": "experiment",
+                    "id": item.get("experiment_id"),
+                    "title": item.get("title") or "Experiment",
+                }
+            )
+        if not sources:
+            return (
+                f"I searched permitted Mundi records for “{query}” and did not find matching protocols or experiments.",
+                sources,
+                tool_calls,
+            )
+        lines = [f"I searched permitted Mundi records for “{query}” and found:"]
+        for source in sources:
+            lines.append(f"- {source['type'].title()}: {source['title']} ({source['id']})")
+        lines.append("These are Mundi source records, not external literature citations.")
+        return "\n".join(lines), sources, tool_calls
+
     def health(self) -> dict[str, Any]:
         configs = self.conversations.list_provider_configs()
         preferred = self.conversations.preferred_provider_config()
@@ -229,6 +432,46 @@ class AIService:
         if "move" in lower and "protocol" in lower:
             return "Open a protocol row's ... menu, choose Move to Group, then pick Root / Ungrouped or a folder."
         return "I can help with Mundi navigation, screens, buttons, and workflows. Ask about the current screen or a task."
+
+
+def _conversation_title(message: str) -> str:
+    title = " ".join(message.split())
+    return title[:60] if title else "Ask Mundi chat"
+
+
+def _search_query_from_message(message: str) -> str:
+    cleaned = re.sub(r"[?.,;:]", " ", message)
+    stopwords = {
+        "which",
+        "of",
+        "my",
+        "the",
+        "a",
+        "an",
+        "used",
+        "use",
+        "mention",
+        "mentions",
+        "protocol",
+        "protocols",
+        "experiment",
+        "experiments",
+        "find",
+        "available",
+    }
+    tokens = [token for token in cleaned.split() if token.lower() not in stopwords]
+    return tokens[-1] if tokens else message.strip()
+
+
+def _assistant_warnings(skill_id: str, has_provider: bool) -> list[str]:
+    if skill_id == "scientific_assistant":
+        warning = "Scientific answers may contain errors. Verify protocol details before use."
+        if not has_provider:
+            return [warning, "No AI provider is configured for open-ended scientific answers."]
+        return [warning]
+    if skill_id == "mundi_data_assistant":
+        return ["Mundi record answers are limited to permitted records returned by tools."]
+    return []
 
 
 def _redact_ai_provider_error(message: str) -> str:

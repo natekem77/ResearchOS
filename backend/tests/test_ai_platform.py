@@ -300,6 +300,69 @@ class AIPlatformTests(unittest.TestCase):
         self.assertIn("New Subgroup", result["response"])
         self.assertTrue(result["conversation_id"])
 
+    def test_ask_mundi_routes_navigation_science_and_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+
+            self.assertEqual(
+                service.route_intent("How do I create a subgroup?")["skill_id"],
+                "teach_mundi",
+            )
+            self.assertEqual(
+                service.route_intent("Why is BMP4 added near day 7?")["skill_id"],
+                "scientific_assistant",
+            )
+            self.assertEqual(
+                service.route_intent("Which of my protocols mention BMP4?")["skill_id"],
+                "mundi_data_assistant",
+            )
+
+    def test_ask_mundi_conversation_persists_without_api_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            result = service.ask_mundi(
+                actor_user_id="user:pi-owner",
+                message="How do I create a protocol subgroup?",
+            )
+            conversation_id = result["conversation"]["conversation_id"]
+            reloaded = AIService(self._settings(tmpdir))
+            conversation = reloaded.conversations.get_conversation(
+                "user:pi-owner",
+                conversation_id,
+            )
+
+        self.assertEqual(result["chosen_skill"], "teach_mundi")
+        self.assertEqual([item["role"] for item in conversation["messages"]], ["user", "assistant"])
+        self.assertNotIn("api_key", str(conversation).lower())
+        self.assertNotIn("secret", str(conversation).lower())
+
+    def test_navigation_preferences_validate_five_unique_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = AIService(self._settings(tmpdir))
+            available = ["home", "experiments", "protocols", "ask_mundi", "settings", "search"]
+            saved = service.conversations.save_navigation_preferences(
+                "user:pi-owner",
+                ["home", "experiments", "protocols", "ask_mundi", "settings"],
+                available,
+            )
+            with self.assertRaises(ValueError):
+                service.conversations.save_navigation_preferences(
+                    "user:pi-owner",
+                    ["home", "home", "protocols", "ask_mundi", "settings"],
+                    available,
+                )
+            with self.assertRaises(ValueError):
+                service.conversations.save_navigation_preferences(
+                    "user:pi-owner",
+                    ["home", "experiments", "protocols", "ask_mundi", "bad"],
+                    available,
+                )
+
+        self.assertEqual(
+            saved["destination_ids"],
+            ["home", "experiments", "protocols", "ask_mundi", "settings"],
+        )
+
     def test_conversation_persists_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = AIService(self._settings(tmpdir))

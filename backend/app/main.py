@@ -945,6 +945,26 @@ class AIRunSkillRequest(BaseModel):
     conversation_id: str | None = None
 
 
+class MobileAiConversationCreateRequest(BaseModel):
+    message: str | None = None
+    context_ids: list[str] = Field(default_factory=list)
+
+
+class MobileAiMessageRequest(BaseModel):
+    message: str
+    context_ids: list[str] = Field(default_factory=list)
+
+
+class MobileAiConversationUpdateRequest(BaseModel):
+    title: str | None = None
+    archived: bool | None = None
+    context_ids: list[str] | None = None
+
+
+class MobileNavigationPreferencesRequest(BaseModel):
+    destination_ids: list[str]
+
+
 class AssistantRequest(BaseModel):
     """Natural-language request for the scientific research assistant."""
 
@@ -4818,6 +4838,139 @@ def ai_conversation(conversation_id: str, request: Request) -> dict[str, object]
         return ai_service.conversations.get_conversation(_request_user_id(request), conversation_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+_MOBILE_NAVIGATION_DESTINATIONS = [
+    {"id": "home", "label": "Home", "screen_index": 0},
+    {"id": "experiments", "label": "Experiments", "screen_index": 4},
+    {"id": "protocols", "label": "Protocols", "screen_index": 14},
+    {"id": "ask_mundi", "label": "Ask Mundi", "screen_index": 15},
+    {"id": "bench", "label": "Bench", "screen_index": 2},
+    {"id": "search", "label": "Search", "screen_index": 7},
+    {"id": "chat", "label": "Chat", "screen_index": 13},
+    {"id": "settings", "label": "Settings", "screen_index": 9},
+]
+_DEFAULT_MOBILE_NAVIGATION_IDS = ["home", "experiments", "protocols", "ask_mundi", "settings"]
+
+
+@app.get("/mobile/ai/conversations", tags=["ai"])
+def mobile_ai_conversations(request: Request) -> dict[str, object]:
+    return {
+        "conversations": ai_service.conversations.list_conversations(
+            _request_user_id(request)
+        )
+    }
+
+
+@app.post("/mobile/ai/conversations", tags=["ai"])
+def create_mobile_ai_conversation(
+    request_body: MobileAiConversationCreateRequest,
+    request: Request,
+) -> dict[str, object]:
+    user_id = _request_user_id(request)
+    if request_body.message and request_body.message.strip():
+        return ai_service.ask_mundi(
+            actor_user_id=user_id,
+            message=request_body.message,
+            context_ids=request_body.context_ids,
+        )
+    conversation = ai_service.conversations.create_conversation(
+        user_id,
+        "ask_mundi",
+        None,
+        request_body.context_ids,
+    )
+    return {"conversation": conversation}
+
+
+@app.get("/mobile/ai/conversations/{conversation_id}", tags=["ai"])
+def mobile_ai_conversation(conversation_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {
+            "conversation": ai_service.conversations.get_conversation(
+                _request_user_id(request),
+                conversation_id,
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/mobile/ai/conversations/{conversation_id}/messages", tags=["ai"])
+def create_mobile_ai_message(
+    conversation_id: str,
+    request_body: MobileAiMessageRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return ai_service.ask_mundi(
+            actor_user_id=_request_user_id(request),
+            conversation_id=conversation_id,
+            message=request_body.message,
+            context_ids=request_body.context_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/mobile/ai/conversations/{conversation_id}", tags=["ai"])
+def update_mobile_ai_conversation(
+    conversation_id: str,
+    request_body: MobileAiConversationUpdateRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "conversation": ai_service.conversations.update_conversation(
+                _request_user_id(request),
+                conversation_id,
+                title=request_body.title,
+                status="archived" if request_body.archived else None,
+                context_ids=request_body.context_ids,
+            )
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/mobile/ai/conversations/{conversation_id}", tags=["ai"])
+def delete_mobile_ai_conversation(conversation_id: str, request: Request) -> dict[str, object]:
+    try:
+        conversation = ai_service.conversations.update_conversation(
+            _request_user_id(request),
+            conversation_id,
+            status="archived",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"archived": True, "conversation": conversation}
+
+
+@app.get("/mobile/navigation/preferences", tags=["mobile"])
+def mobile_navigation_preferences(request: Request) -> dict[str, object]:
+    available_ids = [item["id"] for item in _MOBILE_NAVIGATION_DESTINATIONS]
+    return ai_service.conversations.get_navigation_preferences(
+        _request_user_id(request),
+        available_ids,
+        _DEFAULT_MOBILE_NAVIGATION_IDS,
+    ) | {"available_destinations": _MOBILE_NAVIGATION_DESTINATIONS}
+
+
+@app.put("/mobile/navigation/preferences", tags=["mobile"])
+def save_mobile_navigation_preferences(
+    request_body: MobileNavigationPreferencesRequest,
+    request: Request,
+) -> dict[str, object]:
+    available_ids = [item["id"] for item in _MOBILE_NAVIGATION_DESTINATIONS]
+    try:
+        result = ai_service.conversations.save_navigation_preferences(
+            _request_user_id(request),
+            request_body.destination_ids,
+            available_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result | {"available_destinations": _MOBILE_NAVIGATION_DESTINATIONS}
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["ai"])

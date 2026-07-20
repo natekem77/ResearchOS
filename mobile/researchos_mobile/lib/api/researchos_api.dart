@@ -130,6 +130,52 @@ class ResearchOsApi {
     );
   }
 
+  Future<List<Map<String, dynamic>>> aiConversations() async {
+    final json = await _getMap('/mobile/ai/conversations');
+    return _jsonObjectList(json['conversations']);
+  }
+
+  Future<Map<String, dynamic>> createAiConversation({String? message}) {
+    return _postMap('/mobile/ai/conversations', {
+      if (message != null && message.trim().isNotEmpty)
+        'message': message.trim(),
+    });
+  }
+
+  Future<Map<String, dynamic>> getAiConversation(String conversationId) {
+    return _getMap(
+      '/mobile/ai/conversations/${Uri.encodeComponent(conversationId)}',
+    );
+  }
+
+  Future<Map<String, dynamic>> sendAiConversationMessage({
+    required String conversationId,
+    required String message,
+  }) {
+    return _postMap(
+      '/mobile/ai/conversations/${Uri.encodeComponent(conversationId)}/messages',
+      {'message': message},
+    );
+  }
+
+  Future<Map<String, dynamic>> archiveAiConversation(String conversationId) {
+    return _deleteMap(
+      '/mobile/ai/conversations/${Uri.encodeComponent(conversationId)}',
+    );
+  }
+
+  Future<Map<String, dynamic>> navigationPreferences() {
+    return _getMap('/mobile/navigation/preferences');
+  }
+
+  Future<Map<String, dynamic>> saveNavigationPreferences(
+    List<String> destinationIds,
+  ) {
+    return _putMap('/mobile/navigation/preferences', {
+      'destination_ids': destinationIds,
+    });
+  }
+
   Future<List<DashboardCard>> dashboardCards() async {
     final json = await _getMap('/mobile/dashboard');
     final cards = json['cards'];
@@ -1305,6 +1351,12 @@ class ResearchOsApi {
       throw ResearchOsApiException(
           'Request failed (${response.statusCode}): $path');
     }
+  }
+
+  Future<Map<String, dynamic>> _deleteMap(String path) async {
+    final uri = Uri.parse('${baseUrl.replaceAll(RegExp(r'/$'), '')}$path');
+    final response = await _client.delete(uri).timeout(requestTimeout);
+    return _decodeMapResponse(response, path: path);
   }
 
   Map<String, dynamic> _decodeMapResponse(http.Response response,
