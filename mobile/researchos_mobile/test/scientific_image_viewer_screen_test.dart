@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:researchos_mobile/screens/scientific_image_viewer_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+  });
+
   testWidgets('scientific viewer updates display controls and annotations',
       (tester) async {
     await tester.pumpWidget(
@@ -83,6 +88,46 @@ void main() {
 
     expect(find.text('Filename'), findsOneWidget);
     expect(find.text('cells.png'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('scientific viewer restores locally cached display settings',
+      (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: ScientificImageViewerScreen(
+          title: 'Image Viewer',
+          imageUrl: 'http://example.test/preview.png',
+          metadata: {'Filename': 'cells.png'},
+          assetId: 'imaging-asset:test',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.byType(DropdownButton<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Green').last);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Saved'), findsWidgets);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: ScientificImageViewerScreen(
+          title: 'Image Viewer',
+          imageUrl: 'http://example.test/preview.png',
+          metadata: {'Filename': 'cells.png'},
+          assetId: 'imaging-asset:test',
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Green'), findsWidgets);
+    await tester.tap(find.text('Reset Display'));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Grayscale'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 }

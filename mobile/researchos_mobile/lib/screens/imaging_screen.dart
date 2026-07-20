@@ -211,6 +211,8 @@ class _ImagingScreenState extends State<ImagingScreen> {
           imageUrl:
               widget.api.imagingAssetViewerImageUrl(asset['id'].toString()),
           metadata: metadata,
+          api: widget.api,
+          assetId: asset['id'].toString(),
         ),
       ),
     );
@@ -503,6 +505,8 @@ class _JobCardState extends State<_JobCard> {
                             'Size': _bytes(output['size_bytes']),
                             'Workflow provenance': output['metadata'],
                           },
+                          api: widget.api,
+                          outputId: output['id'].toString(),
                         ),
                       ),
                     );

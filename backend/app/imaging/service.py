@@ -24,6 +24,24 @@ from .workflows import list_workflows, validate_parameters, workflow_by_key
 
 
 ALLOWED_IMAGE_EXTENSIONS = {".tif", ".tiff", ".ome.tif", ".ome.tiff", ".png", ".jpg", ".jpeg", ".czi", ".lif", ".nd2"}
+SUPPORTED_LUTS = {
+    "Grayscale",
+    "Green",
+    "Red",
+    "Blue",
+    "Cyan",
+    "Magenta",
+    "Yellow",
+    "Orange",
+    "White",
+    "Fire",
+    "Ice",
+    "Viridis",
+    "Turbo",
+    "Inferno",
+    "Magma",
+    "Plasma",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -133,6 +151,30 @@ class ImagingService:
                     last_heartbeat TEXT NOT NULL,
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
+                CREATE TABLE IF NOT EXISTS imaging_display_profiles (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    asset_id TEXT,
+                    output_id TEXT,
+                    lut TEXT NOT NULL,
+                    brightness REAL NOT NULL,
+                    contrast REAL NOT NULL,
+                    gamma REAL NOT NULL,
+                    invert INTEGER NOT NULL,
+                    auto_contrast INTEGER NOT NULL,
+                    channel_settings_json TEXT NOT NULL DEFAULT '[]',
+                    comparison_settings_json TEXT,
+                    viewport_json TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CHECK ((asset_id IS NOT NULL AND output_id IS NULL) OR (asset_id IS NULL AND output_id IS NOT NULL))
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_imaging_display_profiles_asset
+                    ON imaging_display_profiles(user_id, asset_id)
+                    WHERE asset_id IS NOT NULL;
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_imaging_display_profiles_output
+                    ON imaging_display_profiles(user_id, output_id)
+                    WHERE output_id IS NOT NULL;
                 """
             )
 
@@ -510,6 +552,109 @@ class ImagingService:
             raise ImagingValidationError("Invalid imaging preview path.")
         return path, "image/png"
 
+    def get_display_profile(self, user_id: str, *, asset_id: str | None = None, output_id: str | None = None) -> dict[str, Any]:
+        self._validate_profile_target(user_id, asset_id=asset_id, output_id=output_id)
+        where = "asset_id = ?" if asset_id is not None else "output_id = ?"
+        target = asset_id if asset_id is not None else output_id
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT * FROM imaging_display_profiles WHERE user_id = ? AND {where}",
+                (user_id, target),
+            ).fetchone()
+        if row is None:
+            return _default_display_profile(asset_id=asset_id, output_id=output_id)
+        return self._display_profile_payload(row)
+
+    def save_display_profile(
+        self,
+        user_id: str,
+        profile: dict[str, Any],
+        *,
+        asset_id: str | None = None,
+        output_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._validate_profile_target(user_id, asset_id=asset_id, output_id=output_id)
+        clean = _validate_display_profile(profile, asset_id=asset_id, output_id=output_id)
+        profile_id = f"imaging-display-profile:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            if asset_id is not None:
+                connection.execute(
+                    """
+                    INSERT INTO imaging_display_profiles
+                        (id, user_id, asset_id, output_id, lut, brightness, contrast, gamma, invert, auto_contrast,
+                         channel_settings_json, comparison_settings_json, viewport_json)
+                    VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, asset_id) WHERE asset_id IS NOT NULL DO UPDATE SET
+                        lut = excluded.lut,
+                        brightness = excluded.brightness,
+                        contrast = excluded.contrast,
+                        gamma = excluded.gamma,
+                        invert = excluded.invert,
+                        auto_contrast = excluded.auto_contrast,
+                        channel_settings_json = excluded.channel_settings_json,
+                        comparison_settings_json = excluded.comparison_settings_json,
+                        viewport_json = excluded.viewport_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        profile_id,
+                        user_id,
+                        asset_id,
+                        clean["lut"],
+                        clean["brightness"],
+                        clean["contrast"],
+                        clean["gamma"],
+                        1 if clean["invert"] else 0,
+                        1 if clean["auto_contrast"] else 0,
+                        json.dumps(clean["channels"]),
+                        json.dumps(clean.get("comparison")),
+                        json.dumps(clean.get("viewport")),
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO imaging_display_profiles
+                        (id, user_id, asset_id, output_id, lut, brightness, contrast, gamma, invert, auto_contrast,
+                         channel_settings_json, comparison_settings_json, viewport_json)
+                    VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, output_id) WHERE output_id IS NOT NULL DO UPDATE SET
+                        lut = excluded.lut,
+                        brightness = excluded.brightness,
+                        contrast = excluded.contrast,
+                        gamma = excluded.gamma,
+                        invert = excluded.invert,
+                        auto_contrast = excluded.auto_contrast,
+                        channel_settings_json = excluded.channel_settings_json,
+                        comparison_settings_json = excluded.comparison_settings_json,
+                        viewport_json = excluded.viewport_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        profile_id,
+                        user_id,
+                        output_id,
+                        clean["lut"],
+                        clean["brightness"],
+                        clean["contrast"],
+                        clean["gamma"],
+                        1 if clean["invert"] else 0,
+                        1 if clean["auto_contrast"] else 0,
+                        json.dumps(clean["channels"]),
+                        json.dumps(clean.get("comparison")),
+                        json.dumps(clean.get("viewport")),
+                    ),
+                )
+        return self.get_display_profile(user_id, asset_id=asset_id, output_id=output_id)
+
+    def _validate_profile_target(self, user_id: str, *, asset_id: str | None, output_id: str | None) -> None:
+        if (asset_id is None) == (output_id is None):
+            raise ImagingValidationError("Display profile must target exactly one image.")
+        if asset_id is not None:
+            self.get_asset(user_id, asset_id)
+        else:
+            self.output_path(user_id, str(output_id))
+
     def record_worker_heartbeat(self, worker_id: str, status: str = "ready") -> dict[str, Any]:
         fiji_path = os.environ.get("MUNDI_FIJI_PATH", "")
         executable_found = bool(fiji_path and Path(fiji_path).exists())
@@ -574,6 +719,24 @@ class ImagingService:
     def _output_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         return dict(row) | {"metadata": json.loads(row["metadata_json"] or "{}")}
 
+    def _display_profile_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "asset_id": row["asset_id"],
+            "output_id": row["output_id"],
+            "lut": row["lut"],
+            "brightness": row["brightness"],
+            "contrast": row["contrast"],
+            "gamma": row["gamma"],
+            "invert": bool(row["invert"]),
+            "auto_contrast": bool(row["auto_contrast"]),
+            "channels": json.loads(row["channel_settings_json"] or "[]"),
+            "comparison": json.loads(row["comparison_settings_json"] or "null"),
+            "viewport": json.loads(row["viewport_json"] or "null"),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -606,6 +769,73 @@ def _basic_metadata(filename: str, data: bytes) -> dict[str, Any]:
 
 def _safe_error(exc: Exception) -> str:
     return str(exc).split("\n")[0][:240]
+
+
+def _default_display_profile(asset_id: str | None = None, output_id: str | None = None) -> dict[str, Any]:
+    return {
+        "id": None,
+        "asset_id": asset_id,
+        "output_id": output_id,
+        "lut": "Grayscale",
+        "brightness": 0.0,
+        "contrast": 1.0,
+        "gamma": 1.0,
+        "invert": False,
+        "auto_contrast": False,
+        "channels": [],
+        "comparison": None,
+        "viewport": None,
+    }
+
+
+def _validate_display_profile(profile: dict[str, Any], *, asset_id: str | None, output_id: str | None) -> dict[str, Any]:
+    lut = str(profile.get("lut") or "Grayscale")
+    if lut not in SUPPORTED_LUTS:
+        raise ImagingValidationError("Unsupported display LUT.")
+    brightness = _bounded_float(profile.get("brightness", 0), "brightness", -1, 1)
+    contrast = _bounded_float(profile.get("contrast", 1), "contrast", 0.2, 3)
+    gamma = _bounded_float(profile.get("gamma", 1), "gamma", 0.2, 3)
+    channels = profile.get("channels") or []
+    if not isinstance(channels, list):
+        raise ImagingValidationError("Channel settings must be a list.")
+    clean_channels = []
+    for channel in channels:
+        if not isinstance(channel, dict):
+            raise ImagingValidationError("Channel setting must be an object.")
+        channel_lut = str(channel.get("lut") or lut)
+        if channel_lut not in SUPPORTED_LUTS:
+            raise ImagingValidationError("Unsupported channel LUT.")
+        clean_channels.append(
+            {
+                "channel_index": int(channel.get("channel_index", 0)),
+                "visible": bool(channel.get("visible", True)),
+                "lut": channel_lut,
+                "opacity": _bounded_float(channel.get("opacity", 1), "channel opacity", 0, 1),
+            }
+        )
+    return {
+        "asset_id": asset_id,
+        "output_id": output_id,
+        "lut": lut,
+        "brightness": brightness,
+        "contrast": contrast,
+        "gamma": gamma,
+        "invert": bool(profile.get("invert", False)),
+        "auto_contrast": bool(profile.get("auto_contrast", False)),
+        "channels": clean_channels,
+        "comparison": profile.get("comparison"),
+        "viewport": profile.get("viewport"),
+    }
+
+
+def _bounded_float(value: object, label: str, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ImagingValidationError(f"Invalid {label}.") from exc
+    if number < minimum or number > maximum:
+        raise ImagingValidationError(f"{label} is outside the supported range.")
+    return number
 
 
 def _exception_diagnostics(exc: Exception) -> dict[str, object]:

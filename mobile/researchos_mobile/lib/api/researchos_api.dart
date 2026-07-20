@@ -258,6 +258,46 @@ class ResearchOsApi {
   String imagingAssetViewerImageUrl(String assetId) =>
       '$baseUrl/mobile/imaging/assets/${Uri.encodeComponent(assetId)}/viewer-image';
 
+  Future<Map<String, dynamic>> imagingAssetDisplayProfile(
+      String assetId) async {
+    final json = await _getMap(
+        '/mobile/imaging/assets/${Uri.encodeComponent(assetId)}/display-profile');
+    final profile = json['profile'];
+    return profile is Map<String, dynamic> ? profile : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> saveImagingAssetDisplayProfile(
+    String assetId,
+    Map<String, dynamic> profile,
+  ) async {
+    final json = await _putMap(
+      '/mobile/imaging/assets/${Uri.encodeComponent(assetId)}/display-profile',
+      profile,
+    );
+    final saved = json['profile'];
+    return saved is Map<String, dynamic> ? saved : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> imagingOutputDisplayProfile(
+      String outputId) async {
+    final json = await _getMap(
+        '/mobile/imaging/outputs/${Uri.encodeComponent(outputId)}/display-profile');
+    final profile = json['profile'];
+    return profile is Map<String, dynamic> ? profile : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> saveImagingOutputDisplayProfile(
+    String outputId,
+    Map<String, dynamic> profile,
+  ) async {
+    final json = await _putMap(
+      '/mobile/imaging/outputs/${Uri.encodeComponent(outputId)}/display-profile',
+      profile,
+    );
+    final saved = json['profile'];
+    return saved is Map<String, dynamic> ? saved : <String, dynamic>{};
+  }
+
   Future<List<DashboardCard>> dashboardCards() async {
     final json = await _getMap('/mobile/dashboard');
     final cards = json['cards'];

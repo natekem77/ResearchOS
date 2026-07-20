@@ -979,6 +979,18 @@ class MobileImagingJobRequest(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class MobileImagingDisplayProfileRequest(BaseModel):
+    lut: str = "Grayscale"
+    brightness: float = 0
+    contrast: float = 1
+    gamma: float = 1
+    invert: bool = False
+    auto_contrast: bool = False
+    channels: list[dict[str, object]] = Field(default_factory=list)
+    comparison: dict[str, object] | None = None
+    viewport: dict[str, object] | None = None
+
+
 class AssistantRequest(BaseModel):
     """Natural-language request for the scientific research assistant."""
 
@@ -5056,6 +5068,32 @@ def view_mobile_imaging_asset(asset_id: str, request: Request) -> FileResponse:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/mobile/imaging/assets/{asset_id}/display-profile", tags=["imaging"])
+def get_mobile_imaging_asset_display_profile(asset_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"profile": _imaging_service().get_display_profile(_request_user_id(request), asset_id=asset_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/mobile/imaging/assets/{asset_id}/display-profile", tags=["imaging"])
+def save_mobile_imaging_asset_display_profile(
+    asset_id: str,
+    request_body: MobileImagingDisplayProfileRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "profile": _imaging_service().save_display_profile(
+                _request_user_id(request),
+                request_body.model_dump(),
+                asset_id=asset_id,
+            )
+        }
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/mobile/imaging/workflows", tags=["imaging"])
 def list_mobile_imaging_workflows() -> dict[str, object]:
     return {"workflows": _imaging_service().list_workflows()}
@@ -5132,6 +5170,32 @@ def download_mobile_imaging_output(output_id: str, request: Request) -> FileResp
         return FileResponse(path)
     except ImagingValidationError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/outputs/{output_id}/display-profile", tags=["imaging"])
+def get_mobile_imaging_output_display_profile(output_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"profile": _imaging_service().get_display_profile(_request_user_id(request), output_id=output_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/mobile/imaging/outputs/{output_id}/display-profile", tags=["imaging"])
+def save_mobile_imaging_output_display_profile(
+    output_id: str,
+    request_body: MobileImagingDisplayProfileRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "profile": _imaging_service().save_display_profile(
+                _request_user_id(request),
+                request_body.model_dump(),
+                output_id=output_id,
+            )
+        }
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["ai"])

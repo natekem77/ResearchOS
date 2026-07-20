@@ -533,6 +533,22 @@ void main() {
             '/mobile/imaging/jobs/imaging-job%3Atest/measurements') {
           return http.Response(jsonEncode({'measurements': const []}), 200);
         }
+        if (request.url.path ==
+            '/mobile/imaging/assets/imaging-asset%3Atest/display-profile') {
+          return http.Response(
+              jsonEncode({
+                'profile': {'lut': 'Green'}
+              }),
+              200);
+        }
+        if (request.url.path ==
+            '/mobile/imaging/outputs/imaging-output%3Atest/display-profile') {
+          return http.Response(
+              jsonEncode({
+                'profile': {'lut': 'Magenta'}
+              }),
+              200);
+        }
         return http.Response('not found', 404);
       }),
     );
@@ -547,6 +563,14 @@ void main() {
     );
     await api.imagingOutputs('imaging-job:test');
     await api.imagingMeasurements('imaging-job:test');
+    await api.imagingAssetDisplayProfile('imaging-asset:test');
+    await api.saveImagingAssetDisplayProfile('imaging-asset:test', {
+      'lut': 'Green',
+    });
+    await api.imagingOutputDisplayProfile('imaging-output:test');
+    await api.saveImagingOutputDisplayProfile('imaging-output:test', {
+      'lut': 'Magenta',
+    });
 
     expect(
       api.imagingAssetViewerImageUrl('imaging-asset:test'),
@@ -565,6 +589,10 @@ void main() {
       'POST /mobile/imaging/jobs',
       'GET /mobile/imaging/jobs/imaging-job%3Atest/outputs',
       'GET /mobile/imaging/jobs/imaging-job%3Atest/measurements',
+      'GET /mobile/imaging/assets/imaging-asset%3Atest/display-profile',
+      'PUT /mobile/imaging/assets/imaging-asset%3Atest/display-profile',
+      'GET /mobile/imaging/outputs/imaging-output%3Atest/display-profile',
+      'PUT /mobile/imaging/outputs/imaging-output%3Atest/display-profile',
     ]);
   });
 

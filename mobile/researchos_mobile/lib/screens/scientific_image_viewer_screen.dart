@@ -1,7 +1,11 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
 
 class ScientificImageViewerScreen extends StatefulWidget {
@@ -11,12 +15,18 @@ class ScientificImageViewerScreen extends StatefulWidget {
     required this.imageUrl,
     required this.metadata,
     this.provenance,
+    this.api,
+    this.assetId,
+    this.outputId,
   });
 
   final String title;
   final String imageUrl;
   final Map<String, dynamic> metadata;
   final Map<String, dynamic>? provenance;
+  final ResearchOsApi? api;
+  final String? assetId;
+  final String? outputId;
 
   @override
   State<ScientificImageViewerScreen> createState() =>
@@ -30,11 +40,14 @@ class _ScientificImageViewerScreenState
   double _contrast = 1;
   double _gamma = 1;
   bool _invert = false;
+  bool _autoContrast = false;
   String _lut = 'Grayscale';
   bool _displayExpanded = true;
   bool _metadataExpanded = false;
   bool _compare = false;
   double _comparePosition = 0.5;
+  Timer? _saveDebounce;
+  String _saveStatus = 'Saved';
   final List<_ViewerAnnotation> _annotations = <_ViewerAnnotation>[];
   final List<_ViewerMeasurement> _measurements = <_ViewerMeasurement>[];
 
@@ -58,18 +71,29 @@ class _ScientificImageViewerScreenState
   ];
 
   @override
+  void initState() {
+    super.initState();
+    unawaited(_loadDisplayProfile());
+  }
+
+  @override
   void dispose() {
+    _saveDebounce?.cancel();
+    unawaited(_saveNow());
     _transform.dispose();
     super.dispose();
   }
 
   void _resetDisplay() {
-    setState(() {
+    _updateDisplay(() {
       _brightness = 0;
       _contrast = 1;
       _gamma = 1;
       _invert = false;
+      _autoContrast = false;
       _lut = 'Grayscale';
+      _compare = false;
+      _comparePosition = 0.5;
     });
   }
 
@@ -104,6 +128,117 @@ class _ScientificImageViewerScreenState
     setState(() {
       _measurements.add(_ViewerMeasurement(type));
     });
+  }
+
+  void _updateDisplay(VoidCallback update) {
+    setState(update);
+    _scheduleSave();
+  }
+
+  Future<void> _loadDisplayProfile() async {
+    final cacheKey = _profileCacheKey;
+    if (cacheKey == null) return;
+    final preferences = await SharedPreferences.getInstance();
+    final cached = preferences.getString(cacheKey);
+    if (cached != null && mounted) {
+      _applyProfile(jsonDecode(cached) as Map<String, dynamic>);
+    }
+    final api = widget.api;
+    if (api == null) return;
+    try {
+      final profile = widget.assetId != null
+          ? await api.imagingAssetDisplayProfile(widget.assetId!)
+          : await api.imagingOutputDisplayProfile(widget.outputId!);
+      await preferences.setString(cacheKey, jsonEncode(profile));
+      if (mounted) _applyProfile(profile);
+    } catch (_) {
+      // Cached display state remains usable offline; retry happens on next save.
+    }
+  }
+
+  void _applyProfile(Map<String, dynamic> profile) {
+    final lut = profile['lut']?.toString() ?? 'Grayscale';
+    setState(() {
+      _lut = _luts.contains(lut) ? lut : 'Grayscale';
+      _brightness = _doubleInRange(profile['brightness'], -1, 1, 0);
+      _contrast = _doubleInRange(profile['contrast'], 0.2, 3, 1);
+      _gamma = _doubleInRange(profile['gamma'], 0.2, 3, 1);
+      _invert = profile['invert'] == true;
+      _autoContrast = profile['auto_contrast'] == true;
+      final comparison = profile['comparison'];
+      if (comparison is Map) {
+        _compare = comparison['enabled'] == true;
+        _comparePosition =
+            _doubleInRange(comparison['position'], 0, 1, _comparePosition);
+      }
+      _saveStatus = 'Saved';
+    });
+  }
+
+  void _scheduleSave() {
+    final cacheKey = _profileCacheKey;
+    if (cacheKey == null) return;
+    setState(() {
+      _saveStatus = 'Saving...';
+    });
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 500), () {
+      unawaited(_saveNow());
+    });
+  }
+
+  Future<void> _saveNow() async {
+    final cacheKey = _profileCacheKey;
+    if (cacheKey == null) return;
+    final profile = _profilePayload();
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setString(cacheKey, jsonEncode(profile));
+    final api = widget.api;
+    if (api == null) {
+      if (mounted) setState(() => _saveStatus = 'Saved');
+      return;
+    }
+    try {
+      if (widget.assetId != null) {
+        await api.saveImagingAssetDisplayProfile(widget.assetId!, profile);
+      } else {
+        await api.saveImagingOutputDisplayProfile(widget.outputId!, profile);
+      }
+      if (mounted) setState(() => _saveStatus = 'Saved');
+    } catch (_) {
+      if (mounted) setState(() => _saveStatus = 'Save failed — Retry');
+    }
+  }
+
+  Map<String, dynamic> _profilePayload() => {
+        'lut': _lut,
+        'brightness': _brightness,
+        'contrast': _contrast,
+        'gamma': _gamma,
+        'invert': _invert,
+        'auto_contrast': _autoContrast,
+        'channels': [
+          {
+            'channel_index': 0,
+            'visible': true,
+            'lut': _lut,
+            'opacity': 1.0,
+          }
+        ],
+        'comparison': {
+          'enabled': _compare,
+          'position': _comparePosition,
+        },
+      };
+
+  String? get _profileCacheKey {
+    if (widget.assetId != null) {
+      return 'imaging.display.asset.${widget.assetId}';
+    }
+    if (widget.outputId != null) {
+      return 'imaging.display.output.${widget.outputId}';
+    }
+    return null;
   }
 
   @override
@@ -181,24 +316,27 @@ class _ScientificImageViewerScreenState
             measurementCount: _measurements.length,
             metadata: widget.metadata,
             provenance: widget.provenance,
+            saveStatus: _saveStatus,
             onDisplayExpanded: (value) =>
                 setState(() => _displayExpanded = value),
             onMetadataExpanded: (value) =>
                 setState(() => _metadataExpanded = value),
-            onBrightness: (value) => setState(() => _brightness = value),
-            onContrast: (value) => setState(() => _contrast = value),
-            onGamma: (value) => setState(() => _gamma = value),
-            onInvert: (value) => setState(() => _invert = value),
-            onLut: (value) => setState(() => _lut = value),
-            onAutoContrast: () => setState(() {
+            onBrightness: (value) => _updateDisplay(() => _brightness = value),
+            onContrast: (value) => _updateDisplay(() => _contrast = value),
+            onGamma: (value) => _updateDisplay(() => _gamma = value),
+            onInvert: (value) => _updateDisplay(() => _invert = value),
+            onLut: (value) => _updateDisplay(() => _lut = value),
+            onAutoContrast: () => _updateDisplay(() {
               _brightness = 0.05;
               _contrast = 1.35;
               _gamma = 1;
+              _autoContrast = true;
             }),
             onReset: _resetDisplay,
-            onCompare: (value) => setState(() => _compare = value),
+            onCompare: (value) => _updateDisplay(() => _compare = value),
             onComparePosition: (value) =>
-                setState(() => _comparePosition = value),
+                _updateDisplay(() => _comparePosition = value),
+            onRetrySave: () => unawaited(_saveNow()),
             onAnnotation: _addAnnotation,
             onMeasurement: _addMeasurement,
           ),
@@ -311,6 +449,7 @@ class _ViewerControls extends StatelessWidget {
     required this.measurementCount,
     required this.metadata,
     required this.provenance,
+    required this.saveStatus,
     required this.onDisplayExpanded,
     required this.onMetadataExpanded,
     required this.onBrightness,
@@ -322,6 +461,7 @@ class _ViewerControls extends StatelessWidget {
     required this.onReset,
     required this.onCompare,
     required this.onComparePosition,
+    required this.onRetrySave,
     required this.onAnnotation,
     required this.onMeasurement,
   });
@@ -340,6 +480,7 @@ class _ViewerControls extends StatelessWidget {
   final int measurementCount;
   final Map<String, dynamic> metadata;
   final Map<String, dynamic>? provenance;
+  final String saveStatus;
   final ValueChanged<bool> onDisplayExpanded;
   final ValueChanged<bool> onMetadataExpanded;
   final ValueChanged<double> onBrightness;
@@ -351,6 +492,7 @@ class _ViewerControls extends StatelessWidget {
   final VoidCallback onReset;
   final ValueChanged<bool> onCompare;
   final ValueChanged<double> onComparePosition;
+  final VoidCallback onRetrySave;
   final ValueChanged<String> onAnnotation;
   final ValueChanged<String> onMeasurement;
 
@@ -417,6 +559,22 @@ class _ViewerControls extends StatelessWidget {
                       ],
                     ),
                     const _Histogram(),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: ResearchOsSpacing.md,
+                        vertical: ResearchOsSpacing.xs,
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(child: Text(saveStatus)),
+                          if (saveStatus.startsWith('Save failed'))
+                            TextButton(
+                              onPressed: onRetrySave,
+                              child: const Text('Retry'),
+                            ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
                 ExpansionTile(
@@ -676,4 +834,15 @@ Color _lutColor(String lut) {
     'Plasma' => const Color(0xffcc4778),
     _ => Colors.white,
   };
+}
+
+double _doubleInRange(
+  Object? value,
+  double min,
+  double max,
+  double fallback,
+) {
+  final parsed = double.tryParse(value?.toString() ?? '');
+  if (parsed == null || parsed < min || parsed > max) return fallback;
+  return parsed;
 }

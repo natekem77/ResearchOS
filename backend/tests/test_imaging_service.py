@@ -97,6 +97,55 @@ class ImagingServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ImagingValidationError, "No displayable preview"):
                 service.viewer_image_path("user:pi-owner", asset["id"])
 
+    def test_display_profile_create_update_is_user_specific_and_no_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="preview.png",
+                data=_tiny_png(),
+                mime_type="image/png",
+            )
+            saved = service.save_display_profile(
+                "user:pi-owner",
+                {"lut": "Green", "brightness": 0.1, "contrast": 1.2, "gamma": 0.9, "invert": True},
+                asset_id=asset["id"],
+            )
+            updated = service.save_display_profile(
+                "user:pi-owner",
+                {"lut": "Magenta", "brightness": 0.2, "contrast": 1.4, "gamma": 1.1},
+                asset_id=asset["id"],
+            )
+            other_user = service.create_asset(
+                user_id="user:other",
+                filename="preview.png",
+                data=_tiny_png(),
+                mime_type="image/png",
+            )
+            other_default = service.get_display_profile("user:other", asset_id=other_user["id"])
+            jobs = service.list_jobs("user:pi-owner")
+
+        self.assertEqual(saved["lut"], "Green")
+        self.assertEqual(updated["lut"], "Magenta")
+        self.assertEqual(updated["brightness"], 0.2)
+        self.assertEqual(other_default["lut"], "Grayscale")
+        self.assertEqual(jobs, [])
+
+    def test_display_profile_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="preview.png",
+                data=_tiny_png(),
+                mime_type="image/png",
+            )
+
+            with self.assertRaisesRegex(ImagingValidationError, "Unsupported display LUT"):
+                service.save_display_profile("user:pi-owner", {"lut": "NotALut"}, asset_id=asset["id"])
+            with self.assertRaisesRegex(ImagingValidationError, "brightness"):
+                service.save_display_profile("user:pi-owner", {"brightness": 5}, asset_id=asset["id"])
+
     def test_generate_preview_job_fails_explicitly_without_fiji(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = ImagingService(self._settings(tmpdir))
