@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:researchos_mobile/ai/ai_models.dart';
 import 'package:researchos_mobile/api/researchos_api.dart';
 
 void main() {
@@ -580,8 +581,12 @@ void main() {
       }),
     );
 
-    expect((await api.aiProviders()).single.displayName, 'OpenAI');
-    expect((await api.aiProviderConfigs()).single.isPreferred, isTrue);
+    final providerSpecs = await api.aiProviders();
+    final providerConfigs = await api.aiProviderConfigs();
+    expect(providerSpecs, isA<List<MundiAiProviderSpec>>());
+    expect(providerSpecs.single.displayName, 'OpenAI');
+    expect(providerConfigs, isA<List<MundiAiProviderConfig>>());
+    expect(providerConfigs.single.isPreferred, isTrue);
     await api.saveAiProviderConfig(
       provider: 'openai',
       displayName: 'OpenAI',

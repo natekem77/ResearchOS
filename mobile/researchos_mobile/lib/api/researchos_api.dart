@@ -39,22 +39,20 @@ class ResearchOsApi {
 
   Future<List<MundiAiProviderSpec>> aiProviders() async {
     final json = await _getMap('/ai/providers');
-    final providers = json['providers'];
-    if (providers is! List) return const [];
-    return providers
-        .whereType<Map<String, dynamic>>()
-        .map(MundiAiProviderSpec.fromJson)
-        .toList();
+    return _jsonObjectList(json['providers'])
+        .map(
+          (Map<String, dynamic> item) => MundiAiProviderSpec.fromJson(item),
+        )
+        .toList(growable: false);
   }
 
   Future<List<MundiAiProviderConfig>> aiProviderConfigs() async {
     final json = await _getMap('/ai/provider-configs');
-    final providers = json['providers'];
-    if (providers is! List) return const [];
-    return providers
-        .whereType<Map<String, dynamic>>()
-        .map(MundiAiProviderConfig.fromJson)
-        .toList();
+    return _jsonObjectList(json['providers'])
+        .map(
+          (Map<String, dynamic> item) => MundiAiProviderConfig.fromJson(item),
+        )
+        .toList(growable: false);
   }
 
   Future<MundiAiProviderConfig> saveAiProviderConfig({
@@ -95,12 +93,9 @@ class ResearchOsApi {
 
   Future<List<MundiAiSkill>> aiSkills() async {
     final json = await _getMap('/ai/skills');
-    final skills = json['skills'];
-    if (skills is! List) return const [];
-    return skills
-        .whereType<Map<String, dynamic>>()
-        .map(MundiAiSkill.fromJson)
-        .toList();
+    return _jsonObjectList(json['skills'])
+        .map((Map<String, dynamic> item) => MundiAiSkill.fromJson(item))
+        .toList(growable: false);
   }
 
   Future<MundiAiSkillRun> runAiSkill(
@@ -1318,6 +1313,23 @@ class ResearchOsApi {
     }
     return decoded;
   }
+}
+
+List<Map<String, dynamic>> _jsonObjectList(Object? value) {
+  if (value is! List) return const <Map<String, dynamic>>[];
+  final result = <Map<String, dynamic>>[];
+  for (final item in value) {
+    if (item is Map<String, dynamic>) {
+      result.add(item);
+    } else if (item is Map) {
+      result.add(
+        item.map(
+          (key, value) => MapEntry(key.toString(), value),
+        ),
+      );
+    }
+  }
+  return result;
 }
 
 MediaType _mediaType(String mimeType) {

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../ai/ai_models.dart';
+import '../ai/ai_provider.dart';
 import '../ai/ai_service.dart';
 import '../api/researchos_api.dart';
 import '../brand/mundi_brand.dart';
@@ -397,7 +399,7 @@ class _AiProvidersCard extends StatefulWidget {
 
 class _AiProvidersCardState extends State<_AiProvidersCard> {
   late final MundiAiService _ai = MundiAiService(widget.api);
-  late Future<dynamic> _future;
+  late Future<MundiAiProviderState> _future;
   final _endpoint = TextEditingController();
   final _model = TextEditingController(text: 'gpt-4o-mini');
   final _apiKey = TextEditingController();
@@ -426,6 +428,26 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
     setState(() {
       _future = _ai.providerState();
     });
+  }
+
+  MundiAiProviderSpec? _providerById(
+    List<MundiAiProviderSpec> providers,
+    String providerId,
+  ) {
+    final index = providers.indexWhere(
+      (MundiAiProviderSpec provider) => provider.providerId == providerId,
+    );
+    return index < 0 ? null : providers[index];
+  }
+
+  MundiAiProviderConfig? _preferredConfig(
+    List<MundiAiProviderConfig> configs,
+  ) {
+    final index = configs.indexWhere(
+      (MundiAiProviderConfig config) => config.isPreferred,
+    );
+    if (index >= 0) return configs[index];
+    return configs.isEmpty ? null : configs.first;
   }
 
   Future<void> _testAndSave({required bool save}) async {
@@ -478,16 +500,19 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<dynamic>(
+    return FutureBuilder<MundiAiProviderState>(
       future: _future,
       builder: (context, snapshot) {
-        final state = snapshot.data;
-        final providers = state?.availableProviders ?? const [];
-        final configs = state?.configuredProviders ?? const [];
+        final MundiAiProviderState? state = snapshot.data;
+        final List<MundiAiProviderSpec> providers =
+            state?.availableProviders ?? const <MundiAiProviderSpec>[];
+        final List<MundiAiProviderConfig> configs =
+            state?.configuredProviders ?? const <MundiAiProviderConfig>[];
         if (providers.isNotEmpty &&
-            !providers.any((item) => item.providerId == _provider)) {
+            _providerById(providers, _provider) == null) {
           _provider = providers.first.providerId;
         }
+        final preferredConfig = _preferredConfig(configs);
         return ResearchOsCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -511,7 +536,7 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
               Text(
                 configs.isEmpty
                     ? 'No provider is required. Add one when AI-assisted features should use a model.'
-                    : '${configs.length} configured provider${configs.length == 1 ? '' : 's'}. Preferred: ${configs.firstWhere((item) => item.isPreferred, orElse: () => configs.first).displayName}.',
+                    : '${configs.length} configured provider${configs.length == 1 ? '' : 's'}. Preferred: ${preferredConfig?.displayName ?? 'None'}.',
               ),
               const SizedBox(height: ResearchOsSpacing.md),
               DropdownButtonFormField<String>(
@@ -526,10 +551,8 @@ class _AiProvidersCardState extends State<_AiProvidersCard> {
                 ],
                 onChanged: (value) {
                   if (value == null) return;
-                  final provider = providers.firstWhere(
-                    (item) => item.providerId == value,
-                    orElse: () => providers.first,
-                  );
+                  final provider = _providerById(providers, value);
+                  if (provider == null) return;
                   setState(() {
                     _provider = value;
                     _endpoint.text = provider.defaultEndpoint ?? '';
