@@ -79,6 +79,7 @@ from app.general_experiments import (
     SamplePlanningService,
     append_markdown_to_notebook_delta,
 )
+from app.imaging import ImagingService, ImagingValidationError
 from app.ingestion import ingest_documents, ingest_literature, ingest_markdown_folder
 from app.inventory import (
     DEFAULT_PURCHASE_IMPORT_TEMPLATES,
@@ -291,6 +292,10 @@ def _general_experiment_service() -> GeneralExperimentService:
 
 def _protocol_hub_service() -> ProtocolHubService:
     return ProtocolHubService(settings=settings)
+
+
+def _imaging_service() -> ImagingService:
+    return ImagingService(settings=settings)
 
 
 def _research_object_service() -> ResearchObjectService:
@@ -966,6 +971,12 @@ class MobileAiConversationUpdateRequest(BaseModel):
 
 class MobileNavigationPreferencesRequest(BaseModel):
     destination_ids: list[str]
+
+
+class MobileImagingJobRequest(BaseModel):
+    asset_id: str
+    workflow_key: str
+    parameters: dict[str, object] = Field(default_factory=dict)
 
 
 class AssistantRequest(BaseModel):
@@ -4856,6 +4867,7 @@ _MOBILE_NAVIGATION_DESTINATIONS = [
     {"id": "bench", "label": "Bench", "screen_index": 2},
     {"id": "search", "label": "Search", "screen_index": 7},
     {"id": "chat", "label": "Chat", "screen_index": 13},
+    {"id": "imaging", "label": "Imaging", "screen_index": 16},
     {"id": "settings", "label": "Settings", "screen_index": 9},
 ]
 _DEFAULT_MOBILE_NAVIGATION_IDS = ["home", "experiments", "protocols", "ask_mundi", "settings"]
@@ -4981,6 +4993,126 @@ def save_mobile_navigation_preferences(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return result | {"available_destinations": _MOBILE_NAVIGATION_DESTINATIONS}
+
+
+@app.post("/mobile/imaging/assets", tags=["imaging"])
+async def upload_mobile_imaging_asset(
+    request: Request,
+    file: UploadFile = File(...),
+    experiment_id: str | None = Form(default=None),
+) -> dict[str, object]:
+    try:
+        data = await file.read()
+        asset = _imaging_service().create_asset(
+            user_id=_request_user_id(request),
+            filename=file.filename or "image",
+            data=data,
+            mime_type=file.content_type,
+            experiment_id=experiment_id,
+        )
+        return {"asset": asset}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/assets", tags=["imaging"])
+def list_mobile_imaging_assets(request: Request) -> dict[str, object]:
+    return {"assets": _imaging_service().list_assets(_request_user_id(request))}
+
+
+@app.get("/mobile/imaging/assets/{asset_id}", tags=["imaging"])
+def get_mobile_imaging_asset(asset_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"asset": _imaging_service().get_asset(_request_user_id(request), asset_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/mobile/imaging/assets/{asset_id}", tags=["imaging"])
+def delete_mobile_imaging_asset(asset_id: str, request: Request) -> dict[str, object]:
+    try:
+        _imaging_service().delete_asset(_request_user_id(request), asset_id)
+        return {"deleted": True}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/workflows", tags=["imaging"])
+def list_mobile_imaging_workflows() -> dict[str, object]:
+    return {"workflows": _imaging_service().list_workflows()}
+
+
+@app.post("/mobile/imaging/jobs", tags=["imaging"])
+def create_mobile_imaging_job(request_body: MobileImagingJobRequest, request: Request) -> dict[str, object]:
+    try:
+        job = _imaging_service().create_job(
+            user_id=_request_user_id(request),
+            asset_id=request_body.asset_id,
+            workflow_key=request_body.workflow_key,
+            parameters=dict(request_body.parameters),
+        )
+        return {"job": job}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/jobs", tags=["imaging"])
+def list_mobile_imaging_jobs(request: Request) -> dict[str, object]:
+    return {"jobs": _imaging_service().list_jobs(_request_user_id(request))}
+
+
+@app.get("/mobile/imaging/jobs/{job_id}", tags=["imaging"])
+def get_mobile_imaging_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"job": _imaging_service().get_job(_request_user_id(request), job_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/mobile/imaging/jobs/{job_id}/cancel", tags=["imaging"])
+def cancel_mobile_imaging_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"job": _imaging_service().cancel_job(_request_user_id(request), job_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/mobile/imaging/jobs/{job_id}/retry", tags=["imaging"])
+def retry_mobile_imaging_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"job": _imaging_service().retry_job(_request_user_id(request), job_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/jobs/{job_id}/outputs", tags=["imaging"])
+def list_mobile_imaging_outputs(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"outputs": _imaging_service().outputs_for_job(_request_user_id(request), job_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/jobs/{job_id}/measurements", tags=["imaging"])
+def list_mobile_imaging_measurements(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"measurements": _imaging_service().measurements_for_job(_request_user_id(request), job_id)}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/worker-status", tags=["imaging"])
+def mobile_imaging_worker_status() -> dict[str, object]:
+    return {"worker": _imaging_service().worker_status()}
+
+
+@app.get("/mobile/imaging/outputs/{output_id}/download", tags=["imaging"])
+def download_mobile_imaging_output(output_id: str, request: Request) -> FileResponse:
+    try:
+        path = _imaging_service().output_path(_request_user_id(request), output_id)
+        return FileResponse(path)
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["ai"])

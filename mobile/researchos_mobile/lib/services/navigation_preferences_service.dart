@@ -80,6 +80,13 @@ const mundiDestinations = <MundiDestination>[
     selectedIcon: Icons.chat_bubble,
   ),
   MundiDestination(
+    id: 'imaging',
+    label: 'Imaging',
+    screenIndex: 16,
+    icon: Icons.photo_library_outlined,
+    selectedIcon: Icons.photo_library,
+  ),
+  MundiDestination(
     id: 'settings',
     label: 'Settings',
     screenIndex: 9,

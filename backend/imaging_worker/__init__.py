@@ -1,0 +1,2 @@
+"""Mundi imaging worker package."""
+

@@ -15,6 +15,7 @@ import 'screens/copilot_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/experiments_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/imaging_screen.dart';
 import 'screens/intelligence_feed_screen.dart';
 import 'screens/inventory_screen.dart';
 import 'screens/morning_brief_screen.dart';
@@ -370,6 +371,7 @@ class ResearchOsHome extends StatelessWidget {
       ChatsScreen(api: api),
       ProtocolHubScreen(api: api),
       AskMundiScreen(api: api),
+      ImagingScreen(api: api),
     ];
     final titles = [
       'Home',
@@ -388,6 +390,7 @@ class ResearchOsHome extends StatelessWidget {
       'Chats',
       'Protocols',
       'Ask Mundi',
+      'Imaging',
     ];
     return ResearchOsScaffold(
       title: titles[selectedIndex],

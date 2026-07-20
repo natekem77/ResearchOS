@@ -495,6 +495,70 @@ void main() {
     ]);
   });
 
+  test('imaging API methods use mobile imaging routes', () async {
+    final requests = <http.Request>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        requests.add(request);
+        if (request.url.path == '/mobile/imaging/assets') {
+          return http.Response(jsonEncode({'assets': const []}), 200);
+        }
+        if (request.url.path == '/mobile/imaging/jobs') {
+          if (request.method == 'POST') {
+            return http.Response(
+              jsonEncode({
+                'job': {'id': 'imaging-job:test'}
+              }),
+              200,
+            );
+          }
+          return http.Response(jsonEncode({'jobs': const []}), 200);
+        }
+        if (request.url.path == '/mobile/imaging/workflows') {
+          return http.Response(jsonEncode({'workflows': const []}), 200);
+        }
+        if (request.url.path == '/mobile/imaging/worker-status') {
+          return http.Response(
+              jsonEncode({
+                'worker': {'status': 'ready'}
+              }),
+              200);
+        }
+        if (request.url.path ==
+            '/mobile/imaging/jobs/imaging-job%3Atest/outputs') {
+          return http.Response(jsonEncode({'outputs': const []}), 200);
+        }
+        if (request.url.path ==
+            '/mobile/imaging/jobs/imaging-job%3Atest/measurements') {
+          return http.Response(jsonEncode({'measurements': const []}), 200);
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await api.imagingAssets();
+    await api.imagingJobs();
+    await api.imagingWorkflows();
+    await api.imagingWorkerStatus();
+    await api.createImagingJob(
+      assetId: 'imaging-asset:test',
+      workflowKey: 'generate_preview',
+    );
+    await api.imagingOutputs('imaging-job:test');
+    await api.imagingMeasurements('imaging-job:test');
+
+    expect(requests.map((request) => '${request.method} ${request.url.path}'), [
+      'GET /mobile/imaging/assets',
+      'GET /mobile/imaging/jobs',
+      'GET /mobile/imaging/workflows',
+      'GET /mobile/imaging/worker-status',
+      'POST /mobile/imaging/jobs',
+      'GET /mobile/imaging/jobs/imaging-job%3Atest/outputs',
+      'GET /mobile/imaging/jobs/imaging-job%3Atest/measurements',
+    ]);
+  });
+
   test('approveProtocolHubExtraction posts explicit confirmation', () async {
     late http.Request captured;
     final api = ResearchOsApi(

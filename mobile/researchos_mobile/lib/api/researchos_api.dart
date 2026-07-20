@@ -194,6 +194,64 @@ class ResearchOsApi {
     });
   }
 
+  Future<List<Map<String, dynamic>>> imagingAssets() async {
+    final json = await _getMap('/mobile/imaging/assets');
+    return _jsonObjectList(json['assets']);
+  }
+
+  Future<List<Map<String, dynamic>>> imagingJobs() async {
+    final json = await _getMap('/mobile/imaging/jobs');
+    return _jsonObjectList(json['jobs']);
+  }
+
+  Future<List<Map<String, dynamic>>> imagingWorkflows() async {
+    final json = await _getMap('/mobile/imaging/workflows');
+    return _jsonObjectList(json['workflows']);
+  }
+
+  Future<Map<String, dynamic>> imagingWorkerStatus() {
+    return _getMap('/mobile/imaging/worker-status');
+  }
+
+  Future<Map<String, dynamic>> uploadImagingAsset(File file) async {
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('$baseUrl/mobile/imaging/assets'),
+    );
+    request.files.add(await http.MultipartFile.fromPath('file', file.path));
+    final streamed = await _client.send(request).timeout(requestTimeout);
+    final response =
+        await http.Response.fromStream(streamed).timeout(requestTimeout);
+    return _decodeMapResponse(response);
+  }
+
+  Future<Map<String, dynamic>> createImagingJob({
+    required String assetId,
+    required String workflowKey,
+    Map<String, dynamic> parameters = const {},
+  }) {
+    return _postMap('/mobile/imaging/jobs', {
+      'asset_id': assetId,
+      'workflow_key': workflowKey,
+      'parameters': parameters,
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> imagingOutputs(String jobId) async {
+    final json = await _getMap(
+        '/mobile/imaging/jobs/${Uri.encodeComponent(jobId)}/outputs');
+    return _jsonObjectList(json['outputs']);
+  }
+
+  Future<List<Map<String, dynamic>>> imagingMeasurements(String jobId) async {
+    final json = await _getMap(
+        '/mobile/imaging/jobs/${Uri.encodeComponent(jobId)}/measurements');
+    return _jsonObjectList(json['measurements']);
+  }
+
+  String imagingOutputDownloadUrl(String outputId) =>
+      '$baseUrl/mobile/imaging/outputs/${Uri.encodeComponent(outputId)}/download';
+
   Future<List<DashboardCard>> dashboardCards() async {
     final json = await _getMap('/mobile/dashboard');
     final cards = json['cards'];

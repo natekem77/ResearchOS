@@ -37,6 +37,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('All Destinations'), findsOneWidget);
+    expect(find.text('Imaging', skipOffstage: false), findsOneWidget);
     expect(find.text('Customize Navigation'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
