@@ -9,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
 import '../widgets/rich_scientific_notebook_editor.dart';
+import 'scientific_image_viewer_screen.dart';
 
 class GeneralExperimentWorkspaceScreen extends StatefulWidget {
   const GeneralExperimentWorkspaceScreen({
@@ -386,6 +387,138 @@ class _GeneralExperimentWorkspaceScreenState
     }
   }
 
+  Future<Map<String, dynamic>?> _pickNotebookImagingReference(
+    NotebookImagingReferenceKind kind,
+  ) async {
+    if (kind == NotebookImagingReferenceKind.dataset) {
+      final assets = await widget.api.imagingAssets();
+      if (!mounted) return null;
+      final asset = await _showImagingAssetPicker(assets);
+      if (asset == null) return null;
+      final assetId = asset['id'].toString();
+      await widget.api.createImagingReference(
+        notebookId: _documentId,
+        experimentId: widget.experimentId,
+        assetId: assetId,
+        referenceType: 'linked',
+        label: _imagingAssetName(asset),
+      );
+      return {
+        'embed_type': 'mundi_imaging_reference',
+        'reference_kind': 'dataset',
+        'asset_id': assetId,
+        'display_name': _imagingAssetName(asset),
+        'dataset_name': _imagingAssetName(asset),
+        'thumbnail_url': widget.api.imagingAssetViewerImageUrl(assetId),
+        'viewer_url': widget.api.imagingAssetViewerImageUrl(assetId),
+        'created_at': asset['created_at'],
+      };
+    }
+    final jobs = await widget.api.imagingJobs();
+    final completedJobs = jobs
+        .where((job) => job['status']?.toString() == 'complete')
+        .toList(growable: false);
+    final outputs = <Map<String, dynamic>>[];
+    for (final job in completedJobs) {
+      final jobOutputs = await widget.api.imagingOutputs(job['id'].toString());
+      for (final output in jobOutputs) {
+        if ((output['mime_type']?.toString() ?? '').startsWith('image/')) {
+          outputs.add({
+            ...output,
+            'asset_id': job['asset_id'],
+            'workflow_id': job['workflow_id'],
+          });
+        }
+      }
+    }
+    if (!mounted) return null;
+    final output = await _showImagingOutputPicker(outputs);
+    if (output == null) return null;
+    final outputId = output['id'].toString();
+    await widget.api.createImagingReference(
+      notebookId: _documentId,
+      experimentId: widget.experimentId,
+      outputId: outputId,
+      referenceType: 'linked',
+      label: _imagingOutputName(output),
+    );
+    return {
+      'embed_type': 'mundi_imaging_reference',
+      'reference_kind': 'result',
+      'asset_id': output['asset_id'],
+      'output_id': outputId,
+      'display_name': _imagingOutputName(output),
+      'dataset_name': output['asset_id']?.toString(),
+      'processing_type': output['workflow_id']?.toString() ??
+          output['output_type']?.toString(),
+      'thumbnail_url': widget.api.imagingOutputDownloadUrl(outputId),
+      'viewer_url': widget.api.imagingOutputDownloadUrl(outputId),
+      'created_at': output['created_at'],
+    };
+  }
+
+  Future<Map<String, dynamic>?> _showImagingAssetPicker(
+    List<Map<String, dynamic>> assets,
+  ) {
+    return showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => _NotebookImagingPickerSheet(
+        title: 'Imaging Dataset',
+        items: assets,
+        titleFor: _imagingAssetName,
+        subtitleFor: (asset) => [
+          asset['format']?.toString() ?? 'format unknown',
+          asset['created_at']?.toString() ?? '',
+        ].where((part) => part.isNotEmpty).join(' • '),
+      ),
+    );
+  }
+
+  Future<Map<String, dynamic>?> _showImagingOutputPicker(
+    List<Map<String, dynamic>> outputs,
+  ) {
+    return showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => _NotebookImagingPickerSheet(
+        title: 'Imaging Result',
+        items: outputs,
+        titleFor: _imagingOutputName,
+        subtitleFor: (output) => [
+          output['workflow_id']?.toString() ??
+              output['output_type']?.toString() ??
+              'Output',
+          output['created_at']?.toString() ?? '',
+        ].where((part) => part.isNotEmpty).join(' • '),
+      ),
+    );
+  }
+
+  void _openNotebookImagingReference(Map<String, dynamic> payload) {
+    final outputId = payload['output_id']?.toString() ?? '';
+    final assetId = payload['asset_id']?.toString() ?? '';
+    final imageUrl = outputId.isNotEmpty
+        ? widget.api.imagingOutputDownloadUrl(outputId)
+        : widget.api.imagingAssetViewerImageUrl(assetId);
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ScientificImageViewerScreen(
+          title: payload['display_name']?.toString() ?? 'Image Viewer',
+          imageUrl: imageUrl,
+          metadata: {
+            'Reference': payload['reference_kind'],
+            'Dataset': payload['dataset_name'],
+            'Processing': payload['processing_type'],
+          },
+          api: widget.api,
+          assetId: outputId.isEmpty ? assetId : null,
+          outputId: outputId.isEmpty ? null : outputId,
+        ),
+      ),
+    );
+  }
+
   Future<void> _openAttachment(Map<String, dynamic> attachment) async {
     final sourceType = _text(attachment['source_type']);
     final attachmentId = _text(attachment['attachment_id']);
@@ -532,6 +665,8 @@ class _GeneralExperimentWorkspaceScreenState
                     onPasteImage: _uploadPastedImage,
                     downloadAttachmentBytes:
                         widget.api.downloadExperimentAttachmentBytes,
+                    onPickImagingReference: _pickNotebookImagingReference,
+                    onOpenImagingReference: _openNotebookImagingReference,
                     onUploadAttachment: _pickAndUploadAttachment,
                     onAddLink: _showAddLinkDialog,
                     onOpenAttachment: _openAttachment,
@@ -600,6 +735,8 @@ class _NotebookSurface extends StatelessWidget {
     required this.onToolSelected,
     required this.onPasteImage,
     required this.downloadAttachmentBytes,
+    required this.onPickImagingReference,
+    required this.onOpenImagingReference,
     required this.onUploadAttachment,
     required this.onAddLink,
     required this.onOpenAttachment,
@@ -624,6 +761,8 @@ class _NotebookSurface extends StatelessWidget {
   final ValueChanged<String> onToolSelected;
   final PastedImageUploader onPasteImage;
   final AttachmentBytesDownloader downloadAttachmentBytes;
+  final NotebookImagingReferencePicker onPickImagingReference;
+  final NotebookImagingReferenceOpener onOpenImagingReference;
   final Future<void> Function({String? attachmentType}) onUploadAttachment;
   final VoidCallback onAddLink;
   final ValueChanged<Map<String, dynamic>> onOpenAttachment;
@@ -706,6 +845,8 @@ class _NotebookSurface extends StatelessWidget {
                 onPasteImage: onPasteImage,
                 documentId: documentId,
                 downloadAttachmentBytes: downloadAttachmentBytes,
+                onPickImagingReference: onPickImagingReference,
+                onOpenImagingReference: onOpenImagingReference,
                 onChanged: onNotebookChanged,
               ),
             ],
@@ -1698,6 +1839,93 @@ IconData _attachmentIcon(String type, String sourceType) {
     default:
       return Icons.insert_drive_file_outlined;
   }
+}
+
+class _NotebookImagingPickerSheet extends StatefulWidget {
+  const _NotebookImagingPickerSheet({
+    required this.title,
+    required this.items,
+    required this.titleFor,
+    required this.subtitleFor,
+  });
+
+  final String title;
+  final List<Map<String, dynamic>> items;
+  final String Function(Map<String, dynamic> item) titleFor;
+  final String Function(Map<String, dynamic> item) subtitleFor;
+
+  @override
+  State<_NotebookImagingPickerSheet> createState() =>
+      _NotebookImagingPickerSheetState();
+}
+
+class _NotebookImagingPickerSheetState
+    extends State<_NotebookImagingPickerSheet> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = widget.items
+        .where((item) =>
+            widget.titleFor(item).toLowerCase().contains(_query.toLowerCase()))
+        .toList(growable: false);
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Insert ${widget.title}',
+                style: Theme.of(context).textTheme.titleLarge),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            TextField(
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                labelText: 'Search',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => setState(() => _query = value),
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Flexible(
+              child: filtered.isEmpty
+                  ? const ResearchOsEmptyState(
+                      icon: Icons.image_not_supported_outlined,
+                      title: 'No imaging records found',
+                      message: 'Upload or process an image first.',
+                    )
+                  : ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) {
+                        final item = filtered[index];
+                        return ListTile(
+                          leading: const Icon(Icons.image_search_outlined),
+                          title: Text(widget.titleFor(item)),
+                          subtitle: Text(widget.subtitleFor(item)),
+                          onTap: () => Navigator.of(context).pop(item),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _imagingAssetName(Map<String, dynamic> asset) {
+  final displayName = (asset['display_name']?.toString() ?? '').trim();
+  if (displayName.isNotEmpty) return displayName;
+  return asset['original_filename']?.toString() ?? 'Imaging dataset';
+}
+
+String _imagingOutputName(Map<String, dynamic> output) {
+  final displayName = (output['display_name']?.toString() ?? '').trim();
+  if (displayName.isNotEmpty) return displayName;
+  return output['filename']?.toString() ?? 'Imaging result';
 }
 
 String _formatBytes(Object? value) {

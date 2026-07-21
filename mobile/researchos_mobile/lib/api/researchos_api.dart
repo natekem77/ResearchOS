@@ -225,6 +225,22 @@ class ResearchOsApi {
     return _decodeMapResponse(response);
   }
 
+  Future<Map<String, dynamic>> renameImagingAsset({
+    required String assetId,
+    required String displayName,
+  }) {
+    return _patchMap(
+      '/mobile/imaging/assets/${Uri.encodeComponent(assetId)}',
+      {'display_name': displayName.trim()},
+    );
+  }
+
+  Future<Map<String, dynamic>> deleteImagingAsset(String assetId) {
+    return _deleteMap(
+      '/mobile/imaging/assets/${Uri.encodeComponent(assetId)}',
+    );
+  }
+
   Future<Map<String, dynamic>> createImagingJob({
     required String assetId,
     required String workflowKey,
@@ -247,6 +263,61 @@ class ResearchOsApi {
     final json = await _getMap(
         '/mobile/imaging/jobs/${Uri.encodeComponent(jobId)}/measurements');
     return _jsonObjectList(json['measurements']);
+  }
+
+  Future<Map<String, dynamic>> deleteImagingJob(String jobId) {
+    return _deleteMap('/mobile/imaging/jobs/${Uri.encodeComponent(jobId)}');
+  }
+
+  Future<Map<String, dynamic>> renameImagingOutput({
+    required String outputId,
+    required String displayName,
+  }) {
+    return _patchMap(
+      '/mobile/imaging/outputs/${Uri.encodeComponent(outputId)}',
+      {'display_name': displayName.trim()},
+    );
+  }
+
+  Future<Map<String, dynamic>> deleteImagingOutput(String outputId) {
+    return _deleteMap(
+        '/mobile/imaging/outputs/${Uri.encodeComponent(outputId)}');
+  }
+
+  Future<List<Map<String, dynamic>>> imagingReferences({
+    String? assetId,
+    String? outputId,
+  }) async {
+    final params = <String>[];
+    if (assetId != null && assetId.isNotEmpty) {
+      params.add('asset_id=${Uri.encodeQueryComponent(assetId)}');
+    }
+    if (outputId != null && outputId.isNotEmpty) {
+      params.add('output_id=${Uri.encodeQueryComponent(outputId)}');
+    }
+    final suffix = params.isEmpty ? '' : '?${params.join('&')}';
+    final json = await _getMap('/mobile/imaging/references$suffix');
+    return _jsonObjectList(json['references']);
+  }
+
+  Future<Map<String, dynamic>> createImagingReference({
+    String? notebookId,
+    String? experimentId,
+    String? assetId,
+    String? outputId,
+    String referenceType = 'linked',
+    String? label,
+  }) {
+    return _postMap('/mobile/imaging/references', {
+      if (notebookId != null && notebookId.isNotEmpty)
+        'notebook_id': notebookId,
+      if (experimentId != null && experimentId.isNotEmpty)
+        'experiment_id': experimentId,
+      if (assetId != null && assetId.isNotEmpty) 'asset_id': assetId,
+      if (outputId != null && outputId.isNotEmpty) 'output_id': outputId,
+      'reference_type': referenceType,
+      if (label != null && label.isNotEmpty) 'label': label,
+    });
   }
 
   String imagingOutputDownloadUrl(String outputId) =>
@@ -296,6 +367,88 @@ class ResearchOsApi {
     );
     final saved = json['profile'];
     return saved is Map<String, dynamic> ? saved : <String, dynamic>{};
+  }
+
+  Future<List<Map<String, dynamic>>> analysisWorkers() async {
+    final json = await _getMap('/mobile/analysis/workers');
+    return _jsonObjectList(json['workers']);
+  }
+
+  Future<List<Map<String, dynamic>>> analysisStorageLocations() async {
+    final json = await _getMap('/mobile/analysis/storage-locations');
+    return _jsonObjectList(json['storage_locations']);
+  }
+
+  Future<List<Map<String, dynamic>>> analysisDatasets({
+    String? modality,
+  }) async {
+    final suffix = modality == null || modality.trim().isEmpty
+        ? ''
+        : '?modality=${Uri.encodeQueryComponent(modality.trim())}';
+    final json = await _getMap('/mobile/analysis/datasets$suffix');
+    return _jsonObjectList(json['datasets']);
+  }
+
+  Future<Map<String, dynamic>> registerAnalysisDataset({
+    required String displayName,
+    required String countsPath,
+    required String metadataPath,
+    String modality = 'bulk_rna_seq',
+    String sourceType = 'server_folder',
+    String? storageLocationId,
+    String? organism,
+    String? genomeBuild,
+    String? assay,
+    String? workerId,
+  }) {
+    return _postMap('/mobile/analysis/datasets', {
+      'display_name': displayName.trim(),
+      'modality': modality,
+      'source_type': sourceType,
+      'counts_path': countsPath.trim(),
+      'metadata_path': metadataPath.trim(),
+      if (storageLocationId != null && storageLocationId.isNotEmpty)
+        'storage_location_id': storageLocationId,
+      if (organism != null && organism.trim().isNotEmpty)
+        'organism': organism.trim(),
+      if (genomeBuild != null && genomeBuild.trim().isNotEmpty)
+        'genome_build': genomeBuild.trim(),
+      if (assay != null && assay.trim().isNotEmpty) 'assay': assay.trim(),
+      if (workerId != null && workerId.trim().isNotEmpty)
+        'worker_id': workerId.trim(),
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> analysisWorkflows() async {
+    final json = await _getMap('/mobile/analysis/workflows');
+    return _jsonObjectList(json['workflows']);
+  }
+
+  Future<List<Map<String, dynamic>>> analysisJobs() async {
+    final json = await _getMap('/mobile/analysis/jobs');
+    return _jsonObjectList(json['jobs']);
+  }
+
+  Future<Map<String, dynamic>> createAnalysisJob({
+    required String datasetId,
+    required String workflowKey,
+    Map<String, dynamic> parameters = const {},
+  }) {
+    return _postMap('/mobile/analysis/jobs', {
+      'dataset_id': datasetId,
+      'workflow_key': workflowKey,
+      'parameters': parameters,
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> analysisOutputs(String jobId) async {
+    final json = await _getMap(
+        '/mobile/analysis/jobs/${Uri.encodeComponent(jobId)}/outputs');
+    return _jsonObjectList(json['outputs']);
+  }
+
+  Future<Map<String, dynamic>> analysisOutput(String outputId) {
+    return _getMap('/mobile/analysis/outputs/${Uri.encodeComponent(outputId)}');
   }
 
   Future<List<DashboardCard>> dashboardCards() async {

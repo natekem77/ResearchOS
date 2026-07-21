@@ -209,6 +209,63 @@ void main() {
     expect((response['attachment'] as Map)['source_type'], 'external_link');
   });
 
+  test('imaging management calls use canonical mobile routes', () async {
+    final captured = <String>[];
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        captured.add('${request.method} ${request.url.path}');
+        if (request.url.path == '/mobile/imaging/references') {
+          return http.Response(
+            jsonEncode({
+              'references': [
+                {'id': 'imaging-reference:test'}
+              ],
+            }),
+            200,
+            headers: {'Content-Type': 'application/json'},
+          );
+        }
+        return http.Response(
+          jsonEncode({
+            'asset': {'id': 'imaging-asset:test'},
+            'output': {'id': 'imaging-output:test'},
+            'deleted': true,
+          }),
+          200,
+          headers: {'Content-Type': 'application/json'},
+        );
+      }),
+    );
+
+    await api.renameImagingAsset(
+      assetId: 'imaging-asset:test',
+      displayName: 'Day30 GFP',
+    );
+    await api.deleteImagingAsset('imaging-asset:test');
+    await api.renameImagingOutput(
+      outputId: 'imaging-output:test',
+      displayName: 'Publication Figure',
+    );
+    await api.deleteImagingOutput('imaging-output:test');
+    await api.deleteImagingJob('imaging-job:test');
+    final references =
+        await api.imagingReferences(outputId: 'imaging-output:test');
+
+    expect(references.single['id'], 'imaging-reference:test');
+    expect(captured,
+        contains('PATCH /mobile/imaging/assets/imaging-asset%3Atest'));
+    expect(captured,
+        contains('DELETE /mobile/imaging/assets/imaging-asset%3Atest'));
+    expect(captured,
+        contains('PATCH /mobile/imaging/outputs/imaging-output%3Atest'));
+    expect(captured,
+        contains('DELETE /mobile/imaging/outputs/imaging-output%3Atest'));
+    expect(
+        captured, contains('DELETE /mobile/imaging/jobs/imaging-job%3Atest'));
+    expect(captured, contains('GET /mobile/imaging/references'));
+  });
+
   test('uploadExperimentAttachmentBytes posts pasted image multipart data',
       () async {
     late http.BaseRequest captured;

@@ -87,6 +87,13 @@ const mundiDestinations = <MundiDestination>[
     selectedIcon: Icons.photo_library,
   ),
   MundiDestination(
+    id: 'analysis',
+    label: 'Analysis',
+    screenIndex: 17,
+    icon: Icons.analytics_outlined,
+    selectedIcon: Icons.analytics,
+  ),
+  MundiDestination(
     id: 'settings',
     label: 'Settings',
     screenIndex: 9,

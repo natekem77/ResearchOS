@@ -9,6 +9,7 @@ import 'brand/mundi_brand.dart';
 import 'config/build_info.dart';
 import 'design_system/researchos_design_system.dart';
 import 'screens/bench_mode_screen.dart';
+import 'screens/analysis_screen.dart';
 import 'screens/ask_mundi_screen.dart';
 import 'screens/chats_screen.dart';
 import 'screens/copilot_screen.dart';
@@ -372,6 +373,7 @@ class ResearchOsHome extends StatelessWidget {
       ProtocolHubScreen(api: api),
       AskMundiScreen(api: api),
       ImagingScreen(api: api),
+      AnalysisScreen(api: api, onOpenImaging: () => onDestinationSelected(16)),
     ];
     final titles = [
       'Home',
@@ -391,6 +393,7 @@ class ResearchOsHome extends StatelessWidget {
       'Protocols',
       'Ask Mundi',
       'Imaging',
+      'Analysis',
     ];
     return ResearchOsScaffold(
       title: titles[selectedIndex],

@@ -16,6 +16,16 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../design_system/researchos_design_system.dart';
 
+typedef NotebookImagingReferencePicker = Future<Map<String, dynamic>?> Function(
+  NotebookImagingReferenceKind kind,
+);
+
+typedef NotebookImagingReferenceOpener = void Function(
+  Map<String, dynamic> payload,
+);
+
+enum NotebookImagingReferenceKind { dataset, result }
+
 class RichScientificNotebookEditor extends StatefulWidget {
   const RichScientificNotebookEditor({
     super.key,
@@ -27,6 +37,8 @@ class RichScientificNotebookEditor extends StatefulWidget {
     this.onSave,
     this.onPasteImage,
     this.downloadAttachmentBytes,
+    this.onPickImagingReference,
+    this.onOpenImagingReference,
     NotebookImageCache? imageCache,
     ClipboardImageReader? clipboardImageReader,
     NotebookImageFileReader? imageFileReader,
@@ -48,6 +60,8 @@ class RichScientificNotebookEditor extends StatefulWidget {
   final VoidCallback? onSave;
   final PastedImageUploader? onPasteImage;
   final AttachmentBytesDownloader? downloadAttachmentBytes;
+  final NotebookImagingReferencePicker? onPickImagingReference;
+  final NotebookImagingReferenceOpener? onOpenImagingReference;
   final NotebookImageCache imageCache;
   final ClipboardImageReader clipboardImageReader;
   final NotebookImageFileReader imageFileReader;
@@ -181,6 +195,13 @@ class _RichScientificNotebookEditorState
       if (insert is Map && insert.containsKey('image')) {
         final payload = _decodeAttachmentEmbed(insert['image']);
         buffer.write(payload['display_name']?.toString() ?? 'Image');
+        continue;
+      }
+      final blockText = _plainTextFromNotebookBlockInsert(insert);
+      if (blockText != null) {
+        buffer
+          ..write(blockText)
+          ..write('\n');
       }
     }
     return buffer.toString();
@@ -373,6 +394,82 @@ class _RichScientificNotebookEditorState
     _controller.replaceText(
       index,
       length,
+      embed,
+      TextSelection.collapsed(offset: index + 1),
+    );
+    _controller.replaceText(
+      index + 1,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: index + 2),
+    );
+    _emitChange();
+  }
+
+  Future<void> _insertImagingReference(
+    NotebookImagingReferenceKind kind,
+  ) async {
+    final picker = widget.onPickImagingReference;
+    if (picker == null) {
+      setState(() {
+        _pasteMessage = 'Imaging references are not available here.';
+      });
+      return;
+    }
+    final pickedPayload = await picker(kind);
+    if (pickedPayload == null) return;
+    final payload = _normalizeNotebookBlockPayload(
+      pickedPayload,
+      'ImagingReferenceBlock',
+      metadata: {
+        'asset_id': pickedPayload['asset_id'],
+        'output_id': pickedPayload['output_id'],
+        'reference_kind': pickedPayload['reference_kind'],
+      },
+    );
+    final embed = BlockEmbed.custom(
+      CustomBlockEmbed('mundi_imaging_reference', jsonEncode(payload)),
+    );
+    final selection = _controller.selection;
+    final index = selection.baseOffset < 0
+        ? _controller.document.length - 1
+        : selection.baseOffset;
+    _controller.replaceText(
+      index,
+      selection.isCollapsed ? 0 : selection.end - selection.start,
+      embed,
+      TextSelection.collapsed(offset: index + 1),
+    );
+    _controller.replaceText(
+      index + 1,
+      0,
+      '\n',
+      TextSelection.collapsed(offset: index + 2),
+    );
+    _emitChange();
+  }
+
+  Future<void> _insertGenericNotebookBlock(String blockType) async {
+    final title = await _showNotebookBlockTitleDialog(context, blockType);
+    if (title == null) return;
+    final payload = _normalizeNotebookBlockPayload(
+      {
+        'display_name': title,
+        'caption': '',
+      },
+      blockType,
+      metadata: {'source': 'manual_insert'},
+    );
+    final embed = BlockEmbed.custom(
+      CustomBlockEmbed('mundi_notebook_block', jsonEncode(payload)),
+    );
+    final selection = _controller.selection;
+    final index = selection.baseOffset < 0
+        ? _controller.document.length - 1
+        : selection.baseOffset;
+    _controller.replaceText(
+      index,
+      selection.isCollapsed ? 0 : selection.end - selection.start,
       embed,
       TextSelection.collapsed(offset: index + 1),
     );
@@ -614,6 +711,17 @@ class _RichScientificNotebookEditorState
               widget.onPasteImage == null ? null : _pasteImageFromClipboard,
           onInsertTable: _showInsertTableSheet,
           onPasteTable: _pasteTableFromClipboard,
+          onInsertImagingDataset: () => _insertImagingReference(
+            NotebookImagingReferenceKind.dataset,
+          ),
+          onInsertImagingResult: () => _insertImagingReference(
+            NotebookImagingReferenceKind.result,
+          ),
+          onInsertSnapshot: () {
+            unawaited(_insertGenericNotebookBlock('SnapshotImageBlock'));
+          },
+          onInsertGenericBlock: (blockType) =>
+              unawaited(_insertGenericNotebookBlock(blockType)),
         ),
         const SizedBox(height: ResearchOsSpacing.sm),
         Row(
@@ -686,6 +794,10 @@ class _RichScientificNotebookEditorState
                     downloadAttachmentBytes: widget.downloadAttachmentBytes,
                     onRetryUpload: _retryImageUpload,
                   ),
+                  MundiImagingReferenceEmbedBuilder(
+                    onOpen: widget.onOpenImagingReference,
+                  ),
+                  const MundiNotebookBlockEmbedBuilder(),
                 ],
               ),
             ),
@@ -714,6 +826,10 @@ class _MobileNotebookToolbar extends StatelessWidget {
     required this.onPasteImage,
     required this.onInsertTable,
     required this.onPasteTable,
+    required this.onInsertImagingDataset,
+    required this.onInsertImagingResult,
+    required this.onInsertSnapshot,
+    required this.onInsertGenericBlock,
   });
 
   final QuillController controller;
@@ -724,6 +840,10 @@ class _MobileNotebookToolbar extends StatelessWidget {
   final VoidCallback? onPasteImage;
   final VoidCallback onInsertTable;
   final VoidCallback onPasteTable;
+  final VoidCallback onInsertImagingDataset;
+  final VoidCallback onInsertImagingResult;
+  final VoidCallback onInsertSnapshot;
+  final ValueChanged<String> onInsertGenericBlock;
 
   @override
   Widget build(BuildContext context) {
@@ -913,6 +1033,54 @@ class _MobileNotebookToolbar extends StatelessWidget {
               onPressed: onPasteTable,
               icon: const Icon(Icons.assignment_return_outlined),
             ),
+            PopupMenuButton<_NotebookInsertAction>(
+              tooltip: 'Insert',
+              icon: const Icon(Icons.add_box_outlined),
+              onSelected: (action) {
+                switch (action) {
+                  case _NotebookInsertAction.text:
+                    controller.replaceText(
+                      controller.selection.baseOffset < 0
+                          ? controller.document.length - 1
+                          : controller.selection.baseOffset,
+                      0,
+                      '\n',
+                      controller.selection,
+                    );
+                  case _NotebookInsertAction.table:
+                    onInsertTable();
+                  case _NotebookInsertAction.protocol:
+                    onInsertGenericBlock('ProtocolBlock');
+                  case _NotebookInsertAction.spreadsheet:
+                    onInsertGenericBlock('SpreadsheetBlock');
+                  case _NotebookInsertAction.file:
+                    onInsertGenericBlock('FileBlock');
+                  case _NotebookInsertAction.imagingDataset:
+                    onInsertImagingDataset();
+                  case _NotebookInsertAction.imagingResult:
+                    onInsertImagingResult();
+                  case _NotebookInsertAction.genomicsDataset:
+                    onInsertGenericBlock('GenomicsDatasetBlock');
+                  case _NotebookInsertAction.analysisResult:
+                    onInsertGenericBlock('AnalysisResultBlock');
+                  case _NotebookInsertAction.snapshot:
+                    onInsertSnapshot();
+                  case _NotebookInsertAction.photo:
+                    onInsertGenericBlock('PhotoBlock');
+                }
+              },
+              itemBuilder: (context) => [
+                for (final action in _NotebookInsertAction.values)
+                  PopupMenuItem(
+                    value: action,
+                    child: ListTile(
+                      dense: true,
+                      leading: Icon(action.icon),
+                      title: Text(action.label),
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(width: ResearchOsSpacing.xs),
             FilledButton.icon(
               key: const ValueKey('rich-notebook-save-button'),
@@ -934,6 +1102,103 @@ class _MobileNotebookToolbar extends StatelessWidget {
       ),
     );
   }
+}
+
+enum _NotebookInsertAction {
+  text('Text', Icons.notes_outlined),
+  table('Table', Icons.table_chart_outlined),
+  protocol('Protocol', Icons.science_outlined),
+  spreadsheet('Spreadsheet', Icons.grid_on_outlined),
+  imagingDataset('Imaging Dataset', Icons.image_search_outlined),
+  imagingResult('Imaging Result', Icons.analytics_outlined),
+  genomicsDataset('Genomics Dataset', Icons.biotech_outlined),
+  analysisResult('Analysis Result', Icons.insert_chart_outlined),
+  snapshot('Snapshot', Icons.camera_outlined),
+  photo('Photo', Icons.photo_outlined),
+  file('File', Icons.attach_file);
+
+  const _NotebookInsertAction(this.label, this.icon);
+
+  final String label;
+  final IconData icon;
+}
+
+Future<String?> _showNotebookBlockTitleDialog(
+  BuildContext context,
+  String blockType,
+) async {
+  final label = _blockTypeLabel(blockType);
+  final controller = TextEditingController(text: label);
+  return showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('Insert $label'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        decoration: const InputDecoration(labelText: 'Display title'),
+        onSubmitted: (_) {
+          final value = controller.text.trim();
+          if (value.isNotEmpty) Navigator.of(context).pop(value);
+        },
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            final value = controller.text.trim();
+            if (value.isNotEmpty) Navigator.of(context).pop(value);
+          },
+          child: const Text('Insert'),
+        ),
+      ],
+    ),
+  );
+}
+
+String _blockTypeLabel(String blockType) {
+  return switch (blockType) {
+    'ImagingReferenceBlock' => 'Imaging Reference',
+    'SnapshotImageBlock' => 'Snapshot',
+    'ProtocolBlock' => 'Protocol',
+    'SpreadsheetBlock' => 'Spreadsheet',
+    'FileBlock' => 'File',
+    'PhotoBlock' => 'Photo',
+    'PlotBlock' => 'Plot',
+    'AIConversationBlock' => 'AI Conversation',
+    'TimelineBlock' => 'Timeline',
+    'DatasetBlock' => 'Dataset',
+    'GenomicsDatasetBlock' => 'Genomics Dataset',
+    'AnalysisResultBlock' => 'Analysis Result',
+    'InteractivePlotBlock' => 'Interactive Plot',
+    'GeneTableBlock' => 'Gene Table',
+    'ModelResultBlock' => 'Model Result',
+    _ => blockType.replaceAll('Block', ''),
+  };
+}
+
+IconData _blockTypeIcon(String blockType) {
+  return switch (blockType) {
+    'ImagingReferenceBlock' => Icons.image_search_outlined,
+    'SnapshotImageBlock' => Icons.camera_outlined,
+    'ProtocolBlock' => Icons.science_outlined,
+    'SpreadsheetBlock' => Icons.grid_on_outlined,
+    'FileBlock' => Icons.attach_file,
+    'PhotoBlock' => Icons.photo_outlined,
+    'PlotBlock' => Icons.show_chart_outlined,
+    'AIConversationBlock' => Icons.smart_toy_outlined,
+    'TimelineBlock' => Icons.timeline_outlined,
+    'DatasetBlock' => Icons.dataset_outlined,
+    'GenomicsDatasetBlock' => Icons.biotech_outlined,
+    'AnalysisResultBlock' => Icons.analytics_outlined,
+    'InteractivePlotBlock' => Icons.scatter_plot_outlined,
+    'GeneTableBlock' => Icons.table_chart_outlined,
+    'ModelResultBlock' => Icons.hub_outlined,
+    _ => Icons.widgets_outlined,
+  };
 }
 
 class _FormatToggleButton extends StatelessWidget {
@@ -2452,6 +2717,43 @@ String _newNotebookTableId(String prefix) {
   return '$prefix:$now:$_notebookTableIdCounter';
 }
 
+int _notebookBlockIdCounter = 0;
+
+String _newNotebookBlockId(String type) {
+  final now = DateTime.now().toUtc().microsecondsSinceEpoch;
+  _notebookBlockIdCounter += 1;
+  return '${type.toLowerCase()}:$now:$_notebookBlockIdCounter';
+}
+
+Map<String, dynamic> _normalizeNotebookBlockPayload(
+  Map<String, dynamic> payload,
+  String blockType, {
+  Map<String, dynamic> metadata = const {},
+}) {
+  final now = DateTime.now().toUtc().toIso8601String();
+  final existingMetadata = payload['metadata'];
+  return {
+    ...payload,
+    'block_id': payload['block_id']?.toString().isNotEmpty == true
+        ? payload['block_id']
+        : _newNotebookBlockId(blockType),
+    'block_type': payload['block_type']?.toString().isNotEmpty == true
+        ? payload['block_type']
+        : blockType,
+    'position': payload['position'],
+    'created_at': payload['created_at']?.toString().isNotEmpty == true
+        ? payload['created_at']
+        : now,
+    'updated_at': now,
+    'metadata': {
+      if (existingMetadata is Map)
+        ...existingMetadata
+            .map((key, value) => MapEntry(key.toString(), value)),
+      ...metadata,
+    },
+  };
+}
+
 class NotebookTableData {
   /// Shared adapter input for future table import paths.
   ///
@@ -2970,6 +3272,44 @@ NotebookTable? _tableFromInsert(Object? insert) {
   }
   if (insert is Map && insert.containsKey('experiment_table')) {
     return NotebookTable.fromJson(insert['experiment_table']);
+  }
+  return null;
+}
+
+String? _plainTextFromNotebookBlockInsert(Object? insert) {
+  final payload = _notebookBlockPayloadFromInsert(insert);
+  if (payload == null) return null;
+  final blockType = payload['block_type']?.toString() ??
+      payload['embed_type']?.toString() ??
+      'NotebookBlock';
+  final label = payload['display_name']?.toString() ??
+      payload['title']?.toString() ??
+      _blockTypeLabel(blockType);
+  final caption = payload['caption']?.toString() ?? '';
+  return caption.trim().isEmpty
+      ? '${_blockTypeLabel(blockType)}: $label'
+      : '${_blockTypeLabel(blockType)}: $label\n$caption';
+}
+
+Map<String, dynamic>? _notebookBlockPayloadFromInsert(Object? insert) {
+  if (insert is! Map) return null;
+  if (insert.containsKey('custom')) {
+    try {
+      final custom =
+          CustomBlockEmbed.fromJsonString(insert['custom'].toString());
+      if (custom.type == 'mundi_imaging_reference' ||
+          custom.type == 'mundi_notebook_block') {
+        return _decodeAttachmentEmbed(custom.data);
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+  if (insert.containsKey('mundi_imaging_reference')) {
+    return _decodeAttachmentEmbed(insert['mundi_imaging_reference']);
+  }
+  if (insert.containsKey('mundi_notebook_block')) {
+    return _decodeAttachmentEmbed(insert['mundi_notebook_block']);
   }
   return null;
 }
@@ -4119,6 +4459,489 @@ class ExperimentAttachmentImageEmbedBuilder extends EmbedBuilder {
       documentOffset: embedContext.node.documentOffset,
     );
   }
+}
+
+class MundiImagingReferenceEmbedBuilder extends EmbedBuilder {
+  const MundiImagingReferenceEmbedBuilder({required this.onOpen});
+
+  final NotebookImagingReferenceOpener? onOpen;
+
+  @override
+  String get key => 'mundi_imaging_reference';
+
+  @override
+  String toPlainText(Embed node) {
+    final payload = _decodeAttachmentEmbed(node.value.data);
+    return '[Imaging: ${payload['display_name'] ?? 'image reference'}]';
+  }
+
+  @override
+  Widget build(BuildContext context, EmbedContext embedContext) {
+    final payload = _decodeAttachmentEmbed(embedContext.node.value.data);
+    final displayName = payload['display_name']?.toString() ?? 'Imaging result';
+    final subtitle = [
+      payload['reference_kind']?.toString() ?? 'linked image',
+      if ((payload['dataset_name']?.toString() ?? '').isNotEmpty)
+        payload['dataset_name'],
+      if ((payload['processing_type']?.toString() ?? '').isNotEmpty)
+        payload['processing_type'],
+    ].join(' • ');
+    final thumbnailUrl = payload['thumbnail_url']?.toString() ?? '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onOpen == null ? null : () => onOpen!(payload),
+          onLongPress: () => _showImagingReferenceActions(
+            context,
+            payload,
+            embedContext.controller,
+            embedContext.node.documentOffset,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(ResearchOsSpacing.sm),
+            child: Row(
+              children: [
+                ClipRRect(
+                  borderRadius:
+                      BorderRadius.circular(ResearchOsTokens.radiusSm),
+                  child: SizedBox.square(
+                    dimension: 72,
+                    child: thumbnailUrl.isEmpty
+                        ? ColoredBox(
+                            color: Theme.of(context).colorScheme.surface,
+                            child: const Icon(Icons.image_search_outlined),
+                          )
+                        : Image.network(
+                            thumbnailUrl,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) =>
+                                const Icon(Icons.broken_image_outlined),
+                          ),
+                  ),
+                ),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(displayName,
+                          style: Theme.of(context).textTheme.titleSmall),
+                      if (subtitle.trim().isNotEmpty)
+                        Text(
+                          subtitle,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      Text(
+                        'Linked imaging reference',
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.open_in_new_outlined),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showImagingReferenceActions(
+    BuildContext context,
+    Map<String, dynamic> payload,
+    QuillController controller,
+    int offset,
+  ) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.open_in_new_outlined),
+              title: const Text('Open Viewer'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onOpen?.call(payload);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline),
+              title: const Text('Rename block title'),
+              onTap: () async {
+                Navigator.of(context).pop();
+                final next = await _showNotebookBlockTitleDialog(
+                  context,
+                  payload['block_type']?.toString() ?? 'ImagingReferenceBlock',
+                );
+                if (next == null) return;
+                _replaceCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_imaging_reference',
+                  {
+                    ...payload,
+                    'display_name': next,
+                    'updated_at': DateTime.now().toUtc().toIso8601String(),
+                  },
+                );
+              },
+            ),
+            const ListTile(
+              leading: Icon(Icons.photo_camera_outlined),
+              title: Text('Convert to Snapshot from Image Viewer'),
+            ),
+            const ListTile(
+              leading: Icon(Icons.swap_horiz_outlined),
+              title: Text('Replace reference from Insert menu'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.keyboard_arrow_up),
+              title: const Text('Move Up'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _moveCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_imaging_reference',
+                  payload,
+                  up: true,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.keyboard_arrow_down),
+              title: const Text('Move Down'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _moveCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_imaging_reference',
+                  payload,
+                  up: false,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_outlined),
+              title: const Text('Copy block'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Clipboard.setData(ClipboardData(text: jsonEncode(payload)));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.control_point_duplicate_outlined),
+              title: const Text('Duplicate'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _duplicateCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_imaging_reference',
+                  payload,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Remove Reference'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _removeCustomBlockEmbed(controller, offset, payload: payload);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class MundiNotebookBlockEmbedBuilder extends EmbedBuilder {
+  const MundiNotebookBlockEmbedBuilder();
+
+  @override
+  String get key => 'mundi_notebook_block';
+
+  @override
+  String toPlainText(Embed node) {
+    final payload = _decodeAttachmentEmbed(node.value.data);
+    final blockType = payload['block_type']?.toString() ?? 'NotebookBlock';
+    return '[${_blockTypeLabel(blockType)}: ${payload['display_name'] ?? 'Untitled'}]';
+  }
+
+  @override
+  Widget build(BuildContext context, EmbedContext embedContext) {
+    final payload = _decodeAttachmentEmbed(embedContext.node.value.data);
+    final blockType = payload['block_type']?.toString() ?? 'NotebookBlock';
+    final title =
+        payload['display_name']?.toString() ?? _blockTypeLabel(blockType);
+    final caption = payload['caption']?.toString() ?? '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: ResearchOsSpacing.sm),
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+        child: InkWell(
+          onLongPress: () => _showGenericBlockActions(
+            context,
+            payload,
+            embedContext.controller,
+            embedContext.node.documentOffset,
+          ),
+          borderRadius: BorderRadius.circular(ResearchOsTokens.radiusMd),
+          child: Padding(
+            padding: const EdgeInsets.all(ResearchOsSpacing.md),
+            child: Row(
+              children: [
+                Icon(_blockTypeIcon(blockType), size: 32),
+                const SizedBox(width: ResearchOsSpacing.md),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(title,
+                          style: Theme.of(context).textTheme.titleSmall),
+                      Text(
+                        _blockTypeLabel(blockType),
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                      if (caption.trim().isNotEmpty)
+                        Text(caption,
+                            style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.more_horiz),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showGenericBlockActions(
+    BuildContext context,
+    Map<String, dynamic> payload,
+    QuillController controller,
+    int offset,
+  ) {
+    final blockType = payload['block_type']?.toString() ?? 'NotebookBlock';
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline),
+              title: const Text('Rename'),
+              onTap: () async {
+                Navigator.of(context).pop();
+                final next = await _showNotebookBlockTitleDialog(
+                  context,
+                  blockType,
+                );
+                if (next == null) return;
+                _replaceCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_notebook_block',
+                  {
+                    ...payload,
+                    'display_name': next,
+                    'updated_at': DateTime.now().toUtc().toIso8601String(),
+                  },
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.keyboard_arrow_up),
+              title: const Text('Move Up'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _moveCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_notebook_block',
+                  payload,
+                  up: true,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.keyboard_arrow_down),
+              title: const Text('Move Down'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _moveCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_notebook_block',
+                  payload,
+                  up: false,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_outlined),
+              title: const Text('Copy'),
+              onTap: () {
+                Navigator.of(context).pop();
+                Clipboard.setData(ClipboardData(text: jsonEncode(payload)));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.control_point_duplicate_outlined),
+              title: const Text('Duplicate'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _duplicateCustomBlockEmbed(
+                  controller,
+                  offset,
+                  'mundi_notebook_block',
+                  payload,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Delete'),
+              onTap: () {
+                Navigator.of(context).pop();
+                _removeCustomBlockEmbed(controller, offset, payload: payload);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+void _replaceCustomBlockEmbed(
+  QuillController controller,
+  int offset,
+  String embedKey,
+  Map<String, dynamic> payload,
+) {
+  final currentOffset = _findCustomBlockOffset(controller, payload) ?? offset;
+  controller.replaceText(
+    currentOffset,
+    1,
+    BlockEmbed.custom(CustomBlockEmbed(embedKey, jsonEncode(payload))),
+    TextSelection.collapsed(offset: currentOffset + 1),
+  );
+}
+
+void _removeCustomBlockEmbed(
+  QuillController controller,
+  int offset, {
+  Map<String, dynamic>? payload,
+}) {
+  final currentOffset = payload == null
+      ? offset
+      : (_findCustomBlockOffset(controller, payload) ?? offset);
+  controller.replaceText(
+    currentOffset,
+    1,
+    '',
+    TextSelection.collapsed(offset: currentOffset),
+  );
+}
+
+void _duplicateCustomBlockEmbed(
+  QuillController controller,
+  int offset,
+  String embedKey,
+  Map<String, dynamic> payload,
+) {
+  final currentOffset = _findCustomBlockOffset(controller, payload) ?? offset;
+  final duplicate = _normalizeNotebookBlockPayload(
+    {
+      ...payload,
+      'block_id': null,
+    },
+    payload['block_type']?.toString() ?? 'NotebookBlock',
+    metadata: payload['metadata'] is Map
+        ? (payload['metadata'] as Map)
+            .map((key, value) => MapEntry(key.toString(), value))
+        : const {},
+  );
+  controller.replaceText(
+    currentOffset + 1,
+    0,
+    BlockEmbed.custom(CustomBlockEmbed(embedKey, jsonEncode(duplicate))),
+    TextSelection.collapsed(offset: currentOffset + 2),
+  );
+  controller.replaceText(
+    currentOffset + 2,
+    0,
+    '\n',
+    TextSelection.collapsed(offset: currentOffset + 3),
+  );
+}
+
+void _moveCustomBlockEmbed(
+  QuillController controller,
+  int offset,
+  String embedKey,
+  Map<String, dynamic> payload, {
+  required bool up,
+}) {
+  final currentOffset = _findCustomBlockOffset(controller, payload) ?? offset;
+  var destination = up ? 0 : controller.document.length - 1;
+  controller.replaceText(
+    currentOffset,
+    1,
+    '',
+    TextSelection.collapsed(offset: currentOffset),
+  );
+  if (destination > currentOffset) destination -= 1;
+  destination = destination.clamp(0, controller.document.length - 1).toInt();
+  controller.replaceText(
+    destination,
+    0,
+    BlockEmbed.custom(CustomBlockEmbed(embedKey, jsonEncode(payload))),
+    TextSelection.collapsed(offset: destination + 1),
+  );
+  controller.replaceText(
+    destination + 1,
+    0,
+    '\n',
+    TextSelection.collapsed(offset: destination + 2),
+  );
+}
+
+int? _findCustomBlockOffset(
+  QuillController controller,
+  Map<String, dynamic> payload,
+) {
+  final blockId = payload['block_id']?.toString() ?? '';
+  if (blockId.isEmpty) return null;
+  var offset = 0;
+  for (final rawOp in controller.document.toDelta().toJson()) {
+    final insert = rawOp['insert'];
+    final candidate = _notebookBlockPayloadFromInsert(insert);
+    if (candidate?['block_id']?.toString() == blockId) {
+      return offset;
+    }
+    offset += _insertLength(insert);
+  }
+  return null;
 }
 
 class NativeQuillImageEmbedBuilder extends EmbedBuilder {

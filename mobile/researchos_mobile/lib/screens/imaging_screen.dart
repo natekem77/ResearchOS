@@ -24,6 +24,8 @@ class _ImagingScreenState extends State<ImagingScreen> {
   Timer? _jobPollTimer;
   String? _message;
   String _query = '';
+  String _sortMode = 'recent';
+  String _formatFilter = 'all';
 
   @override
   void initState() {
@@ -191,6 +193,84 @@ class _ImagingScreenState extends State<ImagingScreen> {
     }
   }
 
+  Future<void> _renameAsset(Map<String, dynamic> asset) async {
+    final current = _assetDisplayName(asset);
+    final next = await _promptForName(
+      context,
+      title: 'Rename dataset',
+      initialValue: current,
+    );
+    if (next == null) return;
+    try {
+      await widget.api.renameImagingAsset(
+        assetId: asset['id'].toString(),
+        displayName: next,
+      );
+      if (!mounted) return;
+      setState(() {
+        _message = 'Dataset renamed.';
+      });
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not rename dataset: $error';
+      });
+    }
+  }
+
+  Future<void> _deleteAsset(Map<String, dynamic> asset) async {
+    final references = await _safeReferences(assetId: asset['id'].toString());
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete ${_assetDisplayName(asset)}?'),
+        content: Text(
+          references.isEmpty
+              ? 'This removes the raw dataset, outputs, measurements, jobs, and display profile.'
+              : 'Referenced by ${references.length} notebook item${references.length == 1 ? '' : 's'}. This removes the raw dataset, outputs, measurements, jobs, and display profile.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('Delete Anyway'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await widget.api.deleteImagingAsset(asset['id'].toString());
+      if (!mounted) return;
+      setState(() {
+        _message = 'Dataset deleted.';
+      });
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not delete dataset: $error';
+      });
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _safeReferences(
+      {String? assetId, String? outputId}) async {
+    try {
+      return widget.api.imagingReferences(assetId: assetId, outputId: outputId);
+    } catch (_) {
+      return const [];
+    }
+  }
+
   void _openAssetViewer(Map<String, dynamic> asset) {
     final metadata = <String, dynamic>{
       'Filename': asset['original_filename'],
@@ -224,11 +304,7 @@ class _ImagingScreenState extends State<ImagingScreen> {
       future: _future,
       builder: (context, snapshot) {
         final state = snapshot.data;
-        final assets = (state?.assets ?? const <Map<String, dynamic>>[])
-            .where((asset) => (asset['original_filename']?.toString() ?? '')
-                .toLowerCase()
-                .contains(_query.toLowerCase()))
-            .toList(growable: false);
+        final assets = _filteredAssets(state?.assets ?? const []);
         final jobs = state?.jobs ?? const <Map<String, dynamic>>[];
         final completedJobs = jobs
             .where((job) => job['status']?.toString() == 'complete')
@@ -277,6 +353,43 @@ class _ImagingScreenState extends State<ImagingScreen> {
                   });
                 },
               ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              Wrap(
+                spacing: ResearchOsSpacing.sm,
+                runSpacing: ResearchOsSpacing.xs,
+                children: [
+                  DropdownButton<String>(
+                    value: _sortMode,
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _sortMode = value);
+                    },
+                    items: const [
+                      DropdownMenuItem(value: 'recent', child: Text('Recent')),
+                      DropdownMenuItem(value: 'oldest', child: Text('Oldest')),
+                      DropdownMenuItem(value: 'name', child: Text('Name')),
+                      DropdownMenuItem(value: 'size', child: Text('Size')),
+                    ],
+                  ),
+                  DropdownButton<String>(
+                    value: _formatFilter,
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setState(() => _formatFilter = value);
+                    },
+                    items: const [
+                      DropdownMenuItem(
+                          value: 'all', child: Text('All formats')),
+                      DropdownMenuItem(
+                          value: 'microscopy', child: Text('Microscopy')),
+                      DropdownMenuItem(
+                          value: 'fluorescence', child: Text('Fluorescence')),
+                      DropdownMenuItem(
+                          value: 'multichannel', child: Text('Multi-channel')),
+                    ],
+                  ),
+                ],
+              ),
               const SizedBox(height: ResearchOsSpacing.md),
               if (snapshot.connectionState == ConnectionState.waiting)
                 const Center(child: CircularProgressIndicator())
@@ -305,6 +418,12 @@ class _ImagingScreenState extends State<ImagingScreen> {
                       asset: asset,
                       onOpen: () => _openAssetViewer(asset),
                       onRun: () => _runWorkflow(asset, state!.workflows),
+                      onRename: () => _renameAsset(asset),
+                      onDelete: () => _deleteAsset(asset),
+                      onExport: () => _showDownloadUrl(
+                        widget.api
+                            .imagingAssetDownloadUrl(asset['id'].toString()),
+                      ),
                     ),
                 const SizedBox(height: ResearchOsSpacing.md),
                 _SectionHeader(
@@ -325,6 +444,7 @@ class _ImagingScreenState extends State<ImagingScreen> {
                     api: widget.api,
                     job: job,
                     workerConnected: workerConnected,
+                    onChanged: () => unawaited(_reload(quiet: true)),
                   ),
               ],
             ],
@@ -332,6 +452,56 @@ class _ImagingScreenState extends State<ImagingScreen> {
         );
       },
     );
+  }
+
+  void _showDownloadUrl(String url) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(url)));
+  }
+
+  List<Map<String, dynamic>> _filteredAssets(
+      List<Map<String, dynamic>> source) {
+    final query = _query.toLowerCase();
+    final assets = source.where((asset) {
+      final displayName = _assetDisplayName(asset).toLowerCase();
+      final original =
+          (asset['original_filename']?.toString() ?? '').toLowerCase();
+      final matchesQuery = query.isEmpty ||
+          displayName.contains(query) ||
+          original.contains(query);
+      if (!matchesQuery) return false;
+      if (_formatFilter == 'all') return true;
+      final format = (asset['format']?.toString() ?? '').toLowerCase();
+      final metadata = (asset['metadata'] as Map?) ?? const {};
+      if (_formatFilter == 'multichannel') {
+        final channels = int.tryParse(metadata['channels']?.toString() ?? '');
+        return channels != null && channels > 1;
+      }
+      if (_formatFilter == 'microscopy' || _formatFilter == 'fluorescence') {
+        return {'tif', 'tiff', 'ome.tif', 'ome.tiff', 'czi', 'lif', 'nd2'}
+            .contains(format);
+      }
+      return true;
+    }).toList(growable: false);
+    assets.sort((a, b) {
+      switch (_sortMode) {
+        case 'oldest':
+          return (a['created_at']?.toString() ?? '')
+              .compareTo(b['created_at']?.toString() ?? '');
+        case 'name':
+          return _assetDisplayName(a)
+              .toLowerCase()
+              .compareTo(_assetDisplayName(b).toLowerCase());
+        case 'size':
+          final left = int.tryParse(a['size_bytes']?.toString() ?? '') ?? 0;
+          final right = int.tryParse(b['size_bytes']?.toString() ?? '') ?? 0;
+          return right.compareTo(left);
+        case 'recent':
+        default:
+          return (b['created_at']?.toString() ?? '')
+              .compareTo(a['created_at']?.toString() ?? '');
+      }
+    });
+    return assets;
   }
 }
 
@@ -382,11 +552,17 @@ class _AssetCard extends StatelessWidget {
     required this.asset,
     required this.onOpen,
     required this.onRun,
+    required this.onRename,
+    required this.onDelete,
+    required this.onExport,
   });
 
   final Map<String, dynamic> asset;
   final VoidCallback onOpen;
   final VoidCallback onRun;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
+  final VoidCallback onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -398,7 +574,7 @@ class _AssetCard extends StatelessWidget {
           contentPadding: EdgeInsets.zero,
           onTap: onOpen,
           leading: const Icon(Icons.image_outlined),
-          title: Text(asset['original_filename']?.toString() ?? 'Image'),
+          title: Text(_assetDisplayName(asset)),
           subtitle: Text([
             asset['format']?.toString() ?? 'format unknown',
             _bytes(asset['size_bytes']),
@@ -410,10 +586,36 @@ class _AssetCard extends StatelessWidget {
             if (metadata['timepoints'] != null) '${metadata['timepoints']} T',
             metadata['metadata_status']?.toString() ?? 'Metadata unavailable',
           ].join(' • ')),
-          trailing: TextButton.icon(
-            onPressed: onRun,
-            icon: const Icon(Icons.play_arrow_outlined),
-            label: const Text('Run'),
+          trailing: Wrap(
+            spacing: ResearchOsSpacing.xs,
+            children: [
+              IconButton(
+                tooltip: 'Run analysis',
+                onPressed: onRun,
+                icon: const Icon(Icons.play_arrow_outlined),
+              ),
+              PopupMenuButton<_AssetAction>(
+                tooltip: 'Dataset actions',
+                onSelected: (action) {
+                  switch (action) {
+                    case _AssetAction.rename:
+                      onRename();
+                    case _AssetAction.export:
+                      onExport();
+                    case _AssetAction.delete:
+                      onDelete();
+                  }
+                },
+                itemBuilder: (context) => const [
+                  PopupMenuItem(
+                      value: _AssetAction.rename, child: Text('Rename')),
+                  PopupMenuItem(
+                      value: _AssetAction.export, child: Text('Export')),
+                  PopupMenuItem(
+                      value: _AssetAction.delete, child: Text('Delete')),
+                ],
+              ),
+            ],
           ),
         ),
       ),
@@ -426,11 +628,13 @@ class _JobCard extends StatefulWidget {
     required this.api,
     required this.job,
     required this.workerConnected,
+    required this.onChanged,
   });
 
   final ResearchOsApi api;
   final Map<String, dynamic> job;
   final bool workerConnected;
+  final VoidCallback onChanged;
 
   @override
   State<_JobCard> createState() => _JobCardState();
@@ -473,9 +677,27 @@ class _JobCardState extends State<_JobCard> {
             subtitle: Text(waitingForWorker
                 ? 'Waiting for imaging worker'
                 : 'Status: $status • Progress: ${widget.job['progress']}'),
-            trailing: TextButton(
-              onPressed: status == 'complete' ? _loadDetails : null,
-              child: const Text('Results'),
+            trailing: Wrap(
+              spacing: ResearchOsSpacing.xs,
+              children: [
+                TextButton(
+                  onPressed: status == 'complete' ? _loadDetails : null,
+                  child: const Text('Results'),
+                ),
+                PopupMenuButton<_JobAction>(
+                  tooltip: 'Job actions',
+                  onSelected: (action) {
+                    switch (action) {
+                      case _JobAction.delete:
+                        unawaited(_deleteJob());
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                        value: _JobAction.delete, child: Text('Delete')),
+                  ],
+                ),
+              ],
             ),
           ),
           if (_expanded) ...[
@@ -486,8 +708,25 @@ class _JobCardState extends State<_JobCard> {
                 dense: true,
                 contentPadding: EdgeInsets.zero,
                 leading: const Icon(Icons.download_outlined),
-                title: Text(output['filename']?.toString() ?? 'Output'),
+                title: Text(_outputDisplayName(output)),
                 subtitle: Text(output['output_type']?.toString() ?? ''),
+                trailing: PopupMenuButton<_OutputAction>(
+                  tooltip: 'Output actions',
+                  onSelected: (action) {
+                    switch (action) {
+                      case _OutputAction.rename:
+                        unawaited(_renameOutput(output));
+                      case _OutputAction.delete:
+                        unawaited(_deleteOutput(output));
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                        value: _OutputAction.rename, child: Text('Rename')),
+                    PopupMenuItem(
+                        value: _OutputAction.delete, child: Text('Delete')),
+                  ],
+                ),
                 onTap: () {
                   if ((output['mime_type']?.toString() ?? '')
                       .startsWith('image/')) {
@@ -533,6 +772,134 @@ class _JobCardState extends State<_JobCard> {
       ),
     );
   }
+
+  Future<void> _deleteJob() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete processing job?'),
+        content: const Text(
+            'This removes the job status and temporary logs. Datasets and outputs are kept.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await widget.api.deleteImagingJob(widget.job['id'].toString());
+    if (!mounted) return;
+    widget.onChanged();
+  }
+
+  Future<void> _renameOutput(Map<String, dynamic> output) async {
+    final next = await _promptForName(
+      context,
+      title: 'Rename output',
+      initialValue: _outputDisplayName(output),
+    );
+    if (next == null) return;
+    await widget.api.renameImagingOutput(
+      outputId: output['id'].toString(),
+      displayName: next,
+    );
+    if (!mounted) return;
+    await _loadDetails();
+    widget.onChanged();
+  }
+
+  Future<void> _deleteOutput(Map<String, dynamic> output) async {
+    final references =
+        await widget.api.imagingReferences(outputId: output['id'].toString());
+    if (!mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Delete ${_outputDisplayName(output)}?'),
+        content: Text(
+          references.isEmpty
+              ? 'This removes the derived output and associated derived metadata. The raw dataset is kept.'
+              : 'Referenced by ${references.length} notebook item${references.length == 1 ? '' : 's'}. This removes the derived output and associated derived metadata. The raw dataset is kept.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    await widget.api.deleteImagingOutput(output['id'].toString());
+    if (!mounted) return;
+    await _loadDetails();
+    widget.onChanged();
+  }
+}
+
+enum _AssetAction { rename, export, delete }
+
+enum _JobAction { delete }
+
+enum _OutputAction { rename, delete }
+
+Future<String?> _promptForName(
+  BuildContext context, {
+  required String title,
+  required String initialValue,
+}) async {
+  final controller = TextEditingController(text: initialValue);
+  try {
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Display name'),
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) {
+            final value = controller.text.trim();
+            if (value.isNotEmpty) Navigator.of(context).pop(value);
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) Navigator.of(context).pop(value);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  } finally {
+    controller.dispose();
+  }
+}
+
+String _assetDisplayName(Map<String, dynamic> asset) {
+  final displayName = (asset['display_name']?.toString() ?? '').trim();
+  if (displayName.isNotEmpty) return displayName;
+  return asset['original_filename']?.toString() ?? 'Image';
+}
+
+String _outputDisplayName(Map<String, dynamic> output) {
+  final displayName = (output['display_name']?.toString() ?? '').trim();
+  if (displayName.isNotEmpty) return displayName;
+  return output['filename']?.toString() ?? 'Output';
 }
 
 String _bytes(Object? value) {

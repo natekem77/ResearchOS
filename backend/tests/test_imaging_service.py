@@ -97,6 +97,148 @@ class ImagingServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ImagingValidationError, "No displayable preview"):
                 service.viewer_image_path("user:pi-owner", asset["id"])
 
+    def test_rename_asset_and_output_display_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="gfp.tif",
+                data=tiny_tiff(),
+                mime_type="image/tiff",
+            )
+            renamed_asset = service.rename_asset(
+                "user:pi-owner",
+                asset["id"],
+                "Day30 GFP",
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                asset_id=asset["id"],
+                workflow_key="generate_preview",
+            )
+            output_path = Path(tmpdir) / "imaging" / "jobs" / job["id"] / "preview.png"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(_tiny_png())
+            with service._connect() as connection:
+                service._insert_output(connection, job["id"], output_path, "preview_png", "image/png")
+            output = service.outputs_for_job("user:pi-owner", job["id"])[0]
+            renamed_output = service.rename_output(
+                "user:pi-owner",
+                output["id"],
+                "Publication Figure",
+            )
+
+        self.assertEqual(renamed_asset["display_name"], "Day30 GFP")
+        self.assertEqual(renamed_asset["original_filename"], "gfp.tif")
+        self.assertEqual(renamed_output["display_name"], "Publication Figure")
+        self.assertEqual(renamed_output["filename"], "preview.png")
+
+    def test_delete_job_keeps_output_and_hides_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="gfp.tif",
+                data=tiny_tiff(),
+                mime_type="image/tiff",
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                asset_id=asset["id"],
+                workflow_key="generate_preview",
+            )
+            job_dir = Path(tmpdir) / "imaging" / "jobs" / job["id"]
+            output_path = job_dir / "preview.png"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(_tiny_png())
+            (job_dir / "log.txt").write_text("temporary log", encoding="utf-8")
+            with service._connect() as connection:
+                service._insert_output(connection, job["id"], output_path, "preview_png", "image/png")
+            output = service.outputs_for_job("user:pi-owner", job["id"])[0]
+
+            service.delete_job("user:pi-owner", job["id"])
+            jobs = service.list_jobs("user:pi-owner")
+            output_after = service.output_path("user:pi-owner", output["id"])
+            output_exists = output_after.exists()
+            log_exists = (job_dir / "log.txt").exists()
+
+            self.assertEqual(jobs, [])
+            self.assertTrue(output_exists)
+            self.assertFalse(log_exists)
+
+    def test_references_and_delete_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="gfp.tif",
+                data=tiny_tiff(),
+                mime_type="image/tiff",
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                asset_id=asset["id"],
+                workflow_key="generate_preview",
+            )
+            output_path = Path(tmpdir) / "imaging" / "jobs" / job["id"] / "preview.png"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(_tiny_png())
+            with service._connect() as connection:
+                service._insert_output(connection, job["id"], output_path, "preview_png", "image/png")
+            output = service.outputs_for_job("user:pi-owner", job["id"])[0]
+            service.record_notebook_reference(
+                "user:pi-owner",
+                notebook_id="notebook:test",
+                output_id=output["id"],
+                reference_type="linked",
+                label="Publication Figure",
+            )
+            references = service.references_for_target("user:pi-owner", output_id=output["id"])
+
+            service.delete_output("user:pi-owner", output["id"])
+
+            with self.assertRaisesRegex(ImagingValidationError, "not found"):
+                service.output_path("user:pi-owner", output["id"])
+
+        self.assertEqual(len(references), 1)
+        self.assertFalse(output_path.exists())
+
+    def test_delete_asset_removes_outputs_jobs_profiles_and_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service = ImagingService(self._settings(tmpdir))
+            asset = service.create_asset(
+                user_id="user:pi-owner",
+                filename="gfp.png",
+                data=_tiny_png(),
+                mime_type="image/png",
+            )
+            service.save_display_profile(
+                "user:pi-owner",
+                {"lut": "Green"},
+                asset_id=asset["id"],
+            )
+            service.record_notebook_reference(
+                "user:pi-owner",
+                notebook_id="notebook:test",
+                asset_id=asset["id"],
+                reference_type="linked",
+                label="Day30 GFP",
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                asset_id=asset["id"],
+                workflow_key="generate_preview",
+            )
+
+            service.delete_asset("user:pi-owner", asset["id"])
+
+            with self.assertRaisesRegex(ImagingValidationError, "not found"):
+                service.get_asset("user:pi-owner", asset["id"])
+            jobs = service.list_jobs("user:pi-owner")
+
+        self.assertEqual(jobs, [])
+        self.assertFalse((Path(tmpdir) / "imaging" / "jobs" / job["id"]).exists())
+
     def test_display_profile_create_update_is_user_specific_and_no_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service = ImagingService(self._settings(tmpdir))

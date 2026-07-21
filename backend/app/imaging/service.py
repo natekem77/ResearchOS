@@ -7,6 +7,7 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
 import sqlite3
 import traceback
 import uuid
@@ -79,6 +80,7 @@ class ImagingService:
                     user_id TEXT NOT NULL,
                     experiment_id TEXT,
                     original_filename TEXT NOT NULL,
+                    display_name TEXT,
                     stored_filename TEXT NOT NULL,
                     storage_uri TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
@@ -120,13 +122,15 @@ class ImagingService:
                     started_at TEXT,
                     completed_at TEXT,
                     error_code TEXT,
-                    safe_error_message TEXT
+                    safe_error_message TEXT,
+                    deleted_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS imaging_outputs (
                     id TEXT PRIMARY KEY,
                     job_id TEXT NOT NULL,
                     output_type TEXT NOT NULL,
                     filename TEXT NOT NULL,
+                    display_name TEXT,
                     storage_uri TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
@@ -175,8 +179,23 @@ class ImagingService:
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_imaging_display_profiles_output
                     ON imaging_display_profiles(user_id, output_id)
                     WHERE output_id IS NOT NULL;
+                CREATE TABLE IF NOT EXISTS imaging_notebook_references (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    notebook_id TEXT,
+                    experiment_id TEXT,
+                    asset_id TEXT,
+                    output_id TEXT,
+                    reference_type TEXT NOT NULL,
+                    label TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CHECK ((asset_id IS NOT NULL AND output_id IS NULL) OR (asset_id IS NULL AND output_id IS NOT NULL))
+                );
                 """
             )
+            _ensure_column(connection, "imaging_assets", "display_name", "TEXT")
+            _ensure_column(connection, "imaging_jobs", "deleted_at", "TEXT")
+            _ensure_column(connection, "imaging_outputs", "display_name", "TEXT")
 
     def _ensure_workflows(self) -> None:
         with self._connect() as connection:
@@ -223,15 +242,16 @@ class ImagingService:
             connection.execute(
                 """
                 INSERT INTO imaging_assets
-                    (id, user_id, experiment_id, original_filename, stored_filename, storage_uri, mime_type,
+                    (id, user_id, experiment_id, original_filename, display_name, stored_filename, storage_uri, mime_type,
                      format, size_bytes, checksum, width, height, channels, z_slices, timepoints,
                      pixel_size_x, pixel_size_y, pixel_size_z, metadata_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     asset_id,
                     user_id,
                     experiment_id,
+                    Path(filename).name,
                     Path(filename).name,
                     stored_filename,
                     storage_uri,
@@ -265,9 +285,32 @@ class ImagingService:
         return self._asset_payload(row)
 
     def delete_asset(self, user_id: str, asset_id: str) -> None:
+        asset = self.get_asset(user_id, asset_id)
+        with self._connect() as connection:
+            job_rows = connection.execute("SELECT id FROM imaging_jobs WHERE asset_id = ? AND user_id = ?", (asset_id, user_id)).fetchall()
+            job_ids = [str(row["id"]) for row in job_rows]
+            for job_id in job_ids:
+                connection.execute("DELETE FROM imaging_outputs WHERE job_id = ?", (job_id,))
+                connection.execute("DELETE FROM imaging_measurements WHERE job_id = ?", (job_id,))
+            connection.execute("DELETE FROM imaging_jobs WHERE asset_id = ? AND user_id = ?", (asset_id, user_id))
+            connection.execute("DELETE FROM imaging_display_profiles WHERE user_id = ? AND asset_id = ?", (user_id, asset_id))
+            connection.execute("DELETE FROM imaging_notebook_references WHERE user_id = ? AND asset_id = ?", (user_id, asset_id))
+            connection.execute("DELETE FROM imaging_assets WHERE id = ? AND user_id = ?", (asset_id, user_id))
+        _safe_unlink(self.base_dir / str(asset["storage_uri"]), self.base_dir)
+        for job_id in job_ids:
+            _safe_rmtree(self.jobs_dir / job_id, self.base_dir)
+
+    def rename_asset(self, user_id: str, asset_id: str, display_name: str) -> dict[str, Any]:
+        clean = display_name.strip()
+        if not clean:
+            raise ImagingValidationError("Display name cannot be blank.")
         self.get_asset(user_id, asset_id)
         with self._connect() as connection:
-            connection.execute("DELETE FROM imaging_assets WHERE id = ? AND user_id = ?", (asset_id, user_id))
+            connection.execute(
+                "UPDATE imaging_assets SET display_name = ? WHERE id = ? AND user_id = ?",
+                (clean, asset_id, user_id),
+            )
+        return self.get_asset(user_id, asset_id)
 
     def list_workflows(self) -> list[dict[str, Any]]:
         return list_workflows()
@@ -294,10 +337,20 @@ class ImagingService:
 
     def list_jobs(self, user_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM imaging_jobs WHERE user_id = ? ORDER BY queued_at DESC", (user_id,)).fetchall()
+            rows = connection.execute(
+                "SELECT * FROM imaging_jobs WHERE user_id = ? AND deleted_at IS NULL ORDER BY queued_at DESC",
+                (user_id,),
+            ).fetchall()
         return [self._job_payload(row) for row in rows]
 
     def get_job(self, user_id: str, job_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM imaging_jobs WHERE id = ? AND user_id = ? AND deleted_at IS NULL", (job_id, user_id)).fetchone()
+        if row is None:
+            raise ImagingValidationError("Imaging job not found.")
+        return self._job_payload(row)
+
+    def _get_job_including_deleted(self, user_id: str, job_id: str) -> dict[str, Any]:
         with self._connect() as connection:
             row = connection.execute("SELECT * FROM imaging_jobs WHERE id = ? AND user_id = ?", (job_id, user_id)).fetchone()
         if row is None:
@@ -309,6 +362,19 @@ class ImagingService:
         with self._connect() as connection:
             connection.execute("UPDATE imaging_jobs SET status = 'queued', progress = 0, error_code = NULL, safe_error_message = NULL WHERE id = ? AND user_id = ?", (job_id, user_id))
         return self.get_job(user_id, job_id)
+
+    def delete_job(self, user_id: str, job_id: str) -> None:
+        job = self.get_job(user_id, job_id)
+        if str(job["status"]) in {"preparing", "running", "saving_outputs"}:
+            raise ImagingValidationError("Running imaging jobs cannot be deleted. Cancel the job first.")
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE imaging_jobs SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+                (job_id, user_id),
+            )
+        job_dir = self.jobs_dir / job_id
+        for filename in ("log.txt", "stdout.txt", "stderr.txt"):
+            _safe_unlink(job_dir / filename, self.base_dir)
 
     def cancel_job(self, user_id: str, job_id: str) -> dict[str, Any]:
         self.get_job(user_id, job_id)
@@ -491,33 +557,114 @@ class ImagingService:
         }
 
     def outputs_for_job(self, user_id: str, job_id: str) -> list[dict[str, Any]]:
-        self.get_job(user_id, job_id)
+        self._get_job_including_deleted(user_id, job_id)
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM imaging_outputs WHERE job_id = ? ORDER BY created_at ASC", (job_id,)).fetchall()
         return [self._output_payload(row) for row in rows]
 
     def measurements_for_job(self, user_id: str, job_id: str) -> list[dict[str, Any]]:
-        self.get_job(user_id, job_id)
+        self._get_job_including_deleted(user_id, job_id)
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM imaging_measurements WHERE job_id = ? ORDER BY rowid ASC", (job_id,)).fetchall()
         return [dict(row) | {"metadata": json.loads(row["metadata_json"] or "{}")} for row in rows]
 
-    def output_path(self, user_id: str, output_id: str) -> Path:
+    def rename_output(self, user_id: str, output_id: str, display_name: str) -> dict[str, Any]:
+        clean = display_name.strip()
+        if not clean:
+            raise ImagingValidationError("Display name cannot be blank.")
+        self.output_path(user_id, output_id)
         with self._connect() as connection:
-            row = connection.execute(
-                """
-                SELECT o.* FROM imaging_outputs o
-                JOIN imaging_jobs j ON j.id = o.job_id
-                WHERE o.id = ? AND j.user_id = ?
-                """,
-                (output_id, user_id),
-            ).fetchone()
+            connection.execute(
+                "UPDATE imaging_outputs SET display_name = ? WHERE id = ?",
+                (clean, output_id),
+            )
+            row = self._output_row(connection, user_id, output_id)
         if row is None:
             raise ImagingValidationError("Imaging output not found.")
+        return self._output_payload(row)
+
+    def delete_output(self, user_id: str, output_id: str) -> None:
+        output = self._output_for_user(user_id, output_id)
+        path = (self.base_dir / str(output["storage_uri"])).resolve()
+        with self._connect() as connection:
+            connection.execute("DELETE FROM imaging_notebook_references WHERE user_id = ? AND output_id = ?", (user_id, output_id))
+            connection.execute("DELETE FROM imaging_display_profiles WHERE user_id = ? AND output_id = ?", (user_id, output_id))
+            connection.execute("DELETE FROM imaging_outputs WHERE id = ?", (output_id,))
+            if str(output["output_type"]) in {"measurements_csv", "provenance"}:
+                connection.execute("DELETE FROM imaging_measurements WHERE job_id = ?", (output["job_id"],))
+        _safe_unlink(path, self.base_dir)
+
+    def references_for_target(self, user_id: str, *, asset_id: str | None = None, output_id: str | None = None) -> list[dict[str, Any]]:
+        if (asset_id is None) == (output_id is None):
+            raise ImagingValidationError("Reference lookup must target exactly one image.")
+        if asset_id is not None:
+            self.get_asset(user_id, asset_id)
+            where = "asset_id = ?"
+            target = asset_id
+        else:
+            self.output_path(user_id, str(output_id))
+            where = "output_id = ?"
+            target = output_id
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM imaging_notebook_references WHERE user_id = ? AND {where} ORDER BY created_at DESC",
+                (user_id, target),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_notebook_reference(
+        self,
+        user_id: str,
+        *,
+        notebook_id: str | None = None,
+        experiment_id: str | None = None,
+        asset_id: str | None = None,
+        output_id: str | None = None,
+        reference_type: str = "linked",
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        if (asset_id is None) == (output_id is None):
+            raise ImagingValidationError("Notebook reference must target exactly one image.")
+        if asset_id is not None:
+            self.get_asset(user_id, asset_id)
+        else:
+            self.output_path(user_id, str(output_id))
+        reference_id = f"imaging-reference:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO imaging_notebook_references
+                    (id, user_id, notebook_id, experiment_id, asset_id, output_id, reference_type, label)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (reference_id, user_id, notebook_id, experiment_id, asset_id, output_id, reference_type, label),
+            )
+            row = connection.execute("SELECT * FROM imaging_notebook_references WHERE id = ?", (reference_id,)).fetchone()
+        return dict(row)
+
+    def output_path(self, user_id: str, output_id: str) -> Path:
+        row = self._output_for_user(user_id, output_id)
         path = (self.base_dir / str(row["storage_uri"])).resolve()
         if not str(path).startswith(str(self.base_dir)):
             raise ImagingValidationError("Invalid imaging output path.")
         return path
+
+    def _output_for_user(self, user_id: str, output_id: str) -> sqlite3.Row:
+        with self._connect() as connection:
+            row = self._output_row(connection, user_id, output_id)
+        if row is None:
+            raise ImagingValidationError("Imaging output not found.")
+        return row
+
+    def _output_row(self, connection: sqlite3.Connection, user_id: str, output_id: str) -> sqlite3.Row | None:
+        return connection.execute(
+            """
+            SELECT o.* FROM imaging_outputs o
+            JOIN imaging_jobs j ON j.id = o.job_id
+            WHERE o.id = ? AND j.user_id = ?
+            """,
+            (output_id, user_id),
+        ).fetchone()
 
     def asset_path(self, user_id: str, asset_id: str) -> Path:
         asset = self.get_asset(user_id, asset_id)
@@ -693,8 +840,8 @@ class ImagingService:
     def _insert_output(self, connection: sqlite3.Connection, job_id: str, path: Path, output_type: str, mime_type: str) -> None:
         rel = path.resolve().relative_to(self.base_dir)
         connection.execute(
-            "INSERT INTO imaging_outputs (id, job_id, output_type, filename, storage_uri, mime_type, size_bytes, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (f"imaging-output:{uuid.uuid4().hex[:16]}", job_id, output_type, path.name, str(rel), mime_type, path.stat().st_size, "{}"),
+            "INSERT INTO imaging_outputs (id, job_id, output_type, filename, display_name, storage_uri, mime_type, size_bytes, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (f"imaging-output:{uuid.uuid4().hex[:16]}", job_id, output_type, path.name, _default_output_display_name(output_type, path.name), str(rel), mime_type, path.stat().st_size, "{}"),
         )
 
     def _insert_measurement(self, connection: sqlite3.Connection, job_id: str, name: str, value: float, unit: str | None = None) -> None:
@@ -711,13 +858,19 @@ class ImagingService:
             )
 
     def _asset_payload(self, row: sqlite3.Row) -> dict[str, Any]:
-        return dict(row) | {"metadata": json.loads(row["metadata_json"] or "{}")}
+        payload = dict(row) | {"metadata": json.loads(row["metadata_json"] or "{}")}
+        if not payload.get("display_name"):
+            payload["display_name"] = payload.get("original_filename")
+        return payload
 
     def _job_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         return dict(row) | {"parameters": json.loads(row["parameters_json"] or "{}")}
 
     def _output_payload(self, row: sqlite3.Row) -> dict[str, Any]:
-        return dict(row) | {"metadata": json.loads(row["metadata_json"] or "{}")}
+        payload = dict(row) | {"metadata": json.loads(row["metadata_json"] or "{}")}
+        if not payload.get("display_name"):
+            payload["display_name"] = _default_output_display_name(str(payload.get("output_type") or ""), str(payload.get("filename") or "Output"))
+        return payload
 
     def _display_profile_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
@@ -748,6 +901,45 @@ def _resolve_data_dir(data_dir: str) -> Path:
         path = PROJECT_ROOT / path
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    if any(str(row["name"]) == column for row in rows):
+        return
+    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _safe_unlink(path: Path, root: Path) -> None:
+    resolved = path.resolve()
+    root_resolved = root.resolve()
+    if not str(resolved).startswith(str(root_resolved)):
+        return
+    try:
+        if resolved.is_file():
+            resolved.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _safe_rmtree(path: Path, root: Path) -> None:
+    resolved = path.resolve()
+    root_resolved = root.resolve()
+    if not str(resolved).startswith(str(root_resolved)):
+        return
+    if resolved.exists() and resolved.is_dir():
+        shutil.rmtree(resolved)
+
+
+def _default_output_display_name(output_type: str, filename: str) -> str:
+    labels = {
+        "preview_png": "Preview",
+        "stdout": "Fiji stdout",
+        "stderr": "Fiji stderr",
+        "log": "Processing log",
+        "provenance": "Provenance",
+    }
+    return labels.get(output_type, Path(filename).stem or "Imaging output")
 
 
 def _imaging_extension(filename: str) -> str:

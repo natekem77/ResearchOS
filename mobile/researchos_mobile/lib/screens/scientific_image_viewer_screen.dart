@@ -130,6 +130,65 @@ class _ScientificImageViewerScreenState
     });
   }
 
+  Future<void> _showExportSheet() {
+    return showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(ResearchOsSpacing.md),
+              child: Text('Export Current View',
+                  style: Theme.of(context).textTheme.titleLarge),
+            ),
+            for (final option in const [
+              ('PNG', Icons.image_outlined),
+              ('TIFF', Icons.photo_size_select_actual_outlined),
+              ('Clipboard', Icons.content_copy_outlined),
+              ('Notebook Entry', Icons.note_add_outlined),
+              ('Files', Icons.folder_outlined),
+              ('Photos', Icons.photo_library_outlined),
+            ])
+              ListTile(
+                leading: Icon(option.$2),
+                title: Text(option.$1),
+                subtitle: const Text(
+                  'Uses the current display settings without creating a Fiji job.',
+                ),
+                onTap: () {
+                  Navigator.of(context).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        '${option.$1} export will use the current rendered view.',
+                      ),
+                    ),
+                  );
+                },
+              ),
+            CheckboxListTile(
+              value: _annotations.isNotEmpty,
+              onChanged: null,
+              title: const Text('Include annotations when present'),
+            ),
+            const CheckboxListTile(
+              value: false,
+              onChanged: null,
+              title: Text('Include scale bar'),
+            ),
+            const CheckboxListTile(
+              value: false,
+              onChanged: null,
+              title: Text('Include metadata footer'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _updateDisplay(VoidCallback update) {
     setState(update);
     _scheduleSave();
@@ -259,6 +318,11 @@ class _ScientificImageViewerScreenState
             tooltip: 'Fit to screen',
             onPressed: _fitToScreen,
             icon: const Icon(Icons.fit_screen_outlined),
+          ),
+          IconButton(
+            tooltip: 'Export Current View',
+            onPressed: _showExportSheet,
+            icon: const Icon(Icons.ios_share_outlined),
           ),
           TextButton(onPressed: _zoom100, child: const Text('100%')),
         ],

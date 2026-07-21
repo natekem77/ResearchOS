@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.agents.manager import create_default_agent_manager
 from app.ai.provider_manager import AIService, get_ai_provider
+from app.analysis import AnalysisAuthorizationError, AnalysisService, AnalysisValidationError
 from app.attachment_storage import AttachmentStorageError, LocalAttachmentStorage
 from app.ai_providers import AIProviderError
 from app.authorization import AuthorizationService
@@ -296,6 +297,10 @@ def _protocol_hub_service() -> ProtocolHubService:
 
 def _imaging_service() -> ImagingService:
     return ImagingService(settings=settings)
+
+
+def _analysis_service() -> AnalysisService:
+    return AnalysisService(settings=settings)
 
 
 def _research_object_service() -> ResearchObjectService:
@@ -979,6 +984,19 @@ class MobileImagingJobRequest(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class MobileImagingRenameRequest(BaseModel):
+    display_name: str
+
+
+class MobileImagingNotebookReferenceRequest(BaseModel):
+    notebook_id: str | None = None
+    experiment_id: str | None = None
+    asset_id: str | None = None
+    output_id: str | None = None
+    reference_type: Literal["linked", "snapshot"] = "linked"
+    label: str | None = None
+
+
 class MobileImagingDisplayProfileRequest(BaseModel):
     lut: str = "Grayscale"
     brightness: float = 0
@@ -989,6 +1007,76 @@ class MobileImagingDisplayProfileRequest(BaseModel):
     channels: list[dict[str, object]] = Field(default_factory=list)
     comparison: dict[str, object] | None = None
     viewport: dict[str, object] | None = None
+
+
+class MobileAnalysisDatasetRequest(BaseModel):
+    display_name: str
+    modality: str = "bulk_rna_seq"
+    source_type: str = "server_folder"
+    storage_location_id: str | None = None
+    counts_path: str
+    metadata_path: str
+    organism: str | None = None
+    genome_build: str | None = None
+    assay: str | None = None
+    worker_id: str | None = None
+
+
+class MobileAnalysisJobRequest(BaseModel):
+    dataset_id: str
+    workflow_key: str
+    parameters: dict[str, object] = Field(default_factory=dict)
+    priority: int = 0
+
+
+class AnalysisWorkerRegisterRequest(BaseModel):
+    worker_id: str
+    display_name: str | None = None
+    hostname: str | None = None
+    operating_system: str | None = None
+    architecture: str | None = None
+    cpu_count: int | None = None
+    ram_gb: float | None = None
+    gpu_inventory: list[dict[str, object]] = Field(default_factory=list)
+    available_disk_gb: float | None = None
+    supported_runtimes: list[str] = Field(default_factory=list)
+    supported_workflows: list[str] = Field(default_factory=list)
+    software_versions: dict[str, object] = Field(default_factory=dict)
+    status: str = "ready"
+    running_job_count: int = 0
+    maximum_concurrent_jobs: int = 1
+
+
+class AnalysisWorkerHeartbeatRequest(BaseModel):
+    worker_id: str
+    status: str = "ready"
+    running_job_count: int = 0
+
+
+class AnalysisWorkerClaimRequest(BaseModel):
+    worker_id: str
+
+
+class AnalysisWorkerProgressRequest(BaseModel):
+    worker_id: str
+    status: str | None = None
+    progress: float | None = None
+    current_stage: str | None = None
+
+
+class AnalysisWorkerLogsRequest(BaseModel):
+    worker_id: str
+    lines: list[str] = Field(default_factory=list)
+
+
+class AnalysisWorkerOutputsRequest(BaseModel):
+    worker_id: str
+    outputs: list[dict[str, object]] = Field(default_factory=list)
+
+
+class AnalysisWorkerFailureRequest(BaseModel):
+    worker_id: str
+    error_summary: str
 
 
 class AssistantRequest(BaseModel):
@@ -4880,6 +4968,7 @@ _MOBILE_NAVIGATION_DESTINATIONS = [
     {"id": "search", "label": "Search", "screen_index": 7},
     {"id": "chat", "label": "Chat", "screen_index": 13},
     {"id": "imaging", "label": "Imaging", "screen_index": 16},
+    {"id": "analysis", "label": "Analysis", "screen_index": 17},
     {"id": "settings", "label": "Settings", "screen_index": 9},
 ]
 _DEFAULT_MOBILE_NAVIGATION_IDS = ["home", "experiments", "protocols", "ask_mundi", "settings"]
@@ -5049,6 +5138,24 @@ def delete_mobile_imaging_asset(asset_id: str, request: Request) -> dict[str, ob
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.patch("/mobile/imaging/assets/{asset_id}", tags=["imaging"])
+def rename_mobile_imaging_asset(
+    asset_id: str,
+    request_body: MobileImagingRenameRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "asset": _imaging_service().rename_asset(
+                _request_user_id(request),
+                asset_id,
+                request_body.display_name,
+            )
+        }
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/mobile/imaging/assets/{asset_id}/download", tags=["imaging"])
 def download_mobile_imaging_asset(asset_id: str, request: Request) -> FileResponse:
     try:
@@ -5142,6 +5249,15 @@ def retry_mobile_imaging_job(job_id: str, request: Request) -> dict[str, object]
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.delete("/mobile/imaging/jobs/{job_id}", tags=["imaging"])
+def delete_mobile_imaging_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        _imaging_service().delete_job(_request_user_id(request), job_id)
+        return {"deleted": True}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/mobile/imaging/jobs/{job_id}/outputs", tags=["imaging"])
 def list_mobile_imaging_outputs(job_id: str, request: Request) -> dict[str, object]:
     try:
@@ -5172,6 +5288,72 @@ def download_mobile_imaging_output(output_id: str, request: Request) -> FileResp
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.patch("/mobile/imaging/outputs/{output_id}", tags=["imaging"])
+def rename_mobile_imaging_output(
+    output_id: str,
+    request_body: MobileImagingRenameRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "output": _imaging_service().rename_output(
+                _request_user_id(request),
+                output_id,
+                request_body.display_name,
+            )
+        }
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/mobile/imaging/outputs/{output_id}", tags=["imaging"])
+def delete_mobile_imaging_output(output_id: str, request: Request) -> dict[str, object]:
+    try:
+        _imaging_service().delete_output(_request_user_id(request), output_id)
+        return {"deleted": True}
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/imaging/references", tags=["imaging"])
+def list_mobile_imaging_references(
+    request: Request,
+    asset_id: str | None = None,
+    output_id: str | None = None,
+) -> dict[str, object]:
+    try:
+        return {
+            "references": _imaging_service().references_for_target(
+                _request_user_id(request),
+                asset_id=asset_id,
+                output_id=output_id,
+            )
+        }
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/mobile/imaging/references", tags=["imaging"])
+def create_mobile_imaging_reference(
+    request_body: MobileImagingNotebookReferenceRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "reference": _imaging_service().record_notebook_reference(
+                _request_user_id(request),
+                notebook_id=request_body.notebook_id,
+                experiment_id=request_body.experiment_id,
+                asset_id=request_body.asset_id,
+                output_id=request_body.output_id,
+                reference_type=request_body.reference_type,
+                label=request_body.label,
+            )
+        }
+    except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/mobile/imaging/outputs/{output_id}/display-profile", tags=["imaging"])
 def get_mobile_imaging_output_display_profile(output_id: str, request: Request) -> dict[str, object]:
     try:
@@ -5195,6 +5377,255 @@ def save_mobile_imaging_output_display_profile(
             )
         }
     except ImagingValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _require_compute_worker_token(token: str | None) -> None:
+    try:
+        _analysis_service().require_worker_token(token)
+    except AnalysisAuthorizationError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/workers", tags=["analysis"])
+def list_mobile_analysis_workers(request: Request) -> dict[str, object]:
+    _request_user_id(request)
+    return {"workers": _analysis_service().list_workers()}
+
+
+@app.get("/mobile/analysis/storage-locations", tags=["analysis"])
+def list_mobile_analysis_storage_locations(request: Request) -> dict[str, object]:
+    _request_user_id(request)
+    return {"storage_locations": _analysis_service().list_storage_locations()}
+
+
+@app.get("/mobile/analysis/datasets", tags=["analysis"])
+def list_mobile_analysis_datasets(
+    request: Request,
+    modality: str | None = None,
+) -> dict[str, object]:
+    return {
+        "datasets": _analysis_service().list_datasets(
+            _request_user_id(request),
+            modality=modality,
+        )
+    }
+
+
+@app.post("/mobile/analysis/datasets", tags=["analysis"])
+def create_mobile_analysis_dataset(
+    request_body: MobileAnalysisDatasetRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        dataset = _analysis_service().register_server_dataset(
+            user_id=_request_user_id(request),
+            payload=request_body.model_dump(exclude_none=True),
+        )
+        return {"dataset": dataset}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/datasets/{dataset_id}", tags=["analysis"])
+def get_mobile_analysis_dataset(dataset_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"dataset": _analysis_service().get_dataset(_request_user_id(request), dataset_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/workflows", tags=["analysis"])
+def list_mobile_analysis_workflows(request: Request) -> dict[str, object]:
+    _request_user_id(request)
+    return {"workflows": _analysis_service().list_workflows()}
+
+
+@app.post("/mobile/analysis/jobs", tags=["analysis"])
+def create_mobile_analysis_job(
+    request_body: MobileAnalysisJobRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "job": _analysis_service().create_job(
+                user_id=_request_user_id(request),
+                dataset_id=request_body.dataset_id,
+                workflow_key=request_body.workflow_key,
+                parameters=dict(request_body.parameters),
+                priority=request_body.priority,
+            )
+        }
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/jobs", tags=["analysis"])
+def list_mobile_analysis_jobs(request: Request) -> dict[str, object]:
+    return {"jobs": _analysis_service().list_jobs(_request_user_id(request))}
+
+
+@app.get("/mobile/analysis/jobs/{job_id}", tags=["analysis"])
+def get_mobile_analysis_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"job": _analysis_service().get_job(_request_user_id(request), job_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/mobile/analysis/jobs/{job_id}/cancel", tags=["analysis"])
+def cancel_mobile_analysis_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"job": _analysis_service().cancel_job(_request_user_id(request), job_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/mobile/analysis/jobs/{job_id}/retry", tags=["analysis"])
+def retry_mobile_analysis_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"job": _analysis_service().retry_job(_request_user_id(request), job_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/mobile/analysis/jobs/{job_id}", tags=["analysis"])
+def delete_mobile_analysis_job(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        _analysis_service().delete_job(_request_user_id(request), job_id)
+        return {"deleted": True}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/jobs/{job_id}/outputs", tags=["analysis"])
+def list_mobile_analysis_outputs(job_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"outputs": _analysis_service().outputs_for_job(_request_user_id(request), job_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/outputs/{output_id}", tags=["analysis"])
+def get_mobile_analysis_output(output_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {"output": _analysis_service().get_output(_request_user_id(request), output_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/worker/register", tags=["analysis-worker"])
+def register_analysis_worker(
+    request_body: AnalysisWorkerRegisterRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    return {"worker": _analysis_service().register_worker(request_body.model_dump())}
+
+
+@app.post("/worker/heartbeat", tags=["analysis-worker"])
+def heartbeat_analysis_worker(
+    request_body: AnalysisWorkerHeartbeatRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    return {
+        "worker": _analysis_service().record_worker_heartbeat(
+            request_body.worker_id,
+            request_body.model_dump(),
+        )
+    }
+
+
+@app.post("/worker/jobs/claim", tags=["analysis-worker"])
+def claim_analysis_worker_job(
+    request_body: AnalysisWorkerClaimRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    try:
+        return {"job": _analysis_service().claim_next_job(request_body.worker_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/worker/jobs/{job_id}/progress", tags=["analysis-worker"])
+def update_analysis_worker_job_progress(
+    job_id: str,
+    request_body: AnalysisWorkerProgressRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    try:
+        return {
+            "job": _analysis_service().update_job_progress(
+                request_body.worker_id,
+                job_id,
+                status=request_body.status,
+                progress=request_body.progress,
+                current_stage=request_body.current_stage,
+            )
+        }
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/worker/jobs/{job_id}/logs", tags=["analysis-worker"])
+def append_analysis_worker_job_logs(
+    job_id: str,
+    request_body: AnalysisWorkerLogsRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    try:
+        return _analysis_service().append_job_logs(request_body.worker_id, job_id, request_body.lines)
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/worker/jobs/{job_id}/outputs", tags=["analysis-worker"])
+def register_analysis_worker_job_outputs(
+    job_id: str,
+    request_body: AnalysisWorkerOutputsRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    try:
+        job = _analysis_service().complete_job(request_body.worker_id, job_id, request_body.outputs)
+        return {"job": job}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/worker/jobs/{job_id}/complete", tags=["analysis-worker"])
+def complete_analysis_worker_job(
+    job_id: str,
+    request_body: AnalysisWorkerOutputsRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    try:
+        return {"job": _analysis_service().complete_job(request_body.worker_id, job_id, request_body.outputs)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/worker/jobs/{job_id}/fail", tags=["analysis-worker"])
+def fail_analysis_worker_job(
+    job_id: str,
+    request_body: AnalysisWorkerFailureRequest,
+    x_mundi_worker_token: str | None = Header(default=None),
+) -> dict[str, object]:
+    _require_compute_worker_token(x_mundi_worker_token)
+    try:
+        return {
+            "job": _analysis_service().fail_job(
+                request_body.worker_id,
+                job_id,
+                request_body.error_summary,
+            )
+        }
+    except AnalysisValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

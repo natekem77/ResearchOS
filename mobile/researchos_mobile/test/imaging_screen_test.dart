@@ -95,7 +95,7 @@ void main() {
     await tester.pageBack();
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Run').first);
+    await tester.tap(find.byTooltip('Run analysis').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Generate Preview'));
     await tester.pumpAndSettle();
@@ -146,7 +146,9 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('Unavailable'), findsOneWidget);
-    expect(find.text('Waiting for imaging worker'), findsOneWidget);
+    await tester.drag(find.byType(ListView).first, const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Waiting for imaging worker'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
