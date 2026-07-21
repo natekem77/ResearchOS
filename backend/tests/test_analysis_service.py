@@ -50,6 +50,19 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(heartbeat["connected"])
         self.assertEqual(heartbeat["status"], "ready")
 
+    def test_worker_status_becomes_offline_when_heartbeat_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker({"worker_id": "worker-1", "display_name": "Worker"})
+            with service._connect() as connection:
+                connection.execute(
+                    "UPDATE analysis_workers SET last_heartbeat = '2020-01-01T00:00:00+00:00' WHERE worker_id = 'worker-1'"
+                )
+            worker = service.get_worker("worker-1")
+
+        self.assertFalse(worker["connected"])
+        self.assertEqual(worker["status"], "offline")
+
     def test_worker_authentication_rejects_bad_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)
@@ -87,6 +100,16 @@ class AnalysisServiceTests(unittest.TestCase):
                         "metadata_path": "bulk/samples.csv",
                     },
                 )
+
+    def test_browse_approved_root_returns_dataset_candidates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            browse = service.browse_storage_location("analysis-storage:default")
+
+        self.assertEqual(browse["storage_location_id"], "analysis-storage:default")
+        bulk = next(item for item in browse["entries"] if item["name"] == "bulk")
+        self.assertTrue(bulk["is_directory"])
+        self.assertEqual(bulk["candidate"]["modality"], "bulk_rna_seq")
 
     def test_job_claim_progress_completion_and_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -166,6 +189,19 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(qc["structured"]["summary"]["integer_counts_valid"])
         self.assertTrue(qc["provenance"]["source_files_remain_server_local"])
 
+    def test_output_browser_and_demo_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            library = service.demo_library()
+            install = service.install_demo_workspace("user:pi-owner")
+            outputs = service.list_outputs("user:pi-owner", query="QC")
+            datasets = service.list_datasets("user:pi-owner")
+
+        self.assertIn("PBMC 3k", [item["display_name"] for item in library["datasets"]])
+        self.assertIn("Demo Workspace", install["workspace"]["display_name"])
+        self.assertGreaterEqual(len(outputs), 1)
+        self.assertIn("Small PBMC Bulk", [item["display_name"] for item in datasets])
+
     def test_scaffolded_workflow_cannot_execute_yet(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)
@@ -183,6 +219,15 @@ class AnalysisServiceTests(unittest.TestCase):
                     dataset_id=dataset["id"],
                     workflow_key="deseq2_differential_expression",
                 )
+
+    def test_analysis_routes_are_registered(self) -> None:
+        from app.main import app
+
+        routes = {(route.path, ",".join(sorted(getattr(route, "methods", [])))) for route in app.routes}
+
+        self.assertTrue(any(path == "/mobile/analysis/workers" and "GET" in methods for path, methods in routes))
+        self.assertTrue(any(path == "/worker/register" and "POST" in methods for path, methods in routes))
+        self.assertTrue(any(path == "/mobile/analysis/demo-library" and "GET" in methods for path, methods in routes))
 
 
 def _write_bulk_fixture(root: Path) -> None:

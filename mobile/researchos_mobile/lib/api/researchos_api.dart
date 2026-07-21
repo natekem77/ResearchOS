@@ -374,9 +374,24 @@ class ResearchOsApi {
     return _jsonObjectList(json['workers']);
   }
 
+  Future<Map<String, dynamic>> analysisWorker(String workerId) {
+    return _getMap('/mobile/analysis/workers/${Uri.encodeComponent(workerId)}');
+  }
+
   Future<List<Map<String, dynamic>>> analysisStorageLocations() async {
     final json = await _getMap('/mobile/analysis/storage-locations');
     return _jsonObjectList(json['storage_locations']);
+  }
+
+  Future<Map<String, dynamic>> browseAnalysisStorageLocation({
+    required String storageLocationId,
+    String path = '',
+  }) {
+    final suffix = path.trim().isEmpty
+        ? ''
+        : '?path=${Uri.encodeQueryComponent(path.trim())}';
+    return _getMap(
+        '/mobile/analysis/storage-locations/${Uri.encodeComponent(storageLocationId)}/browse$suffix');
   }
 
   Future<List<Map<String, dynamic>>> analysisDatasets({
@@ -447,8 +462,24 @@ class ResearchOsApi {
     return _jsonObjectList(json['outputs']);
   }
 
+  Future<List<Map<String, dynamic>>> allAnalysisOutputs({String? query}) async {
+    final suffix = query == null || query.trim().isEmpty
+        ? ''
+        : '?q=${Uri.encodeQueryComponent(query.trim())}';
+    final json = await _getMap('/mobile/analysis/outputs$suffix');
+    return _jsonObjectList(json['outputs']);
+  }
+
   Future<Map<String, dynamic>> analysisOutput(String outputId) {
     return _getMap('/mobile/analysis/outputs/${Uri.encodeComponent(outputId)}');
+  }
+
+  Future<Map<String, dynamic>> analysisDemoLibrary() {
+    return _getMap('/mobile/analysis/demo-library');
+  }
+
+  Future<Map<String, dynamic>> installAnalysisDemoWorkspace() {
+    return _postMap('/mobile/analysis/demo-workspace/install', const {});
   }
 
   Future<List<DashboardCard>> dashboardCards() async {

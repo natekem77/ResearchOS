@@ -36,6 +36,34 @@ void main() {
             ],
           });
         }
+        if (request.url.path == '/mobile/analysis/storage-locations') {
+          return _json({
+            'storage_locations': [
+              {
+                'id': 'analysis-storage:default',
+                'display_name': 'Approved lab data root',
+                'root_path': 'server-data',
+              }
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/demo-library') {
+          return _json({
+            'workspace': {'display_name': 'Demo Workspace'},
+            'datasets': [
+              {'display_name': 'PBMC 3k'},
+              {'display_name': 'Small Retina Bulk'},
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/demo-workspace/install') {
+          return _json({
+            'workspace': {'display_name': 'Demo Workspace'},
+            'installed_datasets': const [],
+            'jobs': const [],
+            'outputs': const [],
+          });
+        }
         if (request.url.path == '/mobile/analysis/datasets') {
           return _json({
             'datasets': [
@@ -46,6 +74,20 @@ void main() {
                 'sample_count': 3,
                 'features_count': 4,
                 'metadata_summary': const {},
+              }
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/outputs') {
+          return _json({
+            'outputs': [
+              {
+                'id': 'analysis-output:test',
+                'display_name': 'Bulk RNA-seq QC Report',
+                'output_type': 'qc_report',
+                'structured': {
+                  'summary': {'sample_count': 3, 'feature_count': 4},
+                },
               }
             ],
           });
@@ -107,7 +149,21 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Analysis'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Lab Analysis Server'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
     expect(find.text('Lab Analysis Server'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Demo Library'),
+      -240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Demo Library'), findsOneWidget);
+    await tester.tap(find.text('Install Demo Workspace'));
+    await tester.pumpAndSettle();
+    expect(calls, contains('POST /mobile/analysis/demo-workspace/install'));
     await tester.scrollUntilVisible(
       find.text('Bulk SAG GRKi'),
       240,
@@ -129,7 +185,7 @@ void main() {
     await tester.tap(find.text('Open Results'));
     await tester.pumpAndSettle();
 
-    expect(find.text('Bulk RNA-seq QC Report'), findsOneWidget);
+    expect(find.text('Bulk RNA-seq QC Report'), findsWidgets);
     expect(calls, contains('POST /mobile/analysis/jobs'));
     expect(tester.takeException(), isNull);
   });

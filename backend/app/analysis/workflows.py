@@ -19,6 +19,7 @@ class AnalysisWorkflow:
     supported_runtimes: tuple[str, ...]
 
     def payload(self) -> dict[str, Any]:
+        status = "installed" if self.stable_key == "bulk_rnaseq_validation_qc" else "available"
         return {
             "id": self.stable_key,
             "stable_key": self.stable_key,
@@ -31,6 +32,8 @@ class AnalysisWorkflow:
             "resource_request": self.resource_request,
             "supported_runtimes": list(self.supported_runtimes),
             "enabled": True,
+            "status": status,
+            "installed": status == "installed",
         }
 
 

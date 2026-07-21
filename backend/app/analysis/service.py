@@ -11,7 +11,7 @@ import platform
 import sqlite3
 import statistics
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -318,6 +318,31 @@ class AnalysisService:
             rows = connection.execute("SELECT * FROM analysis_storage_locations WHERE enabled = 1 ORDER BY created_at ASC").fetchall()
         return [dict(row) | {"root_path": _display_root(row["root_path"])} for row in rows]
 
+    def browse_storage_location(self, storage_location_id: str, relative_path: str = "") -> dict[str, Any]:
+        root, clean_root_relative = self._resolve_location_path(storage_location_id, relative_path or ".")
+        if not root.exists() or not root.is_dir():
+            raise AnalysisValidationError("Approved data folder not found.")
+        entries = []
+        for child in sorted(root.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))[:200]:
+            if child.name.startswith("."):
+                continue
+            relative = str((Path(clean_root_relative) / child.name) if clean_root_relative not in {"", "."} else Path(child.name))
+            candidate = _dataset_candidate(child)
+            entries.append(
+                {
+                    "name": child.name,
+                    "relative_path": relative,
+                    "is_directory": child.is_dir(),
+                    "size_bytes": child.stat().st_size if child.is_file() else None,
+                    "candidate": candidate,
+                }
+            )
+        return {
+            "storage_location_id": storage_location_id,
+            "path": "" if clean_root_relative == "." else clean_root_relative,
+            "entries": entries,
+        }
+
     def register_server_dataset(self, *, user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         display_name = _clean_required(payload.get("display_name"), "display_name")
         modality = str(payload.get("modality") or "bulk_rna_seq")
@@ -366,12 +391,15 @@ class AnalysisService:
         self._audit(user_id, "dataset.register", dataset_id, {"modality": modality})
         return self.get_dataset(user_id, dataset_id)
 
-    def list_datasets(self, user_id: str, modality: str | None = None) -> list[dict[str, Any]]:
+    def list_datasets(self, user_id: str, modality: str | None = None, query: str | None = None) -> list[dict[str, Any]]:
         where = "WHERE user_id = ?"
         params: list[Any] = [user_id]
         if modality:
             where += " AND modality = ?"
             params.append(modality)
+        if query and query.strip():
+            where += " AND lower(display_name) LIKE ?"
+            params.append(f"%{query.strip().lower()}%")
         with self._connect() as connection:
             rows = connection.execute(
                 f"SELECT * FROM analysis_datasets {where} ORDER BY updated_at DESC, created_at DESC",
@@ -389,9 +417,19 @@ class AnalysisService:
             raise AnalysisValidationError("Analysis dataset not found.")
         return self._dataset_payload(row)
 
-    def list_workflows(self) -> list[dict[str, Any]]:
+    def list_workflows(self, query: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as connection:
-            rows = connection.execute("SELECT * FROM analysis_workflows WHERE enabled = 1 ORDER BY category, name").fetchall()
+            if query and query.strip():
+                rows = connection.execute(
+                    """
+                    SELECT * FROM analysis_workflows
+                    WHERE enabled = 1 AND (lower(name) LIKE ? OR lower(category) LIKE ? OR lower(description) LIKE ?)
+                    ORDER BY category, name
+                    """,
+                    (f"%{query.strip().lower()}%",) * 3,
+                ).fetchall()
+            else:
+                rows = connection.execute("SELECT * FROM analysis_workflows WHERE enabled = 1 ORDER BY category, name").fetchall()
         return [self._workflow_payload(row) for row in rows]
 
     def create_job(self, *, user_id: str, dataset_id: str, workflow_key: str, parameters: dict[str, Any] | None = None, priority: int = 0) -> dict[str, Any]:
@@ -625,6 +663,99 @@ class AnalysisService:
             raise AnalysisValidationError("Analysis output not found.")
         return self._output_payload(row)
 
+    def list_outputs(self, user_id: str, query: str | None = None) -> list[dict[str, Any]]:
+        where = "WHERE j.user_id = ?"
+        params: list[Any] = [user_id]
+        if query and query.strip():
+            where += " AND lower(o.display_name) LIKE ?"
+            params.append(f"%{query.strip().lower()}%")
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT o.* FROM analysis_outputs o
+                JOIN analysis_jobs j ON j.id = o.job_id
+                {where}
+                ORDER BY o.created_at DESC
+                """,
+                params,
+            ).fetchall()
+        return [self._output_payload(row) for row in rows]
+
+    def demo_library(self) -> dict[str, Any]:
+        return {"datasets": _demo_datasets(), "workspace": _demo_workspace_payload()}
+
+    def install_demo_workspace(self, user_id: str) -> dict[str, Any]:
+        demo_dir = self.allowed_roots[0] / "demo"
+        bulk_dir = demo_dir / "bulk"
+        bulk_dir.mkdir(parents=True, exist_ok=True)
+        _write_demo_bulk_files(bulk_dir)
+        installed = []
+        for spec in _demo_datasets():
+            if spec["modality"] != "bulk_rna_seq":
+                installed.append(spec | {"status": "available_demo_only"})
+                continue
+            existing = self._dataset_by_name(user_id, spec["display_name"])
+            if existing is None:
+                dataset = self.register_server_dataset(
+                    user_id=user_id,
+                    payload={
+                        "display_name": spec["display_name"],
+                        "modality": "bulk_rna_seq",
+                        "source_type": "demo_server_folder",
+                        "counts_path": spec["counts_path"],
+                        "metadata_path": spec["metadata_path"],
+                        "organism": spec.get("organism"),
+                        "assay": "RNA-seq",
+                    },
+                )
+            else:
+                dataset = self._dataset_payload(existing)
+            if not self._completed_demo_job_exists(user_id, str(dataset["id"])):
+                self.register_worker(
+                    {
+                        "worker_id": "demo-compute-worker",
+                        "display_name": "Demo Compute Worker",
+                        "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                        "supported_runtimes": ["python"],
+                        "software_versions": {"python": platform.python_version()},
+                        "status": "ready",
+                    }
+                )
+                self.create_job(
+                    user_id=user_id,
+                    dataset_id=str(dataset["id"]),
+                    workflow_key="bulk_rnaseq_validation_qc",
+                    parameters={"sample_id_column": "sample", "group_column": "condition"},
+                )
+                self.run_claimed_job_once("demo-compute-worker")
+            installed.append(dataset | {"status": "installed"})
+        return {
+            "workspace": _demo_workspace_payload(),
+            "installed_datasets": installed,
+            "jobs": self.list_jobs(user_id),
+            "outputs": self.list_outputs(user_id),
+        }
+
+    def _dataset_by_name(self, user_id: str, display_name: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT * FROM analysis_datasets WHERE user_id = ? AND display_name = ?",
+                (user_id, display_name),
+            ).fetchone()
+
+    def _completed_demo_job_exists(self, user_id: str, dataset_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM analysis_jobs
+                WHERE user_id = ? AND dataset_id = ? AND workflow_id = 'bulk_rnaseq_validation_qc'
+                  AND status = 'complete' AND deleted_at IS NULL
+                LIMIT 1
+                """,
+                (user_id, dataset_id),
+            ).fetchone()
+        return row is not None
+
     def run_claimed_job_once(self, worker_id: str) -> dict[str, Any] | None:
         job = self.claim_next_job(worker_id)
         if job is None:
@@ -804,9 +935,15 @@ class AnalysisService:
             )
 
     def _worker_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+        status = str(row["status"] or "offline")
+        connected = _is_fresh_heartbeat(str(row["last_heartbeat"]))
+        if not connected and status not in {"maintenance"}:
+            status = "offline"
         return dict(row) | {
             "enabled": bool(row["enabled"]),
-            "connected": True,
+            "connected": connected,
+            "status": status,
+            "status_label": status.replace("_", " ").title(),
             "gpu_inventory": json.loads(row["gpu_inventory_json"] or "[]"),
             "supported_runtimes": json.loads(row["supported_runtimes_json"] or "[]"),
             "supported_workflows": json.loads(row["supported_workflows_json"] or "[]"),
@@ -821,11 +958,15 @@ class AnalysisService:
         return payload
 
     def _workflow_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+        stable_key = str(row["stable_key"])
+        status = "installed" if stable_key == "bulk_rnaseq_validation_qc" else "available"
         return dict(row) | {
             "parameter_schema": json.loads(row["parameter_schema_json"] or "{}"),
             "resource_request": json.loads(row["resource_request_json"] or "{}"),
             "supported_runtimes": json.loads(row["supported_runtimes_json"] or "[]"),
             "enabled": bool(row["enabled"]),
+            "status": status,
+            "installed": status == "installed",
         }
 
     def _job_payload(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -917,6 +1058,32 @@ def _is_within(path: Path, root: Path) -> bool:
 
 def _display_root(path: object) -> str:
     return Path(str(path)).name or "Approved data root"
+
+
+def _is_fresh_heartbeat(value: str) -> bool:
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - timestamp < timedelta(seconds=90)
+
+
+def _dataset_candidate(path: Path) -> dict[str, Any] | None:
+    if path.is_dir():
+        names = {child.name.lower() for child in path.iterdir() if not child.name.startswith(".")}
+        if "filtered_feature_bc_matrix" in names or "matrix.mtx" in names:
+            return {"modality": "single_cell_rna_seq", "source_type": "10x_or_matrix_market"}
+        if {"counts.tsv", "samples.csv"}.issubset(names) or {"counts.csv", "samples.csv"}.issubset(names):
+            return {"modality": "bulk_rna_seq", "source_type": "bulk_count_matrix"}
+        return None
+    suffix = path.suffix.lower()
+    if suffix in {".h5ad", ".h5", ".loom", ".rds"}:
+        return {"modality": "single_cell_rna_seq", "source_type": suffix.removeprefix(".")}
+    if suffix in {".csv", ".tsv"}:
+        return {"modality": "bulk_rna_seq", "source_type": "table"}
+    return None
 
 
 def _fingerprint_paths(paths: list[Path]) -> str:
@@ -1050,3 +1217,176 @@ def _sanitize_log_line(line: object) -> str:
     if token:
         text = text.replace(token, "[redacted]")
     return text[:1000]
+
+
+def _demo_datasets() -> list[dict[str, Any]]:
+    return [
+        {
+            "display_name": "GFP Fluorescence",
+            "modality": "imaging",
+            "description": "Small fluorescence image demo for preview and notebook linking.",
+            "source": "Mundi generated demo",
+            "organism": "human",
+            "expected_analyses": ["Generate Preview"],
+            "recommended_workflows": ["generate_preview"],
+            "estimated_runtime": "under 1 minute",
+        },
+        {
+            "display_name": "DAPI",
+            "modality": "imaging",
+            "description": "Single-channel nuclear stain demo.",
+            "source": "Mundi generated demo",
+            "organism": "human",
+            "expected_analyses": ["Generate Preview"],
+            "recommended_workflows": ["generate_preview"],
+            "estimated_runtime": "under 1 minute",
+        },
+        {
+            "display_name": "Multi-channel TIFF",
+            "modality": "imaging",
+            "description": "Small multi-channel TIFF demo placeholder.",
+            "source": "Mundi generated demo",
+            "organism": "human",
+            "expected_analyses": ["Preview", "Channel display"],
+            "recommended_workflows": ["generate_preview"],
+            "estimated_runtime": "under 1 minute",
+        },
+        {
+            "display_name": "Small Retina Bulk",
+            "modality": "bulk_rna_seq",
+            "description": "Tiny retinal-organoid bulk RNA-seq matrix for validation/QC.",
+            "source": "Mundi generated demo",
+            "organism": "human",
+            "counts_path": "demo/bulk/small_retina_bulk_counts.tsv",
+            "metadata_path": "demo/bulk/small_retina_bulk_samples.csv",
+            "expected_analyses": ["Dataset Validation/QC"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc"],
+            "estimated_runtime": "under 1 minute",
+        },
+        {
+            "display_name": "Small PBMC Bulk",
+            "modality": "bulk_rna_seq",
+            "description": "Tiny PBMC bulk RNA-seq matrix for validation/QC.",
+            "source": "Mundi generated demo",
+            "organism": "human",
+            "counts_path": "demo/bulk/small_pbmc_bulk_counts.tsv",
+            "metadata_path": "demo/bulk/small_pbmc_bulk_samples.csv",
+            "expected_analyses": ["Dataset Validation/QC"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc"],
+            "estimated_runtime": "under 1 minute",
+        },
+        {
+            "display_name": "PBMC 3k",
+            "modality": "single_cell_rna_seq",
+            "description": "Single-cell demo catalog record prepared for future Scanpy/Seurat workflows.",
+            "source": "10x public demo reference",
+            "organism": "human",
+            "expected_analyses": ["QC", "UMAP", "Marker detection"],
+            "recommended_workflows": ["scanpy_standard_pipeline"],
+            "estimated_runtime": "future workflow",
+        },
+        {
+            "display_name": "PBMC 10k",
+            "modality": "single_cell_rna_seq",
+            "description": "Larger single-cell demo catalog record.",
+            "source": "10x public demo reference",
+            "organism": "human",
+            "expected_analyses": ["QC", "UMAP", "Marker detection"],
+            "recommended_workflows": ["scanpy_standard_pipeline"],
+            "estimated_runtime": "future workflow",
+        },
+        {
+            "display_name": "Retina Organoid Demo",
+            "modality": "single_cell_rna_seq",
+            "description": "Retinal-organoid single-cell demo catalog record.",
+            "source": "Mundi demo reference",
+            "organism": "human",
+            "expected_analyses": ["QC", "UMAP", "Cell-type markers"],
+            "recommended_workflows": ["scanpy_standard_pipeline"],
+            "estimated_runtime": "future workflow",
+        },
+        {
+            "display_name": "Scanpy Demo",
+            "modality": "single_cell_rna_seq",
+            "description": "Prepared demonstration entry for Scanpy workflow testing.",
+            "source": "Mundi demo reference",
+            "organism": "human",
+            "expected_analyses": ["Scanpy standard pipeline"],
+            "recommended_workflows": ["scanpy_standard_pipeline"],
+            "estimated_runtime": "future workflow",
+        },
+        {
+            "display_name": "Seurat Demo",
+            "modality": "single_cell_rna_seq",
+            "description": "Prepared demonstration entry for Seurat workflow testing.",
+            "source": "Mundi demo reference",
+            "organism": "human",
+            "expected_analyses": ["Seurat standard pipeline"],
+            "recommended_workflows": ["seurat_standard_pipeline"],
+            "estimated_runtime": "future workflow",
+        },
+        {
+            "display_name": "beta-VAE Demo",
+            "modality": "machine_learning",
+            "description": "Expression-matrix model demo prepared for future beta-VAE execution.",
+            "source": "Mundi generated demo",
+            "organism": "human",
+            "expected_analyses": ["Latent-space visualization"],
+            "recommended_workflows": ["beta_vae_expression_model"],
+            "estimated_runtime": "future workflow",
+        },
+    ]
+
+
+def _demo_workspace_payload() -> dict[str, Any]:
+    return {
+        "display_name": "Demo Workspace",
+        "description": "Notebook, protocols, images, RNA datasets, and example analysis records for regression testing.",
+        "contains": ["notebook", "protocols", "images", "rna_datasets", "example_analyses"],
+    }
+
+
+def _write_demo_bulk_files(bulk_dir: Path) -> None:
+    _write_counts_and_samples(
+        bulk_dir / "small_retina_bulk_counts.tsv",
+        bulk_dir / "small_retina_bulk_samples.csv",
+        genes=[
+            ("BMP4", [10, 28, 31]),
+            ("POU4F2", [2, 9, 8]),
+            ("RBPMS", [3, 12, 11]),
+            ("GAPDH", [100, 110, 115]),
+        ],
+        samples=[("DMSO_1", "DMSO"), ("SAG_1", "SAG"), ("SAG_2", "SAG")],
+    )
+    _write_counts_and_samples(
+        bulk_dir / "small_pbmc_bulk_counts.tsv",
+        bulk_dir / "small_pbmc_bulk_samples.csv",
+        genes=[
+            ("MS4A1", [42, 39, 3]),
+            ("CD3D", [5, 6, 57]),
+            ("LYZ", [10, 12, 45]),
+            ("ACTB", [120, 118, 130]),
+        ],
+        samples=[("Bcell_1", "B_cell"), ("Bcell_2", "B_cell"), ("Tcell_1", "T_cell")],
+    )
+
+
+def _write_counts_and_samples(
+    counts_path: Path,
+    samples_path: Path,
+    *,
+    genes: list[tuple[str, list[int]]],
+    samples: list[tuple[str, str]],
+) -> None:
+    if not counts_path.exists():
+        with counts_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle, delimiter="\t")
+            writer.writerow(["gene", *[sample for sample, _group in samples]])
+            for gene, values in genes:
+                writer.writerow([gene, *values])
+    if not samples_path.exists():
+        with samples_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["sample", "condition"])
+            writer.writeheader()
+            for sample, group in samples:
+                writer.writerow({"sample": sample, "condition": group})

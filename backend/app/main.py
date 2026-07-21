@@ -5393,21 +5393,45 @@ def list_mobile_analysis_workers(request: Request) -> dict[str, object]:
     return {"workers": _analysis_service().list_workers()}
 
 
+@app.get("/mobile/analysis/workers/{worker_id}", tags=["analysis"])
+def get_mobile_analysis_worker(worker_id: str, request: Request) -> dict[str, object]:
+    _request_user_id(request)
+    try:
+        return {"worker": _analysis_service().get_worker(worker_id)}
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.get("/mobile/analysis/storage-locations", tags=["analysis"])
 def list_mobile_analysis_storage_locations(request: Request) -> dict[str, object]:
     _request_user_id(request)
     return {"storage_locations": _analysis_service().list_storage_locations()}
 
 
+@app.get("/mobile/analysis/storage-locations/{storage_location_id}/browse", tags=["analysis"])
+def browse_mobile_analysis_storage_location(
+    storage_location_id: str,
+    request: Request,
+    path: str = "",
+) -> dict[str, object]:
+    _request_user_id(request)
+    try:
+        return _analysis_service().browse_storage_location(storage_location_id, path)
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/mobile/analysis/datasets", tags=["analysis"])
 def list_mobile_analysis_datasets(
     request: Request,
     modality: str | None = None,
+    q: str | None = None,
 ) -> dict[str, object]:
     return {
         "datasets": _analysis_service().list_datasets(
             _request_user_id(request),
             modality=modality,
+            query=q,
         )
     }
 
@@ -5436,9 +5460,9 @@ def get_mobile_analysis_dataset(dataset_id: str, request: Request) -> dict[str, 
 
 
 @app.get("/mobile/analysis/workflows", tags=["analysis"])
-def list_mobile_analysis_workflows(request: Request) -> dict[str, object]:
+def list_mobile_analysis_workflows(request: Request, q: str | None = None) -> dict[str, object]:
     _request_user_id(request)
-    return {"workflows": _analysis_service().list_workflows()}
+    return {"workflows": _analysis_service().list_workflows(query=q)}
 
 
 @app.post("/mobile/analysis/jobs", tags=["analysis"])
@@ -5468,7 +5492,11 @@ def list_mobile_analysis_jobs(request: Request) -> dict[str, object]:
 @app.get("/mobile/analysis/jobs/{job_id}", tags=["analysis"])
 def get_mobile_analysis_job(job_id: str, request: Request) -> dict[str, object]:
     try:
-        return {"job": _analysis_service().get_job(_request_user_id(request), job_id)}
+        user_id = _request_user_id(request)
+        return {
+            "job": _analysis_service().get_job(user_id, job_id),
+            "outputs": _analysis_service().outputs_for_job(user_id, job_id),
+        }
     except AnalysisValidationError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -5506,12 +5534,31 @@ def list_mobile_analysis_outputs(job_id: str, request: Request) -> dict[str, obj
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/mobile/analysis/outputs", tags=["analysis"])
+def list_mobile_analysis_all_outputs(request: Request, q: str | None = None) -> dict[str, object]:
+    return {"outputs": _analysis_service().list_outputs(_request_user_id(request), query=q)}
+
+
 @app.get("/mobile/analysis/outputs/{output_id}", tags=["analysis"])
 def get_mobile_analysis_output(output_id: str, request: Request) -> dict[str, object]:
     try:
         return {"output": _analysis_service().get_output(_request_user_id(request), output_id)}
     except AnalysisValidationError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/demo-library", tags=["analysis"])
+def get_mobile_analysis_demo_library(request: Request) -> dict[str, object]:
+    _request_user_id(request)
+    return _analysis_service().demo_library()
+
+
+@app.post("/mobile/analysis/demo-workspace/install", tags=["analysis"])
+def install_mobile_analysis_demo_workspace(request: Request) -> dict[str, object]:
+    try:
+        return _analysis_service().install_demo_workspace(_request_user_id(request))
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/worker/register", tags=["analysis-worker"])

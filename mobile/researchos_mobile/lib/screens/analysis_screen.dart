@@ -21,6 +21,7 @@ class AnalysisScreen extends StatefulWidget {
 
 class _AnalysisScreenState extends State<AnalysisScreen> {
   late Future<_AnalysisState> _future;
+  _AnalysisState? _lastState;
   Timer? _pollTimer;
   bool _polling = false;
   String? _message;
@@ -40,20 +41,29 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   Future<_AnalysisState> _load() async {
     final results = await Future.wait([
       widget.api.analysisWorkers(),
-      widget.api.analysisDatasets(modality: 'bulk_rna_seq'),
+      widget.api.analysisDatasets(),
       widget.api.analysisWorkflows(),
       widget.api.analysisJobs(),
+      widget.api.allAnalysisOutputs(),
+      widget.api.analysisStorageLocations(),
+      widget.api.analysisDemoLibrary(),
     ]);
     return _AnalysisState(
-      workers: results[0],
-      datasets: results[1],
-      workflows: results[2],
-      jobs: results[3],
+      workers: results[0] as List<Map<String, dynamic>>,
+      datasets: results[1] as List<Map<String, dynamic>>,
+      workflows: results[2] as List<Map<String, dynamic>>,
+      jobs: results[3] as List<Map<String, dynamic>>,
+      outputs: results[4] as List<Map<String, dynamic>>,
+      storageLocations: results[5] as List<Map<String, dynamic>>,
+      demoLibrary: results[6] is Map<String, dynamic>
+          ? results[6] as Map<String, dynamic>
+          : const {},
     );
   }
 
   Future<_AnalysisState> _loadAndTrack() async {
     final state = await _load();
+    _lastState = state;
     if (mounted) _syncPolling(state);
     return state;
   }
@@ -104,7 +114,10 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   Future<void> _registerDataset() async {
     final result = await showDialog<_DatasetDraft>(
       context: context,
-      builder: (context) => const _RegisterDatasetDialog(),
+      builder: (context) => _RegisterDatasetDialog(
+        storageLocations: _lastState?.storageLocations ?? const [],
+        api: widget.api,
+      ),
     );
     if (result == null) return;
     try {
@@ -113,6 +126,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         countsPath: result.countsPath,
         metadataPath: result.metadataPath,
         organism: result.organism,
+        storageLocationId: result.storageLocationId,
       );
       if (!mounted) return;
       setState(() => _message = 'Dataset registered.');
@@ -142,9 +156,19 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
-  Future<void> _showOutputs(Map<String, dynamic> job) async {
-    final outputs = await widget.api.analysisOutputs(job['id'].toString());
-    if (!mounted) return;
+  Future<void> _installDemoWorkspace() async {
+    try {
+      await widget.api.installAnalysisDemoWorkspace();
+      if (!mounted) return;
+      setState(() => _message = 'Demo Workspace installed.');
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = 'Could not install demo workspace: $error');
+    }
+  }
+
+  Future<void> _showWorkerDetails(Map<String, dynamic> worker) async {
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
@@ -152,13 +176,61 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         child: ListView(
           padding: const EdgeInsets.all(ResearchOsSpacing.md),
           children: [
-            Text('Analysis Outputs',
+            Text(worker['display_name']?.toString() ?? 'Compute worker',
                 style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: ResearchOsSpacing.sm),
-            if (outputs.isEmpty)
-              const Text('No outputs have been registered yet.'),
-            for (final output in outputs) _OutputTile(output: output),
+            _KeyValue('Status', worker['status_label'] ?? worker['status']),
+            _KeyValue('Hostname', worker['hostname']),
+            _KeyValue('OS', worker['operating_system']),
+            _KeyValue('Architecture', worker['architecture']),
+            _KeyValue('CPU', worker['cpu_count']),
+            _KeyValue('RAM', '${worker['ram_gb'] ?? '-'} GB'),
+            _KeyValue('GPU', _joinList(worker['gpu_inventory'])),
+            _KeyValue('Python/R', _versions(worker['software_versions'])),
+            _KeyValue('Installed workflows',
+                _joinList(worker['supported_workflows'])),
+            _KeyValue('Running jobs', worker['running_job_count']),
+            _KeyValue('Max concurrent', worker['maximum_concurrent_jobs']),
+            _KeyValue(
+                'Storage', '${worker['available_disk_gb'] ?? '-'} GB free'),
+            _KeyValue('Last heartbeat', worker['last_heartbeat']),
           ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showJobDetails(Map<String, dynamic> job) async {
+    final outputs = await widget.api.analysisOutputs(job['id'].toString());
+    if (!mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.82,
+          builder: (context, controller) => ListView(
+            controller: controller,
+            padding: const EdgeInsets.all(ResearchOsSpacing.md),
+            children: [
+              Text('Job Detail', style: Theme.of(context).textTheme.titleLarge),
+              _KeyValue('Workflow', job['workflow_id']),
+              _KeyValue('Status', job['status']),
+              _KeyValue('Stage', job['current_stage']),
+              _KeyValue('Worker', job['worker_id']),
+              _KeyValue('Dataset', job['dataset_id']),
+              _KeyValue('Started', job['started_at']),
+              _KeyValue('Finished', job['finished_at']),
+              _KeyValue('Parameters', job['parameters']),
+              _KeyValue('Environment', job['resource_request']),
+              _KeyValue('Provenance', job['reproducibility_manifest']),
+              const SizedBox(height: ResearchOsSpacing.md),
+              Text('Outputs', style: Theme.of(context).textTheme.titleMedium),
+              for (final output in outputs) _OutputTile(output: output),
+            ],
+          ),
         ),
       ),
     );
@@ -211,6 +283,11 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
             ),
             const SizedBox(height: ResearchOsSpacing.sm),
             _GenomicsRail(onOpenImaging: widget.onOpenImaging),
+            const SizedBox(height: ResearchOsSpacing.md),
+            _DemoLibraryPanel(
+              demoLibrary: state?.demoLibrary ?? const {},
+              onInstall: _installDemoWorkspace,
+            ),
             const SizedBox(height: ResearchOsSpacing.lg),
             const _SectionHeader(
               title: 'Compute',
@@ -224,18 +301,21 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
             else if (snapshot.hasError)
               Text('Analysis is unavailable: ${snapshot.error}')
             else ...[
-              _WorkerSummary(workers: state?.workers ?? const []),
+              _WorkerSummary(
+                workers: state?.workers ?? const [],
+                onOpenWorker: (worker) => unawaited(_showWorkerDetails(worker)),
+              ),
               const SizedBox(height: ResearchOsSpacing.lg),
               const _SectionHeader(
-                title: 'Bulk RNA-seq Datasets',
-                subtitle: 'Server-local count matrices and sample metadata',
+                title: 'Dataset Registry',
+                subtitle: 'Bulk RNA, Single Cell, Imaging, and model datasets',
                 icon: Icons.table_chart_outlined,
               ),
               const SizedBox(height: ResearchOsSpacing.sm),
               if ((state?.datasets ?? const []).isEmpty)
                 const _EmptyPanel(
                   icon: Icons.dataset_outlined,
-                  text: 'No bulk datasets are registered yet.',
+                  text: 'No datasets are registered yet.',
                 )
               else
                 for (final dataset in state!.datasets)
@@ -243,6 +323,16 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                     dataset: dataset,
                     onRunQc: () => _runQc(dataset),
                   ),
+              const SizedBox(height: ResearchOsSpacing.lg),
+              const _SectionHeader(
+                title: 'Workflow Registry',
+                subtitle:
+                    'Installed, available, and disabled analysis workflows',
+                icon: Icons.schema_outlined,
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              for (final workflow in state?.workflows ?? const [])
+                _WorkflowCard(workflow: workflow),
               const SizedBox(height: ResearchOsSpacing.lg),
               const _SectionHeader(
                 title: 'Analysis Jobs',
@@ -259,8 +349,24 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                 for (final job in state!.jobs)
                   _JobCard(
                     job: job,
-                    onOpenOutputs: () => _showOutputs(job),
+                    onOpenOutputs: () => _showJobDetails(job),
                   ),
+              const SizedBox(height: ResearchOsSpacing.lg),
+              const _SectionHeader(
+                title: 'Output Browser',
+                subtitle:
+                    'QC reports, tables, plots, embeddings, and model outputs',
+                icon: Icons.collections_bookmark_outlined,
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              if ((state?.outputs ?? const []).isEmpty)
+                const _EmptyPanel(
+                  icon: Icons.insert_chart_outlined,
+                  text: 'No analysis outputs have been registered yet.',
+                )
+              else
+                for (final output in state!.outputs)
+                  _OutputTile(output: output),
             ],
           ],
         );
@@ -310,9 +416,13 @@ class _GenomicsRail extends StatelessWidget {
 }
 
 class _WorkerSummary extends StatelessWidget {
-  const _WorkerSummary({required this.workers});
+  const _WorkerSummary({
+    required this.workers,
+    required this.onOpenWorker,
+  });
 
   final List<Map<String, dynamic>> workers;
+  final ValueChanged<Map<String, dynamic>> onOpenWorker;
 
   @override
   Widget build(BuildContext context) {
@@ -337,9 +447,71 @@ class _WorkerSummary extends StatelessWidget {
               ),
               trailing: Text(
                   '${worker['running_job_count'] ?? 0}/${worker['maximum_concurrent_jobs'] ?? 1} jobs'),
+              onTap: () => onOpenWorker(worker),
             ),
           ),
       ],
+    );
+  }
+}
+
+class _DemoLibraryPanel extends StatelessWidget {
+  const _DemoLibraryPanel({
+    required this.demoLibrary,
+    required this.onInstall,
+  });
+
+  final Map<String, dynamic> demoLibrary;
+  final VoidCallback onInstall;
+
+  @override
+  Widget build(BuildContext context) {
+    final datasets = demoLibrary['datasets'];
+    final datasetList = datasets is List ? datasets : const [];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.auto_stories_outlined),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: Text(
+                    'Demo Library',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: onInstall,
+                  icon: const Icon(Icons.download_outlined),
+                  label: const Text('Install Demo Workspace'),
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Text(
+                '${datasetList.length} demo datasets prepared for regression testing.'),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Wrap(
+              spacing: ResearchOsSpacing.xs,
+              runSpacing: ResearchOsSpacing.xs,
+              children: [
+                for (final dataset in datasetList.take(8))
+                  Chip(
+                    label: Text(
+                      dataset is Map
+                          ? dataset['display_name']?.toString() ?? 'Demo'
+                          : 'Demo',
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -357,20 +529,55 @@ class _DatasetCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final summary = dataset['metadata_summary'];
     final metadata = summary is Map ? summary : const {};
+    final modality = dataset['modality']?.toString() ?? 'bulk_rna_seq';
+    final canRunQc = modality == 'bulk_rna_seq';
     return Card(
       child: ListTile(
         leading: const Icon(Icons.dataset_outlined),
         title: Text(dataset['display_name']?.toString() ?? 'Dataset'),
         subtitle: Text(
-          '${dataset['modality'] ?? 'bulk_rna_seq'} • '
+          '$modality • '
           '${dataset['sample_count'] ?? metadata['sample_count'] ?? 0} samples • '
-          '${dataset['features_count'] ?? metadata['feature_count'] ?? 0} features',
+          '${dataset['cell_count'] ?? 0} cells • '
+          '${dataset['features_count'] ?? metadata['feature_count'] ?? 0} genes • '
+          '${dataset['source_type'] ?? 'server'}',
         ),
-        trailing: FilledButton.tonalIcon(
-          onPressed: onRunQc,
-          icon: const Icon(Icons.play_arrow),
-          label: const Text('Run QC'),
+        trailing: canRunQc
+            ? FilledButton.tonalIcon(
+                onPressed: onRunQc,
+                icon: const Icon(Icons.play_arrow),
+                label: const Text('Run QC'),
+              )
+            : const Chip(label: Text('Catalog')),
+      ),
+    );
+  }
+}
+
+class _WorkflowCard extends StatelessWidget {
+  const _WorkflowCard({required this.workflow});
+
+  final Map<String, dynamic> workflow;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = workflow['status']?.toString() ?? 'available';
+    final resource = workflow['resource_request'];
+    return Card(
+      child: ListTile(
+        leading: Icon(
+          status == 'installed'
+              ? Icons.check_circle_outline
+              : Icons.pending_outlined,
         ),
+        title: Text(workflow['name']?.toString() ?? 'Workflow'),
+        subtitle: Text(
+          '${workflow['category'] ?? 'Analysis'} • '
+          '${workflow['workflow_version'] ?? '-'} • '
+          'CPU ${resource is Map ? resource['cpu_cores'] ?? '-' : '-'} • '
+          'RAM ${resource is Map ? resource['ram_gb'] ?? '-' : '-'} GB',
+        ),
+        trailing: Chip(label: Text(status)),
       ),
     );
   }
@@ -444,6 +651,31 @@ class _OutputTile extends StatelessWidget {
         summary is Map
             ? '${summary['sample_count'] ?? '-'} samples • ${summary['feature_count'] ?? '-'} features'
             : output['output_type']?.toString() ?? 'Output',
+      ),
+      trailing: const Icon(Icons.note_add_outlined),
+    );
+  }
+}
+
+class _KeyValue extends StatelessWidget {
+  const _KeyValue(this.label, this.value);
+
+  final String label;
+  final Object? value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(label, style: Theme.of(context).textTheme.labelLarge),
+          ),
+          Expanded(child: Text(value?.toString() ?? '-')),
+        ],
       ),
     );
   }
@@ -530,7 +762,13 @@ class _EmptyPanel extends StatelessWidget {
 }
 
 class _RegisterDatasetDialog extends StatefulWidget {
-  const _RegisterDatasetDialog();
+  const _RegisterDatasetDialog({
+    required this.storageLocations,
+    required this.api,
+  });
+
+  final List<Map<String, dynamic>> storageLocations;
+  final ResearchOsApi api;
 
   @override
   State<_RegisterDatasetDialog> createState() => _RegisterDatasetDialogState();
@@ -541,6 +779,7 @@ class _RegisterDatasetDialogState extends State<_RegisterDatasetDialog> {
   final _counts = TextEditingController(text: 'bulk/counts.tsv');
   final _metadata = TextEditingController(text: 'bulk/samples.csv');
   final _organism = TextEditingController();
+  String? _storageLocationId;
 
   @override
   void dispose() {
@@ -553,6 +792,9 @@ class _RegisterDatasetDialogState extends State<_RegisterDatasetDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final locations = widget.storageLocations;
+    _storageLocationId ??=
+        locations.isNotEmpty ? locations.first['id']?.toString() : null;
     return AlertDialog(
       title: const Text('Register Server Dataset'),
       content: SingleChildScrollView(
@@ -563,6 +805,24 @@ class _RegisterDatasetDialogState extends State<_RegisterDatasetDialog> {
               controller: _name,
               decoration: const InputDecoration(labelText: 'Display name'),
             ),
+            if (locations.isNotEmpty)
+              DropdownButtonFormField<String>(
+                initialValue: _storageLocationId,
+                decoration:
+                    const InputDecoration(labelText: 'Approved data root'),
+                items: [
+                  for (final location in locations)
+                    DropdownMenuItem(
+                      value: location['id']?.toString(),
+                      child: Text(location['root_path']?.toString() ??
+                          location['display_name']?.toString() ??
+                          'Data root'),
+                    ),
+                ],
+                onChanged: (value) => setState(() {
+                  _storageLocationId = value;
+                }),
+              ),
             TextField(
               controller: _counts,
               decoration: const InputDecoration(labelText: 'Count matrix path'),
@@ -575,6 +835,14 @@ class _RegisterDatasetDialogState extends State<_RegisterDatasetDialog> {
             TextField(
               controller: _organism,
               decoration: const InputDecoration(labelText: 'Organism'),
+            ),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _browseRoot,
+                icon: const Icon(Icons.folder_open_outlined),
+                label: const Text('Browse Approved Root'),
+              ),
             ),
           ],
         ),
@@ -596,12 +864,50 @@ class _RegisterDatasetDialogState extends State<_RegisterDatasetDialog> {
                 countsPath: counts,
                 metadataPath: metadata,
                 organism: _organism.text.trim(),
+                storageLocationId: _storageLocationId,
               ),
             );
           },
           child: const Text('Register'),
         ),
       ],
+    );
+  }
+
+  Future<void> _browseRoot() async {
+    final storageId = _storageLocationId;
+    if (storageId == null) return;
+    final response = await widget.api.browseAnalysisStorageLocation(
+      storageLocationId: storageId,
+    );
+    if (!mounted) return;
+    final entries = response['entries'];
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.all(ResearchOsSpacing.md),
+          children: [
+            Text('Approved Root',
+                style: Theme.of(context).textTheme.titleLarge),
+            if (entries is! List || entries.isEmpty)
+              const Text('No supported dataset candidates were found.'),
+            if (entries is List)
+              for (final entry in entries)
+                if (entry is Map)
+                  ListTile(
+                    leading: Icon(entry['is_directory'] == true
+                        ? Icons.folder_outlined
+                        : Icons.description_outlined),
+                    title: Text(entry['name']?.toString() ?? 'Entry'),
+                    subtitle: Text(entry['candidate'] == null
+                        ? entry['relative_path']?.toString() ?? ''
+                        : 'Candidate: ${entry['candidate']}'),
+                  ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -612,12 +918,14 @@ class _DatasetDraft {
     required this.countsPath,
     required this.metadataPath,
     required this.organism,
+    this.storageLocationId,
   });
 
   final String displayName;
   final String countsPath;
   final String metadataPath;
   final String organism;
+  final String? storageLocationId;
 }
 
 class _AnalysisState {
@@ -626,10 +934,35 @@ class _AnalysisState {
     required this.datasets,
     required this.workflows,
     required this.jobs,
+    required this.outputs,
+    required this.storageLocations,
+    required this.demoLibrary,
   });
 
   final List<Map<String, dynamic>> workers;
   final List<Map<String, dynamic>> datasets;
   final List<Map<String, dynamic>> workflows;
   final List<Map<String, dynamic>> jobs;
+  final List<Map<String, dynamic>> outputs;
+  final List<Map<String, dynamic>> storageLocations;
+  final Map<String, dynamic> demoLibrary;
+}
+
+String _joinList(Object? value) {
+  if (value is List) {
+    if (value.isEmpty) return '-';
+    return value
+        .map((item) => item is Map ? item.values.join(' ') : item.toString())
+        .join(', ');
+  }
+  return value?.toString() ?? '-';
+}
+
+String _versions(Object? value) {
+  if (value is Map) {
+    return value.entries
+        .map((entry) => '${entry.key}: ${entry.value}')
+        .join(', ');
+  }
+  return value?.toString() ?? '-';
 }
