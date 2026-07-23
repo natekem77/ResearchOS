@@ -1029,6 +1029,18 @@ class MobileAnalysisJobRequest(BaseModel):
     priority: int = 0
 
 
+class MobileAnalysisOutputRenameRequest(BaseModel):
+    display_name: str
+
+
+class MobileAnalysisNotebookReferenceRequest(BaseModel):
+    output_id: str
+    notebook_id: str | None = None
+    experiment_id: str | None = None
+    reference_type: Literal["linked", "snapshot"] = "linked"
+    caption: str | None = None
+
+
 class AnalysisWorkerRegisterRequest(BaseModel):
     worker_id: str
     display_name: str | None = None
@@ -5539,12 +5551,84 @@ def list_mobile_analysis_all_outputs(request: Request, q: str | None = None) -> 
     return {"outputs": _analysis_service().list_outputs(_request_user_id(request), query=q)}
 
 
+@app.get("/mobile/analysis/output-groups", tags=["analysis"])
+def list_mobile_analysis_output_groups(request: Request) -> dict[str, object]:
+    return {"groups": _analysis_service().output_groups(_request_user_id(request))}
+
+
 @app.get("/mobile/analysis/outputs/{output_id}", tags=["analysis"])
 def get_mobile_analysis_output(output_id: str, request: Request) -> dict[str, object]:
     try:
         return {"output": _analysis_service().get_output(_request_user_id(request), output_id)}
     except AnalysisValidationError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.patch("/mobile/analysis/outputs/{output_id}", tags=["analysis"])
+def rename_mobile_analysis_output(
+    output_id: str,
+    request_body: MobileAnalysisOutputRenameRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "output": _analysis_service().rename_output(
+                _request_user_id(request),
+                output_id,
+                request_body.display_name,
+            )
+        }
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/mobile/analysis/outputs/{output_id}", tags=["analysis"])
+def delete_mobile_analysis_output(
+    output_id: str,
+    request: Request,
+    reference_mode: str = "block_if_referenced",
+) -> dict[str, object]:
+    try:
+        return _analysis_service().delete_output(
+            _request_user_id(request),
+            output_id,
+            reference_mode=reference_mode,
+        )
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/mobile/analysis/outputs/{output_id}/references", tags=["analysis"])
+def list_mobile_analysis_output_references(output_id: str, request: Request) -> dict[str, object]:
+    try:
+        return {
+            "references": _analysis_service().references_for_output(
+                _request_user_id(request),
+                output_id,
+            )
+        }
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/mobile/analysis/notebook-references", tags=["analysis"])
+def create_mobile_analysis_notebook_reference(
+    request_body: MobileAnalysisNotebookReferenceRequest,
+    request: Request,
+) -> dict[str, object]:
+    try:
+        return {
+            "reference": _analysis_service().record_notebook_reference(
+                _request_user_id(request),
+                output_id=request_body.output_id,
+                notebook_id=request_body.notebook_id,
+                experiment_id=request_body.experiment_id,
+                reference_type=request_body.reference_type,
+                caption=request_body.caption,
+            )
+        }
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/mobile/analysis/demo-library", tags=["analysis"])

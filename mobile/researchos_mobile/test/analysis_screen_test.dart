@@ -81,15 +81,90 @@ void main() {
         if (request.url.path == '/mobile/analysis/outputs') {
           return _json({
             'outputs': [
-              {
-                'id': 'analysis-output:test',
-                'display_name': 'Bulk RNA-seq QC Report',
-                'output_type': 'qc_report',
-                'structured': {
-                  'summary': {'sample_count': 3, 'feature_count': 4},
-                },
-              }
+              _qcOutput(),
+              _tableOutput(),
+              _provenanceOutput(),
             ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/output-groups') {
+          return _json({
+            'groups': [
+              {
+                'dataset': {
+                  'id': 'analysis-dataset:test',
+                  'display_name': 'Bulk SAG GRKi',
+                },
+                'job': {
+                  'id': 'analysis-job:test',
+                  'workflow_id': 'bulk_rnaseq_validation_qc',
+                  'status': 'complete',
+                  'created_at': '2026-07-23T11:20:00Z',
+                },
+                'outputs': [
+                  _qcOutput(),
+                  _tableOutput(),
+                  _provenanceOutput(),
+                ],
+              },
+            ],
+          });
+        }
+        if (request.url.path ==
+            '/mobile/analysis/outputs/analysis-output%3Aqc') {
+          return _json({
+            'output': _qcOutput()
+              ..addAll({
+                'dataset': {
+                  'display_name': 'Bulk SAG GRKi',
+                },
+                'job': {
+                  'workflow_id': 'bulk_rnaseq_validation_qc',
+                  'status': 'complete',
+                },
+                'references': const [],
+              }),
+          });
+        }
+        if (request.url.path ==
+            '/mobile/analysis/outputs/analysis-output%3Atable') {
+          return _json({
+            'output': _tableOutput()
+              ..addAll({
+                'dataset': {
+                  'display_name': 'Bulk SAG GRKi',
+                },
+                'job': {
+                  'workflow_id': 'bulk_rnaseq_validation_qc',
+                  'status': 'complete',
+                },
+                'references': const [],
+              }),
+          });
+        }
+        if (request.url.path ==
+            '/mobile/analysis/outputs/analysis-output%3Aprovenance') {
+          return _json({
+            'output': _provenanceOutput()
+              ..addAll({
+                'dataset': {
+                  'display_name': 'Bulk SAG GRKi',
+                },
+                'job': {
+                  'workflow_id': 'bulk_rnaseq_validation_qc',
+                  'status': 'complete',
+                },
+                'references': const [],
+              }),
+          });
+        }
+        if (request.url.path == '/mobile/analysis/notebook-references') {
+          return _json({
+            'reference': {
+              'id': 'analysis-reference:test',
+              'output_id': 'analysis-output:qc',
+              'reference_type': 'linked',
+            },
           });
         }
         if (request.url.path == '/mobile/analysis/workflows') {
@@ -128,14 +203,9 @@ void main() {
             '/mobile/analysis/jobs/analysis-job%3Atest/outputs') {
           return _json({
             'outputs': [
-              {
-                'id': 'analysis-output:test',
-                'display_name': 'Bulk RNA-seq QC Report',
-                'output_type': 'qc_report',
-                'structured': {
-                  'summary': {'sample_count': 3, 'feature_count': 4},
-                },
-              }
+              _qcOutput(),
+              _tableOutput(),
+              _provenanceOutput(),
             ],
           });
         }
@@ -186,9 +256,260 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Bulk RNA-seq QC Report'), findsWidgets);
+    await tester.tap(
+      find
+          .descendant(
+            of: find.byTooltip('Insert into Notebook').last,
+            matching: find.byType(IconButton),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Insert into Notebook'), findsOneWidget);
+    await tester.tap(find.text('Insert').last);
+    await tester.pumpAndSettle();
+    expect(calls, contains('POST /mobile/analysis/notebook-references'));
+
+    await tester.tap(
+      find
+          .ancestor(
+            of: find.text('Bulk RNA-seq QC Report').last,
+            matching: find.byType(ListTile),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Validation checks'), findsOneWidget);
+    expect(
+        calls, contains('GET /mobile/analysis/outputs/analysis-output%3Aqc'));
     expect(calls, contains('POST /mobile/analysis/jobs'));
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('Analysis output browser opens table outputs', (tester) async {
+    final api = _mockAnalysisApi(<String>[]);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Library Sizes'),
+      600,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(find.text('Library Sizes'));
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find
+          .ancestor(
+            of: find.text('Library Sizes').last,
+            matching: find.byType(ListTile),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('DMSO_1'), findsOneWidget);
+    expect(find.text('library_size'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+}
+
+ResearchOsApi _mockAnalysisApi(List<String> calls) {
+  return ResearchOsApi(
+    baseUrl: 'http://example.test',
+    client: MockClient((request) async {
+      calls.add('${request.method} ${request.url.path}');
+      if (request.url.path == '/mobile/analysis/workers') {
+        return _json({
+          'workers': [
+            {
+              'worker_id': 'worker-1',
+              'display_name': 'Lab Analysis Server',
+              'status': 'ready',
+              'cpu_count': 32,
+              'ram_gb': 128,
+              'running_job_count': 0,
+              'maximum_concurrent_jobs': 1,
+            }
+          ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/storage-locations') {
+        return _json({
+          'storage_locations': [
+            {
+              'id': 'analysis-storage:default',
+              'display_name': 'Approved lab data root',
+              'root_path': 'server-data',
+            }
+          ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/demo-library') {
+        return _json({
+          'workspace': {'display_name': 'Demo Workspace'},
+          'datasets': [
+            {'display_name': 'PBMC 3k'},
+            {'display_name': 'Small Retina Bulk'},
+          ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/datasets') {
+        return _json({
+          'datasets': [
+            {
+              'id': 'analysis-dataset:test',
+              'display_name': 'Bulk SAG GRKi',
+              'modality': 'bulk_rna_seq',
+              'sample_count': 3,
+              'features_count': 4,
+              'metadata_summary': const {},
+            }
+          ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/outputs') {
+        return _json({
+          'outputs': [
+            _qcOutput(),
+            _tableOutput(),
+            _provenanceOutput(),
+          ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/output-groups') {
+        return _json({
+          'groups': [
+            {
+              'dataset': {
+                'id': 'analysis-dataset:test',
+                'display_name': 'Bulk SAG GRKi',
+              },
+              'job': {
+                'id': 'analysis-job:test',
+                'workflow_id': 'bulk_rnaseq_validation_qc',
+                'status': 'complete',
+                'created_at': '2026-07-23T11:20:00Z',
+              },
+              'outputs': [
+                _qcOutput(),
+                _tableOutput(),
+                _provenanceOutput(),
+              ],
+            },
+          ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/workflows') {
+        return _json({
+          'workflows': [
+            {
+              'stable_key': 'bulk_rnaseq_validation_qc',
+              'name': 'Bulk RNA-seq Dataset Validation/QC',
+            }
+          ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/jobs') {
+        return _json({
+          'jobs': [
+            {
+              'id': 'analysis-job:test',
+              'workflow_id': 'bulk_rnaseq_validation_qc',
+              'status': 'complete',
+              'progress': 1,
+              'current_stage': 'Complete',
+            }
+          ],
+        });
+      }
+      if (request.url.path ==
+          '/mobile/analysis/outputs/analysis-output%3Atable') {
+        return _json({
+          'output': _tableOutput()
+            ..addAll({
+              'dataset': {
+                'display_name': 'Bulk SAG GRKi',
+              },
+              'job': {
+                'workflow_id': 'bulk_rnaseq_validation_qc',
+                'status': 'complete',
+              },
+              'references': const [],
+            }),
+        });
+      }
+      return http.Response('not found', 404);
+    }),
+  );
+}
+
+Map<String, dynamic> _qcOutput() {
+  return {
+    'id': 'analysis-output:qc',
+    'display_name': 'Bulk RNA-seq QC Report',
+    'output_type': 'qc_report',
+    'job_id': 'analysis-job:test',
+    'dataset_id': 'analysis-dataset:test',
+    'created_at': '2026-07-23T11:20:00Z',
+    'structured': {
+      'summary': {
+        'sample_count': 3,
+        'feature_count': 4,
+        'integer_counts_valid': true,
+        'sample_names_match': true,
+        'duplicate_gene_count': 0,
+        'library_size_min': 115,
+        'library_size_median': 159,
+        'library_size_max': 165,
+        'metadata_rows': 3,
+      },
+      'flags': const [],
+      'group_sizes': {'DMSO': 1, 'SAG': 2},
+    },
+    'provenance': {
+      'workflow_stable_key': 'bulk_rnaseq_validation_qc',
+      'workflow_version': '1.0.0',
+      'worker_id': 'worker-1',
+    },
+  };
+}
+
+Map<String, dynamic> _tableOutput() {
+  return {
+    'id': 'analysis-output:table',
+    'display_name': 'Library Sizes',
+    'output_type': 'table',
+    'job_id': 'analysis-job:test',
+    'dataset_id': 'analysis-dataset:test',
+    'structured': {
+      'columns': ['sample', 'library_size', 'detected_genes'],
+      'rows': [
+        {'sample': 'DMSO_1', 'library_size': 115, 'detected_genes': 4},
+        {'sample': 'SAG_1', 'library_size': 159, 'detected_genes': 4},
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _provenanceOutput() {
+  return {
+    'id': 'analysis-output:provenance',
+    'display_name': 'Reproducibility Manifest',
+    'output_type': 'provenance',
+    'job_id': 'analysis-job:test',
+    'dataset_id': 'analysis-dataset:test',
+    'structured': {
+      'workflow_stable_key': 'bulk_rnaseq_validation_qc',
+      'workflow_version': '1.0.0',
+      'worker_id': 'worker-1',
+      'parameters': {'sample_id_column': 'sample'},
+      'dataset_checksum': 'abc123',
+      'outputs': const [],
+    },
+  };
 }
 
 http.Response _json(Map<String, dynamic> body) {

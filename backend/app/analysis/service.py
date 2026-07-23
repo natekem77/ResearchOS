@@ -153,6 +153,7 @@ class AnalysisService:
                     id TEXT PRIMARY KEY,
                     job_id TEXT NOT NULL,
                     dataset_id TEXT NOT NULL,
+                    registration_key TEXT,
                     output_type TEXT NOT NULL,
                     display_name TEXT NOT NULL,
                     storage_uri TEXT,
@@ -161,6 +162,19 @@ class AnalysisService:
                     structured_json TEXT NOT NULL DEFAULT '{}',
                     viewer_config_json TEXT NOT NULL DEFAULT '{}',
                     provenance_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_outputs_registration
+                    ON analysis_outputs(job_id, registration_key)
+                    WHERE registration_key IS NOT NULL;
+                CREATE TABLE IF NOT EXISTS analysis_notebook_references (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    notebook_id TEXT,
+                    experiment_id TEXT,
+                    output_id TEXT NOT NULL,
+                    reference_type TEXT NOT NULL,
+                    caption TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
                 CREATE TABLE IF NOT EXISTS analysis_audit_log (
@@ -173,6 +187,7 @@ class AnalysisService:
                 );
                 """
             )
+            _ensure_column(connection, "analysis_outputs", "registration_key", "TEXT")
 
     def _ensure_storage_locations(self) -> None:
         with self._connect() as connection:
@@ -661,7 +676,94 @@ class AnalysisService:
             ).fetchone()
         if row is None:
             raise AnalysisValidationError("Analysis output not found.")
-        return self._output_payload(row)
+        output = self._output_payload(row)
+        return output | self._output_context(user_id, output)
+
+    def rename_output(self, user_id: str, output_id: str, display_name: str) -> dict[str, Any]:
+        clean = display_name.strip()
+        if not clean:
+            raise AnalysisValidationError("Output display name cannot be blank.")
+        self.get_output(user_id, output_id)
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE analysis_outputs SET display_name = ? WHERE id = ?",
+                (clean, output_id),
+            )
+        self._audit(user_id, "output.rename", output_id, {"display_name": clean})
+        return self.get_output(user_id, output_id)
+
+    def references_for_output(self, user_id: str, output_id: str) -> list[dict[str, Any]]:
+        self.get_output(user_id, output_id)
+        return self._references_for_output_unchecked(user_id, output_id)
+
+    def _references_for_output_unchecked(self, user_id: str, output_id: str) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM analysis_notebook_references
+                WHERE user_id = ? AND output_id = ?
+                ORDER BY created_at DESC
+                """,
+                (user_id, output_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def record_notebook_reference(
+        self,
+        user_id: str,
+        *,
+        output_id: str,
+        notebook_id: str | None = None,
+        experiment_id: str | None = None,
+        reference_type: str = "linked",
+        caption: str | None = None,
+    ) -> dict[str, Any]:
+        if reference_type not in {"linked", "snapshot"}:
+            raise AnalysisValidationError("Unsupported analysis notebook reference type.")
+        self.get_output(user_id, output_id)
+        reference_id = f"analysis-reference:{uuid.uuid4().hex[:16]}"
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO analysis_notebook_references
+                    (id, user_id, notebook_id, experiment_id, output_id, reference_type, caption)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (reference_id, user_id, notebook_id, experiment_id, output_id, reference_type, caption),
+            )
+            row = connection.execute(
+                "SELECT * FROM analysis_notebook_references WHERE id = ?",
+                (reference_id,),
+            ).fetchone()
+        self._audit(user_id, "output.notebook_reference", output_id, {"reference_type": reference_type})
+        return dict(row)
+
+    def delete_output(self, user_id: str, output_id: str, *, reference_mode: str = "block_if_referenced") -> dict[str, Any]:
+        output = self.get_output(user_id, output_id)
+        references = self.references_for_output(user_id, output_id)
+        if references and reference_mode == "block_if_referenced":
+            raise AnalysisValidationError("Analysis output is referenced by notebooks.")
+        with self._connect() as connection:
+            if reference_mode == "remove_references":
+                connection.execute(
+                    "DELETE FROM analysis_notebook_references WHERE user_id = ? AND output_id = ?",
+                    (user_id, output_id),
+                )
+            elif reference_mode == "leave_placeholders":
+                connection.execute(
+                    """
+                    UPDATE analysis_notebook_references
+                    SET caption = COALESCE(caption, '') || ' [Output deleted]'
+                    WHERE user_id = ? AND output_id = ?
+                    """,
+                    (user_id, output_id),
+                )
+            connection.execute("DELETE FROM analysis_outputs WHERE id = ?", (output_id,))
+        storage_uri = output.get("storage_uri")
+        if storage_uri:
+            _safe_unlink(self.base_dir / str(storage_uri), self.base_dir)
+        self._audit(user_id, "output.delete", output_id, {"reference_mode": reference_mode})
+        return {"deleted": True, "references": references}
 
     def list_outputs(self, user_id: str, query: str | None = None) -> list[dict[str, Any]]:
         where = "WHERE j.user_id = ?"
@@ -672,14 +774,35 @@ class AnalysisService:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT o.* FROM analysis_outputs o
+                SELECT o.*, j.workflow_id AS job_workflow_id, j.workflow_version AS job_workflow_version,
+                       j.status AS job_status, j.created_at AS job_created_at,
+                       d.display_name AS dataset_name
+                FROM analysis_outputs o
                 JOIN analysis_jobs j ON j.id = o.job_id
+                JOIN analysis_datasets d ON d.id = o.dataset_id
                 {where}
                 ORDER BY o.created_at DESC
                 """,
                 params,
             ).fetchall()
         return [self._output_payload(row) for row in rows]
+
+    def output_groups(self, user_id: str) -> list[dict[str, Any]]:
+        datasets = {dataset["id"]: dataset for dataset in self.list_datasets(user_id)}
+        jobs = self.list_jobs(user_id)
+        groups = []
+        for job in jobs:
+            outputs = self.outputs_for_job(user_id, str(job["id"]))
+            if not outputs:
+                continue
+            groups.append(
+                {
+                    "dataset": datasets.get(job["dataset_id"], {"id": job["dataset_id"], "display_name": job["dataset_id"]}),
+                    "job": job,
+                    "outputs": outputs,
+                }
+            )
+        return groups
 
     def demo_library(self) -> dict[str, Any]:
         return {"datasets": _demo_datasets(), "workspace": _demo_workspace_payload()}
@@ -865,6 +988,7 @@ class AnalysisService:
         structured: dict[str, Any] | None = None,
         provenance: dict[str, Any] | None = None,
         replace_output_type: bool = False,
+        registration_key: str | None = None,
     ) -> None:
         storage_uri = None
         size_bytes = None
@@ -879,17 +1003,23 @@ class AnalysisService:
                 "DELETE FROM analysis_outputs WHERE job_id = ? AND output_type = ?",
                 (job_id, output_type),
             )
+        key = registration_key or output_type
+        connection.execute(
+            "DELETE FROM analysis_outputs WHERE job_id = ? AND registration_key = ?",
+            (job_id, key),
+        )
         connection.execute(
             """
             INSERT INTO analysis_outputs
-                (id, job_id, dataset_id, output_type, display_name, storage_uri, mime_type,
+                (id, job_id, dataset_id, registration_key, output_type, display_name, storage_uri, mime_type,
                  size_bytes, structured_json, viewer_config_json, provenance_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)
             """,
             (
                 f"analysis-output:{uuid.uuid4().hex[:16]}",
                 job_id,
                 dataset_id,
+                key,
                 output_type,
                 display_name,
                 storage_uri,
@@ -984,6 +1114,18 @@ class AnalysisService:
             "provenance": json.loads(row["provenance_json"] or "{}"),
         }
 
+    def _output_context(self, user_id: str, output: dict[str, Any]) -> dict[str, Any]:
+        try:
+            job = self.get_job(user_id, str(output["job_id"]))
+            dataset = self.get_dataset(user_id, str(output["dataset_id"]))
+        except AnalysisValidationError:
+            return {"job": None, "dataset": None, "references": []}
+        return {
+            "job": job,
+            "dataset": dataset,
+            "references": self._references_for_output_unchecked(user_id, str(output["id"])),
+        }
+
 
 def _resolve_data_dir(data_dir: str) -> Path:
     path = Path(data_dir)
@@ -991,6 +1133,24 @@ def _resolve_data_dir(data_dir: str) -> Path:
         path = PROJECT_ROOT / path
     path.mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+    if any(str(row["name"]) == column for row in rows):
+        return
+    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _safe_unlink(path: Path, root: Path) -> None:
+    resolved = path.resolve()
+    if not _is_within(resolved, root.resolve()):
+        return
+    try:
+        if resolved.is_file():
+            resolved.unlink()
+    except FileNotFoundError:
+        return
 
 
 def _analysis_roots(data_dir: Path, default_root: Path) -> list[Path]:

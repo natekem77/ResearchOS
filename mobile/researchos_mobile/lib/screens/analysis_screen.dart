@@ -45,6 +45,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       widget.api.analysisWorkflows(),
       widget.api.analysisJobs(),
       widget.api.allAnalysisOutputs(),
+      widget.api.analysisOutputGroups(),
       widget.api.analysisStorageLocations(),
       widget.api.analysisDemoLibrary(),
     ]);
@@ -54,9 +55,10 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       workflows: results[2] as List<Map<String, dynamic>>,
       jobs: results[3] as List<Map<String, dynamic>>,
       outputs: results[4] as List<Map<String, dynamic>>,
-      storageLocations: results[5] as List<Map<String, dynamic>>,
-      demoLibrary: results[6] is Map<String, dynamic>
-          ? results[6] as Map<String, dynamic>
+      outputGroups: results[5] as List<Map<String, dynamic>>,
+      storageLocations: results[6] as List<Map<String, dynamic>>,
+      demoLibrary: results[7] is Map<String, dynamic>
+          ? results[7] as Map<String, dynamic>
           : const {},
     );
   }
@@ -228,12 +230,157 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               _KeyValue('Provenance', job['reproducibility_manifest']),
               const SizedBox(height: ResearchOsSpacing.md),
               Text('Outputs', style: Theme.of(context).textTheme.titleMedium),
-              for (final output in outputs) _OutputTile(output: output),
+              for (final output in outputs)
+                _OutputTile(
+                  output: output,
+                  onOpen: () => _openOutput(output),
+                  onInsert: () => _insertOutput(output),
+                  onRename: () => _renameOutput(output),
+                  onDelete: () => _deleteOutput(output),
+                ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _openOutput(Map<String, dynamic> output) async {
+    final id = output['id']?.toString();
+    if (id == null || id.isEmpty) return;
+    try {
+      final response = await widget.api.analysisOutput(id);
+      final detail = response['output'] is Map<String, dynamic>
+          ? response['output'] as Map<String, dynamic>
+          : output;
+      if (!mounted) return;
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (context) => _OutputViewerSheet(
+          output: detail,
+          onInsert: () => _insertOutput(detail),
+          onRename: () => _renameOutput(detail),
+          onDelete: () => _deleteOutput(detail),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = 'Could not open analysis output: $error');
+    }
+  }
+
+  Future<void> _insertOutput(Map<String, dynamic> output) async {
+    final request = await showDialog<_OutputInsertRequest>(
+      context: context,
+      builder: (context) => _InsertOutputDialog(output: output),
+    );
+    if (request == null) return;
+    try {
+      await widget.api.createAnalysisNotebookReference(
+        outputId: output['id'].toString(),
+        referenceType: request.referenceType,
+        notebookId: request.notebookId,
+        experimentId: request.experimentId,
+        caption: request.caption,
+      );
+      if (!mounted) return;
+      setState(() => _message = 'Analysis result inserted into notebook.');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = 'Notebook insertion failed: $error');
+    }
+  }
+
+  Future<void> _renameOutput(Map<String, dynamic> output) async {
+    final controller = TextEditingController(
+      text: output['display_name']?.toString() ?? 'Analysis output',
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Rename output'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: 'Display name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) Navigator.of(context).pop(value);
+            },
+            child: const Text('Rename'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (name == null) return;
+    try {
+      await widget.api.renameAnalysisOutput(
+        outputId: output['id'].toString(),
+        displayName: name,
+      );
+      if (!mounted) return;
+      setState(() => _message = 'Output renamed.');
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = 'Could not rename output: $error');
+    }
+  }
+
+  Future<void> _deleteOutput(Map<String, dynamic> output) async {
+    final refs =
+        await widget.api.analysisOutputReferences(output['id'].toString());
+    if (!mounted) return;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete output?'),
+        content: Text(
+          refs.isEmpty
+              ? 'This deletes only the selected result output.'
+              : 'This output is referenced by ${refs.length} notebook block(s).',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          if (refs.isNotEmpty)
+            TextButton(
+              onPressed: () => Navigator.of(context).pop('leave_placeholders'),
+              child: const Text('Delete and leave placeholders'),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(
+                refs.isEmpty ? 'block_if_referenced' : 'remove_references'),
+            child:
+                Text(refs.isEmpty ? 'Delete' : 'Remove references and delete'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null) return;
+    try {
+      await widget.api.deleteAnalysisOutput(
+        outputId: output['id'].toString(),
+        referenceMode: choice,
+      );
+      if (!mounted) return;
+      setState(() => _message = 'Output deleted.');
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = 'Could not delete output: $error');
+    }
   }
 
   @override
@@ -365,8 +512,14 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                   text: 'No analysis outputs have been registered yet.',
                 )
               else
-                for (final output in state!.outputs)
-                  _OutputTile(output: output),
+                _GroupedOutputBrowser(
+                  groups: state!.outputGroups,
+                  outputs: state.outputs,
+                  onOpen: _openOutput,
+                  onInsert: _insertOutput,
+                  onRename: _renameOutput,
+                  onDelete: _deleteOutput,
+                ),
             ],
           ],
         );
@@ -636,9 +789,19 @@ class _JobCard extends StatelessWidget {
 }
 
 class _OutputTile extends StatelessWidget {
-  const _OutputTile({required this.output});
+  const _OutputTile({
+    required this.output,
+    required this.onOpen,
+    required this.onInsert,
+    required this.onRename,
+    required this.onDelete,
+  });
 
   final Map<String, dynamic> output;
+  final VoidCallback onOpen;
+  final VoidCallback onInsert;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -652,9 +815,558 @@ class _OutputTile extends StatelessWidget {
             ? '${summary['sample_count'] ?? '-'} samples • ${summary['feature_count'] ?? '-'} features'
             : output['output_type']?.toString() ?? 'Output',
       ),
-      trailing: const Icon(Icons.note_add_outlined),
+      onTap: onOpen,
+      onLongPress: () => _showOutputActions(context),
+      trailing: Tooltip(
+        message: 'Insert into Notebook',
+        child: IconButton.filledTonal(
+          onPressed: onInsert,
+          icon: const Icon(Icons.note_add_outlined),
+        ),
+      ),
     );
   }
+
+  Future<void> _showOutputActions(BuildContext context) {
+    return showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.open_in_new),
+              title: const Text('Open'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onOpen();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.note_add_outlined),
+              title: const Text('Insert into Notebook'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onInsert();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline),
+              title: const Text('Rename'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onRename();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.history_edu_outlined),
+              title: const Text('View Provenance'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onOpen();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('Delete'),
+              onTap: () {
+                Navigator.of(context).pop();
+                onDelete();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _GroupedOutputBrowser extends StatelessWidget {
+  const _GroupedOutputBrowser({
+    required this.groups,
+    required this.outputs,
+    required this.onOpen,
+    required this.onInsert,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  final List<Map<String, dynamic>> groups;
+  final List<Map<String, dynamic>> outputs;
+  final ValueChanged<Map<String, dynamic>> onOpen;
+  final ValueChanged<Map<String, dynamic>> onInsert;
+  final ValueChanged<Map<String, dynamic>> onRename;
+  final ValueChanged<Map<String, dynamic>> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    if (groups.isEmpty) {
+      return Column(
+        children: [
+          for (final output in outputs)
+            _OutputTile(
+              output: output,
+              onOpen: () => onOpen(output),
+              onInsert: () => onInsert(output),
+              onRename: () => onRename(output),
+              onDelete: () => onDelete(output),
+            ),
+        ],
+      );
+    }
+    return Column(
+      children: [
+        for (final group in groups)
+          _OutputGroupCard(
+            group: group,
+            onOpen: onOpen,
+            onInsert: onInsert,
+            onRename: onRename,
+            onDelete: onDelete,
+          ),
+      ],
+    );
+  }
+}
+
+class _OutputGroupCard extends StatelessWidget {
+  const _OutputGroupCard({
+    required this.group,
+    required this.onOpen,
+    required this.onInsert,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  final Map<String, dynamic> group;
+  final ValueChanged<Map<String, dynamic>> onOpen;
+  final ValueChanged<Map<String, dynamic>> onInsert;
+  final ValueChanged<Map<String, dynamic>> onRename;
+  final ValueChanged<Map<String, dynamic>> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final dataset =
+        group['dataset'] is Map ? group['dataset'] as Map : const {};
+    final job = group['job'] is Map ? group['job'] as Map : const {};
+    final outputs =
+        group['outputs'] is List ? group['outputs'] as List : const [];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              dataset['display_name']?.toString() ?? 'Dataset',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            Text(
+              '${job['workflow_id'] ?? 'Workflow'} • ${job['status'] ?? '-'} • ${job['finished_at'] ?? job['created_at'] ?? '-'}',
+            ),
+            const Divider(),
+            for (final output in outputs.whereType<Map>())
+              Builder(builder: (context) {
+                final typedOutput = output.cast<String, dynamic>();
+                return _OutputTile(
+                  output: typedOutput,
+                  onOpen: () => onOpen(typedOutput),
+                  onInsert: () => onInsert(typedOutput),
+                  onRename: () => onRename(typedOutput),
+                  onDelete: () => onDelete(typedOutput),
+                );
+              }),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OutputViewerSheet extends StatelessWidget {
+  const _OutputViewerSheet({
+    required this.output,
+    required this.onInsert,
+    required this.onRename,
+    required this.onDelete,
+  });
+
+  final Map<String, dynamic> output;
+  final VoidCallback onInsert;
+  final VoidCallback onRename;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final type = output['output_type']?.toString() ?? 'unknown';
+    return SafeArea(
+      child: DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.88,
+        builder: (context, controller) => ListView(
+          controller: controller,
+          padding: const EdgeInsets.all(ResearchOsSpacing.md),
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    output['display_name']?.toString() ?? 'Analysis output',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+                PopupMenuButton<String>(
+                  onSelected: (value) {
+                    if (value == 'insert') onInsert();
+                    if (value == 'rename') onRename();
+                    if (value == 'delete') onDelete();
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(
+                        value: 'insert', child: Text('Insert into Notebook')),
+                    PopupMenuItem(value: 'rename', child: Text('Rename')),
+                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            _viewerForType(type, output),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Widget _viewerForType(String type, Map<String, dynamic> output) {
+  if (type == 'qc_report') return _QcReportViewer(output: output);
+  if (type == 'table') return _TableOutputViewer(output: output);
+  if (type == 'provenance') return _ProvenanceViewer(output: output);
+  return _GenericOutputViewer(output: output);
+}
+
+class _QcReportViewer extends StatelessWidget {
+  const _QcReportViewer({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  Widget build(BuildContext context) {
+    final structured =
+        output['structured'] is Map ? output['structured'] as Map : const {};
+    final summary =
+        structured['summary'] is Map ? structured['summary'] as Map : const {};
+    final flags =
+        structured['flags'] is List ? structured['flags'] as List : const [];
+    final provenance =
+        output['provenance'] is Map ? output['provenance'] as Map : const {};
+    final dataset =
+        output['dataset'] is Map ? output['dataset'] as Map : const {};
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _KeyValue('Dataset', dataset['display_name'] ?? output['dataset_id']),
+        _KeyValue('Workflow',
+            provenance['workflow_stable_key'] ?? output['job_workflow_id']),
+        _KeyValue('Workflow version',
+            provenance['workflow_version'] ?? output['job_workflow_version']),
+        _KeyValue('Created', output['created_at']),
+        _KeyValue('Samples', summary['sample_count']),
+        _KeyValue('Genes/features', summary['feature_count']),
+        _KeyValue('Validation', flags.isEmpty ? 'Passed' : 'Needs review'),
+        ExpansionTile(
+          title: const Text('Validation checks'),
+          children: [
+            _KeyValue('Integer counts', summary['integer_counts_valid']),
+            _KeyValue('Sample names match', summary['sample_names_match']),
+            _KeyValue('Duplicate genes', summary['duplicate_gene_count']),
+          ],
+        ),
+        ExpansionTile(
+          title: const Text('Warnings and errors'),
+          children: [
+            if (flags.isEmpty) const ListTile(title: Text('No warnings.')),
+            for (final flag in flags) ListTile(title: Text(flag.toString())),
+          ],
+        ),
+        ExpansionTile(
+          title: const Text('Library-size summary'),
+          children: [
+            _KeyValue('Min', summary['library_size_min']),
+            _KeyValue('Median', summary['library_size_median']),
+            _KeyValue('Max', summary['library_size_max']),
+          ],
+        ),
+        ExpansionTile(
+          title: const Text('Metadata summary'),
+          children: [
+            _KeyValue('Metadata rows', summary['metadata_rows']),
+            _KeyValue('Group sizes', structured['group_sizes']),
+          ],
+        ),
+        ExpansionTile(
+          title: const Text('Provenance'),
+          children: [_KeyValue('Manifest', provenance)],
+        ),
+      ],
+    );
+  }
+}
+
+class _TableOutputViewer extends StatefulWidget {
+  const _TableOutputViewer({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  State<_TableOutputViewer> createState() => _TableOutputViewerState();
+}
+
+class _TableOutputViewerState extends State<_TableOutputViewer> {
+  String _query = '';
+  int? _sortColumnIndex;
+  bool _sortAscending = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final structured = widget.output['structured'] is Map
+        ? widget.output['structured'] as Map
+        : const {};
+    final columns = (structured['columns'] is List
+            ? structured['columns'] as List
+            : const [])
+        .map((item) => item.toString())
+        .toList();
+    final rawRows =
+        structured['rows'] is List ? structured['rows'] as List : const [];
+    var rows = rawRows
+        .whereType<Map>()
+        .map((row) => row.cast<String, dynamic>())
+        .toList();
+    if (_query.trim().isNotEmpty) {
+      final needle = _query.toLowerCase();
+      rows = rows
+          .where((row) => row.values
+              .any((value) => value.toString().toLowerCase().contains(needle)))
+          .toList();
+    }
+    if (_sortColumnIndex != null && _sortColumnIndex! < columns.length) {
+      final key = columns[_sortColumnIndex!];
+      rows.sort(
+          (a, b) => _compareValues(a[key], b[key]) * (_sortAscending ? 1 : -1));
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.search), labelText: 'Search table'),
+          onChanged: (value) => setState(() => _query = value),
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        Scrollbar(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              sortColumnIndex: _sortColumnIndex,
+              sortAscending: _sortAscending,
+              columns: [
+                for (var index = 0; index < columns.length; index++)
+                  DataColumn(
+                    label: Text(columns[index]),
+                    onSort: (columnIndex, ascending) {
+                      setState(() {
+                        _sortColumnIndex = columnIndex;
+                        _sortAscending = ascending;
+                      });
+                    },
+                  ),
+              ],
+              rows: [
+                for (final row in rows)
+                  DataRow(cells: [
+                    for (final column in columns)
+                      DataCell(SelectableText(_formatCell(row[column]))),
+                  ]),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProvenanceViewer extends StatelessWidget {
+  const _ProvenanceViewer({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  Widget build(BuildContext context) {
+    final provenance =
+        output['structured'] is Map && (output['structured'] as Map).isNotEmpty
+            ? output['structured'] as Map
+            : output['provenance'] is Map
+                ? output['provenance'] as Map
+                : const {};
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _KeyValue('Workflow', provenance['workflow_stable_key']),
+        _KeyValue('Workflow version', provenance['workflow_version']),
+        _KeyValue('Worker', provenance['worker_id']),
+        _KeyValue('Parameters', provenance['parameters']),
+        _KeyValue('Input checksum', provenance['dataset_checksum']),
+        _KeyValue('Started', provenance['started_at']),
+        _KeyValue('Finished', provenance['completed_at']),
+        _KeyValue('Outputs', provenance['outputs']),
+      ],
+    );
+  }
+}
+
+class _GenericOutputViewer extends StatelessWidget {
+  const _GenericOutputViewer({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _KeyValue('Type', output['output_type']),
+        _KeyValue('Dataset', output['dataset_id']),
+        _KeyValue('Job', output['job_id']),
+        _KeyValue('MIME type', output['mime_type']),
+        _KeyValue('Size', output['size_bytes']),
+        _KeyValue('Created', output['created_at']),
+        _KeyValue('Metadata', output['structured']),
+        _KeyValue('Provenance', output['provenance']),
+      ],
+    );
+  }
+}
+
+class _InsertOutputDialog extends StatefulWidget {
+  const _InsertOutputDialog({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  State<_InsertOutputDialog> createState() => _InsertOutputDialogState();
+}
+
+class _InsertOutputDialogState extends State<_InsertOutputDialog> {
+  final TextEditingController _notebookController = TextEditingController();
+  final TextEditingController _experimentController = TextEditingController();
+  final TextEditingController _captionController = TextEditingController();
+  String _referenceType = 'linked';
+
+  @override
+  void dispose() {
+    _notebookController.dispose();
+    _experimentController.dispose();
+    _captionController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Insert into Notebook'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                widget.output['display_name']?.toString() ?? 'Analysis result',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                  value: 'linked',
+                  label: Text('Linked Result'),
+                  icon: Icon(Icons.link),
+                ),
+                ButtonSegment(
+                  value: 'snapshot',
+                  label: Text('Snapshot'),
+                  icon: Icon(Icons.photo_outlined),
+                ),
+              ],
+              selected: {_referenceType},
+              onSelectionChanged: (selection) {
+                setState(() => _referenceType = selection.first);
+              },
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            TextField(
+              controller: _notebookController,
+              decoration: const InputDecoration(
+                labelText: 'Notebook ID',
+                helperText: 'Optional for this MVP',
+              ),
+            ),
+            TextField(
+              controller: _experimentController,
+              decoration: const InputDecoration(
+                labelText: 'Experiment ID',
+                helperText: 'Optional',
+              ),
+            ),
+            TextField(
+              controller: _captionController,
+              decoration: const InputDecoration(labelText: 'Caption'),
+              maxLines: 2,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: () {
+            Navigator.of(context).pop(
+              _OutputInsertRequest(
+                referenceType: _referenceType,
+                notebookId: _emptyToNull(_notebookController.text),
+                experimentId: _emptyToNull(_experimentController.text),
+                caption: _emptyToNull(_captionController.text),
+              ),
+            );
+          },
+          icon: const Icon(Icons.note_add_outlined),
+          label: const Text('Insert'),
+        ),
+      ],
+    );
+  }
+}
+
+class _OutputInsertRequest {
+  const _OutputInsertRequest({
+    required this.referenceType,
+    this.notebookId,
+    this.experimentId,
+    this.caption,
+  });
+
+  final String referenceType;
+  final String? notebookId;
+  final String? experimentId;
+  final String? caption;
 }
 
 class _KeyValue extends StatelessWidget {
@@ -935,6 +1647,7 @@ class _AnalysisState {
     required this.workflows,
     required this.jobs,
     required this.outputs,
+    required this.outputGroups,
     required this.storageLocations,
     required this.demoLibrary,
   });
@@ -944,8 +1657,32 @@ class _AnalysisState {
   final List<Map<String, dynamic>> workflows;
   final List<Map<String, dynamic>> jobs;
   final List<Map<String, dynamic>> outputs;
+  final List<Map<String, dynamic>> outputGroups;
   final List<Map<String, dynamic>> storageLocations;
   final Map<String, dynamic> demoLibrary;
+}
+
+String? _emptyToNull(String value) {
+  final clean = value.trim();
+  return clean.isEmpty ? null : clean;
+}
+
+int _compareValues(Object? left, Object? right) {
+  final leftNumber = num.tryParse(left?.toString() ?? '');
+  final rightNumber = num.tryParse(right?.toString() ?? '');
+  if (leftNumber != null && rightNumber != null) {
+    return leftNumber.compareTo(rightNumber);
+  }
+  return (left?.toString() ?? '').compareTo(right?.toString() ?? '');
+}
+
+String _formatCell(Object? value) {
+  if (value == null) return '-';
+  if (value is num) {
+    final rounded = value.toStringAsFixed(3);
+    return rounded.replaceFirst(RegExp(r'\.?0+$'), '');
+  }
+  return value.toString();
 }
 
 String _joinList(Object? value) {

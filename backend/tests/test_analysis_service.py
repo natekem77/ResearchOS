@@ -189,6 +189,151 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(qc["structured"]["summary"]["integer_counts_valid"])
         self.assertTrue(qc["provenance"]["source_files_remain_server_local"])
 
+    def test_output_detail_rename_references_and_delete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            service.run_claimed_job_once("worker-1")
+            output = next(
+                item
+                for item in service.outputs_for_job("user:pi-owner", job["id"])
+                if item["output_type"] == "qc_report"
+            )
+
+            detail = service.get_output("user:pi-owner", output["id"])
+            renamed = service.rename_output("user:pi-owner", output["id"], "Reviewed QC")
+            linked = service.record_notebook_reference(
+                "user:pi-owner",
+                output_id=output["id"],
+                notebook_id="notebook:test",
+                reference_type="linked",
+                caption="QC summary",
+            )
+            snapshot = service.record_notebook_reference(
+                "user:pi-owner",
+                output_id=output["id"],
+                experiment_id="experiment:test",
+                reference_type="snapshot",
+            )
+            references = service.references_for_output("user:pi-owner", output["id"])
+            with self.assertRaisesRegex(AnalysisValidationError, "referenced"):
+                service.delete_output("user:pi-owner", output["id"])
+            deleted = service.delete_output(
+                "user:pi-owner",
+                output["id"],
+                reference_mode="remove_references",
+            )
+
+        self.assertEqual(detail["dataset"]["display_name"], "Bulk SAG GRKi")
+        self.assertEqual(renamed["display_name"], "Reviewed QC")
+        self.assertEqual(linked["reference_type"], "linked")
+        self.assertEqual(snapshot["reference_type"], "snapshot")
+        self.assertEqual(len(references), 2)
+        self.assertTrue(deleted["deleted"])
+
+    def test_output_registration_is_idempotent_within_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            with service._connect() as connection:
+                service._insert_output(
+                    connection,
+                    job_id=job["id"],
+                    dataset_id=dataset["id"],
+                    output_type="table",
+                    display_name="Library Sizes",
+                    structured={"columns": ["sample"], "rows": [{"sample": "A"}]},
+                    registration_key="library_sizes",
+                )
+                service._insert_output(
+                    connection,
+                    job_id=job["id"],
+                    dataset_id=dataset["id"],
+                    output_type="table",
+                    display_name="Library Sizes",
+                    structured={"columns": ["sample"], "rows": [{"sample": "B"}]},
+                    registration_key="library_sizes",
+                )
+            outputs = service.outputs_for_job("user:pi-owner", job["id"])
+
+        self.assertEqual(len(outputs), 1)
+        self.assertEqual(outputs[0]["structured"]["rows"][0]["sample"], "B")
+
+    def test_output_groups_are_dataset_job_output_ordered(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            for _ in range(2):
+                service.create_job(
+                    user_id="user:pi-owner",
+                    dataset_id=dataset["id"],
+                    workflow_key="bulk_rnaseq_validation_qc",
+                    parameters={"sample_id_column": "sample", "group_column": "condition"},
+                )
+                service.run_claimed_job_once("worker-1")
+            groups = service.output_groups("user:pi-owner")
+
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(all(group["dataset"]["display_name"] == "Bulk SAG GRKi" for group in groups))
+        self.assertTrue(all(len(group["outputs"]) == 3 for group in groups))
+
     def test_output_browser_and_demo_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)
@@ -228,6 +373,9 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(any(path == "/mobile/analysis/workers" and "GET" in methods for path, methods in routes))
         self.assertTrue(any(path == "/worker/register" and "POST" in methods for path, methods in routes))
         self.assertTrue(any(path == "/mobile/analysis/demo-library" and "GET" in methods for path, methods in routes))
+        self.assertTrue(any(path == "/mobile/analysis/output-groups" and "GET" in methods for path, methods in routes))
+        self.assertTrue(any(path == "/mobile/analysis/outputs/{output_id}" and "PATCH" in methods for path, methods in routes))
+        self.assertTrue(any(path == "/mobile/analysis/notebook-references" and "POST" in methods for path, methods in routes))
 
 
 def _write_bulk_fixture(root: Path) -> None:

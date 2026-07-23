@@ -470,8 +470,58 @@ class ResearchOsApi {
     return _jsonObjectList(json['outputs']);
   }
 
+  Future<List<Map<String, dynamic>>> analysisOutputGroups() async {
+    final json = await _getMap('/mobile/analysis/output-groups');
+    return _jsonObjectList(json['groups']);
+  }
+
   Future<Map<String, dynamic>> analysisOutput(String outputId) {
     return _getMap('/mobile/analysis/outputs/${Uri.encodeComponent(outputId)}');
+  }
+
+  Future<Map<String, dynamic>> renameAnalysisOutput({
+    required String outputId,
+    required String displayName,
+  }) {
+    return _patchMap(
+      '/mobile/analysis/outputs/${Uri.encodeComponent(outputId)}',
+      {'display_name': displayName.trim()},
+    );
+  }
+
+  Future<Map<String, dynamic>> deleteAnalysisOutput({
+    required String outputId,
+    String referenceMode = 'block_if_referenced',
+  }) {
+    return _deleteMap(
+      '/mobile/analysis/outputs/${Uri.encodeComponent(outputId)}?reference_mode=${Uri.encodeQueryComponent(referenceMode)}',
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> analysisOutputReferences(
+      String outputId) async {
+    final json = await _getMap(
+        '/mobile/analysis/outputs/${Uri.encodeComponent(outputId)}/references');
+    return _jsonObjectList(json['references']);
+  }
+
+  Future<Map<String, dynamic>> createAnalysisNotebookReference({
+    required String outputId,
+    String? notebookId,
+    String? experimentId,
+    String referenceType = 'linked',
+    String? caption,
+  }) {
+    return _postMap('/mobile/analysis/notebook-references', {
+      'output_id': outputId,
+      'reference_type': referenceType,
+      if (notebookId != null && notebookId.trim().isNotEmpty)
+        'notebook_id': notebookId.trim(),
+      if (experimentId != null && experimentId.trim().isNotEmpty)
+        'experiment_id': experimentId.trim(),
+      if (caption != null && caption.trim().isNotEmpty)
+        'caption': caption.trim(),
+    });
   }
 
   Future<Map<String, dynamic>> analysisDemoLibrary() {
