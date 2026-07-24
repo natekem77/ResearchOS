@@ -158,6 +158,27 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
+  Future<void> _runDeseq2(Map<String, dynamic> dataset) async {
+    final request = await showDialog<_Deseq2Request>(
+      context: context,
+      builder: (context) => _Deseq2Dialog(dataset: dataset),
+    );
+    if (request == null) return;
+    try {
+      await widget.api.createAnalysisJob(
+        datasetId: dataset['id'].toString(),
+        workflowKey: 'bulk_rnaseq_deseq2',
+        parameters: request.parameters,
+      );
+      if (!mounted) return;
+      setState(() => _message = 'DESeq2 job queued.');
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _message = 'Could not queue DESeq2 job: $error');
+    }
+  }
+
   Future<void> _installDemoWorkspace() async {
     try {
       await widget.api.installAnalysisDemoWorkspace();
@@ -469,6 +490,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                   _DatasetCard(
                     dataset: dataset,
                     onRunQc: () => _runQc(dataset),
+                    onRunDeseq2: () => _runDeseq2(dataset),
                   ),
               const SizedBox(height: ResearchOsSpacing.lg),
               const _SectionHeader(
@@ -673,10 +695,12 @@ class _DatasetCard extends StatelessWidget {
   const _DatasetCard({
     required this.dataset,
     required this.onRunQc,
+    required this.onRunDeseq2,
   });
 
   final Map<String, dynamic> dataset;
   final VoidCallback onRunQc;
+  final VoidCallback onRunDeseq2;
 
   @override
   Widget build(BuildContext context) {
@@ -696,10 +720,20 @@ class _DatasetCard extends StatelessWidget {
           '${dataset['source_type'] ?? 'server'}',
         ),
         trailing: canRunQc
-            ? FilledButton.tonalIcon(
-                onPressed: onRunQc,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Run QC'),
+            ? Wrap(
+                spacing: ResearchOsSpacing.xs,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: onRunQc,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('Run QC'),
+                  ),
+                  FilledButton.tonalIcon(
+                    onPressed: onRunDeseq2,
+                    icon: const Icon(Icons.biotech_outlined),
+                    label: const Text('Run DESeq2'),
+                  ),
+                ],
               )
             : const Chip(label: Text('Catalog')),
       ),
@@ -734,6 +768,255 @@ class _WorkflowCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _Deseq2Dialog extends StatefulWidget {
+  const _Deseq2Dialog({required this.dataset});
+
+  final Map<String, dynamic> dataset;
+
+  @override
+  State<_Deseq2Dialog> createState() => _Deseq2DialogState();
+}
+
+class _Deseq2DialogState extends State<_Deseq2Dialog> {
+  final TextEditingController _sampleColumnController =
+      TextEditingController(text: 'sample');
+  final TextEditingController _designController =
+      TextEditingController(text: 'condition');
+  final TextEditingController _contrastFactorController =
+      TextEditingController(text: 'condition');
+  final TextEditingController _numeratorController =
+      TextEditingController(text: 'treated');
+  final TextEditingController _denominatorController =
+      TextEditingController(text: 'control');
+  final TextEditingController _minTotalController =
+      TextEditingController(text: '10');
+  final TextEditingController _minSamplesController =
+      TextEditingController(text: '2');
+  final TextEditingController _alphaController =
+      TextEditingController(text: '0.05');
+  final TextEditingController _lfcController =
+      TextEditingController(text: '1.0');
+  final TextEditingController _topGenesController =
+      TextEditingController(text: '50');
+  String _shrinkage = 'none';
+  String _transform = 'vst';
+
+  @override
+  void initState() {
+    super.initState();
+    final name = widget.dataset['display_name']?.toString().toLowerCase() ?? '';
+    if (name.contains('sag') || name.contains('retina')) {
+      _numeratorController.text = 'treated';
+      _denominatorController.text = 'control';
+    }
+  }
+
+  @override
+  void dispose() {
+    _sampleColumnController.dispose();
+    _designController.dispose();
+    _contrastFactorController.dispose();
+    _numeratorController.dispose();
+    _denominatorController.dispose();
+    _minTotalController.dispose();
+    _minSamplesController.dispose();
+    _alphaController.dispose();
+    _lfcController.dispose();
+    _topGenesController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final designFactors = _designFactors();
+    final formula = '~ ${designFactors.join(' + ')}';
+    return AlertDialog(
+      title: const Text('Run DESeq2'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+                widget.dataset['display_name']?.toString() ??
+                    'Bulk RNA dataset',
+                style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            TextField(
+              controller: _sampleColumnController,
+              decoration: const InputDecoration(labelText: 'Sample ID column'),
+            ),
+            TextField(
+              controller: _designController,
+              decoration: const InputDecoration(
+                labelText: 'Design factors',
+                helperText: 'Comma-separated metadata columns',
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(vertical: ResearchOsSpacing.xs),
+              child: Text('Formula: $formula'),
+            ),
+            TextField(
+              controller: _contrastFactorController,
+              decoration: const InputDecoration(labelText: 'Contrast factor'),
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _numeratorController,
+                    decoration: const InputDecoration(labelText: 'Numerator'),
+                  ),
+                ),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: TextField(
+                    controller: _denominatorController,
+                    decoration: const InputDecoration(labelText: 'Reference'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _minTotalController,
+                    keyboardType: TextInputType.number,
+                    decoration:
+                        const InputDecoration(labelText: 'Min total count'),
+                  ),
+                ),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: TextField(
+                    controller: _minSamplesController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Min samples'),
+                  ),
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _alphaController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Alpha'),
+                  ),
+                ),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: TextField(
+                    controller: _lfcController,
+                    keyboardType: TextInputType.number,
+                    decoration:
+                        const InputDecoration(labelText: 'log2FC threshold'),
+                  ),
+                ),
+              ],
+            ),
+            DropdownButtonFormField<String>(
+              initialValue: _shrinkage,
+              decoration: const InputDecoration(labelText: 'LFC shrinkage'),
+              items: const [
+                DropdownMenuItem(value: 'none', child: Text('none')),
+                DropdownMenuItem(value: 'apeglm', child: Text('apeglm')),
+                DropdownMenuItem(value: 'ashr', child: Text('ashr')),
+                DropdownMenuItem(value: 'normal', child: Text('normal')),
+              ],
+              onChanged: (value) =>
+                  setState(() => _shrinkage = value ?? 'none'),
+            ),
+            DropdownButtonFormField<String>(
+              initialValue: _transform,
+              decoration:
+                  const InputDecoration(labelText: 'Transformed counts'),
+              items: const [
+                DropdownMenuItem(value: 'vst', child: Text('VST')),
+                DropdownMenuItem(value: 'rlog', child: Text('rlog')),
+                DropdownMenuItem(value: 'none', child: Text('none')),
+              ],
+              onChanged: (value) => setState(() => _transform = value ?? 'vst'),
+            ),
+            TextField(
+              controller: _topGenesController,
+              keyboardType: TextInputType.number,
+              decoration:
+                  const InputDecoration(labelText: 'Top genes for heatmap'),
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            const Text(
+                'Review: this will submit an approved DESeq2 workflow to a compute worker and produce linked analysis outputs.'),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton.icon(
+          onPressed: _canSubmit()
+              ? () => Navigator.of(context).pop(_Deseq2Request(_parameters()))
+              : null,
+          icon: const Icon(Icons.play_arrow),
+          label: const Text('Submit DESeq2'),
+        ),
+      ],
+    );
+  }
+
+  bool _canSubmit() {
+    return _sampleColumnController.text.trim().isNotEmpty &&
+        _designFactors().isNotEmpty &&
+        _contrastFactorController.text.trim().isNotEmpty &&
+        _numeratorController.text.trim().isNotEmpty &&
+        _denominatorController.text.trim().isNotEmpty &&
+        _numeratorController.text.trim() != _denominatorController.text.trim();
+  }
+
+  List<String> _designFactors() {
+    return _designController.text
+        .split(',')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList();
+  }
+
+  Map<String, dynamic> _parameters() {
+    return {
+      'sample_id_column': _sampleColumnController.text.trim(),
+      'design_factors': _designFactors(),
+      'contrast_factor': _contrastFactorController.text.trim(),
+      'numerator_level': _numeratorController.text.trim(),
+      'denominator_level': _denominatorController.text.trim(),
+      'min_total_count': int.tryParse(_minTotalController.text.trim()) ?? 10,
+      'min_samples_expressing':
+          int.tryParse(_minSamplesController.text.trim()) ?? 2,
+      'independent_filtering': true,
+      'alpha': double.tryParse(_alphaController.text.trim()) ?? 0.05,
+      'lfc_threshold': double.tryParse(_lfcController.text.trim()) ?? 1.0,
+      'padj_method': 'BH',
+      'lfc_shrinkage': _shrinkage,
+      'transformed_count_method': _transform,
+      'top_gene_count': int.tryParse(_topGenesController.text.trim()) ?? 50,
+      'sample_annotation_columns': _designFactors(),
+    };
+  }
+}
+
+class _Deseq2Request {
+  const _Deseq2Request(this.parameters);
+
+  final Map<String, dynamic> parameters;
 }
 
 class _JobCard extends StatelessWidget {
@@ -1041,10 +1324,166 @@ class _OutputViewerSheet extends StatelessWidget {
 }
 
 Widget _viewerForType(String type, Map<String, dynamic> output) {
+  if (type == 'deseq2_run_summary') return _Deseq2SummaryViewer(output: output);
+  if (type == 'differential_expression_table') {
+    return _DifferentialExpressionViewer(output: output);
+  }
   if (type == 'qc_report') return _QcReportViewer(output: output);
   if (type == 'table') return _TableOutputViewer(output: output);
   if (type == 'provenance') return _ProvenanceViewer(output: output);
+  if (type == 'interactive_plot' || type == 'heatmap') {
+    return _PlotPayloadViewer(output: output);
+  }
   return _GenericOutputViewer(output: output);
+}
+
+class _Deseq2SummaryViewer extends StatelessWidget {
+  const _Deseq2SummaryViewer({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  Widget build(BuildContext context) {
+    final structured =
+        output['structured'] is Map ? output['structured'] as Map : const {};
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _KeyValue('Comparison', structured['comparison']),
+        _KeyValue('Design', structured['design_formula']),
+        _KeyValue('Samples', structured['sample_count']),
+        _KeyValue('Genes tested', structured['genes_tested']),
+        _KeyValue('Upregulated', structured['significantly_upregulated']),
+        _KeyValue('Downregulated', structured['significantly_downregulated']),
+        _KeyValue('Alpha', structured['alpha']),
+        _KeyValue('log2FC threshold', structured['lfc_threshold']),
+        _KeyValue('Shrinkage', structured['shrinkage_method']),
+        _KeyValue('Worker', structured['worker']),
+        _KeyValue('Warnings', structured['warnings']),
+      ],
+    );
+  }
+}
+
+class _DifferentialExpressionViewer extends StatefulWidget {
+  const _DifferentialExpressionViewer({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  State<_DifferentialExpressionViewer> createState() =>
+      _DifferentialExpressionViewerState();
+}
+
+class _DifferentialExpressionViewerState
+    extends State<_DifferentialExpressionViewer> {
+  String _query = '';
+  bool _significantOnly = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final structured = widget.output['structured'] is Map
+        ? widget.output['structured'] as Map
+        : const {};
+    final rows =
+        (structured['rows'] is List ? structured['rows'] as List : const [])
+            .whereType<Map>()
+            .map((row) => row.cast<String, dynamic>())
+            .where((row) {
+      final gene = '${row['gene_id']} ${row['gene_symbol']}'.toLowerCase();
+      final queryMatches =
+          _query.trim().isEmpty || gene.contains(_query.trim().toLowerCase());
+      final sigMatches =
+          !_significantOnly || row['significance']?.toString() == 'significant';
+      return queryMatches && sigMatches;
+    }).toList();
+    final columns = [
+      'gene_id',
+      'baseMean',
+      'log2FoldChange',
+      'pvalue',
+      'padj',
+      'direction',
+    ];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          decoration: const InputDecoration(
+            prefixIcon: Icon(Icons.search),
+            labelText: 'Search genes',
+          ),
+          onChanged: (value) => setState(() => _query = value),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Significant only'),
+          value: _significantOnly,
+          onChanged: (value) => setState(() => _significantOnly = value),
+        ),
+        Scrollbar(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: DataTable(
+              columns: [
+                for (final column in columns) DataColumn(label: Text(column)),
+              ],
+              rows: [
+                for (final row in rows.take(200))
+                  DataRow(
+                    cells: [
+                      for (final column in columns)
+                        DataCell(SelectableText(_formatCell(row[column]))),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PlotPayloadViewer extends StatelessWidget {
+  const _PlotPayloadViewer({required this.output});
+
+  final Map<String, dynamic> output;
+
+  @override
+  Widget build(BuildContext context) {
+    final structured =
+        output['structured'] is Map ? output['structured'] as Map : const {};
+    final points =
+        structured['points'] is List ? structured['points'] as List : const [];
+    final rows =
+        structured['rows'] is List ? structured['rows'] as List : const [];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _KeyValue('Plot type', structured['plot_type']),
+        _KeyValue('X axis', structured['x']),
+        _KeyValue('Y axis', structured['y']),
+        _KeyValue('Thresholds', structured['thresholds']),
+        if (points.isNotEmpty) _KeyValue('Points', points.length),
+        if (rows.isNotEmpty) _KeyValue('Rows', rows.length),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        _TableOutputViewer(
+          output: {
+            'structured': points.isNotEmpty
+                ? {
+                    'columns': (points.first as Map).keys.toList(),
+                    'rows': points.take(100).toList(),
+                  }
+                : {
+                    'columns': structured['columns'] ?? const [],
+                    'rows': rows.take(100).toList(),
+                  },
+          },
+        ),
+      ],
+    );
+  }
 }
 
 class _QcReportViewer extends StatelessWidget {

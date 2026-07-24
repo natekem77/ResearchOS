@@ -5420,6 +5420,12 @@ def list_mobile_analysis_storage_locations(request: Request) -> dict[str, object
     return {"storage_locations": _analysis_service().list_storage_locations()}
 
 
+@app.get("/mobile/analysis/storage-report", tags=["analysis"])
+def get_mobile_analysis_storage_report(request: Request) -> dict[str, object]:
+    _request_user_id(request)
+    return _analysis_service().storage_report()
+
+
 @app.get("/mobile/analysis/storage-locations/{storage_location_id}/browse", tags=["analysis"])
 def browse_mobile_analysis_storage_location(
     storage_location_id: str,

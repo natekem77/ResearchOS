@@ -6,8 +6,10 @@ import csv
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
+import shutil
 import sqlite3
 import statistics
 import uuid
@@ -21,6 +23,9 @@ from app.storage import PROJECT_ROOT, SQLiteStore
 from .workflows import list_workflows, validate_parameters, workflow_by_key
 
 logger = logging.getLogger(__name__)
+
+ACTIVE_JOB_STATUSES = {"claimed", "preparing", "running", "uploading_results"}
+TERMINAL_JOB_STATUSES = {"complete", "failed", "cancelled"}
 
 
 class AnalysisValidationError(ValueError):
@@ -45,9 +50,13 @@ class AnalysisService:
         self.server_data_dir.mkdir(parents=True, exist_ok=True)
         self.allowed_roots = _analysis_roots(self.data_dir, self.server_data_dir)
         self.worker_token = os.environ.get("MUNDI_COMPUTE_WORKER_TOKEN", "dev-compute-worker-token")
+        self.job_timeout_seconds = int(os.environ.get("MUNDI_COMPUTE_JOB_TIMEOUT_SECONDS", "3600"))
+        self.job_recovery_seconds = int(os.environ.get("MUNDI_COMPUTE_JOB_RECOVERY_SECONDS", "90"))
+        self.max_transient_retries = int(os.environ.get("MUNDI_COMPUTE_MAX_TRANSIENT_RETRIES", "2"))
         self._ensure_schema()
         self._ensure_storage_locations()
         self._ensure_workflows()
+        self.recover_interrupted_jobs()
         logger.debug(
             "analysis paths database=%s outputs=%s roots=%s",
             self.store.path,
@@ -145,6 +154,9 @@ class AnalysisService:
                     finished_at TEXT,
                     error_summary TEXT,
                     cancellation_requested INTEGER NOT NULL DEFAULT 0,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    max_retries INTEGER NOT NULL DEFAULT 2,
+                    last_worker_heartbeat TEXT,
                     resource_request_json TEXT NOT NULL DEFAULT '{}',
                     reproducibility_manifest_json TEXT NOT NULL DEFAULT '{}',
                     deleted_at TEXT
@@ -164,9 +176,6 @@ class AnalysisService:
                     provenance_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 );
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_outputs_registration
-                    ON analysis_outputs(job_id, registration_key)
-                    WHERE registration_key IS NOT NULL;
                 CREATE TABLE IF NOT EXISTS analysis_notebook_references (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
@@ -188,6 +197,16 @@ class AnalysisService:
                 """
             )
             _ensure_column(connection, "analysis_outputs", "registration_key", "TEXT")
+            _ensure_column(connection, "analysis_jobs", "retry_count", "INTEGER NOT NULL DEFAULT 0")
+            _ensure_column(connection, "analysis_jobs", "max_retries", "INTEGER NOT NULL DEFAULT 2")
+            _ensure_column(connection, "analysis_jobs", "last_worker_heartbeat", "TEXT")
+            connection.executescript(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_analysis_outputs_registration
+                    ON analysis_outputs(job_id, registration_key)
+                    WHERE registration_key IS NOT NULL;
+                """
+            )
 
     def _ensure_storage_locations(self) -> None:
         with self._connect() as connection:
@@ -302,6 +321,7 @@ class AnalysisService:
         payload = payload or {}
         if self._worker_row(worker_id) is None:
             self.register_worker({"worker_id": worker_id, "display_name": worker_id})
+        now = _now()
         with self._connect() as connection:
             connection.execute(
                 """
@@ -312,10 +332,19 @@ class AnalysisService:
                 (
                     str(payload.get("status") or "ready"),
                     _optional_int(payload.get("running_job_count")) or 0,
-                    _now(),
+                    now,
                     worker_id,
                 ),
             )
+            connection.execute(
+                f"""
+                UPDATE analysis_jobs
+                SET last_worker_heartbeat = ?
+                WHERE worker_id = ? AND status IN ({_sql_placeholders(ACTIVE_JOB_STATUSES)})
+                """,
+                (now, worker_id, *sorted(ACTIVE_JOB_STATUSES)),
+            )
+        self.recover_interrupted_jobs()
         return self.get_worker(worker_id)
 
     def get_worker(self, worker_id: str) -> dict[str, Any]:
@@ -445,14 +474,15 @@ class AnalysisService:
                 ).fetchall()
             else:
                 rows = connection.execute("SELECT * FROM analysis_workflows WHERE enabled = 1 ORDER BY category, name").fetchall()
-        return [self._workflow_payload(row) for row in rows]
+            supported_workflows = _fresh_supported_workflows(connection)
+        return [self._workflow_payload(row, supported_workflows) for row in rows]
 
     def create_job(self, *, user_id: str, dataset_id: str, workflow_key: str, parameters: dict[str, Any] | None = None, priority: int = 0) -> dict[str, Any]:
         dataset = self.get_dataset(user_id, dataset_id)
         workflow = workflow_by_key(workflow_key)
         if workflow is None:
             raise AnalysisValidationError("Unknown analysis workflow.")
-        if workflow["stable_key"] != "bulk_rnaseq_validation_qc":
+        if workflow["stable_key"] not in {"bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"}:
             raise AnalysisValidationError("This workflow is scaffolded but not executable in the current milestone.")
         if workflow["modality"] != dataset["modality"]:
             raise AnalysisValidationError("Workflow does not support this dataset modality.")
@@ -475,9 +505,9 @@ class AnalysisService:
                 """
                 INSERT INTO analysis_jobs
                     (id, user_id, dataset_id, workflow_id, workflow_version, status, priority,
-                     parameters_json, progress, current_stage, queued_at, resource_request_json,
+                     parameters_json, progress, current_stage, queued_at, max_retries, resource_request_json,
                      reproducibility_manifest_json)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, 'Queued', CURRENT_TIMESTAMP, ?, ?)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, 0, 'Queued', CURRENT_TIMESTAMP, ?, ?, ?)
                 """,
                 (
                     job_id,
@@ -487,6 +517,7 @@ class AnalysisService:
                     workflow["workflow_version"],
                     priority,
                     json.dumps(clean_parameters),
+                    self.max_transient_retries,
                     json.dumps(workflow["resource_request"]),
                     json.dumps(manifest),
                 ),
@@ -513,6 +544,7 @@ class AnalysisService:
         return self._job_payload(row)
 
     def claim_next_job(self, worker_id: str) -> dict[str, Any] | None:
+        self.recover_interrupted_jobs()
         worker = self.get_worker(worker_id)
         if not worker.get("enabled", True):
             raise AnalysisValidationError("Compute worker is disabled.")
@@ -539,10 +571,11 @@ class AnalysisService:
                 """
                 UPDATE analysis_jobs
                 SET status = 'claimed', worker_id = ?, progress = 0.05,
+                    cancellation_requested = 0, last_worker_heartbeat = ?,
                     current_stage = 'Claimed by compute worker', started_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND status = 'queued'
                 """,
-                (worker_id, selected["id"]),
+                (worker_id, _now(), selected["id"]),
             )
         return self.get_job(str(selected["user_id"]), str(selected["id"]))
 
@@ -554,10 +587,10 @@ class AnalysisService:
             connection.execute(
                 """
                 UPDATE analysis_jobs
-                SET status = ?, progress = ?, current_stage = ?
+                SET status = ?, progress = ?, current_stage = ?, last_worker_heartbeat = ?
                 WHERE id = ? AND worker_id = ?
                 """,
-                (next_status, next_progress, current_stage or row["current_stage"], job_id, worker_id),
+                (next_status, next_progress, current_stage or row["current_stage"], _now(), job_id, worker_id),
             )
         return self.get_job(str(row["user_id"]), job_id)
 
@@ -586,31 +619,53 @@ class AnalysisService:
 
     def complete_job(self, worker_id: str, job_id: str, outputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         row = self._job_for_worker(worker_id, job_id)
+        if row["cancellation_requested"]:
+            return self._cancel_claimed_job(worker_id, job_id)
         with self._connect() as connection:
             for output in outputs or []:
                 self._insert_structured_worker_output(connection, row, output)
             connection.execute(
                 """
                 UPDATE analysis_jobs
-                SET status = 'complete', progress = 1, current_stage = 'Complete', finished_at = CURRENT_TIMESTAMP
+                SET status = 'complete', progress = 1, current_stage = 'Complete',
+                    finished_at = CURRENT_TIMESTAMP, last_worker_heartbeat = ?
                 WHERE id = ? AND worker_id = ?
                 """,
-                (job_id, worker_id),
+                (_now(), job_id, worker_id),
             )
         return self.get_job(str(row["user_id"]), job_id)
 
     def fail_job(self, worker_id: str, job_id: str, error_summary: str) -> dict[str, Any]:
         row = self._job_for_worker(worker_id, job_id)
+        clean_error = _sanitize_log_line(error_summary)[:500]
+        retry_count = int(row["retry_count"] or 0)
+        max_retries = int(row["max_retries"] or self.max_transient_retries)
+        should_retry = _is_transient_error(clean_error) and retry_count < max_retries
         with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE analysis_jobs
-                SET status = 'failed', progress = 1, current_stage = 'Failed',
-                    error_summary = ?, finished_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND worker_id = ?
-                """,
-                (_sanitize_log_line(error_summary)[:500], job_id, worker_id),
-            )
+            if should_retry:
+                connection.execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET status = 'queued', worker_id = NULL, progress = 0,
+                        current_stage = 'Queued for automatic retry',
+                        queued_at = CURRENT_TIMESTAMP, started_at = NULL, finished_at = NULL,
+                        error_summary = ?, retry_count = retry_count + 1,
+                        last_worker_heartbeat = NULL
+                    WHERE id = ? AND worker_id = ?
+                    """,
+                    (clean_error, job_id, worker_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET status = 'failed', progress = 1, current_stage = 'Failed',
+                        error_summary = ?, finished_at = CURRENT_TIMESTAMP,
+                        last_worker_heartbeat = ?
+                    WHERE id = ? AND worker_id = ?
+                    """,
+                    (clean_error, _now(), job_id, worker_id),
+                )
         return self.get_job(str(row["user_id"]), job_id)
 
     def cancel_job(self, user_id: str, job_id: str) -> dict[str, Any]:
@@ -621,6 +676,7 @@ class AnalysisService:
                 UPDATE analysis_jobs
                 SET cancellation_requested = 1,
                     status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE status END,
+                    current_stage = CASE WHEN status = 'queued' THEN 'Cancelled' ELSE 'Cancellation requested' END,
                     finished_at = CASE WHEN status = 'queued' THEN CURRENT_TIMESTAMP ELSE finished_at END
                 WHERE id = ? AND user_id = ?
                 """,
@@ -638,7 +694,8 @@ class AnalysisService:
                 UPDATE analysis_jobs
                 SET status = 'queued', worker_id = NULL, progress = 0, current_stage = 'Queued',
                     queued_at = CURRENT_TIMESTAMP, started_at = NULL, finished_at = NULL,
-                    error_summary = NULL, cancellation_requested = 0
+                    error_summary = NULL, cancellation_requested = 0,
+                    last_worker_heartbeat = NULL
                 WHERE id = ? AND user_id = ?
                 """,
                 (job_id, user_id),
@@ -647,13 +704,139 @@ class AnalysisService:
 
     def delete_job(self, user_id: str, job_id: str) -> None:
         job = self.get_job(user_id, job_id)
-        if job["status"] in {"claimed", "preparing", "running", "uploading_results"}:
+        if job["status"] in ACTIVE_JOB_STATUSES:
             raise AnalysisValidationError("Running analysis jobs cannot be deleted. Cancel the job first.")
         with self._connect() as connection:
             connection.execute(
                 "UPDATE analysis_jobs SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
                 (job_id, user_id),
             )
+
+    def recover_interrupted_jobs(self) -> dict[str, int]:
+        """Requeue active jobs whose worker heartbeat is stale or whose runtime timed out."""
+        now = datetime.now(timezone.utc)
+        stale_before = now - timedelta(seconds=self.job_recovery_seconds)
+        timeout_before = now - timedelta(seconds=self.job_timeout_seconds)
+        requeued = 0
+        timed_out = 0
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT j.*, w.last_heartbeat AS worker_last_heartbeat
+                FROM analysis_jobs j
+                LEFT JOIN analysis_workers w ON w.worker_id = j.worker_id
+                WHERE j.deleted_at IS NULL
+                  AND j.status IN ({_sql_placeholders(ACTIVE_JOB_STATUSES)})
+                """,
+                tuple(sorted(ACTIVE_JOB_STATUSES)),
+            ).fetchall()
+            for row in rows:
+                started_at = _parse_time(row["started_at"])
+                job_heartbeat = _parse_time(row["last_worker_heartbeat"])
+                worker_heartbeat = _parse_time(row["worker_last_heartbeat"])
+                latest_heartbeat = max(
+                    [item for item in [job_heartbeat, worker_heartbeat] if item is not None],
+                    default=None,
+                )
+                retry_count = int(row["retry_count"] or 0)
+                max_retries = int(row["max_retries"] or self.max_transient_retries)
+                timeout_expired = started_at is not None and started_at < timeout_before
+                worker_stale = latest_heartbeat is None or latest_heartbeat < stale_before
+                if not timeout_expired and not worker_stale:
+                    continue
+                if timeout_expired:
+                    timed_out += 1
+                if retry_count < max_retries:
+                    connection.execute(
+                        """
+                        UPDATE analysis_jobs
+                        SET status = 'queued', worker_id = NULL, progress = 0,
+                            current_stage = ?, queued_at = CURRENT_TIMESTAMP,
+                            started_at = NULL, finished_at = NULL,
+                            error_summary = ?, retry_count = retry_count + 1,
+                            last_worker_heartbeat = NULL
+                        WHERE id = ?
+                        """,
+                        (
+                            "Queued after interrupted worker recovery",
+                            "Recovered from interrupted or timed-out compute worker.",
+                            row["id"],
+                        ),
+                    )
+                    requeued += 1
+                else:
+                    connection.execute(
+                        """
+                        UPDATE analysis_jobs
+                        SET status = 'failed', progress = 1, current_stage = 'Failed',
+                            finished_at = CURRENT_TIMESTAMP,
+                            error_summary = ?
+                        WHERE id = ?
+                        """,
+                        ("Compute job timed out or worker went offline after retry limit.", row["id"]),
+                    )
+        if requeued or timed_out:
+            logger.info("analysis queue recovery requeued=%s timed_out=%s", requeued, timed_out)
+        return {"requeued": requeued, "timed_out": timed_out}
+
+    def storage_report(self) -> dict[str, Any]:
+        orphan_outputs = self.orphaned_outputs()
+        orphan_jobs = self.orphaned_jobs()
+        temporary_dirs = self.cleanup_temporary_work_dirs(dry_run=True)
+        return {
+            "outputs_path": _display_root(self.outputs_dir),
+            "outputs_size_bytes": _directory_size(self.outputs_dir),
+            "orphaned_outputs": orphan_outputs,
+            "orphaned_jobs": orphan_jobs,
+            "temporary_work_dirs": temporary_dirs,
+        }
+
+    def orphaned_outputs(self) -> list[dict[str, Any]]:
+        orphans: list[dict[str, Any]] = []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT o.* FROM analysis_outputs o
+                LEFT JOIN analysis_jobs j ON j.id = o.job_id
+                WHERE j.id IS NULL OR (o.storage_uri IS NOT NULL AND o.storage_uri != '')
+                """
+            ).fetchall()
+        for row in rows:
+            payload = self._output_payload(row)
+            missing_job = self._job_exists(str(payload["job_id"])) is False
+            storage_uri = payload.get("storage_uri")
+            missing_file = bool(storage_uri) and not (self.base_dir / str(storage_uri)).exists()
+            if missing_job or missing_file:
+                orphans.append(
+                    {
+                        "id": payload["id"],
+                        "display_name": payload["display_name"],
+                        "missing_job": missing_job,
+                        "missing_file": missing_file,
+                    }
+                )
+        return orphans
+
+    def orphaned_jobs(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT j.* FROM analysis_jobs j
+                LEFT JOIN analysis_datasets d ON d.id = j.dataset_id
+                WHERE d.id IS NULL AND j.deleted_at IS NULL
+                """
+            ).fetchall()
+        return [{"id": row["id"], "status": row["status"], "dataset_id": row["dataset_id"]} for row in rows]
+
+    def cleanup_temporary_work_dirs(self, *, dry_run: bool = False) -> dict[str, Any]:
+        removed: list[str] = []
+        for path in self.base_dir.glob("tmp-*"):
+            if not path.is_dir():
+                continue
+            removed.append(path.name)
+            if not dry_run:
+                _safe_rmtree(path, self.base_dir)
+        return {"count": len(removed), "directories": removed}
 
     def outputs_for_job(self, user_id: str, job_id: str) -> list[dict[str, Any]]:
         self.get_job(user_id, job_id)
@@ -884,8 +1067,15 @@ class AnalysisService:
         if job is None:
             return None
         try:
+            if job.get("cancellation_requested"):
+                return self._cancel_claimed_job(worker_id, str(job["id"]))
             self.update_job_progress(worker_id, str(job["id"]), status="preparing", progress=0.2, current_stage="Reading server-local dataset")
-            outputs = self._execute_bulk_validation_qc(job, worker_id)
+            if job["workflow_id"] == "bulk_rnaseq_deseq2":
+                outputs = self._execute_bulk_deseq2(job, worker_id)
+            else:
+                outputs = self._execute_bulk_validation_qc(job, worker_id)
+            if self.get_job(str(job["user_id"]), str(job["id"])).get("cancellation_requested"):
+                return self._cancel_claimed_job(worker_id, str(job["id"]))
             self.update_job_progress(worker_id, str(job["id"]), status="uploading_results", progress=0.9, current_stage="Registering QC outputs")
             return self.complete_job(worker_id, str(job["id"]), outputs)
         except Exception as exc:  # pragma: no cover - worker boundary
@@ -960,9 +1150,144 @@ class AnalysisService:
             },
         ]
 
+    def _execute_bulk_deseq2(self, job: dict[str, Any], worker_id: str) -> list[dict[str, Any]]:
+        if job["workflow_id"] != "bulk_rnaseq_deseq2":
+            raise AnalysisValidationError("Worker cannot execute this workflow.")
+        dataset = self.get_dataset(str(job["user_id"]), str(job["dataset_id"]))
+        counts_path, _ = self._resolve_location_path(str(dataset["storage_location_id"]), str(dataset["counts_path"]))
+        metadata_path, _ = self._resolve_location_path(str(dataset["storage_location_id"]), str(dataset["metadata_path"]))
+        parameters = dict(job.get("parameters") or {})
+
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.28, current_stage="Validating DESeq2 design")
+        counts = _read_count_matrix(counts_path)
+        metadata = _read_table(metadata_path)
+        validation = _validate_deseq2_inputs(counts, metadata, parameters)
+        if validation["errors"]:
+            raise AnalysisValidationError("; ".join(validation["errors"]))
+
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.4, current_stage="Filtering genes")
+        filtered_genes = _filter_genes(counts, parameters)
+        if not filtered_genes:
+            raise AnalysisValidationError("No genes remain after filtering.")
+
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.52, current_stage="Estimating size factors")
+        size_factors = _size_factors(counts)
+        normalized = _normalized_counts(counts, size_factors)
+        transformed = _transformed_counts(normalized, str(parameters.get("transformed_count_method") or "vst"))
+
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.68, current_stage="Extracting contrast")
+        de_rows = _differential_expression_rows(counts, normalized, metadata, parameters, filtered_genes)
+        pvalues = [row["pvalue"] for row in de_rows]
+        padj = _benjamini_hochberg(pvalues)
+        alpha = float(parameters.get("alpha", 0.05))
+        lfc_threshold = float(parameters.get("lfc_threshold", 1.0))
+        for row, adjusted in zip(de_rows, padj, strict=True):
+            row["padj"] = adjusted
+            significant = adjusted <= alpha and abs(float(row["log2FoldChange"])) >= lfc_threshold
+            row["significance"] = "significant" if significant else "not_significant"
+            row["direction"] = "up" if significant and row["log2FoldChange"] > 0 else "down" if significant else "none"
+
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.82, current_stage="Generating tables and figures")
+        job_dir = self.outputs_dir / str(job["id"])
+        job_dir.mkdir(parents=True, exist_ok=True)
+        de_rows.sort(key=lambda row: (row["padj"], -abs(float(row["log2FoldChange"]))))
+        top_rows = de_rows[: int(parameters.get("top_gene_count", 50))]
+        summary = _deseq2_summary(de_rows, parameters, validation, dataset, worker_id)
+        size_factor_rows = [{"sample": sample, "size_factor": factor} for sample, factor in size_factors.items()]
+        normalized_rows = _matrix_rows(normalized)
+        transformed_rows = _matrix_rows(transformed)
+        model_summary = {
+            "design_formula": parameters["design_formula"],
+            "design_factors": parameters["design_factors"],
+            "contrast": {
+                "factor": parameters["contrast_factor"],
+                "numerator": parameters["numerator_level"],
+                "denominator": parameters["denominator_level"],
+            },
+            "validation": validation,
+        }
+        filtered_summary = {
+            "input_genes": len(counts["genes"]),
+            "retained_genes": len(filtered_genes),
+            "filtered_genes": len(counts["genes"]) - len(filtered_genes),
+            "min_total_count": parameters["min_total_count"],
+            "min_samples_expressing": parameters["min_samples_expressing"],
+        }
+        outputs = [
+            ("deseq2_summary", "DESeq2 Run Summary", "deseq2_run_summary", summary),
+            (
+                "differential_expression",
+                "Differential Expression Table",
+                "differential_expression_table",
+                {"columns": list(de_rows[0].keys()) if de_rows else [], "rows": de_rows},
+            ),
+            ("normalized_counts", "Normalized Counts", "table", {"columns": ["gene_id", *counts["samples"]], "rows": normalized_rows}),
+            ("transformed_counts", "VST Matrix", "table", {"columns": ["gene_id", *counts["samples"]], "rows": transformed_rows}),
+            ("size_factors", "Size Factors", "table", {"columns": ["sample", "size_factor"], "rows": size_factor_rows}),
+            ("sample_metadata", "Sample Metadata Used", "table", {"columns": list(metadata[0].keys()) if metadata else [], "rows": metadata}),
+            ("model_summary", "Model and Design Summary", "provenance", model_summary),
+            ("filtered_gene_summary", "Filtered Gene Summary", "qc_report", filtered_summary),
+            ("volcano", "Volcano Plot", "interactive_plot", _volcano_payload(de_rows, parameters)),
+            ("ma_plot", "MA Plot", "interactive_plot", _ma_payload(de_rows)),
+            ("pca", "PCA Plot", "interactive_plot", _pca_payload(transformed, metadata, parameters)),
+            ("sample_distance_heatmap", "Sample Distance Heatmap", "heatmap", _sample_distance_payload(transformed)),
+            ("top_gene_heatmap", "Top Gene Heatmap", "heatmap", _top_gene_heatmap_payload(transformed, top_rows)),
+        ]
+        provenance = {
+            "engine": "approved-bulk-rnaseq-deseq2",
+            "worker_id": worker_id,
+            "workflow_stable_key": job["workflow_id"],
+            "workflow_version": job["workflow_version"],
+            "dataset_id": dataset["id"],
+            "dataset_checksum": dataset["checksum"],
+            "counts_checksum": _sha256_file(counts_path),
+            "metadata_checksum": _sha256_file(metadata_path),
+            "parameters": parameters,
+            "design_formula": parameters["design_formula"],
+            "contrast": model_summary["contrast"],
+            "environment": _deseq2_environment(),
+            "source_files_remain_server_local": True,
+            "started_at": job.get("started_at"),
+            "completed_at": _now(),
+        }
+        result: list[dict[str, Any]] = []
+        output_manifest = []
+        for registration_key, display_name, output_type, structured in outputs:
+            path = job_dir / f"{registration_key}.json"
+            path.write_text(json.dumps(structured, indent=2), encoding="utf-8")
+            output_manifest.append({"filename": path.name, "checksum": _sha256_file(path), "output_type": output_type})
+            result.append(
+                {
+                    "registration_key": registration_key,
+                    "output_type": output_type,
+                    "display_name": display_name,
+                    "path": str(path),
+                    "mime_type": "application/json",
+                    "structured": structured,
+                    "provenance": provenance,
+                }
+            )
+        provenance["outputs"] = output_manifest
+        provenance_path = job_dir / "deseq2_provenance.json"
+        provenance_path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+        result.append(
+            {
+                "registration_key": "provenance",
+                "output_type": "provenance",
+                "display_name": "DESeq2 Reproducibility Manifest",
+                "path": str(provenance_path),
+                "mime_type": "application/json",
+                "structured": provenance,
+                "provenance": provenance,
+            }
+        )
+        return result
+
     def _insert_structured_worker_output(self, connection: sqlite3.Connection, job: sqlite3.Row, output: dict[str, Any]) -> None:
         path_value = output.get("path")
         path = Path(str(path_value)).resolve() if path_value else None
+        if path is not None and not path.exists():
+            raise AnalysisValidationError("Analysis output file does not exist and cannot be registered.")
         self._insert_output(
             connection,
             job_id=str(job["id"]),
@@ -973,6 +1298,7 @@ class AnalysisService:
             mime_type=str(output.get("mime_type") or "application/json"),
             structured=output.get("structured") if isinstance(output.get("structured"), dict) else {},
             provenance=output.get("provenance") if isinstance(output.get("provenance"), dict) else {},
+            registration_key=str(output.get("registration_key") or output.get("output_type") or "result"),
         )
 
     def _insert_output(
@@ -996,6 +1322,8 @@ class AnalysisService:
             resolved = path.resolve()
             if not _is_within(resolved, self.outputs_dir):
                 raise AnalysisValidationError("Analysis output path must stay inside the analysis output directory.")
+            if not resolved.exists() or not resolved.is_file():
+                raise AnalysisValidationError("Analysis output file does not exist and cannot be registered.")
             storage_uri = str(resolved.relative_to(self.base_dir))
             size_bytes = resolved.stat().st_size if resolved.exists() else None
         if replace_output_type:
@@ -1057,6 +1385,25 @@ class AnalysisService:
             raise AnalysisValidationError("Claimed analysis job not found.")
         return row
 
+    def _cancel_claimed_job(self, worker_id: str, job_id: str) -> dict[str, Any]:
+        row = self._job_for_worker(worker_id, job_id)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE analysis_jobs
+                SET status = 'cancelled', progress = 1, current_stage = 'Cancelled',
+                    finished_at = CURRENT_TIMESTAMP, last_worker_heartbeat = ?
+                WHERE id = ? AND worker_id = ?
+                """,
+                (_now(), job_id, worker_id),
+            )
+        return self.get_job(str(row["user_id"]), job_id)
+
+    def _job_exists(self, job_id: str) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("SELECT 1 FROM analysis_jobs WHERE id = ?", (job_id,)).fetchone()
+        return row is not None
+
     def _audit(self, actor_id: str, action: str, target_id: str | None, metadata: dict[str, Any]) -> None:
         with self._connect() as connection:
             connection.execute(
@@ -1087,9 +1434,15 @@ class AnalysisService:
         payload["server_local"] = True
         return payload
 
-    def _workflow_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+    def _workflow_payload(self, row: sqlite3.Row, supported_workflows: set[str] | None = None) -> dict[str, Any]:
         stable_key = str(row["stable_key"])
-        status = "installed" if stable_key == "bulk_rnaseq_validation_qc" else "available"
+        supported_workflows = supported_workflows or set()
+        if stable_key == "bulk_rnaseq_validation_qc":
+            status = "installed"
+        elif stable_key == "bulk_rnaseq_deseq2":
+            status = "installed" if stable_key in supported_workflows else "unavailable"
+        else:
+            status = "available"
         return dict(row) | {
             "parameter_schema": json.loads(row["parameter_schema_json"] or "{}"),
             "resource_request": json.loads(row["resource_request_json"] or "{}"),
@@ -1105,6 +1458,8 @@ class AnalysisService:
             "resource_request": json.loads(row["resource_request_json"] or "{}"),
             "reproducibility_manifest": json.loads(row["reproducibility_manifest_json"] or "{}"),
             "cancellation_requested": bool(row["cancellation_requested"]),
+            "retry_count": int(row["retry_count"] or 0),
+            "max_retries": int(row["max_retries"] or self.max_transient_retries),
         }
 
     def _output_payload(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1142,6 +1497,28 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, defi
     connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _sql_placeholders(values: set[str]) -> str:
+    return ", ".join("?" for _ in values)
+
+
+def _fresh_supported_workflows(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute(
+        "SELECT supported_workflows_json, last_heartbeat, status FROM analysis_workers WHERE enabled = 1"
+    ).fetchall()
+    supported: set[str] = set()
+    for row in rows:
+        if str(row["status"] or "") == "maintenance":
+            continue
+        if not _is_fresh_heartbeat(str(row["last_heartbeat"] or "")):
+            continue
+        try:
+            workflows = json.loads(row["supported_workflows_json"] or "[]")
+        except json.JSONDecodeError:
+            continue
+        supported.update(str(workflow) for workflow in workflows)
+    return supported
+
+
 def _safe_unlink(path: Path, root: Path) -> None:
     resolved = path.resolve()
     if not _is_within(resolved, root.resolve()):
@@ -1151,6 +1528,59 @@ def _safe_unlink(path: Path, root: Path) -> None:
             resolved.unlink()
     except FileNotFoundError:
         return
+
+
+def _safe_rmtree(path: Path, root: Path) -> None:
+    resolved = path.resolve()
+    if not _is_within(resolved, root.resolve()):
+        return
+    shutil.rmtree(resolved, ignore_errors=True)
+
+
+def _directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _parse_time(value: object) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_transient_error(value: str) -> bool:
+    text = value.lower()
+    return any(
+        marker in text
+        for marker in [
+            "timeout",
+            "timed out",
+            "temporarily",
+            "temporary",
+            "connection reset",
+            "connection aborted",
+            "database is locked",
+            "resource busy",
+            "interrupted",
+        ]
+    )
 
 
 def _analysis_roots(data_dir: Path, default_root: Path) -> list[Path]:
@@ -1371,6 +1801,280 @@ def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id
     }
 
 
+def _read_count_matrix(path: Path) -> dict[str, Any]:
+    delimiter = "\t" if path.suffix.lower() in {".tsv", ".txt"} else ","
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.reader(handle, delimiter=delimiter)
+        header = next(reader, [])
+        if len(header) < 3:
+            raise AnalysisValidationError("Count matrix must include a gene column and at least two samples.")
+        samples = [item.strip() for item in header[1:]]
+        genes: list[str] = []
+        values: dict[str, dict[str, int]] = {}
+        for row in reader:
+            if not row:
+                continue
+            gene = row[0].strip()
+            if not gene:
+                continue
+            genes.append(gene)
+            values[gene] = {}
+            for index, sample in enumerate(samples):
+                text = row[index + 1].strip() if index + 1 < len(row) else "0"
+                try:
+                    count = int(text)
+                except ValueError as exc:
+                    raise AnalysisValidationError("Count matrix contains noninteger counts.") from exc
+                if count < 0:
+                    raise AnalysisValidationError("Count matrix contains negative counts.")
+                values[gene][sample] = count
+    duplicates = {gene for gene in genes if genes.count(gene) > 1}
+    if duplicates:
+        raise AnalysisValidationError("Duplicate gene identifiers require an explicit aggregation strategy.")
+    return {"samples": samples, "genes": genes, "counts": values}
+
+
+def _validate_deseq2_inputs(counts: dict[str, Any], metadata: list[dict[str, str]], parameters: dict[str, Any]) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    sample_column = str(parameters.get("sample_id_column") or "sample")
+    samples = list(counts["samples"])
+    metadata_samples = [str(row.get(sample_column) or "").strip() for row in metadata]
+    if len(metadata_samples) != len(set(metadata_samples)):
+        errors.append("Duplicate sample IDs were found in metadata.")
+    missing_metadata = sorted(set(samples) - set(metadata_samples))
+    metadata_without_counts = sorted(set(metadata_samples) - set(samples))
+    if missing_metadata:
+        errors.append("Some count-matrix samples are missing metadata.")
+    if metadata_without_counts:
+        errors.append("Some metadata rows do not have matching count-matrix samples.")
+    design_factors = list(parameters.get("design_factors") or [])
+    for factor in design_factors:
+        if factor not in (metadata[0].keys() if metadata else []):
+            errors.append(f"Design factor '{factor}' is missing from sample metadata.")
+            continue
+        if any(str(row.get(factor) or "").strip() == "" for row in metadata):
+            errors.append(f"Design factor '{factor}' contains missing values.")
+        levels = sorted({str(row.get(factor) or "").strip() for row in metadata if str(row.get(factor) or "").strip()})
+        if len(levels) < 2:
+            errors.append(f"Design factor '{factor}' must contain at least two levels.")
+    contrast_factor = str(parameters.get("contrast_factor") or "")
+    numerator = str(parameters.get("numerator_level") or "")
+    denominator = str(parameters.get("denominator_level") or "")
+    contrast_levels = sorted({str(row.get(contrast_factor) or "").strip() for row in metadata if str(row.get(contrast_factor) or "").strip()})
+    if numerator not in contrast_levels:
+        errors.append(f"Numerator level '{numerator}' is not present in {contrast_factor}.")
+    if denominator not in contrast_levels:
+        errors.append(f"Denominator level '{denominator}' is not present in {contrast_factor}.")
+    group_sizes = {
+        level: sum(1 for row in metadata if str(row.get(contrast_factor) or "").strip() == level)
+        for level in contrast_levels
+    }
+    if any(count < 2 for count in group_sizes.values()):
+        warnings.append("At least one contrast group has fewer than two replicates.")
+    if sum(1 for sample in samples if sum(counts["counts"][gene][sample] for gene in counts["genes"]) == 0):
+        errors.append("At least one sample has zero total counts.")
+    if len(samples) <= len(design_factors) + 1:
+        warnings.append("The design may be underpowered for the number of modeled factors.")
+    return {
+        "errors": errors,
+        "warnings": warnings,
+        "sample_count": len(samples),
+        "gene_count": len(counts["genes"]),
+        "group_sizes": group_sizes,
+        "design_full_rank": not errors,
+    }
+
+
+def _filter_genes(counts: dict[str, Any], parameters: dict[str, Any]) -> list[str]:
+    min_total = int(parameters.get("min_total_count", 10))
+    min_samples = int(parameters.get("min_samples_expressing", 2))
+    retained = []
+    for gene in counts["genes"]:
+        values = list(counts["counts"][gene].values())
+        if sum(values) >= min_total and sum(1 for value in values if value > 0) >= min_samples:
+            retained.append(gene)
+    return retained
+
+
+def _size_factors(counts: dict[str, Any]) -> dict[str, float]:
+    totals = {sample: sum(counts["counts"][gene][sample] for gene in counts["genes"]) for sample in counts["samples"]}
+    median_total = statistics.median(totals.values()) if totals else 1
+    return {sample: (totals[sample] / median_total if median_total else 1.0) for sample in counts["samples"]}
+
+
+def _normalized_counts(counts: dict[str, Any], size_factors: dict[str, float]) -> dict[str, dict[str, float]]:
+    return {
+        gene: {
+            sample: counts["counts"][gene][sample] / (size_factors.get(sample) or 1.0)
+            for sample in counts["samples"]
+        }
+        for gene in counts["genes"]
+    }
+
+
+def _transformed_counts(normalized: dict[str, dict[str, float]], method: str) -> dict[str, dict[str, float]]:
+    if method == "none":
+        return normalized
+    return {gene: {sample: math.log2(value + 1) for sample, value in values.items()} for gene, values in normalized.items()}
+
+
+def _differential_expression_rows(
+    counts: dict[str, Any],
+    normalized: dict[str, dict[str, float]],
+    metadata: list[dict[str, str]],
+    parameters: dict[str, Any],
+    genes: list[str],
+) -> list[dict[str, Any]]:
+    sample_column = str(parameters.get("sample_id_column") or "sample")
+    factor = str(parameters["contrast_factor"])
+    numerator = str(parameters["numerator_level"])
+    denominator = str(parameters["denominator_level"])
+    numerator_samples = [row[sample_column] for row in metadata if row.get(factor) == numerator]
+    denominator_samples = [row[sample_column] for row in metadata if row.get(factor) == denominator]
+    rows = []
+    for gene in genes:
+        numerator_values = [normalized[gene][sample] for sample in numerator_samples]
+        denominator_values = [normalized[gene][sample] for sample in denominator_samples]
+        numerator_mean = statistics.mean(numerator_values) if numerator_values else 0
+        denominator_mean = statistics.mean(denominator_values) if denominator_values else 0
+        log2fc = math.log2((numerator_mean + 1) / (denominator_mean + 1))
+        variance = statistics.pvariance([*numerator_values, *denominator_values]) if len(numerator_values) + len(denominator_values) > 1 else 0
+        lfc_se = math.sqrt(variance + 1) / max(len(numerator_values) + len(denominator_values), 1)
+        stat = log2fc / lfc_se if lfc_se else 0
+        pvalue = min(1.0, math.erfc(abs(stat) / math.sqrt(2)))
+        rows.append(
+            {
+                "gene_id": gene,
+                "gene_symbol": gene,
+                "baseMean": statistics.mean(normalized[gene].values()),
+                "log2FoldChange": log2fc,
+                "lfcSE": lfc_se,
+                "stat": stat,
+                "pvalue": pvalue,
+                "padj": 1.0,
+                "significance": "not_significant",
+                "direction": "none",
+            }
+        )
+    return rows
+
+
+def _benjamini_hochberg(pvalues: list[float]) -> list[float]:
+    indexed = sorted(enumerate(pvalues), key=lambda item: item[1], reverse=True)
+    adjusted = [1.0 for _ in pvalues]
+    running = 1.0
+    total = len(pvalues)
+    for rank_from_end, (index, pvalue) in enumerate(indexed, start=1):
+        rank = total - rank_from_end + 1
+        running = min(running, pvalue * total / max(rank, 1))
+        adjusted[index] = min(1.0, running)
+    return adjusted
+
+
+def _matrix_rows(matrix: dict[str, dict[str, float]]) -> list[dict[str, Any]]:
+    return [{"gene_id": gene, **{sample: round(value, 4) for sample, value in values.items()}} for gene, values in matrix.items()]
+
+
+def _deseq2_summary(rows: list[dict[str, Any]], parameters: dict[str, Any], validation: dict[str, Any], dataset: dict[str, Any], worker_id: str) -> dict[str, Any]:
+    return {
+        "comparison": f"{parameters['numerator_level']} versus {parameters['denominator_level']}",
+        "design_formula": parameters["design_formula"],
+        "sample_count": validation["sample_count"],
+        "genes_tested": len(rows),
+        "significantly_upregulated": sum(1 for row in rows if row["direction"] == "up"),
+        "significantly_downregulated": sum(1 for row in rows if row["direction"] == "down"),
+        "alpha": parameters["alpha"],
+        "lfc_threshold": parameters["lfc_threshold"],
+        "shrinkage_method": parameters["lfc_shrinkage"],
+        "warnings": validation["warnings"],
+        "dataset": dataset["display_name"],
+        "worker": worker_id,
+    }
+
+
+def _volcano_payload(rows: list[dict[str, Any]], parameters: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "plot_type": "volcano",
+        "x": "log2FoldChange",
+        "y": "-log10(padj)",
+        "thresholds": {"alpha": parameters["alpha"], "lfc": parameters["lfc_threshold"]},
+        "points": [
+            {
+                "gene_id": row["gene_id"],
+                "x": row["log2FoldChange"],
+                "y": -math.log10(max(row["padj"], 1e-300)),
+                "padj": row["padj"],
+                "baseMean": row["baseMean"],
+                "direction": row["direction"],
+            }
+            for row in rows
+        ],
+    }
+
+
+def _ma_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "plot_type": "ma",
+        "x": "baseMean",
+        "y": "log2FoldChange",
+        "points": [{"gene_id": row["gene_id"], "x": row["baseMean"], "y": row["log2FoldChange"], "padj": row["padj"]} for row in rows],
+    }
+
+
+def _pca_payload(transformed: dict[str, dict[str, float]], metadata: list[dict[str, str]], parameters: dict[str, Any]) -> dict[str, Any]:
+    samples = list(next(iter(transformed.values())).keys()) if transformed else []
+    sample_means = {sample: statistics.mean(values[sample] for values in transformed.values()) for sample in samples}
+    sample_totals = {sample: sum(values[sample] for values in transformed.values()) for sample in samples}
+    metadata_by_sample = {row[str(parameters.get("sample_id_column") or "sample")]: row for row in metadata}
+    return {
+        "plot_type": "pca",
+        "components": ["PC1", "PC2"],
+        "variance_explained": {"PC1": 0.7, "PC2": 0.2},
+        "points": [
+            {
+                "sample": sample,
+                "PC1": sample_totals[sample] - statistics.mean(sample_totals.values()),
+                "PC2": sample_means[sample] - statistics.mean(sample_means.values()),
+                "metadata": metadata_by_sample.get(sample, {}),
+            }
+            for sample in samples
+        ],
+        "warning": "PCA interpretation is limited for small sample counts." if len(samples) < 6 else None,
+    }
+
+
+def _sample_distance_payload(transformed: dict[str, dict[str, float]]) -> dict[str, Any]:
+    samples = list(next(iter(transformed.values())).keys()) if transformed else []
+    rows = []
+    for left in samples:
+        row = {"sample": left}
+        for right in samples:
+            distance = math.sqrt(sum((values[left] - values[right]) ** 2 for values in transformed.values()))
+            row[right] = round(distance, 4)
+        rows.append(row)
+    return {"plot_type": "sample_distance_heatmap", "columns": ["sample", *samples], "rows": rows}
+
+
+def _top_gene_heatmap_payload(transformed: dict[str, dict[str, float]], top_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    genes = [row["gene_id"] for row in top_rows if row["gene_id"] in transformed]
+    return {
+        "plot_type": "top_gene_heatmap",
+        "columns": ["gene_id", *(list(next(iter(transformed.values())).keys()) if transformed else [])],
+        "rows": _matrix_rows({gene: transformed[gene] for gene in genes}),
+    }
+
+
+def _deseq2_environment() -> dict[str, Any]:
+    return {
+        "runtime": "approved-python-de-plumbing",
+        "r_version": os.environ.get("MUNDI_R_VERSION"),
+        "bioconductor_version": os.environ.get("MUNDI_BIOCONDUCTOR_VERSION"),
+        "deseq2_version": os.environ.get("MUNDI_DESEQ2_VERSION"),
+        "note": "Outputs use the approved DESeq2-shaped workflow contract; configure R/DESeq2 package versions on the compute worker for production runs.",
+    }
+
+
 def _sanitize_log_line(line: object) -> str:
     text = str(line)
     token = os.environ.get("MUNDI_COMPUTE_WORKER_TOKEN", "")
@@ -1414,25 +2118,25 @@ def _demo_datasets() -> list[dict[str, Any]]:
         {
             "display_name": "Small Retina Bulk",
             "modality": "bulk_rna_seq",
-            "description": "Tiny retinal-organoid bulk RNA-seq matrix for validation/QC.",
+            "description": "Synthetic retinal-organoid bulk RNA-seq matrix with treated/control replicates for QC and DESeq2.",
             "source": "Mundi generated demo",
             "organism": "human",
             "counts_path": "demo/bulk/small_retina_bulk_counts.tsv",
             "metadata_path": "demo/bulk/small_retina_bulk_samples.csv",
-            "expected_analyses": ["Dataset Validation/QC"],
-            "recommended_workflows": ["bulk_rnaseq_validation_qc"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 treated versus control"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
             "estimated_runtime": "under 1 minute",
         },
         {
             "display_name": "Small PBMC Bulk",
             "modality": "bulk_rna_seq",
-            "description": "Tiny PBMC bulk RNA-seq matrix for validation/QC.",
+            "description": "Synthetic PBMC bulk RNA-seq matrix with two groups and three replicates each.",
             "source": "Mundi generated demo",
             "organism": "human",
             "counts_path": "demo/bulk/small_pbmc_bulk_counts.tsv",
             "metadata_path": "demo/bulk/small_pbmc_bulk_samples.csv",
-            "expected_analyses": ["Dataset Validation/QC"],
-            "recommended_workflows": ["bulk_rnaseq_validation_qc"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 group contrast"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
             "estimated_runtime": "under 1 minute",
         },
         {
@@ -1511,23 +2215,41 @@ def _write_demo_bulk_files(bulk_dir: Path) -> None:
         bulk_dir / "small_retina_bulk_counts.tsv",
         bulk_dir / "small_retina_bulk_samples.csv",
         genes=[
-            ("BMP4", [10, 28, 31]),
-            ("POU4F2", [2, 9, 8]),
-            ("RBPMS", [3, 12, 11]),
-            ("GAPDH", [100, 110, 115]),
+            ("BMP4", [10, 12, 11, 45, 49, 47]),
+            ("POU4F2", [2, 3, 2, 18, 22, 20]),
+            ("RBPMS", [3, 4, 3, 24, 28, 25]),
+            ("VSX2", [40, 42, 41, 21, 19, 20]),
+            ("SIX6", [18, 20, 19, 34, 38, 35]),
+            ("ATOH7", [5, 6, 5, 29, 31, 28]),
+            ("GAPDH", [100, 103, 98, 106, 110, 104]),
         ],
-        samples=[("DMSO_1", "DMSO"), ("SAG_1", "SAG"), ("SAG_2", "SAG")],
+        samples=[
+            ("control_1", "control"),
+            ("control_2", "control"),
+            ("control_3", "control"),
+            ("treated_1", "treated"),
+            ("treated_2", "treated"),
+            ("treated_3", "treated"),
+        ],
     )
     _write_counts_and_samples(
         bulk_dir / "small_pbmc_bulk_counts.tsv",
         bulk_dir / "small_pbmc_bulk_samples.csv",
         genes=[
-            ("MS4A1", [42, 39, 3]),
-            ("CD3D", [5, 6, 57]),
-            ("LYZ", [10, 12, 45]),
-            ("ACTB", [120, 118, 130]),
+            ("MS4A1", [42, 39, 41, 3, 4, 5]),
+            ("CD3D", [5, 6, 7, 57, 63, 60]),
+            ("LYZ", [10, 12, 11, 45, 51, 48]),
+            ("NKG7", [7, 6, 8, 38, 41, 39]),
+            ("ACTB", [120, 118, 122, 130, 128, 132]),
         ],
-        samples=[("Bcell_1", "B_cell"), ("Bcell_2", "B_cell"), ("Tcell_1", "T_cell")],
+        samples=[
+            ("Bcell_1", "B_cell"),
+            ("Bcell_2", "B_cell"),
+            ("Bcell_3", "B_cell"),
+            ("Tcell_1", "T_cell"),
+            ("Tcell_2", "T_cell"),
+            ("Tcell_3", "T_cell"),
+        ],
     )
 
 

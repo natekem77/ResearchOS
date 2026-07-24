@@ -1,5 +1,6 @@
 import csv
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +50,57 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(worker["worker_id"], "worker-1")
         self.assertTrue(heartbeat["connected"])
         self.assertEqual(heartbeat["status"], "ready")
+
+    def test_legacy_analysis_outputs_schema_adds_registration_key_before_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "researchos.db"
+            with sqlite3.connect(db_path) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE analysis_outputs (
+                        id TEXT PRIMARY KEY,
+                        job_id TEXT NOT NULL,
+                        dataset_id TEXT NOT NULL,
+                        output_type TEXT NOT NULL,
+                        display_name TEXT NOT NULL,
+                        storage_uri TEXT,
+                        mime_type TEXT,
+                        size_bytes INTEGER,
+                        structured_json TEXT NOT NULL DEFAULT '{}',
+                        viewer_config_json TEXT NOT NULL DEFAULT '{}',
+                        provenance_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO analysis_outputs
+                        (id, job_id, dataset_id, output_type, display_name, structured_json, viewer_config_json, provenance_json)
+                    VALUES ('analysis-output:legacy', 'analysis-job:legacy', 'analysis-dataset:legacy', 'table',
+                            'Legacy Library Sizes', '{}', '{}', '{}')
+                    """
+                )
+
+            AnalysisService(self._settings(tmpdir))
+            service = AnalysisService(self._settings(tmpdir))
+            with service._connect() as connection:
+                columns = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA table_info(analysis_outputs)").fetchall()
+                }
+                indexes = {
+                    row["name"]
+                    for row in connection.execute("PRAGMA index_list(analysis_outputs)").fetchall()
+                }
+                legacy_row = connection.execute(
+                    "SELECT display_name, registration_key FROM analysis_outputs WHERE id = 'analysis-output:legacy'"
+                ).fetchone()
+
+        self.assertIn("registration_key", columns)
+        self.assertIn("idx_analysis_outputs_registration", indexes)
+        self.assertEqual(legacy_row["display_name"], "Legacy Library Sizes")
+        self.assertIsNone(legacy_row["registration_key"])
 
     def test_worker_status_becomes_offline_when_heartbeat_is_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -154,6 +206,183 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(stored_job["status"], "running")
         self.assertEqual(outputs, [])
 
+    def test_queued_job_survives_service_reconstruction(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+
+            restarted = AnalysisService(self._settings(tmpdir))
+            stored = restarted.get_job("user:pi-owner", job["id"])
+
+        self.assertEqual(stored["status"], "queued")
+        self.assertEqual(stored["retry_count"], 0)
+
+    def test_stale_active_job_is_recovered_after_worker_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            service.claim_next_job("worker-1")
+            with service._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE analysis_workers SET last_heartbeat = '2020-01-01T00:00:00+00:00'
+                    WHERE worker_id = 'worker-1'
+                    """
+                )
+                connection.execute(
+                    """
+                    UPDATE analysis_jobs
+                    SET status = 'running', started_at = '2020-01-01T00:00:00+00:00',
+                        last_worker_heartbeat = '2020-01-01T00:00:00+00:00'
+                    WHERE id = ?
+                    """,
+                    (job["id"],),
+                )
+
+            restarted = AnalysisService(self._settings(tmpdir))
+            recovered = restarted.get_job("user:pi-owner", job["id"])
+
+        self.assertEqual(recovered["status"], "queued")
+        self.assertIsNone(recovered["worker_id"])
+        self.assertEqual(recovered["retry_count"], 1)
+
+    def test_cancel_running_job_is_honored_before_completion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            service.claim_next_job("worker-1")
+            service.update_job_progress("worker-1", job["id"], status="running", progress=0.5)
+            service.cancel_job("user:pi-owner", job["id"])
+            cancelled = service.complete_job("worker-1", job["id"], [])
+
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertTrue(cancelled["cancellation_requested"])
+
+    def test_transient_failure_requeues_until_retry_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            service.claim_next_job("worker-1")
+            retried = service.fail_job("worker-1", job["id"], "Temporary timeout while reading dataset")
+            service.claim_next_job("worker-1")
+            failed = service.fail_job("worker-1", job["id"], "permanent malformed matrix")
+
+        self.assertEqual(retried["status"], "queued")
+        self.assertEqual(retried["retry_count"], 1)
+        self.assertEqual(failed["status"], "failed")
+
+    def test_output_registration_requires_existing_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            with service._connect() as connection:
+                with self.assertRaisesRegex(AnalysisValidationError, "does not exist"):
+                    service._insert_output(
+                        connection,
+                        job_id="analysis-job:missing",
+                        dataset_id="analysis-dataset:missing",
+                        output_type="file",
+                        display_name="Missing file",
+                        path=service.outputs_dir / "missing.txt",
+                    )
+
+    def test_storage_report_detects_orphans_and_temp_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            temp_dir = service.base_dir / "tmp-stale"
+            temp_dir.mkdir(parents=True)
+            with service._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO analysis_outputs
+                        (id, job_id, dataset_id, registration_key, output_type, display_name,
+                         storage_uri, structured_json, viewer_config_json, provenance_json)
+                    VALUES ('analysis-output:orphan', 'analysis-job:missing', 'analysis-dataset:missing',
+                            'orphan', 'file', 'Missing output', 'outputs/missing.txt', '{}', '{}', '{}')
+                    """
+                )
+            report = service.storage_report()
+            cleanup = service.cleanup_temporary_work_dirs()
+
+        self.assertEqual(len(report["orphaned_outputs"]), 1)
+        self.assertEqual(report["temporary_work_dirs"]["count"], 1)
+        self.assertEqual(cleanup["count"], 1)
+
     def test_worker_vertical_slice_runs_bulk_qc(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)
@@ -188,6 +417,91 @@ class AnalysisServiceTests(unittest.TestCase):
         qc = next(output for output in outputs if output["output_type"] == "qc_report")
         self.assertTrue(qc["structured"]["summary"]["integer_counts_valid"])
         self.assertTrue(qc["provenance"]["source_files_remain_server_local"])
+
+    def test_deseq2_workflow_registration_and_demo_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+                    "supported_runtimes": ["python", "r", "deseq2"],
+                    "software_versions": {"R": "4.x", "DESeq2": "1.x"},
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_deseq2",
+                parameters={
+                    "sample_id_column": "sample",
+                    "design_factors": ["condition"],
+                    "contrast_factor": "condition",
+                    "numerator_level": "SAG",
+                    "denominator_level": "DMSO",
+                    "min_total_count": 1,
+                    "min_samples_expressing": 1,
+                    "alpha": 0.1,
+                    "lfc_threshold": 0.5,
+                },
+            )
+            completed = service.run_claimed_job_once("worker-1")
+            outputs = service.outputs_for_job("user:pi-owner", job["id"])
+            self.assertEqual(completed["status"], "complete")
+            self.assertIn("bulk_rnaseq_deseq2", [workflow["stable_key"] for workflow in service.list_workflows()])
+            output_types = {output["output_type"] for output in outputs}
+            self.assertIn("differential_expression_table", output_types)
+            self.assertIn("interactive_plot", output_types)
+            self.assertIn("heatmap", output_types)
+            self.assertIn("provenance", output_types)
+            de_table = next(output for output in outputs if output["output_type"] == "differential_expression_table")
+            self.assertIn("log2FoldChange", de_table["structured"]["columns"])
+            self.assertTrue(de_table["provenance"]["source_files_remain_server_local"])
+
+    def test_deseq2_invalid_contrast_fails_with_actionable_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_deseq2"],
+                    "supported_runtimes": ["python", "r", "deseq2"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_deseq2",
+                parameters={
+                    "sample_id_column": "sample",
+                    "design_factors": ["condition"],
+                    "contrast_factor": "condition",
+                    "numerator_level": "missing",
+                    "denominator_level": "DMSO",
+                },
+            )
+            failed = service.run_claimed_job_once("worker-1")
+
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("Numerator level", failed["error_summary"])
 
     def test_output_detail_rename_references_and_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -362,7 +676,7 @@ class AnalysisServiceTests(unittest.TestCase):
                 service.create_job(
                     user_id="user:pi-owner",
                     dataset_id=dataset["id"],
-                    workflow_key="deseq2_differential_expression",
+                    workflow_key="scanpy_standard_pipeline",
                 )
 
     def test_analysis_routes_are_registered(self) -> None:
@@ -376,6 +690,7 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(any(path == "/mobile/analysis/output-groups" and "GET" in methods for path, methods in routes))
         self.assertTrue(any(path == "/mobile/analysis/outputs/{output_id}" and "PATCH" in methods for path, methods in routes))
         self.assertTrue(any(path == "/mobile/analysis/notebook-references" and "POST" in methods for path, methods in routes))
+        self.assertTrue(any(path == "/mobile/analysis/storage-report" and "GET" in methods for path, methods in routes))
 
 
 def _write_bulk_fixture(root: Path) -> None:
