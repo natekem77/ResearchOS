@@ -115,6 +115,88 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertFalse(worker["connected"])
         self.assertEqual(worker["status"], "offline")
 
+    def test_deseq2_workflow_has_single_active_registry_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            with service._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO analysis_workflows
+                        (id, stable_key, name, description, workflow_version, category, modality,
+                         parameter_schema_json, resource_request_json, supported_runtimes_json, enabled)
+                    VALUES ('legacy-deseq2', 'deseq2_differential_expression', 'DESeq2 Differential Expression',
+                            'Legacy scaffold', '0.1.0-scaffold', 'Bulk RNA-seq', 'bulk_rna_seq',
+                            '{}', '{}', '[]', 1)
+                    """
+                )
+            AnalysisService(self._settings(tmpdir))
+            workflows = service.list_workflows()
+
+        deseq2_cards = [workflow for workflow in workflows if workflow["name"] == "DESeq2 Differential Expression"]
+        self.assertEqual([workflow["stable_key"] for workflow in deseq2_cards], ["bulk_rnaseq_deseq2"])
+        self.assertEqual(deseq2_cards[0]["status"], "unavailable")
+
+    def test_deseq2_workflow_ready_only_with_exact_fresh_worker_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            unavailable = next(workflow for workflow in service.list_workflows() if workflow["stable_key"] == "bulk_rnaseq_deseq2")
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Worker",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                }
+            )
+            still_unavailable = next(workflow for workflow in service.list_workflows() if workflow["stable_key"] == "bulk_rnaseq_deseq2")
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Worker",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+                    "supported_runtimes": ["python", "r", "deseq2"],
+                    "software_versions": {"R": "4.x", "DESeq2": "1.x"},
+                }
+            )
+            ready = next(workflow for workflow in service.list_workflows() if workflow["stable_key"] == "bulk_rnaseq_deseq2")
+
+        self.assertEqual(unavailable["status"], "unavailable")
+        self.assertEqual(still_unavailable["status"], "unavailable")
+        self.assertEqual(ready["status"], "installed")
+
+    def test_queued_deseq2_job_reports_missing_worker_dependency_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Worker",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_deseq2",
+                parameters={
+                    "contrast_factor": "condition",
+                    "numerator_level": "SAG",
+                    "denominator_level": "DMSO",
+                },
+            )
+            claimed = service.claim_next_job("worker-1")
+            queued = service.get_job("user:pi-owner", job["id"])
+
+        self.assertIsNone(claimed)
+        self.assertIn("Missing R/DESeq2 dependencies", queued["queue_reason"])
+
     def test_worker_authentication_rejects_bad_token(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)

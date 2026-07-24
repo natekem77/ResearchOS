@@ -223,7 +223,9 @@ class AnalysisService:
 
     def _ensure_workflows(self) -> None:
         with self._connect() as connection:
-            for workflow in list_workflows():
+            workflows = list_workflows()
+            active_keys = [str(workflow["stable_key"]) for workflow in workflows]
+            for workflow in workflows:
                 connection.execute(
                     """
                     INSERT INTO analysis_workflows
@@ -254,6 +256,15 @@ class AnalysisService:
                         json.dumps(workflow["resource_request"]),
                         json.dumps(workflow["supported_runtimes"]),
                     ),
+                )
+            if active_keys:
+                connection.execute(
+                    f"""
+                    UPDATE analysis_workflows
+                    SET enabled = 0, updated_at = CURRENT_TIMESTAMP
+                    WHERE stable_key NOT IN ({", ".join("?" for _ in active_keys)})
+                    """,
+                    active_keys,
                 )
 
     def require_worker_token(self, token: str | None) -> None:
@@ -548,6 +559,14 @@ class AnalysisService:
         worker = self.get_worker(worker_id)
         if not worker.get("enabled", True):
             raise AnalysisValidationError("Compute worker is disabled.")
+        if int(worker.get("running_job_count") or 0) >= int(worker.get("maximum_concurrent_jobs") or 1):
+            logger.debug(
+                "analysis worker at concurrency limit worker_id=%s running=%s max=%s",
+                worker_id,
+                worker.get("running_job_count"),
+                worker.get("maximum_concurrent_jobs"),
+            )
+            return None
         supported = set(worker.get("supported_workflows") or [])
         with self._connect() as connection:
             rows = connection.execute(
@@ -1439,10 +1458,21 @@ class AnalysisService:
         supported_workflows = supported_workflows or set()
         if stable_key == "bulk_rnaseq_validation_qc":
             status = "installed"
+            readiness_reason = "Ready"
         elif stable_key == "bulk_rnaseq_deseq2":
             status = "installed" if stable_key in supported_workflows else "unavailable"
+            readiness_reason = (
+                "Ready"
+                if status == "installed"
+                else "No eligible worker with R/DESeq2 dependencies is connected."
+            )
         else:
             status = "available"
+            readiness_reason = (
+                "Legacy/scaffold workflow definition."
+                if str(row["workflow_version"] or "").endswith("scaffold")
+                else "Available but not currently runnable."
+            )
         return dict(row) | {
             "parameter_schema": json.loads(row["parameter_schema_json"] or "{}"),
             "resource_request": json.loads(row["resource_request_json"] or "{}"),
@@ -1450,6 +1480,7 @@ class AnalysisService:
             "enabled": bool(row["enabled"]),
             "status": status,
             "installed": status == "installed",
+            "readiness_reason": readiness_reason,
         }
 
     def _job_payload(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1460,7 +1491,42 @@ class AnalysisService:
             "cancellation_requested": bool(row["cancellation_requested"]),
             "retry_count": int(row["retry_count"] or 0),
             "max_retries": int(row["max_retries"] or self.max_transient_retries),
+            "queue_reason": self._queue_reason(row),
         }
+
+    def _queue_reason(self, row: sqlite3.Row) -> str | None:
+        if str(row["status"] or "") != "queued":
+            return None
+        workflow_id = str(row["workflow_id"] or "")
+        with self._connect() as connection:
+            workers = connection.execute("SELECT * FROM analysis_workers WHERE enabled = 1").fetchall()
+        if not workers:
+            return "No compute workers connected."
+        fresh_workers = [
+            worker
+            for worker in workers
+            if str(worker["status"] or "") != "maintenance"
+            and _is_fresh_heartbeat(str(worker["last_heartbeat"] or ""))
+        ]
+        if not fresh_workers:
+            if any(str(worker["status"] or "") == "maintenance" for worker in workers):
+                return "Compute worker is in maintenance."
+            return "Worker offline."
+        eligible = []
+        for worker in fresh_workers:
+            try:
+                supported = set(json.loads(worker["supported_workflows_json"] or "[]"))
+            except json.JSONDecodeError:
+                supported = set()
+            if workflow_id in supported:
+                eligible.append(worker)
+        if not eligible:
+            if workflow_id == "bulk_rnaseq_deseq2":
+                return "Connected worker does not support bulk_rnaseq_deseq2. Missing R/DESeq2 dependencies."
+            return f"Connected worker does not support {workflow_id}."
+        if all(int(worker["running_job_count"] or 0) >= int(worker["maximum_concurrent_jobs"] or 1) for worker in eligible):
+            return "Worker concurrency limit reached."
+        return "Waiting for an eligible worker."
 
     def _output_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         return dict(row) | {

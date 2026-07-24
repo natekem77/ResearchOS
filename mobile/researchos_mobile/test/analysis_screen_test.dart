@@ -245,6 +245,8 @@ void main() {
       240,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.ensureVisible(find.text('Run QC'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Run QC'));
     await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
@@ -312,6 +314,123 @@ void main() {
 
     expect(find.text('DMSO_1'), findsOneWidget);
     expect(find.text('library_size'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'queued DESeq2 job shows reason and dataset card fits narrow phone',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        if (request.url.path == '/mobile/analysis/workers') {
+          return _json({
+            'workers': [
+              {
+                'worker_id': 'worker-1',
+                'display_name': 'Nathan Mac',
+                'status': 'ready',
+                'supported_workflows': ['bulk_rnaseq_validation_qc'],
+                'running_job_count': 0,
+                'maximum_concurrent_jobs': 1,
+              }
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/storage-locations') {
+          return _json({'storage_locations': const []});
+        }
+        if (request.url.path == '/mobile/analysis/demo-library') {
+          return _json({'datasets': const []});
+        }
+        if (request.url.path == '/mobile/analysis/datasets') {
+          return _json({
+            'datasets': [
+              {
+                'id': 'analysis-dataset:retina',
+                'display_name':
+                    'Small Retina Bulk With A Deliberately Long Display Name',
+                'modality': 'bulk_rna_seq',
+                'sample_count': 6,
+                'features_count': 1200,
+                'source_type': 'demo_server_folder',
+                'metadata_summary': const {},
+              }
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/workflows') {
+          return _json({
+            'workflows': [
+              {
+                'stable_key': 'bulk_rnaseq_validation_qc',
+                'name': 'Bulk RNA-seq Dataset Validation/QC',
+                'status': 'installed',
+                'readiness_reason': 'Ready',
+              },
+              {
+                'stable_key': 'bulk_rnaseq_deseq2',
+                'name': 'DESeq2 Differential Expression',
+                'workflow_version': '1.0.0',
+                'status': 'unavailable',
+                'readiness_reason':
+                    'No eligible worker with R/DESeq2 dependencies is connected.',
+              },
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/jobs') {
+          return _json({
+            'jobs': [
+              {
+                'id': 'analysis-job:deseq2',
+                'workflow_id': 'bulk_rnaseq_deseq2',
+                'status': 'queued',
+                'progress': 0,
+                'current_stage': 'Queued',
+                'queue_reason':
+                    'Connected worker does not support bulk_rnaseq_deseq2. Missing R/DESeq2 dependencies.',
+              }
+            ],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/outputs' ||
+            request.url.path == '/mobile/analysis/output-groups') {
+          return _json({'outputs': const [], 'groups': const []});
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Small Retina Bulk With A Deliberately Long Display Name'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+      find.text('Small Retina Bulk With A Deliberately Long Display Name'),
+      findsOneWidget,
+    );
+    final deseq2Button = tester
+        .widget<FilledButton>(find.widgetWithText(FilledButton, 'Run DESeq2'));
+    expect(deseq2Button.onPressed, isNull);
+    await tester.scrollUntilVisible(
+      find.textContaining('Missing R/DESeq2 dependencies'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('View Job'), findsOneWidget);
+    expect(find.text('Open Results'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

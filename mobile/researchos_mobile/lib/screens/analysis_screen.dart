@@ -24,12 +24,14 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   _AnalysisState? _lastState;
   Timer? _pollTimer;
   bool _polling = false;
+  bool _reloadInProgress = false;
+  int _reloadGeneration = 0;
   String? _message;
 
   @override
   void initState() {
     super.initState();
-    _future = _loadAndTrack();
+    _future = _loadAndTrack(generation: ++_reloadGeneration);
   }
 
   @override
@@ -63,22 +65,39 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     );
   }
 
-  Future<_AnalysisState> _loadAndTrack() async {
+  Future<_AnalysisState> _loadAndTrack({required int generation}) async {
     final state = await _load();
-    _lastState = state;
-    if (mounted) _syncPolling(state);
+    if (mounted && generation == _reloadGeneration) {
+      _lastState = state;
+      _syncPolling(state);
+    }
     return state;
   }
 
   Future<void> _reload({bool quiet = false}) async {
-    final next = _loadAndTrack();
-    if (mounted) setState(() => _future = next);
+    if (_reloadInProgress || !mounted) return;
+    _reloadInProgress = true;
+    final generation = ++_reloadGeneration;
+    final next =
+        _loadAndTrack(generation: generation).catchError((Object error) {
+      if (_lastState != null) return _lastState!;
+      throw error;
+    });
+    if (mounted) {
+      setState(() {
+        _future = next;
+      });
+    }
     try {
       await next;
     } catch (error) {
-      if (!quiet && mounted) {
-        setState(() => _message = 'Analysis refresh failed: $error');
+      if (!quiet && mounted && generation == _reloadGeneration) {
+        setState(() {
+          _message = 'Analysis refresh failed: $error';
+        });
       }
+    } finally {
+      _reloadInProgress = false;
     }
   }
 
@@ -99,18 +118,25 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       return;
     }
     _pollTimer ??= Timer.periodic(const Duration(seconds: 3), (_) {
-      if (!_polling) unawaited(_poll());
+      if (!_polling && !_reloadInProgress) unawaited(_poll());
     });
   }
 
   Future<void> _poll() async {
-    if (_polling || !mounted) return;
+    if (_polling || _reloadInProgress || !mounted) return;
     _polling = true;
     try {
       await _reload(quiet: true);
     } finally {
       _polling = false;
     }
+  }
+
+  Map<String, dynamic>? _workflowByKey(_AnalysisState? state, String key) {
+    for (final workflow in state?.workflows ?? const <Map<String, dynamic>>[]) {
+      if (workflow['stable_key']?.toString() == key) return workflow;
+    }
+    return null;
   }
 
   Future<void> _registerDataset() async {
@@ -131,11 +157,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         storageLocationId: result.storageLocationId,
       );
       if (!mounted) return;
-      setState(() => _message = 'Dataset registered.');
+      setState(() {
+        _message = 'Dataset registered.';
+      });
       await _reload(quiet: true);
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Could not register dataset: $error');
+      setState(() {
+        _message = 'Could not register dataset: $error';
+      });
     }
   }
 
@@ -150,11 +180,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         },
       );
       if (!mounted) return;
-      setState(() => _message = 'Bulk RNA-seq QC job queued.');
+      setState(() {
+        _message = 'Bulk RNA-seq QC job queued.';
+      });
       await _reload(quiet: true);
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Could not queue analysis job: $error');
+      setState(() {
+        _message = 'Could not queue analysis job: $error';
+      });
     }
   }
 
@@ -171,11 +205,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         parameters: request.parameters,
       );
       if (!mounted) return;
-      setState(() => _message = 'DESeq2 job queued.');
+      setState(() {
+        _message = 'DESeq2 job queued.';
+      });
       await _reload(quiet: true);
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Could not queue DESeq2 job: $error');
+      setState(() {
+        _message = 'Could not queue DESeq2 job: $error';
+      });
     }
   }
 
@@ -183,11 +221,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     try {
       await widget.api.installAnalysisDemoWorkspace();
       if (!mounted) return;
-      setState(() => _message = 'Demo Workspace installed.');
+      setState(() {
+        _message = 'Demo Workspace installed.';
+      });
       await _reload(quiet: true);
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Could not install demo workspace: $error');
+      setState(() {
+        _message = 'Could not install demo workspace: $error';
+      });
     }
   }
 
@@ -242,6 +284,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               _KeyValue('Workflow', job['workflow_id']),
               _KeyValue('Status', job['status']),
               _KeyValue('Stage', job['current_stage']),
+              if (job['queue_reason'] != null)
+                _KeyValue('Queue reason', job['queue_reason']),
               _KeyValue('Worker', job['worker_id']),
               _KeyValue('Dataset', job['dataset_id']),
               _KeyValue('Started', job['started_at']),
@@ -288,7 +332,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       );
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Could not open analysis output: $error');
+      setState(() {
+        _message = 'Could not open analysis output: $error';
+      });
     }
   }
 
@@ -307,10 +353,14 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         caption: request.caption,
       );
       if (!mounted) return;
-      setState(() => _message = 'Analysis result inserted into notebook.');
+      setState(() {
+        _message = 'Analysis result inserted into notebook.';
+      });
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Notebook insertion failed: $error');
+      setState(() {
+        _message = 'Notebook insertion failed: $error';
+      });
     }
   }
 
@@ -349,11 +399,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         displayName: name,
       );
       if (!mounted) return;
-      setState(() => _message = 'Output renamed.');
+      setState(() {
+        _message = 'Output renamed.';
+      });
       await _reload(quiet: true);
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Could not rename output: $error');
+      setState(() {
+        _message = 'Could not rename output: $error';
+      });
     }
   }
 
@@ -396,11 +450,15 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         referenceMode: choice,
       );
       if (!mounted) return;
-      setState(() => _message = 'Output deleted.');
+      setState(() {
+        _message = 'Output deleted.';
+      });
       await _reload(quiet: true);
     } catch (error) {
       if (!mounted) return;
-      setState(() => _message = 'Could not delete output: $error');
+      setState(() {
+        _message = 'Could not delete output: $error';
+      });
     }
   }
 
@@ -413,13 +471,14 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         return ListView(
           padding: ResearchOsSpacing.screen,
           children: [
-            Row(
+            Wrap(
+              spacing: ResearchOsSpacing.sm,
+              runSpacing: ResearchOsSpacing.xs,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                Expanded(
-                  child: Text(
-                    'Analysis',
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
+                Text(
+                  'Analysis',
+                  style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 FilledButton.icon(
                   onPressed: _registerDataset,
@@ -437,7 +496,11 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                 content: Text(_message!),
                 actions: [
                   TextButton(
-                    onPressed: () => setState(() => _message = null),
+                    onPressed: () {
+                      setState(() {
+                        _message = null;
+                      });
+                    },
                     child: const Text('Dismiss'),
                   ),
                 ],
@@ -489,6 +552,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                 for (final dataset in state!.datasets)
                   _DatasetCard(
                     dataset: dataset,
+                    deseq2Workflow: _workflowByKey(state, 'bulk_rnaseq_deseq2'),
                     onRunQc: () => _runQc(dataset),
                     onRunDeseq2: () => _runDeseq2(dataset),
                   ),
@@ -518,6 +582,10 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                 for (final job in state!.jobs)
                   _JobCard(
                     job: job,
+                    hasOutputs: state.outputs.any(
+                      (output) =>
+                          output['job_id']?.toString() == job['id']?.toString(),
+                    ),
                     onOpenOutputs: () => _showJobDetails(job),
                   ),
               const SizedBox(height: ResearchOsSpacing.lg),
@@ -659,12 +727,16 @@ class _DemoLibraryPanel extends StatelessWidget {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                FilledButton.tonalIcon(
-                  onPressed: onInstall,
-                  icon: const Icon(Icons.download_outlined),
-                  label: const Text('Install Demo Workspace'),
-                ),
               ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.tonalIcon(
+                onPressed: onInstall,
+                icon: const Icon(Icons.download_outlined),
+                label: const Text('Install Demo Workspace'),
+              ),
             ),
             const SizedBox(height: ResearchOsSpacing.sm),
             Text(
@@ -694,11 +766,13 @@ class _DemoLibraryPanel extends StatelessWidget {
 class _DatasetCard extends StatelessWidget {
   const _DatasetCard({
     required this.dataset,
+    required this.deseq2Workflow,
     required this.onRunQc,
     required this.onRunDeseq2,
   });
 
   final Map<String, dynamic> dataset;
+  final Map<String, dynamic>? deseq2Workflow;
   final VoidCallback onRunQc;
   final VoidCallback onRunDeseq2;
 
@@ -708,34 +782,74 @@ class _DatasetCard extends StatelessWidget {
     final metadata = summary is Map ? summary : const {};
     final modality = dataset['modality']?.toString() ?? 'bulk_rna_seq';
     final canRunQc = modality == 'bulk_rna_seq';
+    final deseq2Ready =
+        canRunQc && deseq2Workflow?['status']?.toString() == 'installed';
+    final deseq2Reason = deseq2Workflow?['readiness_reason']?.toString() ??
+        'No eligible DESeq2 worker is connected.';
     return Card(
-      child: ListTile(
-        leading: const Icon(Icons.dataset_outlined),
-        title: Text(dataset['display_name']?.toString() ?? 'Dataset'),
-        subtitle: Text(
-          '$modality • '
-          '${dataset['sample_count'] ?? metadata['sample_count'] ?? 0} samples • '
-          '${dataset['cell_count'] ?? 0} cells • '
-          '${dataset['features_count'] ?? metadata['feature_count'] ?? 0} genes • '
-          '${dataset['source_type'] ?? 'server'}',
-        ),
-        trailing: canRunQc
-            ? Wrap(
-                spacing: ResearchOsSpacing.xs,
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.dataset_outlined),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        dataset['display_name']?.toString() ?? 'Dataset',
+                        style: Theme.of(context).textTheme.titleMedium,
+                        softWrap: true,
+                      ),
+                      const SizedBox(height: ResearchOsSpacing.xs),
+                      Text(
+                        '$modality • '
+                        '${dataset['sample_count'] ?? metadata['sample_count'] ?? 0} samples • '
+                        '${dataset['features_count'] ?? metadata['feature_count'] ?? 0} genes',
+                      ),
+                      Text(dataset['source_type']?.toString() ?? 'server'),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            if (canRunQc)
+              Wrap(
+                spacing: ResearchOsSpacing.sm,
+                runSpacing: ResearchOsSpacing.xs,
                 children: [
                   FilledButton.tonalIcon(
                     onPressed: onRunQc,
                     icon: const Icon(Icons.play_arrow),
                     label: const Text('Run QC'),
                   ),
-                  FilledButton.tonalIcon(
-                    onPressed: onRunDeseq2,
-                    icon: const Icon(Icons.biotech_outlined),
-                    label: const Text('Run DESeq2'),
+                  Tooltip(
+                    message: deseq2Ready ? 'Ready' : deseq2Reason,
+                    child: FilledButton.tonalIcon(
+                      onPressed: deseq2Ready ? onRunDeseq2 : null,
+                      icon: const Icon(Icons.biotech_outlined),
+                      label: const Text('Run DESeq2'),
+                    ),
                   ),
                 ],
               )
-            : const Chip(label: Text('Catalog')),
+            else
+              const Chip(label: Text('Catalog')),
+            if (canRunQc && !deseq2Ready) ...[
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Text(
+                deseq2Reason,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }
@@ -750,24 +864,62 @@ class _WorkflowCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final status = workflow['status']?.toString() ?? 'available';
     final resource = workflow['resource_request'];
+    final readiness = workflow['readiness_reason']?.toString();
+    final label = _workflowStatusLabel(status, workflow);
+    final icon = status == 'installed'
+        ? Icons.check_circle_outline
+        : status == 'unavailable'
+            ? Icons.error_outline
+            : status == 'disabled'
+                ? Icons.block
+                : Icons.pending_outlined;
     return Card(
-      child: ListTile(
-        leading: Icon(
-          status == 'installed'
-              ? Icons.check_circle_outline
-              : Icons.pending_outlined,
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: Text(
+                    workflow['name']?.toString() ?? 'Workflow',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.xs),
+            Text(
+              '${workflow['category'] ?? 'Analysis'} • '
+              '${workflow['workflow_version'] ?? '-'} • '
+              'CPU ${resource is Map ? resource['cpu_cores'] ?? '-' : '-'} • '
+              'RAM ${resource is Map ? resource['ram_gb'] ?? '-' : '-'} GB'
+              '${readiness == null ? '' : '\n$readiness'}',
+            ),
+            const SizedBox(height: ResearchOsSpacing.xs),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Chip(label: Text(label)),
+            ),
+          ],
         ),
-        title: Text(workflow['name']?.toString() ?? 'Workflow'),
-        subtitle: Text(
-          '${workflow['category'] ?? 'Analysis'} • '
-          '${workflow['workflow_version'] ?? '-'} • '
-          'CPU ${resource is Map ? resource['cpu_cores'] ?? '-' : '-'} • '
-          'RAM ${resource is Map ? resource['ram_gb'] ?? '-' : '-'} GB',
-        ),
-        trailing: Chip(label: Text(status)),
       ),
     );
   }
+}
+
+String _workflowStatusLabel(String status, Map<String, dynamic> workflow) {
+  if (status == 'installed') return 'Ready';
+  if (status == 'unavailable') return 'Missing dependencies';
+  if (status == 'disabled') return 'Disabled';
+  if (workflow['workflow_version']?.toString().endsWith('scaffold') ?? false) {
+    return 'Legacy/scaffold';
+  }
+  return 'No eligible worker';
 }
 
 class _Deseq2Dialog extends StatefulWidget {
@@ -932,8 +1084,11 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
                 DropdownMenuItem(value: 'ashr', child: Text('ashr')),
                 DropdownMenuItem(value: 'normal', child: Text('normal')),
               ],
-              onChanged: (value) =>
-                  setState(() => _shrinkage = value ?? 'none'),
+              onChanged: (value) {
+                setState(() {
+                  _shrinkage = value ?? 'none';
+                });
+              },
             ),
             DropdownButtonFormField<String>(
               initialValue: _transform,
@@ -944,7 +1099,11 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
                 DropdownMenuItem(value: 'rlog', child: Text('rlog')),
                 DropdownMenuItem(value: 'none', child: Text('none')),
               ],
-              onChanged: (value) => setState(() => _transform = value ?? 'vst'),
+              onChanged: (value) {
+                setState(() {
+                  _transform = value ?? 'vst';
+                });
+              },
             ),
             TextField(
               controller: _topGenesController,
@@ -1022,10 +1181,12 @@ class _Deseq2Request {
 class _JobCard extends StatelessWidget {
   const _JobCard({
     required this.job,
+    required this.hasOutputs,
     required this.onOpenOutputs,
   });
 
   final Map<String, dynamic> job;
+  final bool hasOutputs;
   final VoidCallback onOpenOutputs;
 
   @override
@@ -1053,6 +1214,13 @@ class _JobCard extends StatelessWidget {
             ),
             const SizedBox(height: ResearchOsSpacing.xs),
             Text(job['current_stage']?.toString() ?? 'Queued'),
+            if (job['queue_reason'] != null) ...[
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Text(
+                job['queue_reason'].toString(),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
             const SizedBox(height: ResearchOsSpacing.sm),
             LinearProgressIndicator(value: progress),
             const SizedBox(height: ResearchOsSpacing.sm),
@@ -1061,7 +1229,7 @@ class _JobCard extends StatelessWidget {
               child: TextButton.icon(
                 onPressed: onOpenOutputs,
                 icon: const Icon(Icons.open_in_new),
-                label: const Text('Open Results'),
+                label: Text(hasOutputs ? 'Open Results' : 'View Job'),
               ),
             ),
           ],
@@ -1413,13 +1581,21 @@ class _DifferentialExpressionViewerState
             prefixIcon: Icon(Icons.search),
             labelText: 'Search genes',
           ),
-          onChanged: (value) => setState(() => _query = value),
+          onChanged: (value) {
+            setState(() {
+              _query = value;
+            });
+          },
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('Significant only'),
           value: _significantOnly,
-          onChanged: (value) => setState(() => _significantOnly = value),
+          onChanged: (value) {
+            setState(() {
+              _significantOnly = value;
+            });
+          },
         ),
         Scrollbar(
           child: SingleChildScrollView(
@@ -1602,7 +1778,11 @@ class _TableOutputViewerState extends State<_TableOutputViewer> {
         TextField(
           decoration: const InputDecoration(
               prefixIcon: Icon(Icons.search), labelText: 'Search table'),
-          onChanged: (value) => setState(() => _query = value),
+          onChanged: (value) {
+            setState(() {
+              _query = value;
+            });
+          },
         ),
         const SizedBox(height: ResearchOsSpacing.sm),
         Scrollbar(
@@ -1744,7 +1924,9 @@ class _InsertOutputDialogState extends State<_InsertOutputDialog> {
               ],
               selected: {_referenceType},
               onSelectionChanged: (selection) {
-                setState(() => _referenceType = selection.first);
+                setState(() {
+                  _referenceType = selection.first;
+                });
               },
             ),
             const SizedBox(height: ResearchOsSpacing.sm),

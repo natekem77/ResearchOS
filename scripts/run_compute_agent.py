@@ -95,9 +95,16 @@ def main() -> int:
     while True:
         try:
             service.record_worker_heartbeat(args.worker_id, {"status": "ready", "running_job_count": 0})
+            print("Polling for jobs...")
             job = service.run_claimed_job_once(args.worker_id)
             if job is not None:
-                print(f"processed analysis job {job['id']} status={job['status']}")
+                print(
+                    "Processed analysis job "
+                    f"{job['id']} workflow={job.get('workflow_id')} "
+                    f"status={job['status']} stage={job.get('current_stage')}"
+                )
+            else:
+                print("No eligible queued jobs.")
         except KeyboardInterrupt:
             raise
         except Exception as exc:
