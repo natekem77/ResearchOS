@@ -2070,8 +2070,11 @@ def _volcano_payload(rows: list[dict[str, Any]], parameters: dict[str, Any]) -> 
                 "gene_id": row["gene_id"],
                 "x": row["log2FoldChange"],
                 "y": -math.log10(max(row["padj"], 1e-300)),
+                "log2FoldChange": row["log2FoldChange"],
+                "neg_log10_padj": -math.log10(max(row["padj"], 1e-300)),
                 "padj": row["padj"],
                 "baseMean": row["baseMean"],
+                "significance": row["significance"],
                 "direction": row["direction"],
             }
             for row in rows

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../analysis/viewers/volcano_plot_viewer.dart';
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
 
@@ -1492,6 +1493,13 @@ class _OutputViewerSheet extends StatelessWidget {
 }
 
 Widget _viewerForType(String type, Map<String, dynamic> output) {
+  final plotType = _resolveAnalysisPlotType(type, output);
+  if (plotType != null) {
+    switch (plotType) {
+      case 'volcano':
+        return VolcanoPlotViewer(output: output);
+    }
+  }
   if (type == 'deseq2_run_summary') return _Deseq2SummaryViewer(output: output);
   if (type == 'differential_expression_table') {
     return _DifferentialExpressionViewer(output: output);
@@ -1503,6 +1511,43 @@ Widget _viewerForType(String type, Map<String, dynamic> output) {
     return _PlotPayloadViewer(output: output);
   }
   return _GenericOutputViewer(output: output);
+}
+
+String? _resolveAnalysisPlotType(
+    String outputType, Map<String, dynamic> output) {
+  const known = {
+    'volcano',
+  };
+  final candidates = <String?>[
+    outputType,
+    _plotSubtype(output['structured']),
+    _plotSubtype(output['viewer_config']),
+  ];
+  for (final candidate in candidates) {
+    final normalized = _normalizePlotType(candidate);
+    if (normalized != null && known.contains(normalized)) return normalized;
+  }
+  return null;
+}
+
+String? _plotSubtype(Object? value) {
+  if (value is! Map) return null;
+  final map = value.cast<String, dynamic>();
+  return (map['plot_type'] ??
+          map['plot_subtype'] ??
+          map['subtype'] ??
+          map['viewer'] ??
+          map['kind'])
+      ?.toString();
+}
+
+String? _normalizePlotType(String? value) {
+  if (value == null) return null;
+  final normalized = value.trim().toLowerCase().replaceAll('-', '_');
+  return switch (normalized) {
+    'volcano_plot' => 'volcano',
+    _ => normalized,
+  };
 }
 
 class _Deseq2SummaryViewer extends StatelessWidget {

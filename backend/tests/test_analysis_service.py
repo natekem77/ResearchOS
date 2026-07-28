@@ -547,6 +547,9 @@ class AnalysisServiceTests(unittest.TestCase):
             self.assertIn("provenance", output_types)
             de_table = next(output for output in outputs if output["output_type"] == "differential_expression_table")
             self.assertIn("log2FoldChange", de_table["structured"]["columns"])
+            volcano = next(output for output in outputs if output["display_name"] == "Volcano Plot")
+            self.assertIn("log2FoldChange", volcano["structured"]["points"][0])
+            self.assertIn("neg_log10_padj", volcano["structured"]["points"][0])
             self.assertTrue(de_table["provenance"]["source_files_remain_server_local"])
 
     def test_deseq2_invalid_contrast_fails_with_actionable_error(self) -> None:

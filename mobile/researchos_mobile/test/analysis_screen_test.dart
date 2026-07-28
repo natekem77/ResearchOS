@@ -1,9 +1,11 @@
 import 'dart:convert';
 
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+import 'package:researchos_mobile/analysis/viewers/volcano_plot_viewer.dart';
 import 'package:researchos_mobile/api/researchos_api.dart';
 import 'package:researchos_mobile/screens/analysis_screen.dart';
 import 'package:researchos_mobile/services/navigation_preferences_service.dart';
@@ -433,6 +435,92 @@ void main() {
     expect(find.text('Open Results'), findsNothing);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('volcano output opens graphical Plot tab with Data tab',
+      (tester) async {
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        if (request.url.path == '/mobile/analysis/workers') {
+          return _json({'workers': const []});
+        }
+        if (request.url.path == '/mobile/analysis/storage-locations') {
+          return _json({'storage_locations': const []});
+        }
+        if (request.url.path == '/mobile/analysis/demo-library') {
+          return _json({'datasets': const []});
+        }
+        if (request.url.path == '/mobile/analysis/datasets') {
+          return _json({'datasets': const []});
+        }
+        if (request.url.path == '/mobile/analysis/workflows') {
+          return _json({'workflows': const []});
+        }
+        if (request.url.path == '/mobile/analysis/jobs') {
+          return _json({'jobs': const []});
+        }
+        if (request.url.path == '/mobile/analysis/outputs') {
+          return _json({
+            'outputs': [_volcanoOutput()],
+          });
+        }
+        if (request.url.path == '/mobile/analysis/output-groups') {
+          return _json({
+            'groups': [
+              {
+                'dataset': {'display_name': 'Small Retina Bulk'},
+                'job': {
+                  'id': 'analysis-job:deseq2',
+                  'workflow_id': 'bulk_rnaseq_deseq2',
+                  'status': 'complete',
+                },
+                'outputs': [_volcanoOutput()],
+              }
+            ],
+          });
+        }
+        if (request.url.path ==
+            '/mobile/analysis/outputs/analysis-output%3Avolcano') {
+          return _json({'output': _volcanoOutput()});
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Volcano Plot'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(
+      find
+          .ancestor(
+              of: find.text('Volcano Plot').last,
+              matching: find.byType(ListTile))
+          .first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Plot'), findsOneWidget);
+    expect(find.text('Data'), findsOneWidget);
+    expect(find.byType(VolcanoPlotViewer), findsOneWidget);
+    expect(find.byType(ScatterChart), findsOneWidget);
+    expect(find.textContaining('points'), findsOneWidget);
+    expect(find.text('Export Current View'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField).last, 'POU4F2');
+    await tester.pumpAndSettle();
+    expect(find.text('1 points'), findsOneWidget);
+
+    await tester.tap(find.text('Data'));
+    await tester.pumpAndSettle();
+    expect(find.text('POU4F2'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 ResearchOsApi _mockAnalysisApi(List<String> calls) {
@@ -627,6 +715,45 @@ Map<String, dynamic> _provenanceOutput() {
       'parameters': {'sample_id_column': 'sample'},
       'dataset_checksum': 'abc123',
       'outputs': const [],
+    },
+  };
+}
+
+Map<String, dynamic> _volcanoOutput() {
+  return {
+    'id': 'analysis-output:volcano',
+    'display_name': 'Volcano Plot',
+    'output_type': 'interactive_plot',
+    'job_id': 'analysis-job:deseq2',
+    'dataset_id': 'analysis-dataset:test',
+    'viewer_config': {'plot_subtype': 'volcano'},
+    'structured': {
+      'plot_type': 'volcano',
+      'thresholds': {'alpha': 0.05, 'lfc': 1.0},
+      'points': [
+        {
+          'gene_id': 'POU4F2',
+          'x': 1.8,
+          'y': 2.0,
+          'log2FoldChange': 1.8,
+          'neg_log10_padj': 2.0,
+          'padj': 0.01,
+          'baseMean': 30,
+          'significance': 'significant',
+          'direction': 'up',
+        },
+        {
+          'gene_id': 'RBPMS',
+          'x': 1.2,
+          'y': 1.3,
+          'log2FoldChange': 1.2,
+          'neg_log10_padj': 1.3,
+          'padj': 0.05,
+          'baseMean': 24,
+          'significance': 'not_significant',
+          'direction': 'none',
+        },
+      ],
     },
   };
 }
