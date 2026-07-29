@@ -434,6 +434,24 @@ class ResearchOsApi {
     });
   }
 
+  Future<List<Map<String, dynamic>>> publicAnalysisDatasets({
+    String? query,
+  }) async {
+    final suffix = query == null || query.trim().isEmpty
+        ? ''
+        : '?q=${Uri.encodeQueryComponent(query.trim())}';
+    final json = await _getMap('/mobile/analysis/public-datasets$suffix');
+    return _jsonObjectList(json['datasets']);
+  }
+
+  Future<Map<String, dynamic>> importPublicAnalysisDataset(
+      String accession) async {
+    return _postMap(
+      '/mobile/analysis/public-datasets/${Uri.encodeComponent(accession)}/import',
+      const {},
+    );
+  }
+
   Future<List<Map<String, dynamic>>> analysisWorkflows() async {
     final json = await _getMap('/mobile/analysis/workflows');
     return _jsonObjectList(json['workflows']);

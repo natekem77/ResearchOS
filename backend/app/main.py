@@ -5477,6 +5477,28 @@ def get_mobile_analysis_dataset(dataset_id: str, request: Request) -> dict[str, 
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/mobile/analysis/public-datasets", tags=["analysis"])
+def list_mobile_analysis_public_datasets(
+    request: Request,
+    q: str | None = None,
+) -> dict[str, object]:
+    _request_user_id(request)
+    return {"datasets": _analysis_service().public_geo_datasets(query=q)}
+
+
+@app.post("/mobile/analysis/public-datasets/{accession}/import", tags=["analysis"])
+def import_mobile_analysis_public_dataset(accession: str, request: Request) -> dict[str, object]:
+    try:
+        return {
+            "dataset": _analysis_service().import_public_geo_dataset(
+                _request_user_id(request),
+                accession,
+            )
+        }
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/mobile/analysis/workflows", tags=["analysis"])
 def list_mobile_analysis_workflows(request: Request, q: str | None = None) -> dict[str, object]:
     _request_user_id(request)

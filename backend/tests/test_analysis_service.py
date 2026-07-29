@@ -218,9 +218,32 @@ class AnalysisServiceTests(unittest.TestCase):
             self.assertTrue((root / "bulk/counts.tsv").exists())
 
         self.assertEqual(dataset["display_name"], "Bulk SAG GRKi")
+
+    def test_public_geo_search_and_import_registers_bulk_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, root = self._fixture(tmpdir)
+            records = service.public_geo_datasets("retinal organoid")
+            dataset = service.import_public_geo_dataset(
+                "user:pi-owner",
+                records[0]["accession"],
+            )
+            again = service.import_public_geo_dataset(
+                "user:pi-owner",
+                records[0]["accession"],
+            )
+            counts_exists = (root / dataset["counts_path"]).exists()
+            metadata_exists = (root / dataset["metadata_path"]).exists()
+
+        self.assertGreaterEqual(len(records), 1)
+        self.assertEqual(dataset["modality"], "bulk_rna_seq")
+        self.assertEqual(dataset["source_type"], "public_geo")
+        self.assertEqual(dataset["sample_count"], 6)
+        self.assertTrue(counts_exists)
+        self.assertTrue(metadata_exists)
+        self.assertEqual(again["id"], dataset["id"])
+        self.assertEqual(again["import_status"], "already_imported")
         self.assertTrue(dataset["server_local"])
-        self.assertEqual(dataset["sample_count"], 3)
-        self.assertEqual(dataset["features_count"], 4)
+        self.assertEqual(dataset["features_count"], 7)
 
     def test_path_allowlist_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

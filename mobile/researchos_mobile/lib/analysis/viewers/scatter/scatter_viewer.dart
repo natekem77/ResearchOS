@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../../../design_system/researchos_design_system.dart';
@@ -38,6 +39,8 @@ class ScatterViewer extends StatefulWidget {
 
 class _ScatterViewerState extends State<ScatterViewer> {
   final GlobalKey _boundaryKey = GlobalKey();
+  final TransformationController _transformController =
+      TransformationController();
   late final ScatterController _controller;
 
   @override
@@ -49,6 +52,7 @@ class _ScatterViewerState extends State<ScatterViewer> {
 
   @override
   void dispose() {
+    _transformController.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -72,7 +76,10 @@ class _ScatterViewerState extends State<ScatterViewer> {
                   spec: widget.spec,
                   points: points,
                   selectedId: _controller.selectedId,
-                  showLabels: _controller.showLabels || points.length <= 12,
+                  showLabels: _showLabels(points),
+                  transformController: _transformController,
+                  onResetView: _resetView,
+                  onFitToData: _resetView,
                   onPointSelected: _showPoint,
                 );
               },
@@ -101,6 +108,17 @@ class _ScatterViewerState extends State<ScatterViewer> {
         },
       ),
     );
+  }
+
+  bool _showLabels(List<ScatterPointModel> points) {
+    if (points.length <= 12) return true;
+    if (!_controller.showLabels) return false;
+    return points.length <= 1000;
+  }
+
+  void _resetView() {
+    _transformController.value = _transformController.value.clone()
+      ..setIdentity();
   }
 
   void _showPoint(ScatterPointModel point) {
@@ -134,6 +152,9 @@ class _ScatterPlot extends StatelessWidget {
     required this.points,
     required this.selectedId,
     required this.showLabels,
+    required this.transformController,
+    required this.onResetView,
+    required this.onFitToData,
     required this.onPointSelected,
   });
 
@@ -141,6 +162,9 @@ class _ScatterPlot extends StatelessWidget {
   final List<ScatterPointModel> points;
   final String? selectedId;
   final bool showLabels;
+  final TransformationController transformController;
+  final VoidCallback onResetView;
+  final VoidCallback onFitToData;
   final ValueChanged<ScatterPointModel> onPointSelected;
 
   @override
@@ -158,148 +182,206 @@ class _ScatterPlot extends StatelessWidget {
           style: Theme.of(context).textTheme.labelLarge,
         ),
         const SizedBox(height: ResearchOsSpacing.xs),
+        Wrap(
+          spacing: ResearchOsSpacing.xs,
+          runSpacing: ResearchOsSpacing.xs,
+          children: [
+            TextButton.icon(
+              onPressed: onFitToData,
+              icon: const Icon(Icons.fit_screen_outlined),
+              label: const Text('Fit to data'),
+            ),
+            TextButton.icon(
+              onPressed: onResetView,
+              icon: const Icon(Icons.restart_alt_outlined),
+              label: const Text('Reset view'),
+            ),
+            if (!showLabels && points.length > 1000)
+              Chip(
+                visualDensity: VisualDensity.compact,
+                label: Text(
+                  '${points.length} points; labels reduced for performance',
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: ResearchOsSpacing.xs),
         Expanded(
-          child: InteractiveViewer(
-            minScale: 0.8,
-            maxScale: 8,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 8, 16, 22),
-                  child: ScatterChart(
-                    ScatterChartData(
-                      scatterSpots: [
-                        for (final point in points)
-                          ScatterSpot(
-                            point.x,
-                            point.y,
-                            dotPainter: FlDotCirclePainter(
-                              radius: point.id == selectedId
-                                  ? (point.size ?? 5) + 2.5
-                                  : point.size ?? 4.5,
-                              color: scientificCategoryColor(
-                                context,
-                                point.colorKey,
-                                legend: spec.legend,
+          child: Listener(
+            onPointerSignal: (event) {
+              if (event is PointerScrollEvent) {
+                final scale = event.scrollDelta.dy > 0 ? 0.9 : 1.1;
+                transformController.value = transformController.value.clone()
+                  ..translateByDouble(
+                    event.localPosition.dx,
+                    event.localPosition.dy,
+                    0,
+                    1,
+                  )
+                  ..scaleByDouble(scale, scale, 1, 1)
+                  ..translateByDouble(
+                    -event.localPosition.dx,
+                    -event.localPosition.dy,
+                    0,
+                    1,
+                  );
+              }
+            },
+            child: GestureDetector(
+              onDoubleTap: onResetView,
+              child: InteractiveViewer(
+                transformationController: transformController,
+                minScale: 0.8,
+                maxScale: 16,
+                panEnabled: true,
+                scaleEnabled: true,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 8, 16, 22),
+                      child: RepaintBoundary(
+                        child: ScatterChart(
+                          ScatterChartData(
+                            scatterSpots: [
+                              for (final point in points)
+                                ScatterSpot(
+                                  point.x,
+                                  point.y,
+                                  dotPainter: FlDotCirclePainter(
+                                    radius: point.id == selectedId
+                                        ? (point.size ?? 5) + 2.5
+                                        : point.size ?? 4.5,
+                                    color: scientificCategoryColor(
+                                      context,
+                                      point.colorKey,
+                                      legend: spec.legend,
+                                    ),
+                                    strokeColor: point.id == selectedId
+                                        ? Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                        : Colors.transparent,
+                                    strokeWidth: point.id == selectedId ? 2 : 0,
+                                  ),
+                                ),
+                            ],
+                            minX: bounds.minX,
+                            maxX: bounds.maxX,
+                            minY: bounds.minY,
+                            maxY: bounds.maxY,
+                            showingTooltipIndicators:
+                                selectedIndex < 0 ? const [] : [selectedIndex],
+                            gridData: FlGridData(
+                              show: true,
+                              drawVerticalLine: true,
+                              drawHorizontalLine: true,
+                              getDrawingHorizontalLine: (_) => FlLine(
+                                color: plotTheme.grid,
+                                strokeWidth: 1,
                               ),
-                              strokeColor: point.id == selectedId
-                                  ? Theme.of(context).colorScheme.onSurface
-                                  : Colors.transparent,
-                              strokeWidth: point.id == selectedId ? 2 : 0,
+                              getDrawingVerticalLine: (_) => FlLine(
+                                color: plotTheme.grid,
+                                strokeWidth: 1,
+                              ),
+                            ),
+                            borderData: FlBorderData(
+                              show: true,
+                              border: Border.all(color: plotTheme.axis),
+                            ),
+                            titlesData: FlTitlesData(
+                              topTitles: const AxisTitles(
+                                sideTitles: SideTitles(showTitles: false),
+                              ),
+                              rightTitles: const AxisTitles(
+                                sideTitles: SideTitles(showTitles: false),
+                              ),
+                              leftTitles: AxisTitles(
+                                axisNameWidget: Text(spec.yAxisLabel),
+                                sideTitles: const SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 46,
+                                  getTitlesWidget: _axisTitleWidget,
+                                ),
+                              ),
+                              bottomTitles: AxisTitles(
+                                axisNameWidget: Text(spec.xAxisLabel),
+                                sideTitles: const SideTitles(
+                                  showTitles: true,
+                                  reservedSize: 38,
+                                  getTitlesWidget: _axisTitleWidget,
+                                ),
+                              ),
+                            ),
+                            scatterTouchData: ScatterTouchData(
+                              enabled: true,
+                              touchSpotThreshold: 18,
+                              touchCallback: (event, response) {
+                                if (event is! FlTapUpEvent) return;
+                                final spot = response?.touchedSpot;
+                                if (spot == null) return;
+                                final index = spot.spotIndex;
+                                if (index < 0 || index >= points.length) {
+                                  return;
+                                }
+                                onPointSelected(points[index]);
+                              },
+                              touchTooltipData: ScatterTouchTooltipData(
+                                fitInsideHorizontally: true,
+                                fitInsideVertically: true,
+                                getTooltipItems: (spot) {
+                                  final match = points.firstWhere(
+                                    (point) =>
+                                        point.x == spot.x && point.y == spot.y,
+                                    orElse: () => ScatterPointModel(
+                                      id: 'point',
+                                      label: 'Point',
+                                      x: spot.x,
+                                      y: spot.y,
+                                    ),
+                                  );
+                                  return ScatterTooltipItem(
+                                    '${match.label}\n'
+                                    '${spec.xAxisLabel}: ${match.x.toStringAsPrecision(4)}\n'
+                                    '${spec.yAxisLabel}: ${match.y.toStringAsPrecision(4)}',
+                                    textStyle: TextStyle(
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onInverseSurface,
+                                      fontSize: 11,
+                                    ),
+                                  );
+                                },
+                              ),
                             ),
                           ),
-                      ],
-                      minX: bounds.minX,
-                      maxX: bounds.maxX,
-                      minY: bounds.minY,
-                      maxY: bounds.maxY,
-                      showingTooltipIndicators:
-                          selectedIndex < 0 ? const [] : [selectedIndex],
-                      gridData: FlGridData(
-                        show: true,
-                        drawVerticalLine: true,
-                        drawHorizontalLine: true,
-                        getDrawingHorizontalLine: (_) => FlLine(
-                          color: plotTheme.grid,
-                          strokeWidth: 1,
-                        ),
-                        getDrawingVerticalLine: (_) => FlLine(
-                          color: plotTheme.grid,
-                          strokeWidth: 1,
                         ),
                       ),
-                      borderData: FlBorderData(
-                        show: true,
-                        border: Border.all(color: plotTheme.axis),
+                    ),
+                    IgnorePointer(
+                      child: CustomPaint(
+                        painter: _ScatterReferenceLinePainter(
+                          bounds: bounds,
+                          thresholds: spec.thresholds,
+                          colorScheme: Theme.of(context).colorScheme,
+                        ),
                       ),
-                      titlesData: FlTitlesData(
-                        topTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: false),
-                        ),
-                        rightTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: false),
-                        ),
-                        leftTitles: AxisTitles(
-                          axisNameWidget: Text(spec.yAxisLabel),
-                          sideTitles: const SideTitles(
-                            showTitles: true,
-                            reservedSize: 46,
-                            getTitlesWidget: _axisTitleWidget,
-                          ),
-                        ),
-                        bottomTitles: AxisTitles(
-                          axisNameWidget: Text(spec.xAxisLabel),
-                          sideTitles: const SideTitles(
-                            showTitles: true,
-                            reservedSize: 38,
-                            getTitlesWidget: _axisTitleWidget,
+                    ),
+                    if (showLabels)
+                      IgnorePointer(
+                        child: CustomPaint(
+                          painter: _ScatterLabelPainter(
+                            points: points,
+                            bounds: bounds,
+                            selectedId: selectedId,
+                            color: Theme.of(context).colorScheme.onSurface,
+                            alwaysLabel: points.length <= 12,
                           ),
                         ),
                       ),
-                      scatterTouchData: ScatterTouchData(
-                        enabled: true,
-                        touchSpotThreshold: 18,
-                        touchCallback: (event, response) {
-                          if (event is! FlTapUpEvent) return;
-                          final spot = response?.touchedSpot;
-                          if (spot == null) return;
-                          final index = spot.spotIndex;
-                          if (index < 0 || index >= points.length) return;
-                          onPointSelected(points[index]);
-                        },
-                        touchTooltipData: ScatterTouchTooltipData(
-                          fitInsideHorizontally: true,
-                          fitInsideVertically: true,
-                          getTooltipItems: (spot) {
-                            final match = points.firstWhere(
-                              (point) => point.x == spot.x && point.y == spot.y,
-                              orElse: () => ScatterPointModel(
-                                id: 'point',
-                                label: 'Point',
-                                x: spot.x,
-                                y: spot.y,
-                              ),
-                            );
-                            return ScatterTooltipItem(
-                              '${match.label}\n'
-                              '${spec.xAxisLabel}: ${match.x.toStringAsPrecision(4)}\n'
-                              '${spec.yAxisLabel}: ${match.y.toStringAsPrecision(4)}',
-                              textStyle: TextStyle(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onInverseSurface,
-                                fontSize: 11,
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
+                  ],
                 ),
-                IgnorePointer(
-                  child: CustomPaint(
-                    painter: _ScatterReferenceLinePainter(
-                      bounds: bounds,
-                      thresholds: spec.thresholds,
-                      colorScheme: Theme.of(context).colorScheme,
-                    ),
-                  ),
-                ),
-                if (showLabels)
-                  IgnorePointer(
-                    child: CustomPaint(
-                      painter: _ScatterLabelPainter(
-                        points: points,
-                        bounds: bounds,
-                        selectedId: selectedId,
-                        color: Theme.of(context).colorScheme.onSurface,
-                        alwaysLabel: points.length <= 12,
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
           ),
         ),

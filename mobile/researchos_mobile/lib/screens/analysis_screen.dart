@@ -31,6 +31,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   bool _reloadInProgress = false;
   int _reloadGeneration = 0;
   String? _message;
+  final TextEditingController _publicDatasetSearchController =
+      TextEditingController();
 
   @override
   void initState() {
@@ -41,6 +43,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   @override
   void dispose() {
     _pollTimer?.cancel();
+    _publicDatasetSearchController.dispose();
     super.dispose();
   }
 
@@ -54,6 +57,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       widget.api.analysisOutputGroups(),
       widget.api.analysisStorageLocations(),
       widget.api.analysisDemoLibrary(),
+      widget.api.publicAnalysisDatasets(),
     ]);
     return _AnalysisState(
       workers: results[0] as List<Map<String, dynamic>>,
@@ -66,6 +70,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       demoLibrary: results[7] is Map<String, dynamic>
           ? results[7] as Map<String, dynamic>
           : const {},
+      publicDatasets: results[8] as List<Map<String, dynamic>>,
     );
   }
 
@@ -233,6 +238,24 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       if (!mounted) return;
       setState(() {
         _message = 'Could not install demo workspace: $error';
+      });
+    }
+  }
+
+  Future<void> _importPublicDataset(Map<String, dynamic> dataset) async {
+    final accession = dataset['accession']?.toString();
+    if (accession == null || accession.isEmpty) return;
+    try {
+      await widget.api.importPublicAnalysisDataset(accession);
+      if (!mounted) return;
+      setState(() {
+        _message = 'Public dataset imported.';
+      });
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not import public dataset: $error';
       });
     }
   }
@@ -519,6 +542,13 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
             const SizedBox(height: ResearchOsSpacing.sm),
             _GenomicsRail(onOpenImaging: widget.onOpenImaging),
             const SizedBox(height: ResearchOsSpacing.md),
+            _PublicDatasetsPanel(
+              datasets: state?.publicDatasets ?? const [],
+              searchController: _publicDatasetSearchController,
+              onImport: _importPublicDataset,
+              onSearchChanged: (_) => setState(() {}),
+            ),
+            const SizedBox(height: ResearchOsSpacing.md),
             _DemoLibraryPanel(
               demoLibrary: state?.demoLibrary ?? const {},
               onInstall: _installDemoWorkspace,
@@ -698,6 +728,167 @@ class _WorkerSummary extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+class _PublicDatasetsPanel extends StatelessWidget {
+  const _PublicDatasetsPanel({
+    required this.datasets,
+    required this.searchController,
+    required this.onImport,
+    required this.onSearchChanged,
+  });
+
+  final List<Map<String, dynamic>> datasets;
+  final TextEditingController searchController;
+  final ValueChanged<Map<String, dynamic>> onImport;
+  final ValueChanged<String> onSearchChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final query = searchController.text.trim().toLowerCase();
+    final visible = query.isEmpty
+        ? datasets
+        : datasets.where((dataset) {
+            final haystack = [
+              dataset['accession'],
+              dataset['title'],
+              dataset['organism'],
+              dataset['platform'],
+              dataset['summary'],
+            ].join(' ').toLowerCase();
+            return haystack.contains(query);
+          }).toList();
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.md),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.public_outlined),
+                const SizedBox(width: ResearchOsSpacing.sm),
+                Expanded(
+                  child: Text(
+                    'Public Datasets',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            TextField(
+              controller: searchController,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                labelText: 'Search GEO',
+              ),
+              onChanged: onSearchChanged,
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Wrap(
+              spacing: ResearchOsSpacing.xs,
+              runSpacing: ResearchOsSpacing.xs,
+              children: [
+                for (final label in const [
+                  'retinal organoid',
+                  'human retina',
+                  'mouse retina',
+                  'DESeq2',
+                ])
+                  ActionChip(
+                    label: Text(label),
+                    onPressed: () {
+                      searchController.text = label;
+                      onSearchChanged(label);
+                    },
+                  ),
+              ],
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            if (visible.isEmpty)
+              const _EmptyPanel(
+                icon: Icons.search_off_outlined,
+                text: 'No public bulk RNA-seq datasets match this search.',
+              )
+            else
+              for (final dataset in visible)
+                _PublicDatasetCard(
+                  dataset: dataset,
+                  onImport: () => onImport(dataset),
+                ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PublicDatasetCard extends StatelessWidget {
+  const _PublicDatasetCard({
+    required this.dataset,
+    required this.onImport,
+  });
+
+  final Map<String, dynamic> dataset;
+  final VoidCallback onImport;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: ResearchOsSpacing.sm),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border:
+              Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(ResearchOsSpacing.sm),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.biotech_outlined),
+                  const SizedBox(width: ResearchOsSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          dataset['title']?.toString() ?? 'Public dataset',
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                        Text(
+                          '${dataset['accession'] ?? ''} • '
+                          '${dataset['organism'] ?? ''} • '
+                          '${dataset['sample_count'] ?? '-'} samples',
+                        ),
+                        Text(dataset['platform']?.toString() ?? ''),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Text(dataset['summary']?.toString() ?? ''),
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: FilledButton.tonalIcon(
+                  onPressed: onImport,
+                  icon: const Icon(Icons.download_for_offline_outlined),
+                  label: const Text('Import'),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -2164,6 +2355,7 @@ class _AnalysisState {
     required this.outputGroups,
     required this.storageLocations,
     required this.demoLibrary,
+    required this.publicDatasets,
   });
 
   final List<Map<String, dynamic>> workers;
@@ -2174,6 +2366,7 @@ class _AnalysisState {
   final List<Map<String, dynamic>> outputGroups;
   final List<Map<String, dynamic>> storageLocations;
   final Map<String, dynamic> demoLibrary;
+  final List<Map<String, dynamic>> publicDatasets;
 }
 
 String? _emptyToNull(String value) {

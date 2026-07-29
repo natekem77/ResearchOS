@@ -63,37 +63,152 @@ class _EnhancedTableViewerState extends State<EnhancedTableViewer> {
             label: const Text('Export CSV'),
           ),
         ),
-        Scrollbar(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
+        if (rows.length > 500)
+          Expanded(
+            child: _VirtualizedTable(
+              columns: columns,
+              rows: rows,
               sortColumnIndex: _sortColumnIndex,
               sortAscending: _sortAscending,
-              columns: [
-                for (var index = 0; index < columns.length; index++)
-                  DataColumn(
-                    label: Text(columns[index]),
-                    onSort: (columnIndex, ascending) {
-                      setState(() {
-                        _sortColumnIndex = columnIndex;
-                        _sortAscending = ascending;
-                      });
-                    },
-                  ),
-              ],
-              rows: [
-                for (final row in rows)
-                  DataRow(
-                    cells: [
-                      for (final column in columns)
-                        DataCell(SelectableText(formatViewerCell(row[column]))),
-                    ],
-                  ),
-              ],
+              onSort: (columnIndex, ascending) {
+                setState(() {
+                  _sortColumnIndex = columnIndex;
+                  _sortAscending = ascending;
+                });
+              },
+            ),
+          )
+        else
+          Scrollbar(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: DataTable(
+                sortColumnIndex: _sortColumnIndex,
+                sortAscending: _sortAscending,
+                columns: [
+                  for (var index = 0; index < columns.length; index++)
+                    DataColumn(
+                      label: Text(columns[index]),
+                      onSort: (columnIndex, ascending) {
+                        setState(() {
+                          _sortColumnIndex = columnIndex;
+                          _sortAscending = ascending;
+                        });
+                      },
+                    ),
+                ],
+                rows: [
+                  for (final row in rows)
+                    DataRow(
+                      cells: [
+                        for (final column in columns)
+                          DataCell(
+                              SelectableText(formatViewerCell(row[column]))),
+                      ],
+                    ),
+                ],
+              ),
             ),
           ),
-        ),
       ],
+    );
+  }
+}
+
+class _VirtualizedTable extends StatelessWidget {
+  const _VirtualizedTable({
+    required this.columns,
+    required this.rows,
+    required this.sortColumnIndex,
+    required this.sortAscending,
+    required this.onSort,
+  });
+
+  final List<String> columns;
+  final List<Map<String, dynamic>> rows;
+  final int? sortColumnIndex;
+  final bool sortAscending;
+  final void Function(int columnIndex, bool ascending) onSort;
+
+  @override
+  Widget build(BuildContext context) {
+    const cellWidth = 148.0;
+    const rowHeight = 44.0;
+    return Scrollbar(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SizedBox(
+          width: cellWidth * columns.length,
+          child: Column(
+            children: [
+              SizedBox(
+                height: rowHeight,
+                child: Row(
+                  children: [
+                    for (var index = 0; index < columns.length; index++)
+                      InkWell(
+                        onTap: () => onSort(
+                          index,
+                          sortColumnIndex == index ? !sortAscending : true,
+                        ),
+                        child: Container(
+                          width: cellWidth,
+                          height: rowHeight,
+                          alignment: Alignment.centerLeft,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          decoration: BoxDecoration(
+                            border: Border(
+                              bottom: BorderSide(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outlineVariant,
+                              ),
+                            ),
+                          ),
+                          child: Text(
+                            '${columns[index]}'
+                            '${sortColumnIndex == index ? (sortAscending ? ' ↑' : ' ↓') : ''}',
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelMedium,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: rows.length,
+                  itemExtent: rowHeight,
+                  itemBuilder: (context, rowIndex) => Row(
+                    children: [
+                      for (final column in columns)
+                        Container(
+                          width: cellWidth,
+                          alignment: Alignment.centerLeft,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          decoration: BoxDecoration(
+                            border: Border(
+                              bottom: BorderSide(
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .outlineVariant
+                                    .withValues(alpha: 0.5),
+                              ),
+                            ),
+                          ),
+                          child: SelectableText(
+                            formatViewerCell(rows[rowIndex][column]),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

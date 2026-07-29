@@ -32,10 +32,13 @@ class HeatmapViewer extends StatefulWidget {
 
 class _HeatmapViewerState extends State<HeatmapViewer> {
   final GlobalKey _boundaryKey = GlobalKey();
+  final TransformationController _transformController =
+      TransformationController();
   late final HeatmapController _controller = HeatmapController();
 
   @override
   void dispose() {
+    _transformController.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -62,21 +65,27 @@ class _HeatmapViewerState extends State<HeatmapViewer> {
             ),
           ),
           Expanded(
-            child: InteractiveViewer(
-              minScale: 0.8,
-              maxScale: 8,
-              child: _HeatmapGrid(
-                spec: widget.spec,
-                min: min,
-                max: max,
-                showValues: _controller.showValues,
-                onCellTap: (row, column, value) {
-                  final label =
-                      '${widget.spec.rowLabels[row]} x ${widget.spec.columnLabels[column]} = ${value.toStringAsPrecision(5)}';
-                  _controller.selectCell(label);
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(SnackBar(content: Text(label)));
-                },
+            child: GestureDetector(
+              onDoubleTap: _resetView,
+              child: InteractiveViewer(
+                transformationController: _transformController,
+                minScale: 0.8,
+                maxScale: 16,
+                panEnabled: true,
+                scaleEnabled: true,
+                child: _HeatmapGrid(
+                  spec: widget.spec,
+                  min: min,
+                  max: max,
+                  showValues: _controller.showValues,
+                  onCellTap: (row, column, value) {
+                    final label =
+                        '${widget.spec.rowLabels[row]} x ${widget.spec.columnLabels[column]} = ${value.toStringAsPrecision(5)}';
+                    _controller.selectCell(label);
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(SnackBar(content: Text(label)));
+                  },
+                ),
               ),
             ),
           ),
@@ -94,6 +103,11 @@ class _HeatmapViewerState extends State<HeatmapViewer> {
         },
       ),
     );
+  }
+
+  void _resetView() {
+    _transformController.value = _transformController.value.clone()
+      ..setIdentity();
   }
 }
 
@@ -119,72 +133,95 @@ class _HeatmapGrid extends StatelessWidget {
     }
     final cellSize =
         math.max(44.0, 260 / math.max(1, spec.columnLabels.length));
+    final showRowLabels = spec.rowLabels.length <= 2000;
+    final showColumnLabels = spec.columnLabels.length <= 200;
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
-      child: SingleChildScrollView(
+      child: SizedBox(
+        width: 96 + cellSize * spec.columnLabels.length,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              children: [
-                const SizedBox(width: 96),
-                for (final column in spec.columnLabels)
-                  SizedBox(
-                    width: cellSize,
-                    child: Text(
-                      column,
-                      overflow: TextOverflow.visible,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
-                  ),
-              ],
-            ),
-            for (var rowIndex = 0; rowIndex < spec.rowLabels.length; rowIndex++)
-              Row(
+            SizedBox(
+              height: showColumnLabels ? 44 : 12,
+              child: Row(
                 children: [
-                  SizedBox(
-                    width: 96,
-                    child: Text(
-                      spec.rowLabels[rowIndex],
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.labelSmall,
-                    ),
-                  ),
-                  for (var columnIndex = 0;
-                      columnIndex < spec.columnLabels.length;
-                      columnIndex++)
-                    GestureDetector(
-                      onTap: () => onCellTap(
-                        rowIndex,
-                        columnIndex,
-                        spec.matrix[rowIndex][columnIndex],
-                      ),
-                      child: Container(
-                        width: cellSize,
-                        height: cellSize,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: _heatmapColor(
-                            spec.matrix[rowIndex][columnIndex],
-                            min,
-                            max,
-                          ),
-                          border: Border.all(
-                            color: Theme.of(context).colorScheme.outlineVariant,
-                            width: 0.5,
-                          ),
-                        ),
-                        child: showValues
-                            ? Text(
-                                spec.matrix[rowIndex][columnIndex]
-                                    .toStringAsPrecision(3),
-                                style: const TextStyle(fontSize: 10),
-                              )
-                            : null,
-                      ),
+                  const SizedBox(width: 96),
+                  for (final column in spec.columnLabels)
+                    SizedBox(
+                      width: cellSize,
+                      child: showColumnLabels
+                          ? Text(
+                              column,
+                              overflow: TextOverflow.visible,
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.labelSmall,
+                            )
+                          : const SizedBox.shrink(),
                     ),
                 ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: spec.rowLabels.length,
+                itemExtent: cellSize,
+                itemBuilder: (context, rowIndex) => Row(
+                  children: [
+                    SizedBox(
+                      width: 96,
+                      child: showRowLabels
+                          ? Text(
+                              spec.rowLabels[rowIndex],
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.labelSmall,
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                    for (var columnIndex = 0;
+                        columnIndex < spec.columnLabels.length;
+                        columnIndex++)
+                      GestureDetector(
+                        onTap: () => onCellTap(
+                          rowIndex,
+                          columnIndex,
+                          spec.matrix[rowIndex][columnIndex],
+                        ),
+                        child: Container(
+                          width: cellSize,
+                          height: cellSize,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: _heatmapColor(
+                              spec.matrix[rowIndex][columnIndex],
+                              min,
+                              max,
+                            ),
+                            border: Border.all(
+                              color:
+                                  Theme.of(context).colorScheme.outlineVariant,
+                              width: 0.5,
+                            ),
+                          ),
+                          child: showValues && spec.rowLabels.length <= 500
+                              ? Text(
+                                  spec.matrix[rowIndex][columnIndex]
+                                      .toStringAsPrecision(3),
+                                  style: const TextStyle(fontSize: 10),
+                                )
+                              : null,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            if (!showRowLabels || !showColumnLabels)
+              Padding(
+                padding: const EdgeInsets.only(top: ResearchOsSpacing.xs),
+                child: Text(
+                  'Labels reduced for large heatmap performance.',
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
               ),
           ],
         ),

@@ -8,8 +8,8 @@ import '../common/viewer_base.dart';
 import '../common/viewer_models.dart';
 import '../table/enhanced_table_viewer.dart';
 
-class BarPlotViewer extends StatelessWidget {
-  BarPlotViewer({
+class BarPlotViewer extends StatefulWidget {
+  const BarPlotViewer({
     super.key,
     required this.spec,
     this.actions = const ViewerActionCallbacks(),
@@ -24,69 +24,115 @@ class BarPlotViewer extends StatelessWidget {
 
   final BarPlotSpec spec;
   final ViewerActionCallbacks actions;
+
+  @override
+  State<BarPlotViewer> createState() => _BarPlotViewerState();
+}
+
+class _BarPlotViewerState extends State<BarPlotViewer> {
   final GlobalKey _boundaryKey = GlobalKey();
+  final TransformationController _transformController =
+      TransformationController();
+
+  @override
+  void dispose() {
+    _transformController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final plotTheme = ScientificPlotTheme.fromContext(context);
-    final maxY = spec.bars.isEmpty
+    final maxY = widget.spec.bars.isEmpty
         ? 1.0
-        : spec.bars.map((bar) => bar.value).reduce(math.max) * 1.15;
+        : widget.spec.bars.map((bar) => bar.value).reduce(math.max) * 1.15;
     return ViewerScaffold(
-      title: spec.title,
+      title: widget.spec.title,
       boundaryKey: _boundaryKey,
-      actions: actions,
-      plot: BarChart(
-        BarChartData(
-          maxY: maxY,
-          barGroups: [
-            for (var index = 0; index < spec.bars.length; index++)
-              BarChartGroupData(
-                x: index,
-                barRods: [
-                  BarChartRodData(
-                    toY: spec.bars[index].value,
-                    color: plotTheme.palette[index % plotTheme.palette.length],
-                    width: 18,
-                  ),
-                ],
-              ),
-          ],
-          titlesData: FlTitlesData(
-            topTitles:
-                const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            rightTitles:
-                const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(
-                showTitles: true,
-                reservedSize: 56,
-                getTitlesWidget: (value, meta) {
-                  final index = value.toInt();
-                  if (index < 0 || index >= spec.bars.length) {
-                    return const SizedBox.shrink();
-                  }
-                  return SideTitleWidget(
-                    axisSide: meta.axisSide,
-                    child: Text(
-                      spec.bars[index].label,
-                      style: const TextStyle(fontSize: 10),
+      actions: widget.actions,
+      plot: Column(
+        children: [
+          Align(
+            alignment: Alignment.centerRight,
+            child: TextButton.icon(
+              onPressed: _resetView,
+              icon: const Icon(Icons.restart_alt_outlined),
+              label: const Text('Reset view'),
+            ),
+          ),
+          Expanded(
+            child: GestureDetector(
+              onDoubleTap: _resetView,
+              child: InteractiveViewer(
+                transformationController: _transformController,
+                minScale: 0.8,
+                maxScale: 16,
+                panEnabled: true,
+                scaleEnabled: true,
+                child: BarChart(
+                  BarChartData(
+                    maxY: maxY,
+                    barGroups: [
+                      for (var index = 0;
+                          index < widget.spec.bars.length;
+                          index++)
+                        BarChartGroupData(
+                          x: index,
+                          barRods: [
+                            BarChartRodData(
+                              toY: widget.spec.bars[index].value,
+                              color: plotTheme
+                                  .palette[index % plotTheme.palette.length],
+                              width: 18,
+                            ),
+                          ],
+                        ),
+                    ],
+                    titlesData: FlTitlesData(
+                      topTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false)),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 56,
+                          getTitlesWidget: (value, meta) {
+                            final index = value.toInt();
+                            if (index < 0 || index >= widget.spec.bars.length) {
+                              return const SizedBox.shrink();
+                            }
+                            return SideTitleWidget(
+                              axisSide: meta.axisSide,
+                              child: Text(
+                                widget.spec.bars[index].label,
+                                style: const TextStyle(fontSize: 10),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
                     ),
-                  );
-                },
+                    gridData: const FlGridData(show: true),
+                    borderData: FlBorderData(show: true),
+                  ),
+                ),
               ),
             ),
           ),
-          gridData: const FlGridData(show: true),
-          borderData: FlBorderData(show: true),
-        ),
+        ],
       ),
       data: EnhancedTableViewer(
         output: {
-          'structured': {'rows': spec.rawRows ?? const []}
+          'structured': {'rows': widget.spec.rawRows ?? const []}
         },
       ),
     );
+  }
+
+  void _resetView() {
+    _transformController.value = _transformController.value.clone()
+      ..setIdentity();
   }
 }
 

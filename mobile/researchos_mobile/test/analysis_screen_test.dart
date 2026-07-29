@@ -71,6 +71,22 @@ void main() {
             'outputs': const [],
           });
         }
+        if (request.url.path == '/mobile/analysis/public-datasets') {
+          return _json({
+            'datasets': [
+              _publicDataset(),
+            ],
+          });
+        }
+        if (request.url.path ==
+            '/mobile/analysis/public-datasets/GSE-MUNDI-RET-ORG-BULK/import') {
+          return _json({
+            'dataset': {
+              'id': 'analysis-dataset:public',
+              'display_name': 'Retinal organoid BMP4 response bulk RNA-seq',
+            },
+          });
+        }
         if (request.url.path == '/mobile/analysis/datasets') {
           return _json({
             'datasets': [
@@ -355,6 +371,9 @@ void main() {
         if (request.url.path == '/mobile/analysis/demo-library') {
           return _json({'datasets': const []});
         }
+        if (request.url.path == '/mobile/analysis/public-datasets') {
+          return _json({'datasets': const []});
+        }
         if (request.url.path == '/mobile/analysis/datasets') {
           return _json({
             'datasets': [
@@ -470,6 +489,38 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('public GEO datasets search and import from Analysis',
+      (tester) async {
+    final calls = <String>[];
+    final api = _mockAnalysisApi(calls);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Public Datasets'),
+      -300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Search GEO'), findsOneWidget);
+    expect(find.text('Retinal organoid BMP4 response bulk RNA-seq'),
+        findsOneWidget);
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Search GEO'), 'BMP4');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Import').first);
+    await tester.pumpAndSettle();
+
+    expect(
+      calls,
+      contains(
+        'POST /mobile/analysis/public-datasets/GSE-MUNDI-RET-ORG-BULK/import',
+      ),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('viewer factory routes scientific outputs to typed viewers',
       (tester) async {
     final cases = [
@@ -543,6 +594,22 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
             {'display_name': 'PBMC 3k'},
             {'display_name': 'Small Retina Bulk'},
           ],
+        });
+      }
+      if (request.url.path == '/mobile/analysis/public-datasets') {
+        return _json({
+          'datasets': [
+            _publicDataset(),
+          ],
+        });
+      }
+      if (request.url.path ==
+          '/mobile/analysis/public-datasets/GSE-MUNDI-RET-ORG-BULK/import') {
+        return _json({
+          'dataset': {
+            'id': 'analysis-dataset:public',
+            'display_name': 'Retinal organoid BMP4 response bulk RNA-seq',
+          },
         });
       }
       if (request.url.path == '/mobile/analysis/datasets') {
@@ -698,6 +765,17 @@ Map<String, dynamic> _provenanceOutput() {
       'dataset_checksum': 'abc123',
       'outputs': const [],
     },
+  };
+}
+
+Map<String, dynamic> _publicDataset() {
+  return {
+    'accession': 'GSE-MUNDI-RET-ORG-BULK',
+    'title': 'Retinal organoid BMP4 response bulk RNA-seq',
+    'organism': 'Homo sapiens',
+    'sample_count': 6,
+    'platform': 'Illumina NovaSeq 6000',
+    'summary': 'Curated retinal organoid public GEO import fixture.',
   };
 }
 

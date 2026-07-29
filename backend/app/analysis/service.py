@@ -1009,6 +1009,77 @@ class AnalysisService:
     def demo_library(self) -> dict[str, Any]:
         return {"datasets": _demo_datasets(), "workspace": _demo_workspace_payload()}
 
+    def public_geo_datasets(self, query: str | None = None) -> list[dict[str, Any]]:
+        needle = (query or "").strip().lower()
+        records = _public_geo_datasets()
+        if needle:
+            records = [
+                record
+                for record in records
+                if needle in record["accession"].lower()
+                or needle in record["title"].lower()
+                or needle in record["organism"].lower()
+                or needle in record["summary"].lower()
+                or any(needle in tag.lower() for tag in record.get("tags", []))
+            ]
+        return [
+            {
+                key: value
+                for key, value in record.items()
+                if key not in {"genes", "samples", "counts_filename", "metadata_filename"}
+            }
+            for record in records
+        ]
+
+    def import_public_geo_dataset(self, user_id: str, accession: str) -> dict[str, Any]:
+        clean_accession = accession.strip()
+        record = next(
+            (
+                candidate
+                for candidate in _public_geo_datasets()
+                if candidate["accession"].lower() == clean_accession.lower()
+            ),
+            None,
+        )
+        if record is None:
+            raise AnalysisValidationError("Public GEO dataset is not available in the curated import catalog.")
+        existing = self._dataset_by_name(user_id, record["title"])
+        if existing is not None:
+            return self._dataset_payload(existing) | {"import_status": "already_imported"}
+
+        dataset_dir = self.allowed_roots[0] / "public_geo" / record["accession"]
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        counts_path = dataset_dir / record["counts_filename"]
+        metadata_path = dataset_dir / record["metadata_filename"]
+        _write_counts_and_samples(
+            counts_path,
+            metadata_path,
+            genes=record["genes"],
+            samples=record["samples"],
+        )
+        relative_counts = str(counts_path.relative_to(self.allowed_roots[0]))
+        relative_metadata = str(metadata_path.relative_to(self.allowed_roots[0]))
+        dataset = self.register_server_dataset(
+            user_id=user_id,
+            payload={
+                "display_name": record["title"],
+                "modality": "bulk_rna_seq",
+                "source_type": "public_geo",
+                "counts_path": relative_counts,
+                "metadata_path": relative_metadata,
+                "organism": record["organism"],
+                "genome_build": record.get("genome_build"),
+                "assay": "Bulk RNA-seq",
+            },
+        )
+        self._audit(
+            user_id,
+            "dataset.public_geo_import",
+            str(dataset["id"]),
+            {"accession": record["accession"], "source": record["source"]},
+        )
+        return dataset | {"import_status": "imported"}
+
     def install_demo_workspace(self, user_id: str) -> dict[str, Any]:
         demo_dir = self.allowed_roots[0] / "demo"
         bulk_dir = demo_dir / "bulk"
@@ -2310,6 +2381,140 @@ def _demo_workspace_payload() -> dict[str, Any]:
         "description": "Notebook, protocols, images, RNA datasets, and example analysis records for regression testing.",
         "contains": ["notebook", "protocols", "images", "rna_datasets", "example_analyses"],
     }
+
+
+def _public_geo_datasets() -> list[dict[str, Any]]:
+    return [
+        {
+            "accession": "GSE-MUNDI-RET-ORG-BULK",
+            "title": "Retinal organoid BMP4 response bulk RNA-seq",
+            "organism": "Homo sapiens",
+            "platform": "Illumina NovaSeq 6000",
+            "sample_count": 6,
+            "summary": "Curated public-GEO-style retinal organoid bulk RNA-seq import prepared for DESeq2 testing with control and BMP4-treated samples.",
+            "source": "Mundi curated public dataset fixture",
+            "genome_build": "GRCh38",
+            "tags": ["retinal organoid", "human retina", "BMP4", "DESeq2"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 treated versus control"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "under 2 minutes",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "genes": [
+                ("BMP4", [12, 14, 13, 80, 86, 82]),
+                ("POU4F2", [3, 4, 3, 36, 41, 39]),
+                ("RBPMS", [4, 5, 4, 42, 45, 44]),
+                ("ATOH7", [9, 8, 10, 48, 51, 49]),
+                ("VSX2", [80, 78, 82, 35, 32, 34]),
+                ("SIX6", [30, 31, 29, 62, 66, 64]),
+                ("GAPDH", [220, 214, 228, 224, 231, 226]),
+            ],
+            "samples": [
+                ("control_1", "control"),
+                ("control_2", "control"),
+                ("control_3", "control"),
+                ("treated_1", "treated"),
+                ("treated_2", "treated"),
+                ("treated_3", "treated"),
+            ],
+        },
+        {
+            "accession": "GSE-MUNDI-HUMAN-RETINA-BULK",
+            "title": "Human retina differentiation bulk RNA-seq",
+            "organism": "Homo sapiens",
+            "platform": "Illumina HiSeq 2500",
+            "sample_count": 6,
+            "summary": "Human retina bulk RNA-seq fixture with early and late differentiation groups for public import and DESeq2 validation.",
+            "source": "Mundi curated public dataset fixture",
+            "genome_build": "GRCh38",
+            "tags": ["human retina", "differentiation", "bulk RNA-seq"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 late versus early"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "under 2 minutes",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "genes": [
+                ("RHO", [2, 2, 3, 70, 76, 74]),
+                ("CRX", [15, 16, 14, 58, 62, 61]),
+                ("VSX2", [65, 68, 64, 25, 24, 26]),
+                ("SIX6", [31, 30, 33, 55, 59, 58]),
+                ("POU4F2", [8, 9, 7, 30, 35, 33]),
+                ("ACTB", [180, 178, 182, 190, 188, 192]),
+            ],
+            "samples": [
+                ("early_1", "early"),
+                ("early_2", "early"),
+                ("early_3", "early"),
+                ("late_1", "late"),
+                ("late_2", "late"),
+                ("late_3", "late"),
+            ],
+        },
+        {
+            "accession": "GSE-MUNDI-MOUSE-RETINA-BULK",
+            "title": "Mouse retina perturbation bulk RNA-seq",
+            "organism": "Mus musculus",
+            "platform": "Illumina NextSeq 500",
+            "sample_count": 6,
+            "summary": "Mouse retina bulk RNA-seq fixture for testing public import, QC, and DESeq2 without phone-side preprocessing.",
+            "source": "Mundi curated public dataset fixture",
+            "genome_build": "GRCm39",
+            "tags": ["mouse retina", "perturbation", "bulk RNA-seq"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 mutant versus wildtype"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "under 2 minutes",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "genes": [
+                ("Pax6", [44, 46, 45, 21, 18, 20]),
+                ("Atoh7", [18, 20, 17, 52, 56, 54]),
+                ("Rbpms", [15, 16, 15, 44, 49, 47]),
+                ("Vsx2", [58, 61, 59, 28, 27, 29]),
+                ("Six6", [22, 24, 23, 41, 43, 42]),
+                ("Actb", [150, 148, 152, 156, 158, 154]),
+            ],
+            "samples": [
+                ("wildtype_1", "wildtype"),
+                ("wildtype_2", "wildtype"),
+                ("wildtype_3", "wildtype"),
+                ("mutant_1", "mutant"),
+                ("mutant_2", "mutant"),
+                ("mutant_3", "mutant"),
+            ],
+        },
+        {
+            "accession": "GSE-MUNDI-DESEQ2-DEMO",
+            "title": "General DESeq2 demonstration bulk RNA-seq",
+            "organism": "Homo sapiens",
+            "platform": "Illumina NextSeq 2000",
+            "sample_count": 6,
+            "summary": "General-purpose public-GEO-style bulk RNA-seq import for exercising DESeq2 configuration and result viewers.",
+            "source": "Mundi curated public dataset fixture",
+            "genome_build": "GRCh38",
+            "tags": ["DESeq2", "bulk RNA-seq", "demo"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 treated versus control"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "under 2 minutes",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "genes": [
+                ("GENE_A", [20, 21, 22, 70, 72, 74]),
+                ("GENE_B", [80, 78, 81, 30, 29, 32]),
+                ("GENE_C", [15, 14, 16, 15, 16, 15]),
+                ("GENE_D", [6, 7, 6, 34, 36, 35]),
+                ("GENE_E", [99, 104, 101, 95, 98, 96]),
+                ("GENE_F", [12, 13, 11, 55, 58, 57]),
+            ],
+            "samples": [
+                ("control_1", "control"),
+                ("control_2", "control"),
+                ("control_3", "control"),
+                ("treated_1", "treated"),
+                ("treated_2", "treated"),
+                ("treated_3", "treated"),
+            ],
+        },
+    ]
 
 
 def _write_demo_bulk_files(bulk_dir: Path) -> None:
