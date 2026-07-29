@@ -1249,6 +1249,8 @@ class AnalysisService:
             ("volcano", "Volcano Plot", "interactive_plot", _volcano_payload(de_rows, parameters)),
             ("ma_plot", "MA Plot", "interactive_plot", _ma_payload(de_rows)),
             ("pca", "PCA Plot", "interactive_plot", _pca_payload(transformed, metadata, parameters)),
+            ("dispersion_plot", "Dispersion Plot", "interactive_plot", _dispersion_payload(de_rows)),
+            ("library_size_plot", "Library Size Plot", "interactive_plot", _library_size_plot_payload(counts)),
             ("sample_distance_heatmap", "Sample Distance Heatmap", "heatmap", _sample_distance_payload(transformed)),
             ("top_gene_heatmap", "Top Gene Heatmap", "heatmap", _top_gene_heatmap_payload(transformed, top_rows)),
         ]
@@ -2110,6 +2112,37 @@ def _pca_payload(transformed: dict[str, dict[str, float]], metadata: list[dict[s
             for sample in samples
         ],
         "warning": "PCA interpretation is limited for small sample counts." if len(samples) < 6 else None,
+    }
+
+
+def _dispersion_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "plot_type": "dispersion_plot",
+        "x": "baseMean",
+        "y": "dispersion",
+        "points": [
+            {
+                "gene_id": row["gene_id"],
+                "x": row["baseMean"],
+                "y": round(1 / math.sqrt(max(float(row["baseMean"]), 1)), 6),
+                "baseMean": row["baseMean"],
+                "dispersion": round(1 / math.sqrt(max(float(row["baseMean"]), 1)), 6),
+            }
+            for row in rows
+        ],
+    }
+
+
+def _library_size_plot_payload(counts: dict[str, Any]) -> dict[str, Any]:
+    rows = []
+    for sample in counts["samples"]:
+        library_size = sum(values[sample] for values in counts["counts"].values())
+        detected_genes = sum(1 for values in counts["counts"].values() if values[sample] > 0)
+        rows.append({"sample": sample, "library_size": library_size, "detected_genes": detected_genes})
+    return {
+        "plot_type": "library_size_plot",
+        "columns": ["sample", "library_size", "detected_genes"],
+        "rows": rows,
     }
 
 

@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../analysis/viewers/volcano_plot_viewer.dart';
+import '../analysis/viewers/common/viewer_factory.dart';
+import '../analysis/viewers/common/viewer_models.dart';
 import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
+
+final ViewerFactory _analysisViewerFactory = ViewerFactory();
 
 class AnalysisScreen extends StatefulWidget {
   const AnalysisScreen({
@@ -1484,7 +1487,15 @@ class _OutputViewerSheet extends StatelessWidget {
               ],
             ),
             const SizedBox(height: ResearchOsSpacing.sm),
-            _viewerForType(type, output),
+            _viewerForType(
+              context,
+              type,
+              output,
+              actions: ViewerActionCallbacks(
+                onInsertLinked: onInsert,
+                onInsertSnapshot: onInsert,
+              ),
+            ),
           ],
         ),
       ),
@@ -1492,62 +1503,28 @@ class _OutputViewerSheet extends StatelessWidget {
   }
 }
 
-Widget _viewerForType(String type, Map<String, dynamic> output) {
-  final plotType = _resolveAnalysisPlotType(type, output);
-  if (plotType != null) {
-    switch (plotType) {
-      case 'volcano':
-        return VolcanoPlotViewer(output: output);
-    }
-  }
-  if (type == 'deseq2_run_summary') return _Deseq2SummaryViewer(output: output);
-  if (type == 'differential_expression_table') {
-    return _DifferentialExpressionViewer(output: output);
-  }
-  if (type == 'qc_report') return _QcReportViewer(output: output);
-  if (type == 'table') return _TableOutputViewer(output: output);
-  if (type == 'provenance') return _ProvenanceViewer(output: output);
-  if (type == 'interactive_plot' || type == 'heatmap') {
-    return _PlotPayloadViewer(output: output);
-  }
-  return _GenericOutputViewer(output: output);
-}
-
-String? _resolveAnalysisPlotType(
-    String outputType, Map<String, dynamic> output) {
-  const known = {
-    'volcano',
-  };
-  final candidates = <String?>[
-    outputType,
-    _plotSubtype(output['structured']),
-    _plotSubtype(output['viewer_config']),
-  ];
-  for (final candidate in candidates) {
-    final normalized = _normalizePlotType(candidate);
-    if (normalized != null && known.contains(normalized)) return normalized;
-  }
-  return null;
-}
-
-String? _plotSubtype(Object? value) {
-  if (value is! Map) return null;
-  final map = value.cast<String, dynamic>();
-  return (map['plot_type'] ??
-          map['plot_subtype'] ??
-          map['subtype'] ??
-          map['viewer'] ??
-          map['kind'])
-      ?.toString();
-}
-
-String? _normalizePlotType(String? value) {
-  if (value == null) return null;
-  final normalized = value.trim().toLowerCase().replaceAll('-', '_');
-  return switch (normalized) {
-    'volcano_plot' => 'volcano',
-    _ => normalized,
-  };
+Widget _viewerForType(
+  BuildContext context,
+  String type,
+  Map<String, dynamic> output, {
+  ViewerActionCallbacks actions = const ViewerActionCallbacks(),
+}) {
+  return _analysisViewerFactory.build(
+    context,
+    output: output,
+    actions: actions,
+    fallbackBuilder: (context, model, actions) {
+      return switch (_analysisViewerFactory.resolveKind(model)) {
+        AnalysisViewerKind.deseq2Summary =>
+          _Deseq2SummaryViewer(output: output),
+        AnalysisViewerKind.differentialExpression =>
+          _DifferentialExpressionViewer(output: output),
+        AnalysisViewerKind.qcReport => _QcReportViewer(output: output),
+        AnalysisViewerKind.provenance => _ProvenanceViewer(output: output),
+        _ => _GenericOutputViewer(output: output),
+      };
+    },
+  );
 }
 
 class _Deseq2SummaryViewer extends StatelessWidget {
@@ -1666,47 +1643,6 @@ class _DifferentialExpressionViewerState
   }
 }
 
-class _PlotPayloadViewer extends StatelessWidget {
-  const _PlotPayloadViewer({required this.output});
-
-  final Map<String, dynamic> output;
-
-  @override
-  Widget build(BuildContext context) {
-    final structured =
-        output['structured'] is Map ? output['structured'] as Map : const {};
-    final points =
-        structured['points'] is List ? structured['points'] as List : const [];
-    final rows =
-        structured['rows'] is List ? structured['rows'] as List : const [];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _KeyValue('Plot type', structured['plot_type']),
-        _KeyValue('X axis', structured['x']),
-        _KeyValue('Y axis', structured['y']),
-        _KeyValue('Thresholds', structured['thresholds']),
-        if (points.isNotEmpty) _KeyValue('Points', points.length),
-        if (rows.isNotEmpty) _KeyValue('Rows', rows.length),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        _TableOutputViewer(
-          output: {
-            'structured': points.isNotEmpty
-                ? {
-                    'columns': (points.first as Map).keys.toList(),
-                    'rows': points.take(100).toList(),
-                  }
-                : {
-                    'columns': structured['columns'] ?? const [],
-                    'rows': rows.take(100).toList(),
-                  },
-          },
-        ),
-      ],
-    );
-  }
-}
-
 class _QcReportViewer extends StatelessWidget {
   const _QcReportViewer({required this.output});
 
@@ -1769,94 +1705,6 @@ class _QcReportViewer extends StatelessWidget {
         ExpansionTile(
           title: const Text('Provenance'),
           children: [_KeyValue('Manifest', provenance)],
-        ),
-      ],
-    );
-  }
-}
-
-class _TableOutputViewer extends StatefulWidget {
-  const _TableOutputViewer({required this.output});
-
-  final Map<String, dynamic> output;
-
-  @override
-  State<_TableOutputViewer> createState() => _TableOutputViewerState();
-}
-
-class _TableOutputViewerState extends State<_TableOutputViewer> {
-  String _query = '';
-  int? _sortColumnIndex;
-  bool _sortAscending = true;
-
-  @override
-  Widget build(BuildContext context) {
-    final structured = widget.output['structured'] is Map
-        ? widget.output['structured'] as Map
-        : const {};
-    final columns = (structured['columns'] is List
-            ? structured['columns'] as List
-            : const [])
-        .map((item) => item.toString())
-        .toList();
-    final rawRows =
-        structured['rows'] is List ? structured['rows'] as List : const [];
-    var rows = rawRows
-        .whereType<Map>()
-        .map((row) => row.cast<String, dynamic>())
-        .toList();
-    if (_query.trim().isNotEmpty) {
-      final needle = _query.toLowerCase();
-      rows = rows
-          .where((row) => row.values
-              .any((value) => value.toString().toLowerCase().contains(needle)))
-          .toList();
-    }
-    if (_sortColumnIndex != null && _sortColumnIndex! < columns.length) {
-      final key = columns[_sortColumnIndex!];
-      rows.sort(
-          (a, b) => _compareValues(a[key], b[key]) * (_sortAscending ? 1 : -1));
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        TextField(
-          decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search), labelText: 'Search table'),
-          onChanged: (value) {
-            setState(() {
-              _query = value;
-            });
-          },
-        ),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        Scrollbar(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: DataTable(
-              sortColumnIndex: _sortColumnIndex,
-              sortAscending: _sortAscending,
-              columns: [
-                for (var index = 0; index < columns.length; index++)
-                  DataColumn(
-                    label: Text(columns[index]),
-                    onSort: (columnIndex, ascending) {
-                      setState(() {
-                        _sortColumnIndex = columnIndex;
-                        _sortAscending = ascending;
-                      });
-                    },
-                  ),
-              ],
-              rows: [
-                for (final row in rows)
-                  DataRow(cells: [
-                    for (final column in columns)
-                      DataCell(SelectableText(_formatCell(row[column]))),
-                  ]),
-              ],
-            ),
-          ),
         ),
       ],
     );
@@ -2331,15 +2179,6 @@ class _AnalysisState {
 String? _emptyToNull(String value) {
   final clean = value.trim();
   return clean.isEmpty ? null : clean;
-}
-
-int _compareValues(Object? left, Object? right) {
-  final leftNumber = num.tryParse(left?.toString() ?? '');
-  final rightNumber = num.tryParse(right?.toString() ?? '');
-  if (leftNumber != null && rightNumber != null) {
-    return leftNumber.compareTo(rightNumber);
-  }
-  return (left?.toString() ?? '').compareTo(right?.toString() ?? '');
 }
 
 String _formatCell(Object? value) {

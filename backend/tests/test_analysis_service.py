@@ -550,6 +550,13 @@ class AnalysisServiceTests(unittest.TestCase):
             volcano = next(output for output in outputs if output["display_name"] == "Volcano Plot")
             self.assertIn("log2FoldChange", volcano["structured"]["points"][0])
             self.assertIn("neg_log10_padj", volcano["structured"]["points"][0])
+            plot_types = {
+                output["structured"].get("plot_type")
+                for output in outputs
+                if output["structured"].get("plot_type")
+            }
+            self.assertIn("dispersion_plot", plot_types)
+            self.assertIn("library_size_plot", plot_types)
             self.assertTrue(de_table["provenance"]["source_files_remain_server_local"])
 
     def test_deseq2_invalid_contrast_fails_with_actionable_error(self) -> None:

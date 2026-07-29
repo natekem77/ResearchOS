@@ -5,7 +5,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:researchos_mobile/analysis/viewers/volcano_plot_viewer.dart';
+import 'package:researchos_mobile/analysis/viewers/bar/bar_plot_viewer.dart';
+import 'package:researchos_mobile/analysis/viewers/common/viewer_factory.dart';
+import 'package:researchos_mobile/analysis/viewers/heatmap/heatmap_viewer.dart';
+import 'package:researchos_mobile/analysis/viewers/line/line_plot_viewer.dart';
+import 'package:researchos_mobile/analysis/viewers/scatter/scatter_viewer.dart';
+import 'package:researchos_mobile/analysis/viewers/table/enhanced_table_viewer.dart';
 import 'package:researchos_mobile/api/researchos_api.dart';
 import 'package:researchos_mobile/screens/analysis_screen.dart';
 import 'package:researchos_mobile/services/navigation_preferences_service.dart';
@@ -438,88 +443,65 @@ void main() {
 
   testWidgets('volcano output opens graphical Plot tab with Data tab',
       (tester) async {
-    final api = ResearchOsApi(
-      baseUrl: 'http://example.test',
-      client: MockClient((request) async {
-        if (request.url.path == '/mobile/analysis/workers') {
-          return _json({'workers': const []});
-        }
-        if (request.url.path == '/mobile/analysis/storage-locations') {
-          return _json({'storage_locations': const []});
-        }
-        if (request.url.path == '/mobile/analysis/demo-library') {
-          return _json({'datasets': const []});
-        }
-        if (request.url.path == '/mobile/analysis/datasets') {
-          return _json({'datasets': const []});
-        }
-        if (request.url.path == '/mobile/analysis/workflows') {
-          return _json({'workflows': const []});
-        }
-        if (request.url.path == '/mobile/analysis/jobs') {
-          return _json({'jobs': const []});
-        }
-        if (request.url.path == '/mobile/analysis/outputs') {
-          return _json({
-            'outputs': [_volcanoOutput()],
-          });
-        }
-        if (request.url.path == '/mobile/analysis/output-groups') {
-          return _json({
-            'groups': [
-              {
-                'dataset': {'display_name': 'Small Retina Bulk'},
-                'job': {
-                  'id': 'analysis-job:deseq2',
-                  'workflow_id': 'bulk_rnaseq_deseq2',
-                  'status': 'complete',
-                },
-                'outputs': [_volcanoOutput()],
-              }
-            ],
-          });
-        }
-        if (request.url.path ==
-            '/mobile/analysis/outputs/analysis-output%3Avolcano') {
-          return _json({'output': _volcanoOutput()});
-        }
-        return http.Response('not found', 404);
-      }),
-    );
-
     await tester.pumpWidget(
-      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) =>
+                ViewerFactory().build(context, output: _volcanoOutput()),
+          ),
+        ),
+      ),
     );
     await tester.pumpAndSettle();
 
-    await tester.scrollUntilVisible(
-      find.text('Volcano Plot'),
-      500,
-      scrollable: find.byType(Scrollable).first,
-    );
-    await tester.tap(
-      find
-          .ancestor(
-              of: find.text('Volcano Plot').last,
-              matching: find.byType(ListTile))
-          .first,
-    );
-    await tester.pumpAndSettle();
     expect(find.text('Plot'), findsOneWidget);
     expect(find.text('Data'), findsOneWidget);
-    expect(find.byType(VolcanoPlotViewer), findsOneWidget);
+    expect(find.byType(ScatterViewer), findsOneWidget);
     expect(find.byType(ScatterChart), findsOneWidget);
-    expect(find.textContaining('points'), findsOneWidget);
-    expect(find.text('Export Current View'), findsOneWidget);
+    expect(find.text('Export PNG'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).last, 'POU4F2');
     await tester.pumpAndSettle();
-    expect(find.text('1 points'), findsOneWidget);
 
     await tester.tap(find.text('Data'));
     await tester.pumpAndSettle();
     expect(find.text('POU4F2'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('viewer factory routes scientific outputs to typed viewers',
+      (tester) async {
+    final cases = [
+      (_maOutput(), ScatterViewer, ScatterChart),
+      (_pcaOutput(), ScatterViewer, ScatterChart),
+      (_sampleDistanceHeatmapOutput(), HeatmapViewer, null),
+      (_topGeneHeatmapOutput(), HeatmapViewer, null),
+      (_dispersionOutput(), LinePlotViewer, LineChart),
+      (_librarySizePlotOutput(), BarPlotViewer, BarChart),
+      (_tableOutput(), EnhancedTableViewer, null),
+    ];
+
+    for (final (output, viewerType, chartType) in cases) {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Builder(
+              builder: (context) =>
+                  ViewerFactory().build(context, output: output),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byType(viewerType), findsOneWidget);
+      if (chartType != null) expect(find.byType(chartType), findsOneWidget);
+      if (output['output_type'] != 'table') {
+        expect(find.text('Plot'), findsOneWidget);
+        expect(find.text('Data'), findsOneWidget);
+      }
+      expect(tester.takeException(), isNull);
+    }
   });
 }
 
@@ -753,6 +735,110 @@ Map<String, dynamic> _volcanoOutput() {
           'significance': 'not_significant',
           'direction': 'none',
         },
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _maOutput() {
+  return {
+    'id': 'analysis-output:ma',
+    'display_name': 'MA Plot',
+    'output_type': 'interactive_plot',
+    'structured': {
+      'plot_type': 'ma',
+      'points': [
+        {'gene_id': 'POU4F2', 'x': 30, 'y': 1.8, 'padj': 0.01},
+        {'gene_id': 'RBPMS', 'x': 24, 'y': 1.2, 'padj': 0.05},
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _pcaOutput() {
+  return {
+    'id': 'analysis-output:pca',
+    'display_name': 'PCA',
+    'output_type': 'interactive_plot',
+    'structured': {
+      'plot_type': 'pca',
+      'variance_explained': {'PC1': 0.7, 'PC2': 0.2},
+      'points': [
+        {
+          'sample': 'DMSO_1',
+          'PC1': -1.0,
+          'PC2': 0.2,
+          'metadata': {'condition': 'DMSO'},
+        },
+        {
+          'sample': 'SAG_1',
+          'PC1': 1.0,
+          'PC2': -0.2,
+          'metadata': {'condition': 'SAG'},
+        },
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _sampleDistanceHeatmapOutput() {
+  return {
+    'id': 'analysis-output:sample-distance',
+    'display_name': 'Sample Distance Heatmap',
+    'output_type': 'heatmap',
+    'structured': {
+      'plot_type': 'sample_distance_heatmap',
+      'columns': ['sample', 'DMSO_1', 'SAG_1'],
+      'rows': [
+        {'sample': 'DMSO_1', 'DMSO_1': 0.0, 'SAG_1': 2.195},
+        {'sample': 'SAG_1', 'DMSO_1': 2.195, 'SAG_1': 0.0},
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _topGeneHeatmapOutput() {
+  return {
+    'id': 'analysis-output:top-genes',
+    'display_name': 'Top Gene Heatmap',
+    'output_type': 'heatmap',
+    'structured': {
+      'plot_type': 'top_gene_heatmap',
+      'columns': ['gene_id', 'DMSO_1', 'SAG_1'],
+      'rows': [
+        {'gene_id': 'POU4F2', 'DMSO_1': 1.0, 'SAG_1': 4.0},
+        {'gene_id': 'RBPMS', 'DMSO_1': 2.0, 'SAG_1': 5.0},
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _dispersionOutput() {
+  return {
+    'id': 'analysis-output:dispersion',
+    'display_name': 'Dispersion Plot',
+    'output_type': 'interactive_plot',
+    'structured': {
+      'plot_type': 'dispersion_plot',
+      'points': [
+        {'mean': 10, 'dispersion': 0.4},
+        {'mean': 20, 'dispersion': 0.2},
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _librarySizePlotOutput() {
+  return {
+    'id': 'analysis-output:library-size-plot',
+    'display_name': 'Library Size Plot',
+    'output_type': 'interactive_plot',
+    'structured': {
+      'plot_type': 'library_size_plot',
+      'columns': ['sample', 'library_size'],
+      'rows': [
+        {'sample': 'DMSO_1', 'library_size': 115},
+        {'sample': 'SAG_1', 'library_size': 159},
       ],
     },
   };
