@@ -71,6 +71,8 @@ class _HeatmapViewerState extends State<HeatmapViewer> {
                 transformationController: _transformController,
                 minScale: 0.8,
                 maxScale: 16,
+                boundaryMargin: const EdgeInsets.all(240),
+                clipBehavior: Clip.none,
                 panEnabled: true,
                 scaleEnabled: true,
                 child: _HeatmapGrid(
@@ -131,103 +133,211 @@ class _HeatmapGrid extends StatelessWidget {
     if (spec.matrix.isEmpty) {
       return const Center(child: Text('No heatmap values available.'));
     }
-    final cellSize =
-        math.max(44.0, 260 / math.max(1, spec.columnLabels.length));
-    final showRowLabels = spec.rowLabels.length <= 2000;
-    final showColumnLabels = spec.columnLabels.length <= 200;
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: SizedBox(
-        width: 96 + cellSize * spec.columnLabels.length,
-        child: Column(
-          children: [
-            SizedBox(
-              height: showColumnLabels ? 44 : 12,
-              child: Row(
-                children: [
-                  const SizedBox(width: 96),
-                  for (final column in spec.columnLabels)
-                    SizedBox(
-                      width: cellSize,
-                      child: showColumnLabels
-                          ? Text(
-                              column,
-                              overflow: TextOverflow.visible,
-                              textAlign: TextAlign.center,
-                              style: Theme.of(context).textTheme.labelSmall,
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-                ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final geometry = _heatmapGeometry(spec, constraints.biggest);
+        return SizedBox(
+          width: geometry.width,
+          height: geometry.height,
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onTapUp: (details) {
+              final cell = _cellFromPosition(details.localPosition, geometry);
+              if (cell == null) return;
+              if (cell.row >= spec.rowLabels.length ||
+                  cell.column >= spec.columnLabels.length) {
+                return;
+              }
+              onCellTap(
+                cell.row,
+                cell.column,
+                spec.matrix[cell.row][cell.column],
+              );
+            },
+            child: CustomPaint(
+              painter: _HeatmapPainter(
+                spec: spec,
+                min: min,
+                max: max,
+                showValues: showValues,
+                geometry: geometry,
+                colorScheme: Theme.of(context).colorScheme,
+                textStyle: Theme.of(context).textTheme.labelSmall,
               ),
             ),
-            Expanded(
-              child: ListView.builder(
-                itemCount: spec.rowLabels.length,
-                itemExtent: cellSize,
-                itemBuilder: (context, rowIndex) => Row(
-                  children: [
-                    SizedBox(
-                      width: 96,
-                      child: showRowLabels
-                          ? Text(
-                              spec.rowLabels[rowIndex],
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.labelSmall,
-                            )
-                          : const SizedBox.shrink(),
-                    ),
-                    for (var columnIndex = 0;
-                        columnIndex < spec.columnLabels.length;
-                        columnIndex++)
-                      GestureDetector(
-                        onTap: () => onCellTap(
-                          rowIndex,
-                          columnIndex,
-                          spec.matrix[rowIndex][columnIndex],
-                        ),
-                        child: Container(
-                          width: cellSize,
-                          height: cellSize,
-                          alignment: Alignment.center,
-                          decoration: BoxDecoration(
-                            color: _heatmapColor(
-                              spec.matrix[rowIndex][columnIndex],
-                              min,
-                              max,
-                            ),
-                            border: Border.all(
-                              color:
-                                  Theme.of(context).colorScheme.outlineVariant,
-                              width: 0.5,
-                            ),
-                          ),
-                          child: showValues && spec.rowLabels.length <= 500
-                              ? Text(
-                                  spec.matrix[rowIndex][columnIndex]
-                                      .toStringAsPrecision(3),
-                                  style: const TextStyle(fontSize: 10),
-                                )
-                              : null,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            if (!showRowLabels || !showColumnLabels)
-              Padding(
-                padding: const EdgeInsets.only(top: ResearchOsSpacing.xs),
-                child: Text(
-                  'Labels reduced for large heatmap performance.',
-                  style: Theme.of(context).textTheme.labelSmall,
-                ),
-              ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
+}
+
+class _HeatmapGeometry {
+  const _HeatmapGeometry({
+    required this.cellSize,
+    required this.labelWidth,
+    required this.headerHeight,
+    required this.width,
+    required this.height,
+    required this.showRowLabels,
+    required this.showColumnLabels,
+  });
+
+  final double cellSize;
+  final double labelWidth;
+  final double headerHeight;
+  final double width;
+  final double height;
+  final bool showRowLabels;
+  final bool showColumnLabels;
+}
+
+({int row, int column})? _cellFromPosition(
+  Offset position,
+  _HeatmapGeometry geometry,
+) {
+  final x = position.dx - geometry.labelWidth;
+  final y = position.dy - geometry.headerHeight;
+  if (x < 0 || y < 0) return null;
+  final column = x ~/ geometry.cellSize;
+  final row = y ~/ geometry.cellSize;
+  if (row < 0 || column < 0) return null;
+  return (row: row, column: column);
+}
+
+_HeatmapGeometry _heatmapGeometry(HeatmapSpec spec, Size viewport) {
+  final columnCount = math.max(1, spec.columnLabels.length);
+  final cellSize = math.max(28.0, 260 / columnCount);
+  final showRowLabels = spec.rowLabels.length <= 2000;
+  final showColumnLabels = spec.columnLabels.length <= 200;
+  final labelWidth = showRowLabels ? 96.0 : 18.0;
+  final headerHeight = showColumnLabels ? 44.0 : 14.0;
+  final width = math.max(
+      viewport.width, labelWidth + cellSize * spec.columnLabels.length);
+  final height = math.max(
+      viewport.height, headerHeight + cellSize * spec.rowLabels.length);
+  return _HeatmapGeometry(
+    cellSize: cellSize,
+    labelWidth: labelWidth,
+    headerHeight: headerHeight,
+    width: width,
+    height: height,
+    showRowLabels: showRowLabels,
+    showColumnLabels: showColumnLabels,
+  );
+}
+
+class _HeatmapPainter extends CustomPainter {
+  const _HeatmapPainter({
+    required this.spec,
+    required this.min,
+    required this.max,
+    required this.showValues,
+    required this.geometry,
+    required this.colorScheme,
+    required this.textStyle,
+  });
+
+  final HeatmapSpec spec;
+  final double min;
+  final double max;
+  final bool showValues;
+  final _HeatmapGeometry geometry;
+  final ColorScheme colorScheme;
+  final TextStyle? textStyle;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final borderPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 0.5
+      ..color = colorScheme.outlineVariant;
+    final valuePainter = TextPainter(textDirection: TextDirection.ltr);
+
+    if (geometry.showColumnLabels) {
+      for (var column = 0; column < spec.columnLabels.length; column++) {
+        _paintText(
+          canvas,
+          spec.columnLabels[column],
+          Offset(
+            geometry.labelWidth + column * geometry.cellSize,
+            4,
+          ),
+          geometry.cellSize,
+          textStyle,
+          TextAlign.center,
+        );
+      }
+    }
+
+    for (var row = 0; row < spec.rowLabels.length; row++) {
+      final top = geometry.headerHeight + row * geometry.cellSize;
+      if (geometry.showRowLabels) {
+        _paintText(
+          canvas,
+          spec.rowLabels[row],
+          Offset(0, top + 8),
+          geometry.labelWidth - 6,
+          textStyle,
+          TextAlign.left,
+        );
+      }
+      for (var column = 0; column < spec.columnLabels.length; column++) {
+        final value = spec.matrix[row][column];
+        final rect = Rect.fromLTWH(
+          geometry.labelWidth + column * geometry.cellSize,
+          top,
+          geometry.cellSize,
+          geometry.cellSize,
+        );
+        canvas.drawRect(rect, Paint()..color = _heatmapColor(value, min, max));
+        canvas.drawRect(rect, borderPaint);
+        if (showValues &&
+            spec.rowLabels.length <= 500 &&
+            spec.columnLabels.length <= 60) {
+          valuePainter
+            ..text = TextSpan(
+              text: value.toStringAsPrecision(3),
+              style: const TextStyle(fontSize: 10, color: Colors.black),
+            )
+            ..layout(maxWidth: geometry.cellSize);
+          valuePainter.paint(
+            canvas,
+            rect.center -
+                Offset(valuePainter.width / 2, valuePainter.height / 2),
+          );
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _HeatmapPainter oldDelegate) {
+    return oldDelegate.spec != spec ||
+        oldDelegate.min != min ||
+        oldDelegate.max != max ||
+        oldDelegate.showValues != showValues ||
+        oldDelegate.geometry != geometry ||
+        oldDelegate.colorScheme != colorScheme ||
+        oldDelegate.textStyle != textStyle;
+  }
+}
+
+void _paintText(
+  Canvas canvas,
+  String text,
+  Offset offset,
+  double maxWidth,
+  TextStyle? style,
+  TextAlign align,
+) {
+  final painter = TextPainter(
+    text: TextSpan(text: text, style: style),
+    textAlign: align,
+    textDirection: TextDirection.ltr,
+    ellipsis: '...',
+  )..layout(maxWidth: maxWidth);
+  painter.paint(canvas, offset);
 }
 
 HeatmapSpec heatmapSpecFromOutput(Map<String, dynamic> output) {

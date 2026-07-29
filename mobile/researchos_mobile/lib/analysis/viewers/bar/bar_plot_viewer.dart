@@ -67,10 +67,13 @@ class _BarPlotViewerState extends State<BarPlotViewer> {
                 transformationController: _transformController,
                 minScale: 0.8,
                 maxScale: 16,
+                boundaryMargin: const EdgeInsets.all(240),
+                clipBehavior: Clip.none,
                 panEnabled: true,
                 scaleEnabled: true,
                 child: BarChart(
                   BarChartData(
+                    barTouchData: BarTouchData(enabled: false),
                     maxY: maxY,
                     barGroups: [
                       for (var index = 0;

@@ -174,7 +174,6 @@ class _ScatterPlot extends StatelessWidget {
       return const Center(child: Text('No plot points available.'));
     }
     final bounds = _pointBounds(points);
-    final selectedIndex = points.indexWhere((point) => point.id == selectedId);
     return Column(
       children: [
         Text(
@@ -233,6 +232,8 @@ class _ScatterPlot extends StatelessWidget {
                 transformationController: transformController,
                 minScale: 0.8,
                 maxScale: 16,
+                boundaryMargin: const EdgeInsets.all(240),
+                clipBehavior: Clip.none,
                 panEnabled: true,
                 scaleEnabled: true,
                 child: Stack(
@@ -270,8 +271,6 @@ class _ScatterPlot extends StatelessWidget {
                             maxX: bounds.maxX,
                             minY: bounds.minY,
                             maxY: bounds.maxY,
-                            showingTooltipIndicators:
-                                selectedIndex < 0 ? const [] : [selectedIndex],
                             gridData: FlGridData(
                               show: true,
                               drawVerticalLine: true,
@@ -314,45 +313,7 @@ class _ScatterPlot extends StatelessWidget {
                               ),
                             ),
                             scatterTouchData: ScatterTouchData(
-                              enabled: true,
-                              touchSpotThreshold: 18,
-                              touchCallback: (event, response) {
-                                if (event is! FlTapUpEvent) return;
-                                final spot = response?.touchedSpot;
-                                if (spot == null) return;
-                                final index = spot.spotIndex;
-                                if (index < 0 || index >= points.length) {
-                                  return;
-                                }
-                                onPointSelected(points[index]);
-                              },
-                              touchTooltipData: ScatterTouchTooltipData(
-                                fitInsideHorizontally: true,
-                                fitInsideVertically: true,
-                                getTooltipItems: (spot) {
-                                  final match = points.firstWhere(
-                                    (point) =>
-                                        point.x == spot.x && point.y == spot.y,
-                                    orElse: () => ScatterPointModel(
-                                      id: 'point',
-                                      label: 'Point',
-                                      x: spot.x,
-                                      y: spot.y,
-                                    ),
-                                  );
-                                  return ScatterTooltipItem(
-                                    '${match.label}\n'
-                                    '${spec.xAxisLabel}: ${match.x.toStringAsPrecision(4)}\n'
-                                    '${spec.yAxisLabel}: ${match.y.toStringAsPrecision(4)}',
-                                    textStyle: TextStyle(
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onInverseSurface,
-                                      fontSize: 11,
-                                    ),
-                                  );
-                                },
-                              ),
+                              enabled: false,
                             ),
                           ),
                         ),
@@ -379,6 +340,25 @@ class _ScatterPlot extends StatelessWidget {
                           ),
                         ),
                       ),
+                    Positioned.fill(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) => GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onTapUp: (details) {
+                            final point = _nearestPoint(
+                              details.localPosition,
+                              Size(
+                                constraints.maxWidth,
+                                constraints.maxHeight,
+                              ),
+                              points,
+                              bounds,
+                            );
+                            if (point != null) onPointSelected(point);
+                          },
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -388,6 +368,30 @@ class _ScatterPlot extends StatelessWidget {
       ],
     );
   }
+}
+
+ScatterPointModel? _nearestPoint(
+  Offset position,
+  Size size,
+  List<ScatterPointModel> points,
+  ({double minX, double maxX, double minY, double maxY}) bounds,
+) {
+  final rect = _flChartPlotRect(size);
+  if (!rect.inflate(24).contains(position)) return null;
+  ScatterPointModel? nearest;
+  var nearestDistance = double.infinity;
+  for (final point in points) {
+    final pointOffset = Offset(
+      _scaleX(point.x, rect, bounds),
+      _scaleY(point.y, rect, bounds),
+    );
+    final distance = (pointOffset - position).distance;
+    if (distance < nearestDistance) {
+      nearest = point;
+      nearestDistance = distance;
+    }
+  }
+  return nearestDistance <= 24 ? nearest : null;
 }
 
 class _ScatterReferenceLinePainter extends CustomPainter {
