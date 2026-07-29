@@ -223,18 +223,28 @@ class AnalysisServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             service, root = self._fixture(tmpdir)
             records = service.public_geo_datasets("retinal organoid")
+            fixture = next(
+                record
+                for record in service.public_geo_datasets("BMP4 response")
+                if record["accession"] == "GSE-MUNDI-RET-ORG-BULK"
+            )
             dataset = service.import_public_geo_dataset(
                 "user:pi-owner",
-                records[0]["accession"],
+                fixture["accession"],
             )
             again = service.import_public_geo_dataset(
                 "user:pi-owner",
-                records[0]["accession"],
+                fixture["accession"],
             )
             counts_exists = (root / dataset["counts_path"]).exists()
             metadata_exists = (root / dataset["metadata_path"]).exists()
 
         self.assertGreaterEqual(len(records), 1)
+        self.assertIn("GSE119274", {record["accession"] for record in records})
+        stress_records = service.public_geo_datasets("stress test")
+        stress_record = next(record for record in stress_records if record["accession"] == "GSE101986")
+        self.assertEqual(stress_record["sample_count"], 24)
+        self.assertIn("bulk_rnaseq_deseq2", stress_record["recommended_workflows"])
         self.assertEqual(dataset["modality"], "bulk_rna_seq")
         self.assertEqual(dataset["source_type"], "public_geo")
         self.assertEqual(dataset["sample_count"], 6)
@@ -244,6 +254,8 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(again["import_status"], "already_imported")
         self.assertTrue(dataset["server_local"])
         self.assertEqual(dataset["features_count"], 7)
+        self.assertTrue(dataset["metadata_summary"]["validation"]["sample_names_match"])
+        self.assertEqual(dataset["metadata_summary"]["validation"]["duplicate_gene_count"], 0)
 
     def test_path_allowlist_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import gzip
 import hashlib
 import json
 import logging
@@ -12,6 +13,8 @@ import platform
 import shutil
 import sqlite3
 import statistics
+import tarfile
+import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1026,7 +1029,15 @@ class AnalysisService:
             {
                 key: value
                 for key, value in record.items()
-                if key not in {"genes", "samples", "counts_filename", "metadata_filename"}
+                if key
+                not in {
+                    "genes",
+                    "samples",
+                    "sample_accessions",
+                    "counts_filename",
+                    "metadata_filename",
+                    "annotation_filename",
+                }
             }
             for record in records
         ]
@@ -1051,12 +1062,15 @@ class AnalysisService:
         dataset_dir.mkdir(parents=True, exist_ok=True)
         counts_path = dataset_dir / record["counts_filename"]
         metadata_path = dataset_dir / record["metadata_filename"]
-        _write_counts_and_samples(
-            counts_path,
-            metadata_path,
-            genes=record["genes"],
-            samples=record["samples"],
-        )
+        if record.get("download_url"):
+            _download_public_geo_dataset(record, dataset_dir, counts_path, metadata_path)
+        else:
+            _write_counts_and_samples(
+                counts_path,
+                metadata_path,
+                genes=record["genes"],
+                samples=record["samples"],
+            )
         relative_counts = str(counts_path.relative_to(self.allowed_roots[0]))
         relative_metadata = str(metadata_path.relative_to(self.allowed_roots[0]))
         dataset = self.register_server_dataset(
@@ -1842,18 +1856,94 @@ def _read_table(path: Path) -> list[dict[str, str]]:
 
 def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]:
     delimiter = "\t" if counts_path.suffix.lower() in {".tsv", ".txt"} else ","
+    samples: list[str] = []
+    genes_seen: set[str] = set()
+    duplicate_genes: set[str] = set()
+    non_integer_values = 0
+    negative_values = 0
+    low_count_genes = 0
+    empty_gene_ids = 0
     with counts_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
         header = next(reader, [])
-        feature_count = sum(1 for _ in reader)
+        samples = [item.strip() for item in header[1:]]
+        feature_count = 0
+        for row in reader:
+            if not row:
+                continue
+            feature_count += 1
+            gene = row[0].strip()
+            if not gene:
+                empty_gene_ids += 1
+            elif gene in genes_seen:
+                duplicate_genes.add(gene)
+            else:
+                genes_seen.add(gene)
+            total = 0
+            for index, _sample in enumerate(samples, start=1):
+                text = row[index].strip() if index < len(row) else "0"
+                try:
+                    value = int(text)
+                except ValueError:
+                    non_integer_values += 1
+                    continue
+                if value < 0:
+                    negative_values += 1
+                total += value
+            if total < 10:
+                low_count_genes += 1
     metadata_rows = _read_table(metadata_path)
+    metadata_columns = list(metadata_rows[0].keys()) if metadata_rows else []
+    sample_column = "sample" if "sample" in metadata_columns else metadata_columns[0] if metadata_columns else ""
+    metadata_samples = [
+        str(row.get(sample_column) or "").strip()
+        for row in metadata_rows
+        if sample_column
+    ]
+    missing_metadata = sorted(set(samples) - set(metadata_samples))
+    metadata_without_counts = sorted(set(metadata_samples) - set(samples))
+    duplicate_metadata_samples = sorted(
+        {sample for sample in metadata_samples if sample and metadata_samples.count(sample) > 1}
+    )
+    warnings = []
+    if missing_metadata:
+        warnings.append("Some count-matrix samples are missing metadata.")
+    if metadata_without_counts:
+        warnings.append("Some metadata rows do not have matching count-matrix samples.")
+    if duplicate_metadata_samples:
+        warnings.append("Duplicate sample identifiers were found in metadata.")
+    if duplicate_genes:
+        warnings.append("Duplicate gene identifiers were detected.")
+    if non_integer_values:
+        warnings.append("The count matrix contains non-integer values.")
+    if negative_values:
+        warnings.append("The count matrix contains negative values.")
+    if empty_gene_ids:
+        warnings.append("Some rows have empty gene identifiers.")
     return {
         "sample_count": max(len(header) - 1, 0),
         "feature_count": feature_count,
         "metadata_rows": len(metadata_rows),
-        "metadata_columns": list(metadata_rows[0].keys()) if metadata_rows else [],
+        "metadata_columns": metadata_columns,
         "counts_filename": counts_path.name,
         "metadata_filename": metadata_path.name,
+        "validation": {
+            "sample_names_match": not missing_metadata and not metadata_without_counts,
+            "duplicate_gene_count": len(duplicate_genes),
+            "duplicate_metadata_sample_count": len(duplicate_metadata_samples),
+            "missing_metadata_samples": missing_metadata[:100],
+            "metadata_without_counts": metadata_without_counts[:100],
+            "non_integer_value_count": non_integer_values,
+            "negative_value_count": negative_values,
+            "empty_gene_id_count": empty_gene_ids,
+            "low_count_gene_count": low_count_genes,
+            "count_matrix_dimensions": {
+                "genes": feature_count,
+                "samples": len(samples),
+            },
+            "metadata_complete": bool(metadata_rows) and not missing_metadata,
+            "warnings": warnings,
+        },
     }
 
 
@@ -2386,6 +2476,283 @@ def _demo_workspace_payload() -> dict[str, Any]:
 def _public_geo_datasets() -> list[dict[str, Any]]:
     return [
         {
+            "accession": "GSE119274",
+            "title": "Generation, transcriptome profiling, and functional validation of cone-enriched human retinal organoids",
+            "organism": "Homo sapiens",
+            "tissue": "Stem-cell-derived retinal organoids",
+            "publication": "Lowe et al.; GEO record lists processed bulk RNA-seq supplementary data",
+            "platform": "GPL11154 Illumina HiSeq 2000",
+            "sample_count": 15,
+            "experimental_groups": ["D15", "1M", "3M", "6.5M", "9M"],
+            "summary": "Bulk RNA-seq time course of human retinal organoids at 15 days, 1 month, 3 months, 6.5 months, and 9 months with three replicates per time point.",
+            "source": "NCBI GEO",
+            "geo_url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE119274",
+            "download_url": "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE119274&format=file",
+            "download_kind": "geo_raw_tar_txt_counts",
+            "genome_build": "GRCh38",
+            "tags": ["retinal organoid", "human retina", "bulk RNA-seq", "time course"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 later versus early organoid stage"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "minutes after download",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "annotation_filename": "gene_annotations.tsv",
+            "deseq2_defaults": {
+                "design_formula": "~ condition",
+                "contrast_factor": "condition",
+                "denominator_level": "D15",
+                "numerator_level": "9M",
+                "min_total_count": 10,
+                "min_samples_expressing": 2,
+                "alpha": 0.05,
+                "lfc_threshold": 1.0,
+            },
+            "samples": [
+                ("organoid_D15_1", "D15"),
+                ("organoid_D15_2", "D15"),
+                ("organoid_D15_3", "D15"),
+                ("organoid_1M_1", "1M"),
+                ("organoid_1M_2", "1M"),
+                ("organoid_1M_3", "1M"),
+                ("organoid_3M_1", "3M"),
+                ("organoid_3M_2", "3M"),
+                ("organoid_3M_3", "3M"),
+                ("organoid_6.5M_1", "6.5M"),
+                ("organoid_6.5M_2", "6.5M"),
+                ("organoid_6.5M_3", "6.5M"),
+                ("organoid_9M_1", "9M"),
+                ("organoid_9M_2", "9M"),
+                ("organoid_9M_3", "9M"),
+            ],
+            "sample_accessions": {
+                "organoid_D15_1": "GSM3362986",
+                "organoid_D15_2": "GSM3362987",
+                "organoid_D15_3": "GSM3362988",
+                "organoid_1M_1": "GSM3362989",
+                "organoid_1M_2": "GSM3362990",
+                "organoid_1M_3": "GSM3362991",
+                "organoid_3M_1": "GSM3362992",
+                "organoid_3M_2": "GSM3362993",
+                "organoid_3M_3": "GSM3362994",
+                "organoid_6.5M_1": "GSM3362995",
+                "organoid_6.5M_2": "GSM3362996",
+                "organoid_6.5M_3": "GSM3362997",
+                "organoid_9M_1": "GSM3362998",
+                "organoid_9M_2": "GSM3362999",
+                "organoid_9M_3": "GSM3363000",
+            },
+        },
+        {
+            "accession": "GSE229682",
+            "title": "Stage-specific dynamic reorganization of genome topology shapes transcriptional neighborhoods in developing human retinal organoids",
+            "organism": "Homo sapiens",
+            "tissue": "Human retinal organoids",
+            "publication": "Qu et al.; PMID 38048222",
+            "platform": "GPL16791 Illumina HiSeq 2500",
+            "sample_count": 15,
+            "experimental_groups": ["D60", "D70", "D90", "D120", "D200"],
+            "summary": "RNA-seq at five time points in retinal organoid development with downloadable processed gene CPM table.",
+            "source": "NCBI GEO",
+            "geo_url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE229682",
+            "download_url": "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE229682&format=file&file=GSE229682_Gene_CPM_MSTR.tsv.gz",
+            "download_kind": "expression_table_tsv_gz",
+            "genome_build": "GRCh38",
+            "tags": ["retinal organoid", "human retina", "bulk RNA-seq", "time course"],
+            "expected_analyses": ["Dataset Validation/QC", "Exploratory DESeq2 after rounded CPM import"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc"],
+            "estimated_runtime": "minutes after download",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "import_warning": "GEO provides CPM values, not raw counts; Mundi stores rounded values for exploratory validation only.",
+            "deseq2_defaults": {
+                "design_formula": "~ condition",
+                "contrast_factor": "condition",
+                "denominator_level": "D60",
+                "numerator_level": "D200",
+                "min_total_count": 10,
+                "min_samples_expressing": 2,
+                "alpha": 0.05,
+                "lfc_threshold": 1.0,
+            },
+            "samples": [
+                ("D60_rep1", "D60"),
+                ("D60_rep2", "D60"),
+                ("D60_rep3", "D60"),
+                ("D70_rep1", "D70"),
+                ("D70_rep2", "D70"),
+                ("D70_rep3", "D70"),
+                ("D90_rep1", "D90"),
+                ("D90_rep2", "D90"),
+                ("D90_rep3", "D90"),
+                ("D120_rep1", "D120"),
+                ("D120_rep2", "D120"),
+                ("D120_rep3", "D120"),
+                ("D200_rep1", "D200"),
+                ("D200_rep2", "D200"),
+                ("D200_rep3", "D200"),
+            ],
+        },
+        {
+            "accession": "GSE101986",
+            "title": "Developmental Transcriptome Dynamics of the Murine Retina",
+            "organism": "Mus musculus",
+            "tissue": "Developing mouse retina",
+            "publication": "Brooks et al.; developmental mouse retina transcriptome",
+            "platform": "GPL11002 Illumina Genome Analyzer IIx",
+            "sample_count": 24,
+            "experimental_groups": ["E11", "E12", "E14", "E16", "P0", "P2", "P4", "P6", "P10", "P14", "P21", "P28"],
+            "summary": "Bulk RNA-seq across 12 embryonic and postnatal mouse retina stages in duplicate; useful as the large retinal stress-test dataset.",
+            "source": "NCBI GEO",
+            "geo_url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE101986",
+            "download_url": "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE101986&format=file&file=GSE101986_Gene_Counts.txt.gz",
+            "download_kind": "expression_table_tsv_gz",
+            "genome_build": "GRCm38",
+            "tags": ["mouse retina", "early retinal development", "bulk RNA-seq", "stress test"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 P28 versus E11"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "several minutes after download",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "deseq2_defaults": {
+                "design_formula": "~ condition",
+                "contrast_factor": "condition",
+                "denominator_level": "E11",
+                "numerator_level": "P28",
+                "min_total_count": 10,
+                "min_samples_expressing": 2,
+                "alpha": 0.05,
+                "lfc_threshold": 1.0,
+            },
+            "samples": [
+                ("E11.1", "E11"),
+                ("E11.2", "E11"),
+                ("E12.1", "E12"),
+                ("E12.2", "E12"),
+                ("E14.1", "E14"),
+                ("E14.2", "E14"),
+                ("E16.1", "E16"),
+                ("E16.2", "E16"),
+                ("P0.1", "P0"),
+                ("P0.2", "P0"),
+                ("P2.1", "P2"),
+                ("P2.2", "P2"),
+                ("P4.1", "P4"),
+                ("P4.2", "P4"),
+                ("P6.1", "P6"),
+                ("P6.2", "P6"),
+                ("P10.1", "P10"),
+                ("P10.2", "P10"),
+                ("P14.1", "P14"),
+                ("P14.2", "P14"),
+                ("P21.1", "P21"),
+                ("P21.2", "P21"),
+                ("P28.1", "P28"),
+                ("P28.2", "P28"),
+            ],
+        },
+        {
+            "accession": "GSE202725",
+            "title": "Jarid2 promotes temporal progression of retinal progenitors via repression of Foxp1 [Foxp1 cKO bulk RNA-seq]",
+            "organism": "Mus musculus",
+            "tissue": "E16.5 mouse retina",
+            "publication": "Zhang et al., Cell Reports 2023",
+            "doi": "10.1016/j.celrep.2023.112237",
+            "platform": "GPL24247 Illumina NovaSeq 6000",
+            "sample_count": 6,
+            "experimental_groups": ["control", "foxp1_cko"],
+            "summary": "Triplicate E16.5 mouse retina Foxp1 conditional knockout and littermate control bulk RNA-seq.",
+            "source": "NCBI GEO",
+            "geo_url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE202725",
+            "download_url": "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE202725&format=file&file=GSE202725_foxp1_counts.txt.gz",
+            "download_kind": "expression_table_tsv_gz",
+            "genome_build": "GRCm39",
+            "tags": ["mouse retina", "early retinal development", "Foxp1", "bulk RNA-seq"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 foxp1 cKO versus control"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "under 2 minutes",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "deseq2_defaults": {
+                "design_formula": "~ condition",
+                "contrast_factor": "condition",
+                "denominator_level": "control",
+                "numerator_level": "foxp1_cko",
+                "min_total_count": 10,
+                "min_samples_expressing": 2,
+                "alpha": 0.05,
+                "lfc_threshold": 1.0,
+            },
+            "samples": [
+                ("E16_control_1", "control"),
+                ("E16_control_2", "control"),
+                ("E16_control_3", "control"),
+                ("E16_foxp1_cko_1", "foxp1_cko"),
+                ("E16_foxp1_cko_2", "foxp1_cko"),
+                ("E16_foxp1_cko_3", "foxp1_cko"),
+            ],
+        },
+        {
+            "accession": "GSE180641",
+            "title": "Zfp503/Nlz2 is Required for RPE Differentiation and Optic Fissure Closure",
+            "organism": "Mus musculus",
+            "tissue": "Retinal pigment epithelium",
+            "publication": "Boobalan et al., Investigative Ophthalmology & Visual Science 2022",
+            "doi": "10.1167/iovs.63.12.5",
+            "platform": "GPL17021 Illumina HiSeq 2500",
+            "sample_count": 12,
+            "experimental_groups": ["wildtype", "zfp503_ko"],
+            "summary": "Mouse RPE wild-type and Zfp503 knockout bulk RNA-seq with lane-level count files.",
+            "source": "NCBI GEO",
+            "geo_url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE180641",
+            "download_url": "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE180641&format=file",
+            "download_kind": "geo_raw_tar_txt_counts",
+            "genome_build": "GRCm38",
+            "tags": ["RPE differentiation", "mouse RPE", "bulk RNA-seq"],
+            "expected_analyses": ["Dataset Validation/QC", "DESeq2 Zfp503 KO versus wildtype"],
+            "recommended_workflows": ["bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"],
+            "estimated_runtime": "under 2 minutes",
+            "counts_filename": "counts.tsv",
+            "metadata_filename": "samples.csv",
+            "deseq2_defaults": {
+                "design_formula": "~ condition",
+                "contrast_factor": "condition",
+                "denominator_level": "wildtype",
+                "numerator_level": "zfp503_ko",
+                "min_total_count": 10,
+                "min_samples_expressing": 2,
+                "alpha": 0.05,
+                "lfc_threshold": 1.0,
+            },
+            "samples": [
+                ("WT_rep1_lane7", "wildtype"),
+                ("WT_rep1_lane8", "wildtype"),
+                ("WT_rep2_lane7", "wildtype"),
+                ("WT_rep2_lane8", "wildtype"),
+                ("WT_rep3_lane7", "wildtype"),
+                ("WT_rep3_lane8", "wildtype"),
+                ("Zfp503KO_rep1_lane7", "zfp503_ko"),
+                ("Zfp503KO_rep1_lane8", "zfp503_ko"),
+                ("Zfp503KO_rep2_lane7", "zfp503_ko"),
+                ("Zfp503KO_rep2_lane8", "zfp503_ko"),
+                ("Zfp503KO_rep3_lane7", "zfp503_ko"),
+                ("Zfp503KO_rep3_lane8", "zfp503_ko"),
+            ],
+            "sample_accessions": {
+                "WT_rep1_lane7": "GSM5466677",
+                "WT_rep1_lane8": "GSM5466678",
+                "WT_rep2_lane7": "GSM5466679",
+                "WT_rep2_lane8": "GSM5466680",
+                "WT_rep3_lane7": "GSM5466681",
+                "WT_rep3_lane8": "GSM5466682",
+                "Zfp503KO_rep1_lane7": "GSM5466683",
+                "Zfp503KO_rep1_lane8": "GSM5466684",
+                "Zfp503KO_rep2_lane7": "GSM5466685",
+                "Zfp503KO_rep2_lane8": "GSM5466686",
+                "Zfp503KO_rep3_lane7": "GSM5466687",
+                "Zfp503KO_rep3_lane8": "GSM5466688",
+            },
+        },
+        {
             "accession": "GSE-MUNDI-RET-ORG-BULK",
             "title": "Retinal organoid BMP4 response bulk RNA-seq",
             "organism": "Homo sapiens",
@@ -2515,6 +2882,221 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
             ],
         },
     ]
+
+
+def _download_public_geo_dataset(
+    record: dict[str, Any],
+    dataset_dir: Path,
+    counts_path: Path,
+    metadata_path: Path,
+) -> None:
+    source_name = record["download_url"].split("file=")[-1] if "file=" in record["download_url"] else f"{record['accession']}_RAW.tar"
+    source_path = dataset_dir / source_name.replace("/", "_")
+    if not source_path.exists():
+        _download_url(str(record["download_url"]), source_path)
+    kind = str(record.get("download_kind") or "")
+    if kind == "geo_raw_tar_txt_counts":
+        _convert_geo_raw_tar_to_counts(record, source_path, counts_path, metadata_path)
+    elif kind == "expression_table_tsv_gz":
+        _convert_expression_table_to_counts(record, source_path, counts_path, metadata_path)
+    else:
+        raise AnalysisValidationError(f"Unsupported public GEO import type: {kind}")
+
+
+def _download_url(url: str, destination: Path) -> None:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mundi-ResearchOS/1.0 public dataset importer"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
+            shutil.copyfileobj(response, handle)
+    except Exception as exc:  # pragma: no cover - exact urllib exceptions vary by platform
+        if destination.exists():
+            destination.unlink()
+        raise AnalysisValidationError(f"Could not download public GEO dataset: {exc}") from exc
+
+
+def _convert_geo_raw_tar_to_counts(
+    record: dict[str, Any],
+    archive_path: Path,
+    counts_path: Path,
+    metadata_path: Path,
+) -> None:
+    sample_names = [sample for sample, _group in record["samples"]]
+    sample_accessions = record.get("sample_accessions", {})
+    counts_by_sample: dict[str, dict[str, int]] = {}
+    with tarfile.open(archive_path) as archive:
+        members = [
+            member
+            for member in archive.getmembers()
+            if member.isfile() and member.name.lower().endswith((".txt", ".tsv", ".csv", ".txt.gz", ".tsv.gz", ".csv.gz"))
+        ]
+        assigned: set[str] = set()
+        for member in members:
+            sample = _match_geo_member_to_sample(member.name, sample_names, sample_accessions, assigned)
+            if sample is None:
+                continue
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                continue
+            raw = extracted.read()
+            if member.name.lower().endswith(".gz"):
+                raw = gzip.decompress(raw)
+            counts = _parse_two_column_counts(raw.decode("utf-8", errors="replace"))
+            if counts:
+                counts_by_sample[sample] = counts
+                assigned.add(sample)
+
+    missing = [sample for sample in sample_names if sample not in counts_by_sample]
+    if missing:
+        raise AnalysisValidationError(
+            "Public GEO import did not find count files for: " + ", ".join(missing[:8])
+        )
+    _write_combined_count_matrix(counts_path, sample_names, counts_by_sample)
+    _write_public_geo_metadata(metadata_path, record)
+    _write_gene_annotations_if_possible(counts_path.parent / str(record.get("annotation_filename", "gene_annotations.tsv")), counts_by_sample)
+
+
+def _convert_expression_table_to_counts(
+    record: dict[str, Any],
+    table_path: Path,
+    counts_path: Path,
+    metadata_path: Path,
+) -> None:
+    opener = gzip.open if table_path.name.endswith(".gz") else open
+    with opener(table_path, "rt", encoding="utf-8", errors="replace", newline="") as handle:
+        reader = csv.reader(handle, delimiter="\t")
+        header = next(reader, None)
+        if not header or len(header) < 2:
+            raise AnalysisValidationError("Downloaded GEO expression table did not contain sample columns.")
+        gene_column = header[0]
+        configured_samples = [sample for sample, _group in record.get("samples", [])]
+        if configured_samples:
+            header_lookup = {column.strip(): index for index, column in enumerate(header)}
+            selected = [
+                (sample, header_lookup[sample])
+                for sample in configured_samples
+                if sample in header_lookup
+            ]
+            if len(selected) < max(2, len(configured_samples) // 2):
+                selected = [(column, index) for index, column in enumerate(header[1:], start=1)]
+        else:
+            selected = [(column, index) for index, column in enumerate(header[1:], start=1)]
+        sample_names = [sample for sample, _index in selected]
+        rows: list[tuple[str, list[int]]] = []
+        for row in reader:
+            if len(row) < 2:
+                continue
+            gene = row[0].strip()
+            if not gene:
+                continue
+            values = [
+                _safe_count(row[index] if index < len(row) else 0)
+                for _sample, index in selected
+            ]
+            rows.append((gene, values))
+    if not rows:
+        raise AnalysisValidationError("Downloaded GEO expression table did not contain gene rows.")
+    with counts_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        writer.writerow([gene_column or "gene", *sample_names])
+        writer.writerows(([gene, *values] for gene, values in rows))
+    _write_public_geo_metadata(metadata_path, record, sample_names=sample_names)
+
+
+def _match_geo_member_to_sample(
+    member_name: str,
+    sample_names: list[str],
+    sample_accessions: dict[str, str],
+    assigned: set[str],
+) -> str | None:
+    clean_member = member_name.lower()
+    for sample in sample_names:
+        accession = str(sample_accessions.get(sample, ""))
+        if sample in assigned:
+            continue
+        if sample.lower() in clean_member or (accession and accession.lower() in clean_member):
+            return sample
+    return None
+
+
+def _parse_two_column_counts(text: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    delimiter = "\t" if "\t" in text.partition("\n")[0] else ","
+    reader = csv.reader(text.splitlines(), delimiter=delimiter)
+    for row in reader:
+        if len(row) < 2:
+            continue
+        gene = row[0].strip()
+        if not gene or gene.startswith("__") or gene.lower() in {"gene", "gene_id", "id"}:
+            continue
+        value = _safe_count(row[-1])
+        counts[gene] = value
+    return counts
+
+
+def _safe_count(value: object) -> int:
+    try:
+        return max(0, int(round(float(str(value).strip()))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_combined_count_matrix(
+    counts_path: Path,
+    sample_names: list[str],
+    counts_by_sample: dict[str, dict[str, int]],
+) -> None:
+    genes: list[str] = []
+    seen: set[str] = set()
+    for sample in sample_names:
+        for gene in counts_by_sample[sample]:
+            if gene not in seen:
+                genes.append(gene)
+                seen.add(gene)
+    with counts_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        writer.writerow(["gene", *sample_names])
+        for gene in genes:
+            writer.writerow([gene, *[counts_by_sample[sample].get(gene, 0) for sample in sample_names]])
+
+
+def _write_public_geo_metadata(
+    metadata_path: Path,
+    record: dict[str, Any],
+    sample_names: list[str] | None = None,
+) -> None:
+    configured = record.get("samples") or []
+    group_by_sample = {sample: group for sample, group in configured}
+    names = sample_names or [sample for sample, _group in configured]
+    with metadata_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["sample", "condition", "geo_accession", "tissue"])
+        writer.writeheader()
+        accessions = record.get("sample_accessions", {})
+        for sample in names:
+            writer.writerow(
+                {
+                    "sample": sample,
+                    "condition": group_by_sample.get(sample) or _infer_group_from_sample(sample),
+                    "geo_accession": accessions.get(sample, ""),
+                    "tissue": record.get("tissue", ""),
+                }
+            )
+
+
+def _infer_group_from_sample(sample: str) -> str:
+    parts = sample.replace("-", "_").split("_")
+    return parts[0] if parts else "group"
+
+
+def _write_gene_annotations_if_possible(path: Path, counts_by_sample: dict[str, dict[str, int]]) -> None:
+    first_sample = next(iter(counts_by_sample.values()), {})
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        writer.writerow(["gene_id", "gene_symbol"])
+        for gene in first_sample:
+            writer.writerow([gene, gene])
 
 
 def _write_demo_bulk_files(bulk_dir: Path) -> None:

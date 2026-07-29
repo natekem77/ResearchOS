@@ -51,8 +51,19 @@ class ViewerScaffold extends StatelessWidget {
                 onSelected: (value) {
                   if (value == 'linked') actions.onInsertLinked?.call();
                   if (value == 'snapshot') actions.onInsertSnapshot?.call();
-                  if (value == 'export') {
-                    _export(context);
+                  if (value == 'export_300') {
+                    _export(context, pixelRatio: 3, label: '300 dpi PNG');
+                  }
+                  if (value == 'export_600') {
+                    _export(context, pixelRatio: 6, label: '600 dpi PNG');
+                  }
+                  if (value == 'export_transparent') {
+                    _export(
+                      context,
+                      pixelRatio: 6,
+                      label: 'transparent PNG',
+                      transparent: true,
+                    );
                   }
                 },
                 itemBuilder: (context) => const [
@@ -64,7 +75,13 @@ class ViewerScaffold extends StatelessWidget {
                     value: 'snapshot',
                     child: Text('Insert Snapshot'),
                   ),
-                  PopupMenuItem(value: 'export', child: Text('Export PNG')),
+                  PopupMenuItem(
+                      value: 'export_300', child: Text('Export PNG 300 dpi')),
+                  PopupMenuItem(
+                      value: 'export_600', child: Text('Export PNG 600 dpi')),
+                  PopupMenuItem(
+                      value: 'export_transparent',
+                      child: Text('Export transparent PNG')),
                 ],
               ),
             ],
@@ -72,9 +89,10 @@ class ViewerScaffold extends StatelessWidget {
           Align(
             alignment: Alignment.centerRight,
             child: TextButton.icon(
-              onPressed: () => _export(context),
+              onPressed: () =>
+                  _export(context, pixelRatio: 3, label: '300 dpi PNG'),
               icon: const Icon(Icons.download_outlined),
-              label: const Text('Export PNG'),
+              label: const Text('Export PNG 300 dpi'),
             ),
           ),
           const TabBar(tabs: [Tab(text: 'Plot'), Tab(text: 'Data')]),
@@ -92,15 +110,21 @@ class ViewerScaffold extends StatelessWidget {
     );
   }
 
-  Future<void> _export(BuildContext context) async {
+  Future<void> _export(
+    BuildContext context, {
+    required double pixelRatio,
+    required String label,
+    bool transparent = false,
+  }) async {
     try {
       final file = await exportService.exportBoundaryAsPng(
         boundaryKey: boundaryKey,
-        filenameStem: title,
+        filenameStem: transparent ? '$title transparent' : title,
+        pixelRatio: pixelRatio,
       );
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Exported visualization to ${file.path}')),
+        SnackBar(content: Text('Exported $label to ${file.path}')),
       );
     } catch (error) {
       if (!context.mounted) return;

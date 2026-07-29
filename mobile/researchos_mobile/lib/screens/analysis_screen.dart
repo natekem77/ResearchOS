@@ -260,6 +260,44 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
+  Future<void> _importAndRunPublicDataset(Map<String, dynamic> dataset) async {
+    final accession = dataset['accession']?.toString();
+    if (accession == null || accession.isEmpty) return;
+    try {
+      final response = await widget.api.importPublicAnalysisDataset(accession);
+      final imported = response['dataset'] is Map<String, dynamic>
+          ? response['dataset'] as Map<String, dynamic>
+          : <String, dynamic>{};
+      final datasetId = imported['id']?.toString();
+      if (datasetId == null || datasetId.isEmpty) {
+        throw StateError('Imported dataset response did not include an id.');
+      }
+      await widget.api.createAnalysisJob(
+        datasetId: datasetId,
+        workflowKey: 'bulk_rnaseq_validation_qc',
+        parameters: const {
+          'sample_id_column': 'sample',
+          'group_column': 'condition',
+        },
+      );
+      await widget.api.createAnalysisJob(
+        datasetId: datasetId,
+        workflowKey: 'bulk_rnaseq_deseq2',
+        parameters: _publicDeseq2Defaults(dataset),
+      );
+      if (!mounted) return;
+      setState(() {
+        _message = 'Public dataset imported; QC and DESeq2 jobs queued.';
+      });
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not import and run public dataset: $error';
+      });
+    }
+  }
+
   Future<void> _showWorkerDetails(Map<String, dynamic> worker) async {
     await showModalBottomSheet<void>(
       context: context,
@@ -546,6 +584,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               datasets: state?.publicDatasets ?? const [],
               searchController: _publicDatasetSearchController,
               onImport: _importPublicDataset,
+              onImportAndRun: _importAndRunPublicDataset,
               onSearchChanged: (_) => setState(() {}),
             ),
             const SizedBox(height: ResearchOsSpacing.md),
@@ -737,12 +776,14 @@ class _PublicDatasetsPanel extends StatelessWidget {
     required this.datasets,
     required this.searchController,
     required this.onImport,
+    required this.onImportAndRun,
     required this.onSearchChanged,
   });
 
   final List<Map<String, dynamic>> datasets;
   final TextEditingController searchController;
   final ValueChanged<Map<String, dynamic>> onImport;
+  final ValueChanged<Map<String, dynamic>> onImportAndRun;
   final ValueChanged<String> onSearchChanged;
 
   @override
@@ -755,7 +796,10 @@ class _PublicDatasetsPanel extends StatelessWidget {
               dataset['accession'],
               dataset['title'],
               dataset['organism'],
+              dataset['tissue'],
               dataset['platform'],
+              dataset['publication'],
+              dataset['experimental_groups'],
               dataset['summary'],
             ].join(' ').toLowerCase();
             return haystack.contains(query);
@@ -818,6 +862,7 @@ class _PublicDatasetsPanel extends StatelessWidget {
                 _PublicDatasetCard(
                   dataset: dataset,
                   onImport: () => onImport(dataset),
+                  onImportAndRun: () => onImportAndRun(dataset),
                 ),
           ],
         ),
@@ -830,10 +875,12 @@ class _PublicDatasetCard extends StatelessWidget {
   const _PublicDatasetCard({
     required this.dataset,
     required this.onImport,
+    required this.onImportAndRun,
   });
 
   final Map<String, dynamic> dataset;
   final VoidCallback onImport;
+  final VoidCallback onImportAndRun;
 
   @override
   Widget build(BuildContext context) {
@@ -869,6 +916,22 @@ class _PublicDatasetCard extends StatelessWidget {
                           '${dataset['sample_count'] ?? '-'} samples',
                         ),
                         Text(dataset['platform']?.toString() ?? ''),
+                        if (dataset['tissue'] != null)
+                          Text('Tissue: ${dataset['tissue']}'),
+                        if (dataset['experimental_groups'] is List)
+                          Text(
+                            'Groups: ${(dataset['experimental_groups'] as List).join(', ')}',
+                          ),
+                        if (dataset['publication'] != null)
+                          Text('Publication: ${dataset['publication']}'),
+                        if (dataset['doi'] != null)
+                          Text('DOI: ${dataset['doi']}'),
+                        if (dataset['deseq2_defaults'] is Map)
+                          Text(
+                            'Suggested DESeq2: '
+                            '${(dataset['deseq2_defaults'] as Map)['numerator_level']} '
+                            'vs ${(dataset['deseq2_defaults'] as Map)['denominator_level']}',
+                          ),
                       ],
                     ),
                   ),
@@ -876,14 +939,29 @@ class _PublicDatasetCard extends StatelessWidget {
               ),
               const SizedBox(height: ResearchOsSpacing.xs),
               Text(dataset['summary']?.toString() ?? ''),
-              const SizedBox(height: ResearchOsSpacing.xs),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: FilledButton.tonalIcon(
-                  onPressed: onImport,
-                  icon: const Icon(Icons.download_for_offline_outlined),
-                  label: const Text('Import'),
+              if (dataset['import_warning'] != null) ...[
+                const SizedBox(height: ResearchOsSpacing.xs),
+                Text(
+                  dataset['import_warning'].toString(),
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
+              ],
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Wrap(
+                spacing: ResearchOsSpacing.xs,
+                runSpacing: ResearchOsSpacing.xs,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: onImport,
+                    icon: const Icon(Icons.download_for_offline_outlined),
+                    label: const Text('Import'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: onImportAndRun,
+                    icon: const Icon(Icons.play_arrow_outlined),
+                    label: const Text('Import + Run DESeq2'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -2372,6 +2450,38 @@ class _AnalysisState {
 String? _emptyToNull(String value) {
   final clean = value.trim();
   return clean.isEmpty ? null : clean;
+}
+
+Map<String, dynamic> _publicDeseq2Defaults(Map<String, dynamic> dataset) {
+  final defaults = dataset['deseq2_defaults'];
+  if (defaults is Map) return defaults.cast<String, dynamic>();
+  final groups = dataset['experimental_groups'];
+  if (groups is List && groups.length >= 2) {
+    return {
+      'sample_id_column': 'sample',
+      'group_column': 'condition',
+      'design_formula': '~ condition',
+      'contrast_factor': 'condition',
+      'denominator_level': groups.first.toString(),
+      'numerator_level': groups.last.toString(),
+      'min_total_count': 10,
+      'min_samples_expressing': 2,
+      'alpha': 0.05,
+      'lfc_threshold': 1.0,
+    };
+  }
+  return const {
+    'sample_id_column': 'sample',
+    'group_column': 'condition',
+    'design_formula': '~ condition',
+    'contrast_factor': 'condition',
+    'denominator_level': 'control',
+    'numerator_level': 'treated',
+    'min_total_count': 10,
+    'min_samples_expressing': 2,
+    'alpha': 0.05,
+    'lfc_threshold': 1.0,
+  };
 }
 
 String _formatCell(Object? value) {

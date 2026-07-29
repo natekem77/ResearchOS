@@ -478,7 +478,7 @@ void main() {
     expect(find.text('Data'), findsOneWidget);
     expect(find.byType(ScatterViewer), findsOneWidget);
     expect(find.byType(ScatterChart), findsOneWidget);
-    expect(find.text('Export PNG'), findsOneWidget);
+    expect(find.text('Export PNG 300 dpi'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).last, 'POU4F2');
     await tester.pumpAndSettle();
