@@ -257,6 +257,69 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(dataset["metadata_summary"]["validation"]["sample_names_match"])
         self.assertEqual(dataset["metadata_summary"]["validation"]["duplicate_gene_count"], 0)
 
+    def test_raw_count_dataset_allows_deseq2_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Raw Counts",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                    "source_data_kind": "raw_counts",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_deseq2",
+                parameters={
+                    "sample_id_column": "sample",
+                    "design_factors": ["condition"],
+                    "contrast_factor": "condition",
+                    "numerator_level": "SAG",
+                    "denominator_level": "DMSO",
+                },
+            )
+
+        self.assertEqual(job["workflow_id"], "bulk_rnaseq_deseq2")
+        self.assertEqual(job["status"], "queued")
+
+    def test_normalized_cpm_dataset_blocks_deseq2_job(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            public_records = service.public_geo_datasets("GSE229682")
+            gse229682 = next(record for record in public_records if record["accession"] == "GSE229682")
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "CPM-only Dataset",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                    "source_data_kind": "normalized_cpm",
+                    "exploratory_only": True,
+                },
+            )
+
+            with self.assertRaisesRegex(AnalysisValidationError, "DESeq2 requires raw integer counts"):
+                service.create_job(
+                    user_id="user:pi-owner",
+                    dataset_id=dataset["id"],
+                    workflow_key="bulk_rnaseq_deseq2",
+                    parameters={
+                        "sample_id_column": "sample",
+                        "design_factors": ["condition"],
+                        "contrast_factor": "condition",
+                        "numerator_level": "SAG",
+                        "denominator_level": "DMSO",
+                    },
+                )
+
+        self.assertTrue(gse229682["exploratory_only"])
+        self.assertEqual(gse229682["source_data_kind"], "normalized_cpm")
+        self.assertNotIn("bulk_rnaseq_deseq2", gse229682["recommended_workflows"])
+        self.assertTrue(dataset["exploratory_only"])
+
     def test_path_allowlist_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)

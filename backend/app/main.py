@@ -1020,6 +1020,8 @@ class MobileAnalysisDatasetRequest(BaseModel):
     genome_build: str | None = None
     assay: str | None = None
     worker_id: str | None = None
+    source_data_kind: str | None = None
+    exploratory_only: bool = False
 
 
 class MobileAnalysisJobRequest(BaseModel):

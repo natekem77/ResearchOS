@@ -521,6 +521,48 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('CPM public dataset queues QC only and shows failed job error',
+      (tester) async {
+    final calls = <String>[];
+    final api = _mockAnalysisApi(calls);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Search GEO'), 'GSE229682');
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Import + QC only'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(find.text('Import + QC only'));
+    await tester.pumpAndSettle();
+    expect(find.text('Import + QC only'), findsOneWidget);
+    await tester.tap(find.text('Import + QC only'));
+    await tester.pumpAndSettle();
+
+    expect(
+      calls,
+      contains('POST /mobile/analysis/public-datasets/GSE229682/import'),
+    );
+    expect(
+        calls.where((call) => call == 'POST /mobile/analysis/jobs').length, 1);
+
+    await tester.scrollUntilVisible(
+      find.text('View Job'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('View Job').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Error'), findsOneWidget);
+    expect(find.text('DESeq2 requires raw integer counts.'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('viewer factory routes scientific outputs to typed viewers',
       (tester) async {
     final cases = [
@@ -600,6 +642,7 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
         return _json({
           'datasets': [
             _publicDataset(),
+            _exploratoryPublicDataset(),
           ],
         });
       }
@@ -609,6 +652,17 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
           'dataset': {
             'id': 'analysis-dataset:public',
             'display_name': 'Retinal organoid BMP4 response bulk RNA-seq',
+          },
+        });
+      }
+      if (request.url.path ==
+          '/mobile/analysis/public-datasets/GSE229682/import') {
+        return _json({
+          'dataset': {
+            'id': 'analysis-dataset:cpm',
+            'display_name': 'GSE229682 CPM-only retinal organoids',
+            'exploratory_only': true,
+            'source_data_kind': 'normalized_cpm',
           },
         });
       }
@@ -622,7 +676,20 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
               'sample_count': 3,
               'features_count': 4,
               'metadata_summary': const {},
-            }
+            },
+            {
+              'id': 'analysis-dataset:cpm',
+              'display_name': 'GSE229682 CPM-only retinal organoids',
+              'modality': 'bulk_rna_seq',
+              'sample_count': 15,
+              'features_count': 59618,
+              'source_data_kind': 'normalized_cpm',
+              'exploratory_only': true,
+              'metadata_summary': {
+                'exploratory_only': true,
+                'source_data_kind': 'normalized_cpm',
+              },
+            },
           ],
         });
       }
@@ -669,6 +736,15 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
         });
       }
       if (request.url.path == '/mobile/analysis/jobs') {
+        if (request.method == 'POST') {
+          return _json({
+            'job': {
+              'id': 'analysis-job:queued',
+              'status': 'queued',
+              'progress': 0,
+            }
+          });
+        }
         return _json({
           'jobs': [
             {
@@ -677,9 +753,21 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
               'status': 'complete',
               'progress': 1,
               'current_stage': 'Complete',
-            }
+            },
+            {
+              'id': 'analysis-job:failed',
+              'workflow_id': 'bulk_rnaseq_deseq2',
+              'status': 'failed',
+              'progress': 1,
+              'current_stage': 'Failed',
+              'error_summary': 'DESeq2 requires raw integer counts.',
+            },
           ],
         });
+      }
+      if (request.url.path ==
+          '/mobile/analysis/jobs/analysis-job%3Afailed/outputs') {
+        return _json({'outputs': const []});
       }
       if (request.url.path ==
           '/mobile/analysis/outputs/analysis-output%3Atable') {
@@ -776,6 +864,23 @@ Map<String, dynamic> _publicDataset() {
     'sample_count': 6,
     'platform': 'Illumina NovaSeq 6000',
     'summary': 'Curated retinal organoid public GEO import fixture.',
+  };
+}
+
+Map<String, dynamic> _exploratoryPublicDataset() {
+  return {
+    'accession': 'GSE229682',
+    'title': 'GSE229682 CPM-only retinal organoids',
+    'organism': 'Homo sapiens',
+    'tissue': 'Human retinal organoids',
+    'sample_count': 15,
+    'platform': 'GPL16791 Illumina HiSeq 2500',
+    'experimental_groups': ['D60', 'D70', 'D90', 'D120', 'D200'],
+    'source_data_kind': 'normalized_cpm',
+    'exploratory_only': true,
+    'summary': 'Processed CPM table for exploratory visualization.',
+    'import_warning':
+        'GEO provides CPM values, not raw counts. Mundi imports this dataset as exploratory-only and will not run DESeq2 on rounded CPM values.',
   };
 }
 

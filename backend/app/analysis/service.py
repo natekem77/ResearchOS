@@ -118,6 +118,8 @@ class AnalysisService:
                     sample_count INTEGER,
                     cell_count INTEGER,
                     features_count INTEGER,
+                    source_data_kind TEXT NOT NULL DEFAULT 'raw_counts',
+                    exploratory_only INTEGER NOT NULL DEFAULT 0,
                     metadata_summary_json TEXT NOT NULL DEFAULT '{}',
                     checksum TEXT,
                     access_json TEXT NOT NULL DEFAULT '{}',
@@ -200,6 +202,8 @@ class AnalysisService:
                 """
             )
             _ensure_column(connection, "analysis_outputs", "registration_key", "TEXT")
+            _ensure_column(connection, "analysis_datasets", "source_data_kind", "TEXT NOT NULL DEFAULT 'raw_counts'")
+            _ensure_column(connection, "analysis_datasets", "exploratory_only", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "analysis_jobs", "retry_count", "INTEGER NOT NULL DEFAULT 0")
             _ensure_column(connection, "analysis_jobs", "max_retries", "INTEGER NOT NULL DEFAULT 2")
             _ensure_column(connection, "analysis_jobs", "last_worker_heartbeat", "TEXT")
@@ -415,6 +419,10 @@ class AnalysisService:
         if not metadata_abs.exists() or not metadata_abs.is_file():
             raise AnalysisValidationError("Sample metadata path is not available under an approved data root.")
         summary = _peek_bulk_dataset(counts_abs, metadata_abs)
+        source_data_kind = str(payload.get("source_data_kind") or summary.get("source_data_kind") or "raw_counts")
+        exploratory_only = bool(payload.get("exploratory_only") or summary.get("exploratory_only"))
+        summary["source_data_kind"] = source_data_kind
+        summary["exploratory_only"] = exploratory_only
         dataset_id = f"analysis-dataset:{uuid.uuid4().hex[:16]}"
         checksum = _fingerprint_paths([counts_abs, metadata_abs])
         with self._connect() as connection:
@@ -423,8 +431,8 @@ class AnalysisService:
                 INSERT INTO analysis_datasets
                     (id, user_id, display_name, modality, source_type, worker_id, storage_location_id,
                      counts_path, metadata_path, organism, genome_build, assay, sample_count,
-                     features_count, metadata_summary_json, checksum, access_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     features_count, source_data_kind, exploratory_only, metadata_summary_json, checksum, access_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dataset_id,
@@ -441,6 +449,8 @@ class AnalysisService:
                     payload.get("assay"),
                     summary["sample_count"],
                     summary["feature_count"],
+                    source_data_kind,
+                    1 if exploratory_only else 0,
                     json.dumps(summary),
                     checksum,
                     json.dumps({"owner": user_id}),
@@ -500,6 +510,12 @@ class AnalysisService:
             raise AnalysisValidationError("This workflow is scaffolded but not executable in the current milestone.")
         if workflow["modality"] != dataset["modality"]:
             raise AnalysisValidationError("Workflow does not support this dataset modality.")
+        if workflow_key == "bulk_rnaseq_deseq2" and _dataset_is_exploratory_only(dataset):
+            source_kind = str(dataset.get("source_data_kind") or "normalized expression")
+            raise AnalysisValidationError(
+                "DESeq2 requires raw integer counts. This dataset is marked exploratory-only "
+                f"because its source data are {source_kind}; use QC, PCA, clustering, and exploratory visualization instead."
+            )
         try:
             clean_parameters = validate_parameters(workflow_key, parameters or {})
         except ValueError as exc:
@@ -1084,6 +1100,8 @@ class AnalysisService:
                 "organism": record["organism"],
                 "genome_build": record.get("genome_build"),
                 "assay": "Bulk RNA-seq",
+                "source_data_kind": record.get("source_data_kind", "raw_counts"),
+                "exploratory_only": bool(record.get("exploratory_only", False)),
             },
         )
         self._audit(
@@ -1538,6 +1556,7 @@ class AnalysisService:
         payload["metadata_summary"] = json.loads(row["metadata_summary_json"] or "{}")
         payload["access"] = json.loads(row["access_json"] or "{}")
         payload["server_local"] = True
+        payload["exploratory_only"] = bool(row["exploratory_only"]) if "exploratory_only" in row.keys() else False
         return payload
 
     def _workflow_payload(self, row: sqlite3.Row, supported_workflows: set[str] | None = None) -> dict[str, Any]:
@@ -1811,6 +1830,20 @@ def _is_fresh_heartbeat(value: str) -> bool:
     if timestamp.tzinfo is None:
         timestamp = timestamp.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc) - timestamp < timedelta(seconds=90)
+
+
+def _dataset_is_exploratory_only(dataset: dict[str, Any]) -> bool:
+    if bool(dataset.get("exploratory_only")):
+        return True
+    summary = dataset.get("metadata_summary")
+    if isinstance(summary, dict) and bool(summary.get("exploratory_only")):
+        return True
+    return str(dataset.get("source_data_kind") or "").lower() in {
+        "normalized_cpm",
+        "normalized_tpm",
+        "cpm",
+        "tpm",
+    }
 
 
 def _dataset_candidate(path: Path) -> dict[str, Any] | None:
@@ -2556,14 +2589,17 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
             "geo_url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE229682",
             "download_url": "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE229682&format=file&file=GSE229682_Gene_CPM_MSTR.tsv.gz",
             "download_kind": "expression_table_tsv_gz",
+            "source_data_kind": "normalized_cpm",
+            "exploratory_only": True,
             "genome_build": "GRCh38",
             "tags": ["retinal organoid", "human retina", "bulk RNA-seq", "time course"],
-            "expected_analyses": ["Dataset Validation/QC", "Exploratory DESeq2 after rounded CPM import"],
+            "expected_analyses": ["Dataset Validation/QC", "PCA, clustering, and exploratory visualization"],
             "recommended_workflows": ["bulk_rnaseq_validation_qc"],
             "estimated_runtime": "minutes after download",
             "counts_filename": "counts.tsv",
             "metadata_filename": "samples.csv",
-            "import_warning": "GEO provides CPM values, not raw counts; Mundi stores rounded values for exploratory validation only.",
+            "gene_column": "external_gene_name",
+            "import_warning": "GEO provides CPM values, not raw counts. Mundi imports this dataset as exploratory-only and will not run DESeq2 on rounded CPM values.",
             "deseq2_defaults": {
                 "design_formula": "~ condition",
                 "contrast_factor": "condition",
@@ -2575,21 +2611,21 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
                 "lfc_threshold": 1.0,
             },
             "samples": [
-                ("D60_rep1", "D60"),
-                ("D60_rep2", "D60"),
-                ("D60_rep3", "D60"),
-                ("D70_rep1", "D70"),
-                ("D70_rep2", "D70"),
-                ("D70_rep3", "D70"),
-                ("D90_rep1", "D90"),
-                ("D90_rep2", "D90"),
-                ("D90_rep3", "D90"),
-                ("D120_rep1", "D120"),
-                ("D120_rep2", "D120"),
-                ("D120_rep3", "D120"),
-                ("D200_rep1", "D200"),
-                ("D200_rep2", "D200"),
-                ("D200_rep3", "D200"),
+                ("D060_1", "D60"),
+                ("D060_2", "D60"),
+                ("D060_3", "D60"),
+                ("D070_1", "D70"),
+                ("D070_2", "D70"),
+                ("D070_3", "D70"),
+                ("D090_1", "D90"),
+                ("D090_2", "D90"),
+                ("D090_3", "D90"),
+                ("D120_1", "D120"),
+                ("D120_2", "D120"),
+                ("D120_3", "D120"),
+                ("D200_1", "D200"),
+                ("D200_2", "D200"),
+                ("D200_3", "D200"),
             ],
         },
         {
@@ -2970,7 +3006,8 @@ def _convert_expression_table_to_counts(
         header = next(reader, None)
         if not header or len(header) < 2:
             raise AnalysisValidationError("Downloaded GEO expression table did not contain sample columns.")
-        gene_column = header[0]
+        gene_column = str(record.get("gene_column") or header[0])
+        gene_index = header.index(gene_column) if gene_column in header else 0
         configured_samples = [sample for sample, _group in record.get("samples", [])]
         if configured_samples:
             header_lookup = {column.strip(): index for index, column in enumerate(header)}
@@ -2988,7 +3025,7 @@ def _convert_expression_table_to_counts(
         for row in reader:
             if len(row) < 2:
                 continue
-            gene = row[0].strip()
+            gene = row[gene_index].strip() if gene_index < len(row) else ""
             if not gene:
                 continue
             values = [

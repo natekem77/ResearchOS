@@ -280,14 +280,20 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           'group_column': 'condition',
         },
       );
-      await widget.api.createAnalysisJob(
-        datasetId: datasetId,
-        workflowKey: 'bulk_rnaseq_deseq2',
-        parameters: _publicDeseq2Defaults(dataset),
-      );
+      final exploratory =
+          _isExploratoryOnly(dataset) || _isExploratoryOnly(imported);
+      if (!exploratory) {
+        await widget.api.createAnalysisJob(
+          datasetId: datasetId,
+          workflowKey: 'bulk_rnaseq_deseq2',
+          parameters: _publicDeseq2Defaults(dataset),
+        );
+      }
       if (!mounted) return;
       setState(() {
-        _message = 'Public dataset imported; QC and DESeq2 jobs queued.';
+        _message = exploratory
+            ? 'Public dataset imported; QC queued. DESeq2 was not queued because this dataset is exploratory-only.'
+            : 'Public dataset imported; QC and DESeq2 jobs queued.';
       });
       await _reload(quiet: true);
     } catch (error) {
@@ -351,6 +357,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               _KeyValue('Stage', job['current_stage']),
               if (job['queue_reason'] != null)
                 _KeyValue('Queue reason', job['queue_reason']),
+              if (job['error_summary'] != null)
+                _KeyValue('Error', job['error_summary']),
               _KeyValue('Worker', job['worker_id']),
               _KeyValue('Dataset', job['dataset_id']),
               _KeyValue('Started', job['started_at']),
@@ -884,6 +892,7 @@ class _PublicDatasetCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final exploratory = _isExploratoryOnly(dataset);
     return Padding(
       padding: const EdgeInsets.only(top: ResearchOsSpacing.sm),
       child: DecoratedBox(
@@ -959,7 +968,9 @@ class _PublicDatasetCard extends StatelessWidget {
                   FilledButton.icon(
                     onPressed: onImportAndRun,
                     icon: const Icon(Icons.play_arrow_outlined),
-                    label: const Text('Import + Run DESeq2'),
+                    label: Text(exploratory
+                        ? 'Import + QC only'
+                        : 'Import + Run DESeq2'),
                   ),
                 ],
               ),
@@ -1055,10 +1066,14 @@ class _DatasetCard extends StatelessWidget {
     final metadata = summary is Map ? summary : const {};
     final modality = dataset['modality']?.toString() ?? 'bulk_rna_seq';
     final canRunQc = modality == 'bulk_rna_seq';
-    final deseq2Ready =
-        canRunQc && deseq2Workflow?['status']?.toString() == 'installed';
-    final deseq2Reason = deseq2Workflow?['readiness_reason']?.toString() ??
-        'No eligible DESeq2 worker is connected.';
+    final exploratory = _isExploratoryOnly(dataset);
+    final deseq2Ready = canRunQc &&
+        !exploratory &&
+        deseq2Workflow?['status']?.toString() == 'installed';
+    final deseq2Reason = exploratory
+        ? 'DESeq2 requires raw integer counts. This dataset is exploratory-only because its source data are normalized CPM/TPM values.'
+        : deseq2Workflow?['readiness_reason']?.toString() ??
+            'No eligible DESeq2 worker is connected.';
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(ResearchOsSpacing.md),
@@ -1107,7 +1122,8 @@ class _DatasetCard extends StatelessWidget {
                     child: FilledButton.tonalIcon(
                       onPressed: deseq2Ready ? onRunDeseq2 : null,
                       icon: const Icon(Icons.biotech_outlined),
-                      label: const Text('Run DESeq2'),
+                      label: Text(
+                          exploratory ? 'DESeq2 unavailable' : 'Run DESeq2'),
                     ),
                   ),
                 ],
@@ -1492,6 +1508,16 @@ class _JobCard extends StatelessWidget {
               Text(
                 job['queue_reason'].toString(),
                 style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+            if (job['error_summary'] != null) ...[
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Text(
+                job['error_summary'].toString(),
+                style: Theme.of(context)
+                    .textTheme
+                    .bodySmall
+                    ?.copyWith(color: Theme.of(context).colorScheme.error),
               ),
             ],
             const SizedBox(height: ResearchOsSpacing.sm),
@@ -2452,15 +2478,31 @@ String? _emptyToNull(String value) {
   return clean.isEmpty ? null : clean;
 }
 
+bool _isExploratoryOnly(Map<String, dynamic> dataset) {
+  if (dataset['exploratory_only'] == true) return true;
+  final summary = dataset['metadata_summary'];
+  if (summary is Map && summary['exploratory_only'] == true) return true;
+  final sourceKind = dataset['source_data_kind']?.toString().toLowerCase();
+  return sourceKind == 'normalized_cpm' ||
+      sourceKind == 'normalized_tpm' ||
+      sourceKind == 'cpm' ||
+      sourceKind == 'tpm';
+}
+
 Map<String, dynamic> _publicDeseq2Defaults(Map<String, dynamic> dataset) {
   final defaults = dataset['deseq2_defaults'];
-  if (defaults is Map) return defaults.cast<String, dynamic>();
+  if (defaults is Map) {
+    final clean = defaults.cast<String, dynamic>();
+    clean.remove('design_formula');
+    clean.remove('group_column');
+    clean.putIfAbsent('design_factors', () => ['condition']);
+    return clean;
+  }
   final groups = dataset['experimental_groups'];
   if (groups is List && groups.length >= 2) {
     return {
       'sample_id_column': 'sample',
-      'group_column': 'condition',
-      'design_formula': '~ condition',
+      'design_factors': ['condition'],
       'contrast_factor': 'condition',
       'denominator_level': groups.first.toString(),
       'numerator_level': groups.last.toString(),
@@ -2472,8 +2514,7 @@ Map<String, dynamic> _publicDeseq2Defaults(Map<String, dynamic> dataset) {
   }
   return const {
     'sample_id_column': 'sample',
-    'group_column': 'condition',
-    'design_formula': '~ condition',
+    'design_factors': ['condition'],
     'contrast_factor': 'condition',
     'denominator_level': 'control',
     'numerator_level': 'treated',
