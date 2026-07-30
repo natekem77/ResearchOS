@@ -1347,8 +1347,12 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
               '${validation['sample_count'] ?? widget.dataset['sample_count'] ?? '-'} samples • '
               '${validation['count_matrix_dimensions'] is Map ? (validation['count_matrix_dimensions'] as Map)['genes'] : widget.dataset['features_count'] ?? '-'} genes',
             ),
-            if (levels.isNotEmpty)
+            if (levels.isNotEmpty) ...[
+              const SizedBox(height: ResearchOsSpacing.xs),
+              const Text('Detected condition levels:'),
+              for (final level in levels) Text('• $level'),
               Text('Condition levels: ${levels.join(', ')}'),
+            ],
             Text(
                 'Zero-count samples: ${zeroCountSamples.isEmpty ? 'none' : zeroCountSamples.join(', ')}'),
             Text(
@@ -1612,26 +1616,26 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
     }
     final suggestedNumerator = suggested['numerator_level']?.toString();
     final suggestedDenominator = suggested['denominator_level']?.toString();
-    final denominator = levels.contains(suggestedDenominator)
-        ? suggestedDenominator!
-        : levels.first;
-    final numerator =
-        levels.contains(suggestedNumerator) ? suggestedNumerator! : levels.last;
+    final hasRecommendedComparison = levels.contains(suggestedNumerator) &&
+        levels.contains(suggestedDenominator) &&
+        suggestedNumerator != suggestedDenominator;
+    if (!hasRecommendedComparison) {
+      if (force) {
+        _numeratorController.clear();
+        _denominatorController.clear();
+      }
+      return;
+    }
     if (force ||
         _denominatorController.text.isEmpty ||
         !levels.contains(_denominatorController.text)) {
-      _denominatorController.text = denominator;
+      _denominatorController.text = suggestedDenominator!;
     }
     if (force ||
         _numeratorController.text.isEmpty ||
         !levels.contains(_numeratorController.text) ||
         _numeratorController.text == _denominatorController.text) {
-      _numeratorController.text =
-          numerator == _denominatorController.text && levels.length > 1
-              ? levels.lastWhere(
-                  (level) => level != _denominatorController.text,
-                )
-              : numerator;
+      _numeratorController.text = suggestedNumerator!;
     }
   }
 
@@ -1647,13 +1651,8 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
         onChanged: (_) => setState(() {}),
       );
     }
-    final current =
-        levels.contains(controller.text) ? controller.text : levels.first;
-    if (controller.text != current) {
-      controller.text = current;
-    }
     return DropdownButtonFormField<String>(
-      initialValue: current,
+      initialValue: levels.contains(controller.text) ? controller.text : null,
       decoration: InputDecoration(labelText: label),
       items: [
         for (final level in levels)

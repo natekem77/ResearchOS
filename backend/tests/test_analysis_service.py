@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import sqlite3
 import tempfile
@@ -287,6 +288,50 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(
             dataset["metadata_summary"]["validation"]["condition_levels_by_factor"]["condition"],
             ["DMSO", "SAG"],
+        )
+
+    def test_dataset_payload_enriches_missing_condition_levels_from_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Legacy Summary Counts",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                    "source_data_kind": "raw_counts",
+                    "suggested_deseq2": {
+                        "sample_id_column": "sample",
+                        "design_factors": ["condition"],
+                        "contrast_factor": "condition",
+                        "denominator_level": "DMSO",
+                        "numerator_level": "SAG",
+                    },
+                },
+            )
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    "UPDATE analysis_datasets SET metadata_summary_json = ? WHERE id = ?",
+                    (
+                        json.dumps(
+                            {
+                                "suggested_deseq2": dataset["metadata_summary"]["suggested_deseq2"],
+                                "validation": {"sample_names_match": True},
+                            }
+                        ),
+                        dataset["id"],
+                    ),
+                )
+
+            hydrated = service.get_dataset("user:pi-owner", dataset["id"])
+
+        self.assertEqual(
+            hydrated["metadata_summary"]["validation"]["condition_levels_by_factor"]["condition"],
+            ["DMSO", "SAG"],
+        )
+        self.assertEqual(
+            hydrated["metadata_summary"]["suggested_deseq2"]["numerator_level"],
+            "SAG",
         )
 
     def test_normalized_cpm_dataset_blocks_deseq2_job(self) -> None:

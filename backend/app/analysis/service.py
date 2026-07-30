@@ -1640,7 +1640,21 @@ class AnalysisService:
 
     def _dataset_payload(self, row: sqlite3.Row) -> dict[str, Any]:
         payload = dict(row)
-        payload["metadata_summary"] = json.loads(row["metadata_summary_json"] or "{}")
+        metadata_summary = json.loads(row["metadata_summary_json"] or "{}")
+        validation = metadata_summary.get("validation")
+        needs_factor_levels = not isinstance(validation, dict) or not validation.get("condition_levels_by_factor")
+        if needs_factor_levels:
+            try:
+                counts_path, _ = self._resolve_location_path(str(row["storage_location_id"]), str(row["counts_path"]))
+                metadata_path, _ = self._resolve_location_path(str(row["storage_location_id"]), str(row["metadata_path"]))
+                refreshed_summary = _peek_bulk_dataset(counts_path, metadata_path)
+                for key in ("source_data_kind", "exploratory_only", "suggested_deseq2"):
+                    if key in metadata_summary:
+                        refreshed_summary[key] = metadata_summary[key]
+                metadata_summary = refreshed_summary
+            except Exception:
+                logger.debug("analysis dataset metadata summary enrichment failed", exc_info=True)
+        payload["metadata_summary"] = metadata_summary
         payload["access"] = json.loads(row["access_json"] or "{}")
         payload["server_local"] = True
         payload["exploratory_only"] = bool(row["exploratory_only"]) if "exploratory_only" in row.keys() else False
