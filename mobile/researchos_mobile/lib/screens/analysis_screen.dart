@@ -1243,14 +1243,27 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
       TextEditingController(text: '50');
   String _shrinkage = 'none';
   String _transform = 'vst';
+  bool _excludeZeroCountSamples = false;
 
   @override
   void initState() {
     super.initState();
-    final name = widget.dataset['display_name']?.toString().toLowerCase() ?? '';
-    if (name.contains('sag') || name.contains('retina')) {
-      _numeratorController.text = 'treated';
-      _denominatorController.text = 'control';
+    final suggested = _suggestedDeseq2();
+    final conditions = _conditions();
+    _sampleColumnController.text =
+        suggested['sample_id_column']?.toString() ?? 'sample';
+    _designController.text = _designFactorsFromSuggested(suggested).join(', ');
+    _contrastFactorController.text =
+        suggested['contrast_factor']?.toString() ?? 'condition';
+    if (suggested['numerator_level'] != null) {
+      _numeratorController.text = suggested['numerator_level'].toString();
+    } else if (conditions.isNotEmpty) {
+      _numeratorController.text = conditions.last;
+    }
+    if (suggested['denominator_level'] != null) {
+      _denominatorController.text = suggested['denominator_level'].toString();
+    } else if (conditions.isNotEmpty) {
+      _denominatorController.text = conditions.first;
     }
   }
 
@@ -1273,6 +1286,10 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
   Widget build(BuildContext context) {
     final designFactors = _designFactors();
     final formula = '~ ${designFactors.join(' + ')}';
+    final validation = _validationSummary();
+    final conditions = _conditions();
+    final zeroCountSamples = _zeroCountSamples();
+    final mismatches = _metadataMismatches();
     return AlertDialog(
       title: const Text('Run DESeq2'),
       content: SingleChildScrollView(
@@ -1306,23 +1323,56 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
               controller: _contrastFactorController,
               decoration: const InputDecoration(labelText: 'Contrast factor'),
             ),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _numeratorController,
-                    decoration: const InputDecoration(labelText: 'Numerator'),
-                  ),
-                ),
-                const SizedBox(width: ResearchOsSpacing.sm),
-                Expanded(
-                  child: TextField(
-                    controller: _denominatorController,
-                    decoration: const InputDecoration(labelText: 'Reference'),
-                  ),
-                ),
-              ],
+            if (conditions.isNotEmpty) ...[
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Text('condition: ${conditions.join(', ')}'),
+            ],
+            _conditionField(
+              label: 'Numerator',
+              controller: _numeratorController,
+              conditions: conditions,
             ),
+            _conditionField(
+              label: 'Reference',
+              controller: _denominatorController,
+              conditions: conditions,
+            ),
+            const SizedBox(height: ResearchOsSpacing.sm),
+            Text('Validation summary',
+                style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              '${validation['sample_count'] ?? widget.dataset['sample_count'] ?? '-'} samples • '
+              '${validation['count_matrix_dimensions'] is Map ? (validation['count_matrix_dimensions'] as Map)['genes'] : widget.dataset['features_count'] ?? '-'} genes',
+            ),
+            if (conditions.isNotEmpty)
+              Text('Conditions: ${conditions.join(', ')}'),
+            Text(
+                'Zero-count samples: ${zeroCountSamples.isEmpty ? 'none' : zeroCountSamples.join(', ')}'),
+            Text(
+              'Duplicated samples: ${validation['duplicate_sample_count'] ?? 0}',
+            ),
+            Text(
+              'Duplicated genes: ${validation['duplicate_gene_count'] ?? 0}',
+            ),
+            if (mismatches.isNotEmpty)
+              Text(
+                'Metadata mismatches: ${mismatches.join('; ')}',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            if (zeroCountSamples.isNotEmpty)
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _excludeZeroCountSamples,
+                onChanged: (value) {
+                  setState(() {
+                    _excludeZeroCountSamples = value ?? false;
+                  });
+                },
+                title: const Text('Exclude zero-count samples'),
+                subtitle: Text(
+                  'DESeq2 cannot use samples with zero total counts: ${zeroCountSamples.join(', ')}',
+                ),
+              ),
             const SizedBox(height: ResearchOsSpacing.sm),
             Row(
               children: [
@@ -1423,12 +1473,17 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
   }
 
   bool _canSubmit() {
+    final zeroCountSamples = _zeroCountSamples();
+    final mismatches = _metadataMismatches();
     return _sampleColumnController.text.trim().isNotEmpty &&
         _designFactors().isNotEmpty &&
         _contrastFactorController.text.trim().isNotEmpty &&
         _numeratorController.text.trim().isNotEmpty &&
         _denominatorController.text.trim().isNotEmpty &&
-        _numeratorController.text.trim() != _denominatorController.text.trim();
+        _numeratorController.text.trim() !=
+            _denominatorController.text.trim() &&
+        mismatches.isEmpty &&
+        (zeroCountSamples.isEmpty || _excludeZeroCountSamples);
   }
 
   List<String> _designFactors() {
@@ -1457,7 +1512,111 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
       'transformed_count_method': _transform,
       'top_gene_count': int.tryParse(_topGenesController.text.trim()) ?? 50,
       'sample_annotation_columns': _designFactors(),
+      if (_excludeZeroCountSamples) 'exclude_samples': _zeroCountSamples(),
     };
+  }
+
+  Map<String, dynamic> _metadataSummary() {
+    final summary = widget.dataset['metadata_summary'];
+    return summary is Map
+        ? summary.cast<String, dynamic>()
+        : <String, dynamic>{};
+  }
+
+  Map<String, dynamic> _validationSummary() {
+    final validation = _metadataSummary()['validation'];
+    return validation is Map
+        ? validation.cast<String, dynamic>()
+        : <String, dynamic>{};
+  }
+
+  Map<String, dynamic> _suggestedDeseq2() {
+    final suggested = _metadataSummary()['suggested_deseq2'];
+    return suggested is Map
+        ? suggested.cast<String, dynamic>()
+        : <String, dynamic>{};
+  }
+
+  List<String> _conditions() {
+    final conditions = _validationSummary()['conditions'];
+    if (conditions is List) {
+      return conditions
+          .map((item) => item.toString())
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
+    return const [];
+  }
+
+  List<String> _zeroCountSamples() {
+    final samples = _validationSummary()['zero_count_samples'];
+    if (samples is List) {
+      return samples
+          .map((item) => item.toString())
+          .where((item) => item.isNotEmpty)
+          .toList();
+    }
+    return const [];
+  }
+
+  List<String> _metadataMismatches() {
+    final validation = _validationSummary();
+    final messages = <String>[];
+    final missing = validation['missing_metadata_samples'];
+    if (missing is List && missing.isNotEmpty) {
+      messages.add('missing metadata for ${missing.join(', ')}');
+    }
+    final extra = validation['metadata_without_counts'];
+    if (extra is List && extra.isNotEmpty) {
+      messages.add('metadata without counts for ${extra.join(', ')}');
+    }
+    return messages;
+  }
+
+  List<String> _designFactorsFromSuggested(Map<String, dynamic> suggested) {
+    final factors = suggested['design_factors'];
+    if (factors is List) {
+      final clean = factors
+          .map((item) => item.toString())
+          .where((item) => item.isNotEmpty)
+          .toList();
+      if (clean.isNotEmpty) return clean;
+    }
+    return const ['condition'];
+  }
+
+  Widget _conditionField({
+    required String label,
+    required TextEditingController controller,
+    required List<String> conditions,
+  }) {
+    if (conditions.isEmpty) {
+      return TextField(
+        controller: controller,
+        decoration: InputDecoration(labelText: label),
+        onChanged: (_) => setState(() {}),
+      );
+    }
+    final current = conditions.contains(controller.text)
+        ? controller.text
+        : conditions.first;
+    if (controller.text != current) {
+      controller.text = current;
+    }
+    return DropdownButtonFormField<String>(
+      initialValue: current,
+      decoration: InputDecoration(labelText: label),
+      items: [
+        for (final condition in conditions)
+          DropdownMenuItem(value: condition, child: Text(condition)),
+      ],
+      onChanged: (value) {
+        if (value == null) return;
+        setState(() {
+          controller.text = value;
+        });
+      },
+    );
   }
 }
 

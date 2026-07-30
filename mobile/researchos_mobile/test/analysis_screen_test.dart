@@ -556,10 +556,44 @@ void main() {
       500,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.ensureVisible(find.text('View Job').last);
+    await tester.pumpAndSettle();
     await tester.tap(find.text('View Job').last);
     await tester.pumpAndSettle();
     expect(find.text('Error'), findsOneWidget);
     expect(find.text('DESeq2 requires raw integer counts.'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('DESeq2 dialog uses imported condition defaults and validation',
+      (tester) async {
+    final api = _mockAnalysisApi(<String>[]);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Imported retinal GEO counts'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.scrollUntilVisible(
+      find.widgetWithText(FilledButton, 'Run DESeq2').last,
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester
+        .ensureVisible(find.widgetWithText(FilledButton, 'Run DESeq2').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, 'Run DESeq2').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('condition: D60, D70, D90, D120, D200'), findsOneWidget);
+    expect(find.text('D200'), findsWidgets);
+    expect(find.text('D60'), findsWidgets);
+    expect(find.text('Zero-count samples: none'), findsOneWidget);
+    expect(find.text('Duplicated genes: 0'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -678,6 +712,37 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
               'metadata_summary': const {},
             },
             {
+              'id': 'analysis-dataset:geo',
+              'display_name': 'Imported retinal GEO counts',
+              'modality': 'bulk_rna_seq',
+              'sample_count': 15,
+              'features_count': 59618,
+              'source_data_kind': 'raw_counts',
+              'exploratory_only': false,
+              'metadata_summary': {
+                'suggested_deseq2': {
+                  'sample_id_column': 'sample',
+                  'design_factors': ['condition'],
+                  'contrast_factor': 'condition',
+                  'denominator_level': 'D60',
+                  'numerator_level': 'D200',
+                },
+                'validation': {
+                  'sample_count': 15,
+                  'duplicate_gene_count': 0,
+                  'duplicate_sample_count': 0,
+                  'zero_count_samples': const [],
+                  'missing_metadata_samples': const [],
+                  'metadata_without_counts': const [],
+                  'conditions': ['D60', 'D70', 'D90', 'D120', 'D200'],
+                  'count_matrix_dimensions': {
+                    'genes': 59618,
+                    'samples': 15,
+                  },
+                },
+              },
+            },
+            {
               'id': 'analysis-dataset:cpm',
               'display_name': 'GSE229682 CPM-only retinal organoids',
               'modality': 'bulk_rna_seq',
@@ -731,7 +796,13 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
             {
               'stable_key': 'bulk_rnaseq_validation_qc',
               'name': 'Bulk RNA-seq Dataset Validation/QC',
-            }
+            },
+            {
+              'stable_key': 'bulk_rnaseq_deseq2',
+              'name': 'DESeq2 Differential Expression',
+              'status': 'installed',
+              'readiness_reason': 'Ready',
+            },
           ],
         });
       }

@@ -116,6 +116,11 @@ BULK_DESEQ2 = AnalysisWorkflow(
                 "items": {"type": "string"},
                 "default": ["condition"],
             },
+            "exclude_samples": {
+                "type": "array",
+                "items": {"type": "string"},
+                "default": [],
+            },
         },
         "required": ["contrast_factor", "numerator_level", "denominator_level"],
         "additionalProperties": False,
@@ -222,6 +227,11 @@ def validate_parameters(stable_key: str, parameters: dict[str, Any] | None) -> d
             "sample_annotation_columns": [
                 str(item).strip()
                 for item in raw.get("sample_annotation_columns", [contrast_factor])
+                if str(item).strip()
+            ],
+            "exclude_samples": [
+                str(item).strip()
+                for item in raw.get("exclude_samples", [])
                 if str(item).strip()
             ],
         }

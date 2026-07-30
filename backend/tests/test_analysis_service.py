@@ -320,6 +320,64 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertNotIn("bulk_rnaseq_deseq2", gse229682["recommended_workflows"])
         self.assertTrue(dataset["exploratory_only"])
 
+    def test_zero_count_sample_requires_explicit_exclusion_for_deseq2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, root = self._fixture(tmpdir)
+            zero_counts = root / "bulk" / "counts_with_zero.tsv"
+            with zero_counts.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle, delimiter="\t")
+                writer.writerow(["gene", "DMSO_1", "SAG_1", "zero_sample"])
+                writer.writerow(["BMP4", "10", "28", "0"])
+                writer.writerow(["POU4F2", "2", "9", "0"])
+                writer.writerow(["RBPMS", "3", "12", "0"])
+                writer.writerow(["GAPDH", "100", "110", "0"])
+            metadata = root / "bulk" / "samples_with_zero.csv"
+            with metadata.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["sample", "condition"])
+                writer.writeheader()
+                writer.writerow({"sample": "DMSO_1", "condition": "DMSO"})
+                writer.writerow({"sample": "SAG_1", "condition": "SAG"})
+                writer.writerow({"sample": "zero_sample", "condition": "SAG"})
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Counts With Zero Sample",
+                    "counts_path": "bulk/counts_with_zero.tsv",
+                    "metadata_path": "bulk/samples_with_zero.csv",
+                },
+            )
+            validation = dataset["metadata_summary"]["validation"]
+
+            with self.assertRaisesRegex(AnalysisValidationError, "zero_sample"):
+                service.create_job(
+                    user_id="user:pi-owner",
+                    dataset_id=dataset["id"],
+                    workflow_key="bulk_rnaseq_deseq2",
+                    parameters={
+                        "sample_id_column": "sample",
+                        "design_factors": ["condition"],
+                        "contrast_factor": "condition",
+                        "numerator_level": "SAG",
+                        "denominator_level": "DMSO",
+                    },
+                )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_deseq2",
+                parameters={
+                    "sample_id_column": "sample",
+                    "design_factors": ["condition"],
+                    "contrast_factor": "condition",
+                    "numerator_level": "SAG",
+                    "denominator_level": "DMSO",
+                    "exclude_samples": ["zero_sample"],
+                },
+            )
+
+        self.assertEqual(validation["zero_count_samples"], ["zero_sample"])
+        self.assertEqual(job["parameters"]["exclude_samples"], ["zero_sample"])
+
     def test_path_allowlist_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)
@@ -676,22 +734,19 @@ class AnalysisServiceTests(unittest.TestCase):
                     "metadata_path": "bulk/samples.csv",
                 },
             )
-            job = service.create_job(
-                user_id="user:pi-owner",
-                dataset_id=dataset["id"],
-                workflow_key="bulk_rnaseq_deseq2",
-                parameters={
-                    "sample_id_column": "sample",
-                    "design_factors": ["condition"],
-                    "contrast_factor": "condition",
-                    "numerator_level": "missing",
-                    "denominator_level": "DMSO",
-                },
-            )
-            failed = service.run_claimed_job_once("worker-1")
-
-        self.assertEqual(failed["status"], "failed")
-        self.assertIn("Numerator level", failed["error_summary"])
+            with self.assertRaisesRegex(AnalysisValidationError, "Numerator level"):
+                service.create_job(
+                    user_id="user:pi-owner",
+                    dataset_id=dataset["id"],
+                    workflow_key="bulk_rnaseq_deseq2",
+                    parameters={
+                        "sample_id_column": "sample",
+                        "design_factors": ["condition"],
+                        "contrast_factor": "condition",
+                        "numerator_level": "missing",
+                        "denominator_level": "DMSO",
+                    },
+                )
 
     def test_output_detail_rename_references_and_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

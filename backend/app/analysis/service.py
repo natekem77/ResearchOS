@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import platform
+import re
 import shutil
 import sqlite3
 import statistics
@@ -423,6 +424,8 @@ class AnalysisService:
         exploratory_only = bool(payload.get("exploratory_only") or summary.get("exploratory_only"))
         summary["source_data_kind"] = source_data_kind
         summary["exploratory_only"] = exploratory_only
+        if isinstance(payload.get("suggested_deseq2"), dict):
+            summary["suggested_deseq2"] = payload["suggested_deseq2"]
         dataset_id = f"analysis-dataset:{uuid.uuid4().hex[:16]}"
         checksum = _fingerprint_paths([counts_abs, metadata_abs])
         with self._connect() as connection:
@@ -520,6 +523,8 @@ class AnalysisService:
             clean_parameters = validate_parameters(workflow_key, parameters or {})
         except ValueError as exc:
             raise AnalysisValidationError(str(exc)) from exc
+        if workflow_key == "bulk_rnaseq_deseq2":
+            self._preflight_bulk_deseq2_dataset(dataset, clean_parameters)
         job_id = f"analysis-job:{uuid.uuid4().hex[:16]}"
         manifest = {
             "dataset_id": dataset_id,
@@ -554,6 +559,21 @@ class AnalysisService:
             )
         self._audit(user_id, "job.create", job_id, {"workflow": workflow_key})
         return self.get_job(user_id, job_id)
+
+    def _preflight_bulk_deseq2_dataset(self, dataset: dict[str, Any], parameters: dict[str, Any]) -> None:
+        counts_path, _ = self._resolve_location_path(str(dataset["storage_location_id"]), str(dataset["counts_path"]))
+        metadata_path, _ = self._resolve_location_path(str(dataset["storage_location_id"]), str(dataset["metadata_path"]))
+        excluded_samples = set(str(item) for item in parameters.get("exclude_samples", []) if str(item).strip())
+        counts = _read_count_matrix(counts_path, exclude_samples=excluded_samples)
+        sample_column = str(parameters.get("sample_id_column") or "sample")
+        metadata = [
+            row
+            for row in _read_table(metadata_path)
+            if str(row.get(sample_column) or "").strip() not in excluded_samples
+        ]
+        validation = _validate_deseq2_inputs(counts, metadata, parameters)
+        if validation["errors"]:
+            raise AnalysisValidationError("; ".join(validation["errors"]))
 
     def list_jobs(self, user_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -1072,7 +1092,8 @@ class AnalysisService:
             raise AnalysisValidationError("Public GEO dataset is not available in the curated import catalog.")
         existing = self._dataset_by_name(user_id, record["title"])
         if existing is not None:
-            return self._dataset_payload(existing) | {"import_status": "already_imported"}
+            refreshed = self._refresh_public_geo_dataset(user_id, existing, record)
+            return refreshed | {"import_status": "already_imported"}
 
         dataset_dir = self.allowed_roots[0] / "public_geo" / record["accession"]
         dataset_dir.mkdir(parents=True, exist_ok=True)
@@ -1102,6 +1123,7 @@ class AnalysisService:
                 "assay": "Bulk RNA-seq",
                 "source_data_kind": record.get("source_data_kind", "raw_counts"),
                 "exploratory_only": bool(record.get("exploratory_only", False)),
+                "suggested_deseq2": record.get("deseq2_defaults"),
             },
         )
         self._audit(
@@ -1111,6 +1133,65 @@ class AnalysisService:
             {"accession": record["accession"], "source": record["source"]},
         )
         return dataset | {"import_status": "imported"}
+
+    def _refresh_public_geo_dataset(
+        self,
+        user_id: str,
+        existing: sqlite3.Row,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        counts_path, _counts_rel = self._resolve_location_path(
+            str(existing["storage_location_id"]),
+            str(existing["counts_path"]),
+        )
+        metadata_path, _metadata_rel = self._resolve_location_path(
+            str(existing["storage_location_id"]),
+            str(existing["metadata_path"]),
+        )
+        if record.get("download_url"):
+            _download_public_geo_dataset(record, counts_path.parent, counts_path, metadata_path)
+        else:
+            _write_counts_and_samples(
+                counts_path,
+                metadata_path,
+                genes=record["genes"],
+                samples=record["samples"],
+            )
+        summary = _peek_bulk_dataset(counts_path, metadata_path)
+        source_data_kind = str(record.get("source_data_kind", "raw_counts"))
+        exploratory_only = bool(record.get("exploratory_only", False))
+        summary["source_data_kind"] = source_data_kind
+        summary["exploratory_only"] = exploratory_only
+        if isinstance(record.get("deseq2_defaults"), dict):
+            summary["suggested_deseq2"] = record["deseq2_defaults"]
+        checksum = _fingerprint_paths([counts_path, metadata_path])
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE analysis_datasets
+                SET sample_count = ?, features_count = ?, source_data_kind = ?,
+                    exploratory_only = ?, metadata_summary_json = ?, checksum = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+                """,
+                (
+                    summary["sample_count"],
+                    summary["feature_count"],
+                    source_data_kind,
+                    1 if exploratory_only else 0,
+                    json.dumps(summary),
+                    checksum,
+                    existing["id"],
+                    user_id,
+                ),
+            )
+        self._audit(
+            user_id,
+            "dataset.public_geo_refresh",
+            str(existing["id"]),
+            {"accession": record["accession"], "source": record["source"]},
+        )
+        return self.get_dataset(user_id, str(existing["id"]))
 
     def install_demo_workspace(self, user_id: str) -> dict[str, Any]:
         demo_dir = self.allowed_roots[0] / "demo"
@@ -1281,8 +1362,14 @@ class AnalysisService:
         parameters = dict(job.get("parameters") or {})
 
         self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.28, current_stage="Validating DESeq2 design")
-        counts = _read_count_matrix(counts_path)
-        metadata = _read_table(metadata_path)
+        excluded_samples = set(str(item) for item in parameters.get("exclude_samples", []) if str(item).strip())
+        counts = _read_count_matrix(counts_path, exclude_samples=excluded_samples)
+        metadata = [
+            row
+            for row in _read_table(metadata_path)
+            if str(row.get(str(parameters.get("sample_id_column") or "sample")) or "").strip()
+            not in excluded_samples
+        ]
         validation = _validate_deseq2_inputs(counts, metadata, parameters)
         if validation["errors"]:
             raise AnalysisValidationError("; ".join(validation["errors"]))
@@ -1896,10 +1983,12 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
     negative_values = 0
     low_count_genes = 0
     empty_gene_ids = 0
+    sample_totals: dict[str, int] = {}
     with counts_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
         header = next(reader, [])
         samples = [item.strip() for item in header[1:]]
+        sample_totals = {sample: 0 for sample in samples}
         feature_count = 0
         for row in reader:
             if not row:
@@ -1922,6 +2011,7 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
                     continue
                 if value < 0:
                     negative_values += 1
+                sample_totals[_sample] = sample_totals.get(_sample, 0) + value
                 total += value
             if total < 10:
                 low_count_genes += 1
@@ -1938,6 +2028,16 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
     duplicate_metadata_samples = sorted(
         {sample for sample in metadata_samples if sample and metadata_samples.count(sample) > 1}
     )
+    duplicate_count_samples = sorted({sample for sample in samples if sample and samples.count(sample) > 1})
+    zero_count_samples = sorted(sample for sample, total in sample_totals.items() if total == 0)
+    conditions = sorted(
+        {
+            str(row.get("condition") or "").strip()
+            for row in metadata_rows
+            if str(row.get("condition") or "").strip()
+        },
+        key=_natural_label_sort_key,
+    )
     warnings = []
     if missing_metadata:
         warnings.append("Some count-matrix samples are missing metadata.")
@@ -1945,8 +2045,12 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
         warnings.append("Some metadata rows do not have matching count-matrix samples.")
     if duplicate_metadata_samples:
         warnings.append("Duplicate sample identifiers were found in metadata.")
+    if duplicate_count_samples:
+        warnings.append("Duplicate sample columns were found in the count matrix.")
     if duplicate_genes:
         warnings.append("Duplicate gene identifiers were detected.")
+    if zero_count_samples:
+        warnings.append("One or more samples have zero total counts.")
     if non_integer_values:
         warnings.append("The count matrix contains non-integer values.")
     if negative_values:
@@ -1963,9 +2067,11 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
         "validation": {
             "sample_names_match": not missing_metadata and not metadata_without_counts,
             "duplicate_gene_count": len(duplicate_genes),
+            "duplicate_sample_count": len(duplicate_count_samples),
             "duplicate_metadata_sample_count": len(duplicate_metadata_samples),
             "missing_metadata_samples": missing_metadata[:100],
             "metadata_without_counts": metadata_without_counts[:100],
+            "zero_count_samples": zero_count_samples,
             "non_integer_value_count": non_integer_values,
             "negative_value_count": negative_values,
             "empty_gene_id_count": empty_gene_ids,
@@ -1975,9 +2081,15 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
                 "samples": len(samples),
             },
             "metadata_complete": bool(metadata_rows) and not missing_metadata,
+            "conditions": conditions,
             "warnings": warnings,
         },
     }
+
+
+def _natural_label_sort_key(label: str) -> tuple[Any, ...]:
+    parts = re.split(r"(\d+)", label)
+    return tuple(int(part) if part.isdigit() else part.lower() for part in parts)
 
 
 def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id_column: str, group_column: str) -> dict[str, Any]:
@@ -2027,6 +2139,7 @@ def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id
         for sample in samples
     ]
     library_values = [row["library_size"] for row in sample_qc]
+    zero_count_samples = [sample for sample, total in library_sizes.items() if total == 0]
     flags = []
     if missing_metadata:
         flags.append("Some count-matrix samples are missing metadata.")
@@ -2036,6 +2149,8 @@ def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id
         flags.append("The count matrix contains non-integer values.")
     if duplicate_genes:
         flags.append("Duplicate gene identifiers were detected.")
+    if zero_count_samples:
+        flags.append("One or more samples have zero total counts.")
     return {
         "summary": {
             "sample_count": len(samples),
@@ -2044,6 +2159,7 @@ def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id
             "integer_counts_valid": non_integer_values == 0,
             "sample_names_match": not missing_metadata and not metadata_without_counts,
             "duplicate_gene_count": len(duplicate_genes),
+            "zero_count_sample_count": len(zero_count_samples),
             "library_size_min": min(library_values) if library_values else 0,
             "library_size_max": max(library_values) if library_values else 0,
             "library_size_median": statistics.median(library_values) if library_values else 0,
@@ -2051,6 +2167,7 @@ def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id
         "sample_qc": sample_qc,
         "group_sizes": groups,
         "duplicate_genes": duplicate_genes[:100],
+        "zero_count_samples": zero_count_samples,
         "missing_metadata_samples": missing_metadata,
         "metadata_without_counts": metadata_without_counts,
         "flags": flags,
@@ -2063,14 +2180,22 @@ def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id
     }
 
 
-def _read_count_matrix(path: Path) -> dict[str, Any]:
+def _read_count_matrix(path: Path, *, exclude_samples: set[str] | None = None) -> dict[str, Any]:
     delimiter = "\t" if path.suffix.lower() in {".tsv", ".txt"} else ","
+    exclude_samples = exclude_samples or set()
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.reader(handle, delimiter=delimiter)
         header = next(reader, [])
         if len(header) < 3:
             raise AnalysisValidationError("Count matrix must include a gene column and at least two samples.")
-        samples = [item.strip() for item in header[1:]]
+        indexed_samples = [
+            (index, item.strip())
+            for index, item in enumerate(header[1:], start=1)
+            if item.strip() not in exclude_samples
+        ]
+        samples = [sample for _index, sample in indexed_samples]
+        if len(samples) < 2:
+            raise AnalysisValidationError("At least two count-matrix samples must remain after exclusions.")
         genes: list[str] = []
         values: dict[str, dict[str, int]] = {}
         for row in reader:
@@ -2081,8 +2206,8 @@ def _read_count_matrix(path: Path) -> dict[str, Any]:
                 continue
             genes.append(gene)
             values[gene] = {}
-            for index, sample in enumerate(samples):
-                text = row[index + 1].strip() if index + 1 < len(row) else "0"
+            for index, sample in indexed_samples:
+                text = row[index].strip() if index < len(row) else "0"
                 try:
                     count = int(text)
                 except ValueError as exc:
@@ -2134,8 +2259,13 @@ def _validate_deseq2_inputs(counts: dict[str, Any], metadata: list[dict[str, str
     }
     if any(count < 2 for count in group_sizes.values()):
         warnings.append("At least one contrast group has fewer than two replicates.")
-    if sum(1 for sample in samples if sum(counts["counts"][gene][sample] for gene in counts["genes"]) == 0):
-        errors.append("At least one sample has zero total counts.")
+    zero_count_samples = [
+        sample
+        for sample in samples
+        if sum(counts["counts"][gene][sample] for gene in counts["genes"]) == 0
+    ]
+    if zero_count_samples:
+        errors.append("Samples with zero total counts must be excluded before DESeq2: " + ", ".join(zero_count_samples))
     if len(samples) <= len(design_factors) + 1:
         warnings.append("The design may be underpowered for the number of modeled factors.")
     return {
@@ -2144,6 +2274,7 @@ def _validate_deseq2_inputs(counts: dict[str, Any], metadata: list[dict[str, str
         "sample_count": len(samples),
         "gene_count": len(counts["genes"]),
         "group_sizes": group_sizes,
+        "zero_count_samples": zero_count_samples,
         "design_full_rank": not errors,
     }
 
@@ -3016,8 +3147,12 @@ def _convert_expression_table_to_counts(
                 for sample in configured_samples
                 if sample in header_lookup
             ]
-            if len(selected) < max(2, len(configured_samples) // 2):
-                selected = [(column, index) for index, column in enumerate(header[1:], start=1)]
+            if len(selected) != len(configured_samples):
+                missing = [sample for sample in configured_samples if sample not in header_lookup]
+                raise AnalysisValidationError(
+                    "Downloaded GEO expression table is missing expected sample columns: "
+                    + ", ".join(missing[:8])
+                )
         else:
             selected = [(column, index) for index, column in enumerate(header[1:], start=1)]
         sample_names = [sample for sample, _index in selected]
