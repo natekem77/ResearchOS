@@ -284,6 +284,10 @@ class AnalysisServiceTests(unittest.TestCase):
 
         self.assertEqual(job["workflow_id"], "bulk_rnaseq_deseq2")
         self.assertEqual(job["status"], "queued")
+        self.assertEqual(
+            dataset["metadata_summary"]["validation"]["condition_levels_by_factor"]["condition"],
+            ["DMSO", "SAG"],
+        )
 
     def test_normalized_cpm_dataset_blocks_deseq2_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

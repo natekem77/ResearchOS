@@ -202,9 +202,17 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   Future<void> _runDeseq2(Map<String, dynamic> dataset) async {
+    Map<String, dynamic> dialogDataset = dataset;
+    try {
+      dialogDataset =
+          await widget.api.analysisDataset(dataset['id'].toString());
+    } catch (_) {
+      dialogDataset = dataset;
+    }
+    if (!mounted) return;
     final request = await showDialog<_Deseq2Request>(
       context: context,
-      builder: (context) => _Deseq2Dialog(dataset: dataset),
+      builder: (context) => _Deseq2Dialog(dataset: dialogDataset),
     );
     if (request == null) return;
     try {
@@ -1227,10 +1235,8 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
       TextEditingController(text: 'condition');
   final TextEditingController _contrastFactorController =
       TextEditingController(text: 'condition');
-  final TextEditingController _numeratorController =
-      TextEditingController(text: 'treated');
-  final TextEditingController _denominatorController =
-      TextEditingController(text: 'control');
+  final TextEditingController _numeratorController = TextEditingController();
+  final TextEditingController _denominatorController = TextEditingController();
   final TextEditingController _minTotalController =
       TextEditingController(text: '10');
   final TextEditingController _minSamplesController =
@@ -1249,22 +1255,12 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
   void initState() {
     super.initState();
     final suggested = _suggestedDeseq2();
-    final conditions = _conditions();
     _sampleColumnController.text =
         suggested['sample_id_column']?.toString() ?? 'sample';
     _designController.text = _designFactorsFromSuggested(suggested).join(', ');
     _contrastFactorController.text =
         suggested['contrast_factor']?.toString() ?? 'condition';
-    if (suggested['numerator_level'] != null) {
-      _numeratorController.text = suggested['numerator_level'].toString();
-    } else if (conditions.isNotEmpty) {
-      _numeratorController.text = conditions.last;
-    }
-    if (suggested['denominator_level'] != null) {
-      _denominatorController.text = suggested['denominator_level'].toString();
-    } else if (conditions.isNotEmpty) {
-      _denominatorController.text = conditions.first;
-    }
+    _applyLevelDefaults();
   }
 
   @override
@@ -1287,7 +1283,7 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
     final designFactors = _designFactors();
     final formula = '~ ${designFactors.join(' + ')}';
     final validation = _validationSummary();
-    final conditions = _conditions();
+    final levels = _levelsForContrastFactor(_contrastFactorController.text);
     final zeroCountSamples = _zeroCountSamples();
     final mismatches = _metadataMismatches();
     return AlertDialog(
@@ -1322,20 +1318,27 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
             TextField(
               controller: _contrastFactorController,
               decoration: const InputDecoration(labelText: 'Contrast factor'),
+              onChanged: (_) {
+                setState(() {
+                  _applyLevelDefaults(force: true);
+                });
+              },
             ),
-            if (conditions.isNotEmpty) ...[
+            if (levels.isNotEmpty) ...[
               const SizedBox(height: ResearchOsSpacing.xs),
-              Text('condition: ${conditions.join(', ')}'),
+              Text(
+                '${_contrastFactorController.text.trim()}: ${levels.join(', ')}',
+              ),
             ],
             _conditionField(
               label: 'Numerator',
               controller: _numeratorController,
-              conditions: conditions,
+              levels: levels,
             ),
             _conditionField(
               label: 'Reference',
               controller: _denominatorController,
-              conditions: conditions,
+              levels: levels,
             ),
             const SizedBox(height: ResearchOsSpacing.sm),
             Text('Validation summary',
@@ -1344,8 +1347,8 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
               '${validation['sample_count'] ?? widget.dataset['sample_count'] ?? '-'} samples • '
               '${validation['count_matrix_dimensions'] is Map ? (validation['count_matrix_dimensions'] as Map)['genes'] : widget.dataset['features_count'] ?? '-'} genes',
             ),
-            if (conditions.isNotEmpty)
-              Text('Conditions: ${conditions.join(', ')}'),
+            if (levels.isNotEmpty)
+              Text('Condition levels: ${levels.join(', ')}'),
             Text(
                 'Zero-count samples: ${zeroCountSamples.isEmpty ? 'none' : zeroCountSamples.join(', ')}'),
             Text(
@@ -1475,6 +1478,7 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
   bool _canSubmit() {
     final zeroCountSamples = _zeroCountSamples();
     final mismatches = _metadataMismatches();
+    final levels = _levelsForContrastFactor(_contrastFactorController.text);
     return _sampleColumnController.text.trim().isNotEmpty &&
         _designFactors().isNotEmpty &&
         _contrastFactorController.text.trim().isNotEmpty &&
@@ -1482,6 +1486,7 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
         _denominatorController.text.trim().isNotEmpty &&
         _numeratorController.text.trim() !=
             _denominatorController.text.trim() &&
+        (levels.isEmpty || levels.length > 1) &&
         mismatches.isEmpty &&
         (zeroCountSamples.isEmpty || _excludeZeroCountSamples);
   }
@@ -1537,13 +1542,23 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
         : <String, dynamic>{};
   }
 
-  List<String> _conditions() {
-    final conditions = _validationSummary()['conditions'];
-    if (conditions is List) {
-      return conditions
+  List<String> _levelsForContrastFactor(String factor) {
+    final cleanFactor = factor.trim();
+    final byFactor = _validationSummary()['condition_levels_by_factor'];
+    if (byFactor is Map && byFactor[cleanFactor] is List) {
+      return (byFactor[cleanFactor] as List)
           .map((item) => item.toString())
           .where((item) => item.isNotEmpty)
           .toList();
+    }
+    if (cleanFactor == 'condition') {
+      final conditions = _validationSummary()['conditions'];
+      if (conditions is List) {
+        return conditions
+            .map((item) => item.toString())
+            .where((item) => item.isNotEmpty)
+            .toList();
+      }
     }
     return const [];
   }
@@ -1585,21 +1600,55 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
     return const ['condition'];
   }
 
+  void _applyLevelDefaults({bool force = false}) {
+    final suggested = _suggestedDeseq2();
+    final levels = _levelsForContrastFactor(_contrastFactorController.text);
+    if (levels.isEmpty) {
+      if (force) {
+        _numeratorController.clear();
+        _denominatorController.clear();
+      }
+      return;
+    }
+    final suggestedNumerator = suggested['numerator_level']?.toString();
+    final suggestedDenominator = suggested['denominator_level']?.toString();
+    final denominator = levels.contains(suggestedDenominator)
+        ? suggestedDenominator!
+        : levels.first;
+    final numerator =
+        levels.contains(suggestedNumerator) ? suggestedNumerator! : levels.last;
+    if (force ||
+        _denominatorController.text.isEmpty ||
+        !levels.contains(_denominatorController.text)) {
+      _denominatorController.text = denominator;
+    }
+    if (force ||
+        _numeratorController.text.isEmpty ||
+        !levels.contains(_numeratorController.text) ||
+        _numeratorController.text == _denominatorController.text) {
+      _numeratorController.text =
+          numerator == _denominatorController.text && levels.length > 1
+              ? levels.lastWhere(
+                  (level) => level != _denominatorController.text,
+                )
+              : numerator;
+    }
+  }
+
   Widget _conditionField({
     required String label,
     required TextEditingController controller,
-    required List<String> conditions,
+    required List<String> levels,
   }) {
-    if (conditions.isEmpty) {
+    if (levels.isEmpty) {
       return TextField(
         controller: controller,
         decoration: InputDecoration(labelText: label),
         onChanged: (_) => setState(() {}),
       );
     }
-    final current = conditions.contains(controller.text)
-        ? controller.text
-        : conditions.first;
+    final current =
+        levels.contains(controller.text) ? controller.text : levels.first;
     if (controller.text != current) {
       controller.text = current;
     }
@@ -1607,8 +1656,8 @@ class _Deseq2DialogState extends State<_Deseq2Dialog> {
       initialValue: current,
       decoration: InputDecoration(labelText: label),
       items: [
-        for (final condition in conditions)
-          DropdownMenuItem(value: condition, child: Text(condition)),
+        for (final level in levels)
+          DropdownMenuItem(value: level, child: Text(level)),
       ],
       onChanged: (value) {
         if (value == null) return;

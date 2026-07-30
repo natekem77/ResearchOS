@@ -404,6 +404,16 @@ class ResearchOsApi {
     return _jsonObjectList(json['datasets']);
   }
 
+  Future<Map<String, dynamic>> analysisDataset(String datasetId) async {
+    final json = await _getMap(
+      '/mobile/analysis/datasets/${Uri.encodeComponent(datasetId)}',
+    );
+    final dataset = json['dataset'];
+    if (dataset is Map<String, dynamic>) return dataset;
+    if (dataset is Map) return dataset.cast<String, dynamic>();
+    throw const ResearchOsApiException('Invalid analysis dataset response.');
+  }
+
   Future<Map<String, dynamic>> registerAnalysisDataset({
     required String displayName,
     required String countsPath,

@@ -2038,6 +2038,18 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
         },
         key=_natural_label_sort_key,
     )
+    condition_levels_by_factor = {
+        column: sorted(
+            {
+                str(row.get(column) or "").strip()
+                for row in metadata_rows
+                if str(row.get(column) or "").strip()
+            },
+            key=_natural_label_sort_key,
+        )
+        for column in metadata_columns
+        if column != sample_column
+    }
     warnings = []
     if missing_metadata:
         warnings.append("Some count-matrix samples are missing metadata.")
@@ -2082,6 +2094,7 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
             },
             "metadata_complete": bool(metadata_rows) and not missing_metadata,
             "conditions": conditions,
+            "condition_levels_by_factor": condition_levels_by_factor,
             "warnings": warnings,
         },
     }

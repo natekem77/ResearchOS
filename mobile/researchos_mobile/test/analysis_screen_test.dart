@@ -567,7 +567,8 @@ void main() {
 
   testWidgets('DESeq2 dialog uses imported condition defaults and validation',
       (tester) async {
-    final api = _mockAnalysisApi(<String>[]);
+    final calls = <String>[];
+    final api = _mockAnalysisApi(calls);
     await tester.pumpWidget(
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
@@ -590,10 +591,23 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('condition: D60, D70, D90, D120, D200'), findsOneWidget);
+    expect(
+      find.text('Condition levels: D60, D70, D90, D120, D200'),
+      findsOneWidget,
+    );
     expect(find.text('D200'), findsWidgets);
     expect(find.text('D60'), findsWidgets);
     expect(find.text('Zero-count samples: none'), findsOneWidget);
     expect(find.text('Duplicated genes: 0'), findsOneWidget);
+    await tester.tap(find.text('Submit DESeq2'));
+    await tester.pumpAndSettle();
+    expect(
+      calls.any((call) =>
+          call.startsWith('BODY ') &&
+          call.contains('"numerator_level":"D200"') &&
+          call.contains('"denominator_level":"D60"')),
+      isTrue,
+    );
     expect(tester.takeException(), isNull);
   });
 
@@ -637,6 +651,10 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
     baseUrl: 'http://example.test',
     client: MockClient((request) async {
       calls.add('${request.method} ${request.url.path}');
+      if (request.method == 'POST' &&
+          request.url.path == '/mobile/analysis/jobs') {
+        calls.add('BODY ${request.body}');
+      }
       if (request.url.path == '/mobile/analysis/workers') {
         return _json({
           'workers': [
@@ -711,37 +729,7 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
               'features_count': 4,
               'metadata_summary': const {},
             },
-            {
-              'id': 'analysis-dataset:geo',
-              'display_name': 'Imported retinal GEO counts',
-              'modality': 'bulk_rna_seq',
-              'sample_count': 15,
-              'features_count': 59618,
-              'source_data_kind': 'raw_counts',
-              'exploratory_only': false,
-              'metadata_summary': {
-                'suggested_deseq2': {
-                  'sample_id_column': 'sample',
-                  'design_factors': ['condition'],
-                  'contrast_factor': 'condition',
-                  'denominator_level': 'D60',
-                  'numerator_level': 'D200',
-                },
-                'validation': {
-                  'sample_count': 15,
-                  'duplicate_gene_count': 0,
-                  'duplicate_sample_count': 0,
-                  'zero_count_samples': const [],
-                  'missing_metadata_samples': const [],
-                  'metadata_without_counts': const [],
-                  'conditions': ['D60', 'D70', 'D90', 'D120', 'D200'],
-                  'count_matrix_dimensions': {
-                    'genes': 59618,
-                    'samples': 15,
-                  },
-                },
-              },
-            },
+            _geoDataset(),
             {
               'id': 'analysis-dataset:cpm',
               'display_name': 'GSE229682 CPM-only retinal organoids',
@@ -757,6 +745,10 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
             },
           ],
         });
+      }
+      if (request.url.path ==
+          '/mobile/analysis/datasets/analysis-dataset:geo') {
+        return _json({'dataset': _geoDataset()});
       }
       if (request.url.path == '/mobile/analysis/outputs') {
         return _json({
@@ -935,6 +927,43 @@ Map<String, dynamic> _publicDataset() {
     'sample_count': 6,
     'platform': 'Illumina NovaSeq 6000',
     'summary': 'Curated retinal organoid public GEO import fixture.',
+  };
+}
+
+Map<String, dynamic> _geoDataset() {
+  return {
+    'id': 'analysis-dataset:geo',
+    'display_name': 'Imported retinal GEO counts',
+    'modality': 'bulk_rna_seq',
+    'sample_count': 15,
+    'features_count': 59618,
+    'source_data_kind': 'raw_counts',
+    'exploratory_only': false,
+    'metadata_summary': {
+      'suggested_deseq2': {
+        'sample_id_column': 'sample',
+        'design_factors': ['condition'],
+        'contrast_factor': 'condition',
+        'denominator_level': 'D60',
+        'numerator_level': 'D200',
+      },
+      'validation': {
+        'sample_count': 15,
+        'duplicate_gene_count': 0,
+        'duplicate_sample_count': 0,
+        'zero_count_samples': const [],
+        'missing_metadata_samples': const [],
+        'metadata_without_counts': const [],
+        'conditions': ['D60', 'D70', 'D90', 'D120', 'D200'],
+        'condition_levels_by_factor': {
+          'condition': ['D60', 'D70', 'D90', 'D120', 'D200'],
+        },
+        'count_matrix_dimensions': {
+          'genes': 59618,
+          'samples': 15,
+        },
+      },
+    },
   };
 }
 
