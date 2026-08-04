@@ -12,6 +12,7 @@ import 'package:researchos_mobile/analysis/viewers/heatmap/heatmap_viewer.dart';
 import 'package:researchos_mobile/analysis/viewers/line/line_plot_viewer.dart';
 import 'package:researchos_mobile/analysis/viewers/scatter/scatter_viewer.dart';
 import 'package:researchos_mobile/analysis/viewers/table/enhanced_table_viewer.dart';
+import 'package:researchos_mobile/analysis/viewers/violin/violin_plot_viewer.dart';
 import 'package:researchos_mobile/api/researchos_api.dart';
 import 'package:researchos_mobile/screens/analysis_screen.dart';
 import 'package:researchos_mobile/services/navigation_preferences_service.dart';
@@ -789,9 +790,11 @@ void main() {
       (_maOutput(), ScatterViewer, ScatterChart),
       (_pcaOutput(), ScatterViewer, ScatterChart),
       (_umapOutput(), ScatterViewer, ScatterChart),
+      (_featurePlotOutput(), ScatterViewer, ScatterChart),
       (_sampleDistanceHeatmapOutput(), HeatmapViewer, null),
       (_topGeneHeatmapOutput(), HeatmapViewer, null),
       (_markerDotPlotOutput(), DotPlotViewer, null),
+      (_violinOutput(), ViolinPlotViewer, null),
       (_dispersionOutput(), LinePlotViewer, LineChart),
       (_librarySizePlotOutput(), BarPlotViewer, BarChart),
       (_tableOutput(), EnhancedTableViewer, null),
@@ -1422,6 +1425,45 @@ Map<String, dynamic> _umapOutput() {
   };
 }
 
+Map<String, dynamic> _featurePlotOutput() {
+  return {
+    'id': 'analysis-output:feature-plot',
+    'display_name': 'Feature Plot MS4A1',
+    'output_type': 'interactive_plot',
+    'structured': {
+      'plot_type': 'feature_plot',
+      'x': 'UMAP1',
+      'y': 'UMAP2',
+      'selected_feature': 'MS4A1',
+      'feature_expression': {
+        'MS4A1': {'AAAC-1': 2.1, 'TTTG-1': 0.2},
+      },
+      'points': [
+        {
+          'barcode': 'AAAC-1',
+          'cell_id': 'AAAC-1',
+          'x': -1.0,
+          'y': 0.2,
+          'UMAP1': -1.0,
+          'UMAP2': 0.2,
+          'leiden': '0',
+          'metadata': {'leiden': '0'},
+        },
+        {
+          'barcode': 'TTTG-1',
+          'cell_id': 'TTTG-1',
+          'x': 1.1,
+          'y': -0.4,
+          'UMAP1': 1.1,
+          'UMAP2': -0.4,
+          'leiden': '1',
+          'metadata': {'leiden': '1'},
+        },
+      ],
+    },
+  };
+}
+
 Map<String, dynamic> _sampleDistanceHeatmapOutput() {
   return {
     'id': 'analysis-output:sample-distance',
@@ -1524,6 +1566,39 @@ Map<String, dynamic> _markerDotPlotOutput() {
           'gene': 'CD3D',
           'percent_expressing': 0.78,
           'average_scaled_expression': 1.2,
+        },
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _violinOutput() {
+  return {
+    'id': 'analysis-output:violin',
+    'display_name': 'Genes per Cell Violin',
+    'output_type': 'interactive_plot',
+    'structured': {
+      'plot_type': 'violin',
+      'x': 'leiden',
+      'y': 'detected_genes',
+      'rows': [
+        {
+          'group': '0',
+          'n': 10,
+          'min': 200,
+          'q1': 450,
+          'median': 700,
+          'q3': 900,
+          'max': 1200,
+        },
+        {
+          'group': '1',
+          'n': 10,
+          'min': 180,
+          'q1': 420,
+          'median': 680,
+          'q3': 940,
+          'max': 1300,
         },
       ],
     },

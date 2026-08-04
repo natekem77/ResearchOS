@@ -1484,6 +1484,9 @@ class AnalysisService:
         qc = _single_cell_qc_summary(matrix)
         self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.6, current_stage="PCA, neighbors, Leiden, UMAP")
         cells = _single_cell_embedding_rows(matrix, parameters)
+        cell_by_barcode = {row["barcode"]: row for row in cells}
+        for row in qc["cell_qc"]:
+            row["leiden"] = cell_by_barcode.get(row["barcode"], {}).get("leiden", "0")
         clusters = sorted({row["leiden"] for row in cells}, key=_natural_label_sort_key)
         cluster_sizes = [
             {"cluster": cluster, "cell_count": sum(1 for row in cells if row["leiden"] == cluster)}
@@ -1491,6 +1494,7 @@ class AnalysisService:
         ]
         markers = _single_cell_marker_rows(matrix, clusters, int(parameters.get("marker_top_n") or 100))
         marker_genes = _ordered_unique([row["gene"] for row in markers])[: min(20, len(markers))]
+        feature_expression = _single_cell_feature_expression(matrix, cells, marker_genes)
         marker_heatmap = _single_cell_marker_heatmap(marker_genes, clusters)
         marker_dotplot = _single_cell_marker_dotplot(marker_genes, clusters)
         job_dir = self.outputs_dir / str(job["id"])
@@ -1515,9 +1519,13 @@ class AnalysisService:
             ("genes_per_cell", "Genes per Cell", "interactive_plot", _histogram_payload("genes_per_cell", qc["cell_qc"], "detected_genes"), "QC"),
             ("counts_per_cell", "Counts per Cell", "interactive_plot", _histogram_payload("counts_per_cell", qc["cell_qc"], "total_counts"), "QC"),
             ("percent_mito", "Mitochondrial Percent", "interactive_plot", _histogram_payload("percent_mito", qc["cell_qc"], "percent_mito"), "QC"),
+            ("genes_per_cell_violin", "Genes per Cell Violin", "interactive_plot", _violin_payload("genes_per_cell_violin", qc["cell_qc"], "detected_genes", "leiden"), "QC"),
+            ("counts_per_cell_violin", "Counts per Cell Violin", "interactive_plot", _violin_payload("counts_per_cell_violin", qc["cell_qc"], "total_counts", "leiden"), "QC"),
+            ("percent_mito_violin", "Mitochondrial Percent Violin", "interactive_plot", _violin_payload("percent_mito_violin", qc["cell_qc"], "percent_mito", "leiden"), "QC"),
             ("genes_vs_counts", "Genes vs Counts", "interactive_plot", _cell_scatter_payload("genes_vs_counts", qc["cell_qc"], "detected_genes", "total_counts"), "QC"),
-            ("pca", "PCA Plot", "interactive_plot", _single_cell_scatter_payload("pca", cells, "PC1", "PC2"), "Embeddings"),
-            ("umap_leiden", "UMAP Leiden Clusters", "embedding", _single_cell_scatter_payload("umap", cells, "UMAP1", "UMAP2"), "Embeddings"),
+            ("pca", "PCA Plot", "interactive_plot", _single_cell_scatter_payload("pca", cells, "PC1", "PC2", feature_expression), "Embeddings"),
+            ("umap_leiden", "UMAP Leiden Clusters", "embedding", _single_cell_scatter_payload("umap", cells, "UMAP1", "UMAP2", feature_expression), "Embeddings"),
+            ("feature_plot", f"Feature Plot {marker_genes[0] if marker_genes else 'Feature'}", "interactive_plot", _feature_plot_payload(cells, marker_genes[0] if marker_genes else "", feature_expression), "Embeddings"),
             ("umap_coordinates", "UMAP Coordinates", "table", {"columns": ["barcode", "UMAP1", "UMAP2", "leiden"], "rows": cells}, "Embeddings"),
             ("cluster_sizes", "Cluster Sizes", "interactive_plot", {"plot_type": "cluster_size_bar", "columns": ["cluster", "cell_count"], "rows": cluster_sizes}, "Clusters"),
             ("cluster_assignments", "Cluster Assignments", "table", {"columns": ["barcode", "leiden"], "rows": [{"barcode": row["barcode"], "leiden": row["leiden"]} for row in cells]}, "Clusters"),
@@ -2655,7 +2663,7 @@ def _single_cell_marker_dotplot(genes: list[str], clusters: list[str]) -> dict[s
 def _histogram_payload(plot_type: str, rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
     values = [float(row.get(field) or 0) for row in rows]
     if not values:
-        return {"plot_type": "library_size_plot", "columns": ["bin", "count"], "rows": []}
+        return {"plot_type": "histogram", "subtype": plot_type, "x": field, "y": "count", "columns": ["bin", "count"], "rows": []}
     min_value = min(values)
     max_value = max(values)
     bin_count = min(20, max(5, int(math.sqrt(len(values)))))
@@ -2664,7 +2672,48 @@ def _histogram_payload(plot_type: str, rows: list[dict[str, Any]], field: str) -
     for value in values:
         index = min(bin_count - 1, int((value - min_value) / width))
         bins[index]["count"] += 1
-    return {"plot_type": "library_size_plot", "subtype": plot_type, "columns": ["bin", "count"], "rows": bins}
+    return {
+        "plot_type": "histogram",
+        "subtype": plot_type,
+        "x": field,
+        "y": "count",
+        "bin_width": width,
+        "columns": ["bin", "count"],
+        "rows": bins,
+    }
+
+
+def _violin_payload(plot_type: str, rows: list[dict[str, Any]], field: str, group_field: str) -> dict[str, Any]:
+    grouped: dict[str, list[float]] = {}
+    for row in rows:
+        group = str(row.get(group_field) or "all")
+        value = row.get(field)
+        if value is None:
+            continue
+        grouped.setdefault(group, []).append(float(value))
+    summary_rows = []
+    for group, values in sorted(grouped.items(), key=lambda item: _natural_label_sort_key(item[0])):
+        ordered = sorted(values)
+        summary_rows.append(
+            {
+                "group": group,
+                "n": len(ordered),
+                "min": ordered[0],
+                "q1": _quantile(ordered, 0.25),
+                "median": _quantile(ordered, 0.5),
+                "q3": _quantile(ordered, 0.75),
+                "max": ordered[-1],
+                "values": ordered,
+            }
+        )
+    return {
+        "plot_type": "violin",
+        "subtype": plot_type,
+        "x": group_field,
+        "y": field,
+        "columns": ["group", "n", "min", "q1", "median", "q3", "max"],
+        "rows": summary_rows,
+    }
 
 
 def _cell_scatter_payload(plot_type: str, rows: list[dict[str, Any]], x_field: str, y_field: str) -> dict[str, Any]:
@@ -2686,12 +2735,20 @@ def _cell_scatter_payload(plot_type: str, rows: list[dict[str, Any]], x_field: s
     }
 
 
-def _single_cell_scatter_payload(plot_type: str, rows: list[dict[str, Any]], x_field: str, y_field: str) -> dict[str, Any]:
+def _single_cell_scatter_payload(
+    plot_type: str,
+    rows: list[dict[str, Any]],
+    x_field: str,
+    y_field: str,
+    feature_expression: dict[str, dict[str, float]] | None = None,
+) -> dict[str, Any]:
     return {
         "plot_type": "pca" if plot_type == "pca" else "umap",
         "x": x_field,
         "y": y_field,
         "color_by": "leiden",
+        "color_options": ["leiden", "total_counts", "detected_genes", "percent_mito"],
+        "feature_expression": feature_expression or {},
         "condition_levels": sorted({str(row["leiden"]) for row in rows}, key=_natural_label_sort_key),
         "variance_explained": {"PC1": 0.42, "PC2": 0.18} if plot_type == "pca" else {},
         "points": [
@@ -2710,6 +2767,57 @@ def _single_cell_scatter_payload(plot_type: str, rows: list[dict[str, Any]], x_f
             for row in rows
         ],
     }
+
+
+def _feature_plot_payload(
+    rows: list[dict[str, Any]],
+    gene: str,
+    feature_expression: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    return {
+        "plot_type": "feature_plot",
+        "x": "UMAP1",
+        "y": "UMAP2",
+        "color_by": None,
+        "color_options": ["leiden", "total_counts", "detected_genes", "percent_mito"],
+        "feature_expression": feature_expression,
+        "selected_feature": gene,
+        "points": [
+            {
+                "sample": row["barcode"],
+                "barcode": row["barcode"],
+                "condition": row["leiden"],
+                "x": row["UMAP1"],
+                "y": row["UMAP2"],
+                "UMAP1": row["UMAP1"],
+                "UMAP2": row["UMAP2"],
+                "metadata": row,
+            }
+            for row in rows
+        ],
+    }
+
+
+def _single_cell_feature_expression(
+    matrix: dict[str, Any],
+    cells: list[dict[str, Any]],
+    genes: list[str],
+) -> dict[str, dict[str, float]]:
+    barcode_to_column = {barcode: index for index, barcode in enumerate(matrix["barcodes"], start=1)}
+    gene_to_row = {gene: index for index, gene in enumerate(matrix["genes"], start=1)}
+    values_by_gene = {gene: {cell["barcode"]: 0.0 for cell in cells} for gene in genes if gene in gene_to_row}
+    entry_lookup = {(row_index, column_index): value for row_index, column_index, value in matrix["entries"]}
+    for gene, row_index in gene_to_row.items():
+        if gene not in values_by_gene:
+            continue
+        for cell in cells:
+            column_index = barcode_to_column.get(cell["barcode"])
+            if column_index is None:
+                continue
+            total = float(cell.get("total_counts") or 0)
+            raw = float(entry_lookup.get((row_index, column_index), 0))
+            values_by_gene[gene][cell["barcode"]] = round(math.log1p(raw / total * 10000) if total > 0 else 0, 4)
+    return values_by_gene
 
 
 def _scanpy_environment() -> dict[str, Any]:
@@ -2733,6 +2841,20 @@ def _module_version(name: str) -> str | None:
     except Exception:
         return None
     return str(getattr(module, "__version__", "installed"))
+
+
+def _quantile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return values[0]
+    position = (len(values) - 1) * fraction
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return values[lower]
+    weight = position - lower
+    return values[lower] * (1 - weight) + values[upper] * weight
 
 
 def _natural_label_sort_key(label: str) -> tuple[Any, ...]:

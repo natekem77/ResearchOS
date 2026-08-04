@@ -5,6 +5,7 @@ enum AnalysisViewerKind {
   heatmap,
   line,
   bar,
+  violin,
   dotPlot,
   table,
   qcReport,
@@ -55,6 +56,10 @@ class AnalysisOutputViewModel {
     'umap',
     'marker_dotplot',
     'cluster_size_bar',
+    'histogram',
+    'violin',
+    'feature_plot',
+    'marker_heatmap',
   };
 
   static String? normalizePlotType(String? value) {
@@ -79,7 +84,11 @@ class AnalysisOutputViewModel {
       'dispersion' || 'dispersion_plot' => 'dispersion_plot',
       'umap' || 'umap_leiden' => 'umap',
       'marker_dotplot' || 'dot_plot' => 'marker_dotplot',
+      'marker_heatmap' => 'marker_heatmap',
       'cluster_size' || 'cluster_size_bar' => 'cluster_size_bar',
+      'histogram' || 'qc_histogram' => 'histogram',
+      'violin' || 'violin_plot' => 'violin',
+      'feature' || 'feature_plot' => 'feature_plot',
       _ => normalized,
     };
   }
@@ -138,6 +147,20 @@ class ThresholdLineModel {
   final Color? color;
 }
 
+class ContinuousColorScale {
+  const ContinuousColorScale({
+    required this.label,
+    required this.valuesByPointId,
+    required this.min,
+    required this.max,
+  });
+
+  final String label;
+  final Map<String, double> valuesByPointId;
+  final double min;
+  final double max;
+}
+
 class ScatterPlotSpec {
   const ScatterPlotSpec({
     required this.title,
@@ -150,6 +173,10 @@ class ScatterPlotSpec {
     this.autoLabelIds = const {},
     this.showLabelsByDefault = false,
     this.detailsTitle = 'Point',
+    this.colorOptions = const [],
+    this.defaultColorBy,
+    this.defaultFeature,
+    this.expressionByFeature = const {},
     this.rawRows,
   });
 
@@ -163,6 +190,10 @@ class ScatterPlotSpec {
   final Set<String> autoLabelIds;
   final bool showLabelsByDefault;
   final String detailsTitle;
+  final List<String> colorOptions;
+  final String? defaultColorBy;
+  final String? defaultFeature;
+  final Map<String, ContinuousColorScale> expressionByFeature;
   final List<Map<String, dynamic>>? rawRows;
 }
 

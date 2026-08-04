@@ -7,11 +7,15 @@ class ScatterController extends ChangeNotifier {
   String? _selectedId;
   bool _showLabels = false;
   bool _hideUnselectedCategories = false;
+  String? _colorBy;
+  String _featureQuery = '';
 
   String get query => _query;
   String? get selectedId => _selectedId;
   bool get showLabels => _showLabels;
   bool get hideUnselectedCategories => _hideUnselectedCategories;
+  String? get colorBy => _colorBy;
+  String get featureQuery => _featureQuery;
 
   set query(String value) {
     _query = value;
@@ -34,11 +38,30 @@ class ScatterController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setColorBy(String? value) {
+    _colorBy = value;
+    _featureQuery = '';
+    notifyListeners();
+  }
+
+  void setFeatureQuery(String value) {
+    _featureQuery = value;
+    if (value.trim().isNotEmpty) _colorBy = null;
+    notifyListeners();
+  }
+
+  void setInitialFeatureQuery(String value) {
+    _featureQuery = value;
+    if (value.trim().isNotEmpty) _colorBy = null;
+  }
+
   void reset() {
     _query = '';
     _selectedId = null;
     _showLabels = false;
     _hideUnselectedCategories = false;
+    _colorBy = null;
+    _featureQuery = '';
     notifyListeners();
   }
 }

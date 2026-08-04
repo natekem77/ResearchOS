@@ -62,6 +62,9 @@ class ViewerScaffold extends StatelessWidget {
                       transparent: true,
                     );
                   }
+                  if (value == 'export_svg') {
+                    _exportSvg(context);
+                  }
                 },
                 itemBuilder: (context) => const [
                   PopupMenuItem(
@@ -79,6 +82,8 @@ class ViewerScaffold extends StatelessWidget {
                   PopupMenuItem(
                       value: 'export_transparent',
                       child: Text('Export transparent PNG')),
+                  PopupMenuItem(
+                      value: 'export_svg', child: Text('Export SVG')),
                 ],
               ),
             ],
@@ -127,6 +132,25 @@ class ViewerScaffold extends StatelessWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not export visualization: $error')),
+      );
+    }
+  }
+
+  Future<void> _exportSvg(BuildContext context) async {
+    try {
+      final file = await exportService.exportBoundaryAsSvg(
+        boundaryKey: boundaryKey,
+        filenameStem: title,
+        pixelRatio: 6,
+      );
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Exported SVG to ${file.path}')),
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not export SVG: $error')),
       );
     }
   }

@@ -881,9 +881,15 @@ class AnalysisServiceTests(unittest.TestCase):
             outputs = service.outputs_for_job("user:pi-owner", job["id"])
             output_types = {output["output_type"] for output in outputs}
             umap = next(output for output in outputs if output["display_name"] == "UMAP Leiden Clusters")
+            histogram = next(output for output in outputs if output["display_name"] == "Genes per Cell")
+            violin = next(output for output in outputs if output["display_name"] == "Genes per Cell Violin")
+            feature_plot = next(output for output in outputs if output["display_name"].startswith("Feature Plot"))
             dotplot = next(output for output in outputs if output["display_name"] == "Marker Dot Plot")
             processed = next(output for output in outputs if output["display_name"] == "Processed AnnData")
             umap_detail = service.get_output("user:pi-owner", umap["id"])
+            histogram_detail = service.get_output("user:pi-owner", histogram["id"])
+            violin_detail = service.get_output("user:pi-owner", violin["id"])
+            feature_detail = service.get_output("user:pi-owner", feature_plot["id"])
             dotplot_detail = service.get_output("user:pi-owner", dotplot["id"])
 
         self.assertEqual(dataset["modality"], "single_cell_rna_seq")
@@ -897,6 +903,12 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertNotIn("structured", umap)
         self.assertEqual(umap_detail["structured"]["plot_type"], "umap")
         self.assertGreaterEqual(len(umap_detail["structured"]["condition_levels"]), 2)
+        self.assertIn("feature_expression", umap_detail["structured"])
+        self.assertEqual(histogram_detail["structured"]["plot_type"], "histogram")
+        self.assertEqual(violin_detail["structured"]["plot_type"], "violin")
+        self.assertIn("median", violin_detail["structured"]["rows"][0])
+        self.assertEqual(feature_detail["structured"]["plot_type"], "feature_plot")
+        self.assertIn("selected_feature", feature_detail["structured"])
         self.assertEqual(dotplot_detail["structured"]["plot_type"], "marker_dotplot")
         self.assertTrue(str(processed["storage_uri"]).endswith("processed_scanpy.h5ad"))
 

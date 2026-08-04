@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -29,6 +30,38 @@ class AnalysisExportService {
       '${directory.path}/${safeExportFilename(filenameStem)}.png',
     );
     await file.writeAsBytes(bytes, flush: true);
+    return file;
+  }
+
+  Future<File> exportBoundaryAsSvg({
+    required GlobalKey boundaryKey,
+    required String filenameStem,
+    double pixelRatio = 6,
+  }) async {
+    final boundary = boundaryKey.currentContext?.findRenderObject()
+        as RenderRepaintBoundary?;
+    if (boundary == null) {
+      throw StateError('Rendered visualization is not available yet.');
+    }
+    final image = await boundary.toImage(pixelRatio: pixelRatio);
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    final bytes = byteData?.buffer.asUint8List();
+    if (bytes == null || bytes.isEmpty) {
+      throw StateError('Rendered visualization did not produce export bytes.');
+    }
+    final width = image.width;
+    final height = image.height;
+    final encoded = base64Encode(bytes);
+    final svg = '''
+<svg xmlns="http://www.w3.org/2000/svg" width="$width" height="$height" viewBox="0 0 $width $height">
+  <image width="$width" height="$height" href="data:image/png;base64,$encoded"/>
+</svg>
+''';
+    final directory = await getTemporaryDirectory();
+    final file = File(
+      '${directory.path}/${safeExportFilename(filenameStem)}.svg',
+    );
+    await file.writeAsString(svg, flush: true);
     return file;
   }
 }

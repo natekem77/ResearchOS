@@ -47,7 +47,11 @@ class _ScatterViewerState extends State<ScatterViewer> {
   void initState() {
     super.initState();
     _controller = ScatterController()
-      ..setShowLabels(widget.spec.showLabelsByDefault);
+      ..setShowLabels(widget.spec.showLabelsByDefault)
+      ..setColorBy(widget.spec.defaultColorBy);
+    if (widget.spec.defaultFeature != null) {
+      _controller.setInitialFeatureQuery(widget.spec.defaultFeature!);
+    }
   }
 
   @override
@@ -65,15 +69,25 @@ class _ScatterViewerState extends State<ScatterViewer> {
       actions: widget.actions,
       plot: Column(
         children: [
-          ScatterToolbar(controller: _controller),
+          ScatterToolbar(
+            controller: _controller,
+            colorOptions: widget.spec.colorOptions,
+            featureOptions: widget.spec.expressionByFeature.keys.toList(),
+          ),
           const SizedBox(height: ResearchOsSpacing.xs),
           Expanded(
             child: AnimatedBuilder(
               animation: _controller,
               builder: (context, _) {
-                final points = _filteredPoints(widget.spec, _controller.query);
+                final colorState = _scatterColorState(
+                  widget.spec,
+                  colorBy: _controller.colorBy,
+                  featureQuery: _controller.featureQuery,
+                );
+                final effectiveSpec = _withColorState(widget.spec, colorState);
+                final points = _filteredPoints(effectiveSpec, _controller.query);
                 return _ScatterPlot(
-                  spec: widget.spec,
+                  spec: effectiveSpec,
                   points: points,
                   selectedId: _controller.selectedId,
                   showLabels: _showLabels(points),
@@ -86,7 +100,16 @@ class _ScatterViewerState extends State<ScatterViewer> {
             ),
           ),
           const SizedBox(height: ResearchOsSpacing.xs),
-          ScatterLegend(items: widget.spec.legend),
+          AnimatedBuilder(
+            animation: _controller,
+            builder: (context, _) => ScatterLegend(
+              items: _scatterColorState(
+                widget.spec,
+                colorBy: _controller.colorBy,
+                featureQuery: _controller.featureQuery,
+              ).legend,
+            ),
+          ),
         ],
       ),
       data: EnhancedTableViewer(
@@ -144,6 +167,103 @@ class _ScatterViewerState extends State<ScatterViewer> {
       ),
     );
   }
+}
+
+typedef _ScatterColorState = ({
+  Map<String, Color> legend,
+  Map<String, String> colorKeyByPointId,
+  Map<String, dynamic> metadataByPointId,
+});
+
+_ScatterColorState _scatterColorState(
+  ScatterPlotSpec spec, {
+  required String? colorBy,
+  required String featureQuery,
+}) {
+  final feature = _matchingFeature(spec, featureQuery);
+  if (feature != null) {
+    final scale = spec.expressionByFeature[feature]!;
+    return (
+      legend: const {
+        'low expression': Colors.blueAccent,
+        'medium expression': Colors.white,
+        'high expression': Colors.redAccent,
+      },
+      colorKeyByPointId: {
+        for (final entry in scale.valuesByPointId.entries)
+          entry.key: _expressionBucket(entry.value, scale.min, scale.max),
+      },
+      metadataByPointId: {
+        for (final entry in scale.valuesByPointId.entries)
+          entry.key: {scale.label: entry.value},
+      },
+    );
+  }
+  final key = colorBy ?? spec.defaultColorBy;
+  if (key == null || key.isEmpty) {
+    return (
+      legend: spec.legend,
+      colorKeyByPointId: const {},
+      metadataByPointId: const {},
+    );
+  }
+  final categories = <String>{};
+  final colorKeyByPointId = <String, String>{};
+  for (final point in spec.points) {
+    final value = (point.metadata[key] ?? point.colorKey)?.toString() ?? '';
+    if (value.isEmpty) continue;
+    categories.add(value);
+    colorKeyByPointId[point.id] = value;
+  }
+  final ordered = categories.toList()..sort();
+  return (
+    legend: {
+      for (var index = 0; index < ordered.length; index++)
+        ordered[index]: _levelColor(index),
+    },
+    colorKeyByPointId: colorKeyByPointId,
+    metadataByPointId: const {},
+  );
+}
+
+ScatterPlotSpec _withColorState(
+  ScatterPlotSpec spec,
+  _ScatterColorState state,
+) {
+  if (state.colorKeyByPointId.isEmpty && state.metadataByPointId.isEmpty) {
+    return spec;
+  }
+  return ScatterPlotSpec(
+    title: spec.title,
+    xAxisLabel: spec.xAxisLabel,
+    yAxisLabel: spec.yAxisLabel,
+    points: [
+      for (final point in spec.points)
+        ScatterPointModel(
+          id: point.id,
+          label: point.label,
+          x: point.x,
+          y: point.y,
+          colorKey: state.colorKeyByPointId[point.id] ?? point.colorKey,
+          size: point.size,
+          metadata: {
+            ...point.metadata,
+            ...mapFromObject(state.metadataByPointId[point.id]),
+          },
+        ),
+    ],
+    thresholds: spec.thresholds,
+    legend: state.legend,
+    summary: spec.summary,
+    autoLabelIds: spec.autoLabelIds,
+    showLabelsByDefault: spec.showLabelsByDefault,
+    detailsTitle: spec.detailsTitle,
+    colorOptions: spec.colorOptions,
+    defaultColorBy: spec.defaultColorBy,
+    defaultFeature: spec.defaultFeature,
+    expressionByFeature: spec.expressionByFeature,
+    rawRows: spec.rawRows,
+  );
 }
 
 class _ScatterPlot extends StatelessWidget {
@@ -527,7 +647,7 @@ ScatterPlotSpec scatterSpecFromOutput(Map<String, dynamic> output) {
     'volcano' => _volcanoSpec(view, structured),
     'ma' => _maSpec(view, structured),
     'pca' => _pcaSpec(view, structured),
-    'umap' => _embeddingSpec(view, structured),
+    'umap' || 'feature_plot' => _embeddingSpec(view, structured),
     _ => _genericScatterSpec(view, structured),
   };
 }
@@ -662,6 +782,10 @@ ScatterPlotSpec _pcaSpec(
       for (var index = 0; index < levels.length; index++)
         levels[index]: _levelColor(index),
     },
+    colorOptions: _stringList(structured['color_options']),
+    defaultColorBy: colorBy,
+    defaultFeature: structured['selected_feature']?.toString(),
+    expressionByFeature: _expressionScales(structured),
     points: [
       for (final row in rows)
         ScatterPointModel(
@@ -723,6 +847,10 @@ ScatterPlotSpec _embeddingSpec(
       for (var index = 0; index < levels.length; index++)
         levels[index]: _levelColor(index),
     },
+    colorOptions: _stringList(structured['color_options']),
+    defaultColorBy: colorBy,
+    defaultFeature: structured['selected_feature']?.toString(),
+    expressionByFeature: _expressionScales(structured),
     points: [
       for (final row in rows)
         ScatterPointModel(
@@ -842,9 +970,59 @@ String _volcanoColorKey(Map<String, dynamic> row) {
   return 'not significant';
 }
 
+String? _matchingFeature(ScatterPlotSpec spec, String query) {
+  final needle = query.trim().toLowerCase();
+  if (needle.isEmpty) return null;
+  for (final feature in spec.expressionByFeature.keys) {
+    if (feature.toLowerCase() == needle) return feature;
+  }
+  for (final feature in spec.expressionByFeature.keys) {
+    if (feature.toLowerCase().contains(needle)) return feature;
+  }
+  return null;
+}
+
+String _expressionBucket(double value, double min, double max) {
+  if (max <= min) return 'medium expression';
+  final t = ((value - min) / (max - min)).clamp(0.0, 1.0);
+  if (t < 0.33) return 'low expression';
+  if (t < 0.67) return 'medium expression';
+  return 'high expression';
+}
+
 List<String> _tableColumns(List<Map<String, dynamic>> rows) {
   if (rows.isEmpty) return const ['id', 'label', 'x', 'y'];
   return rows.first.keys.map((key) => key.toString()).toList();
+}
+
+List<String> _stringList(Object? value) {
+  if (value is! List) return const [];
+  return value
+      .map((item) => item.toString())
+      .where((item) => item.trim().isNotEmpty)
+      .toList();
+}
+
+Map<String, ContinuousColorScale> _expressionScales(
+  Map<String, dynamic> structured,
+) {
+  final raw = mapFromObject(structured['feature_expression']);
+  final result = <String, ContinuousColorScale>{};
+  for (final entry in raw.entries) {
+    final values = mapFromObject(entry.value).map(
+      (key, value) => MapEntry(key, doubleFromObject(value) ?? 0),
+    );
+    if (values.isEmpty) continue;
+    final min = values.values.reduce(math.min);
+    final max = values.values.reduce(math.max);
+    result[entry.key] = ContinuousColorScale(
+      label: '${entry.key} expression',
+      valuesByPointId: values,
+      min: min,
+      max: max,
+    );
+  }
+  return result;
 }
 
 String _prettyKey(String key) {

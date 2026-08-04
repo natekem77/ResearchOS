@@ -6,6 +6,7 @@ import '../heatmap/heatmap_viewer.dart';
 import '../line/line_plot_viewer.dart';
 import '../scatter/scatter_viewer.dart';
 import '../table/enhanced_table_viewer.dart';
+import '../violin/violin_plot_viewer.dart';
 import 'viewer_base.dart';
 import 'viewer_models.dart';
 import 'viewer_registry.dart';
@@ -42,12 +43,16 @@ class ViewerFactory {
   AnalysisViewerKind resolveKind(AnalysisOutputViewModel output) {
     final plotType = output.plotType;
     return switch (plotType) {
-      'volcano' || 'ma' || 'pca' || 'umap' => AnalysisViewerKind.scatter,
+      'volcano' || 'ma' || 'pca' || 'umap' || 'feature_plot' =>
+        AnalysisViewerKind.scatter,
       'sample_distance_heatmap' ||
-      'top_gene_heatmap' =>
+      'top_gene_heatmap' ||
+      'marker_heatmap' =>
         AnalysisViewerKind.heatmap,
       'dispersion_plot' => AnalysisViewerKind.line,
-      'library_size_plot' || 'cluster_size_bar' => AnalysisViewerKind.bar,
+      'library_size_plot' || 'cluster_size_bar' || 'histogram' =>
+        AnalysisViewerKind.bar,
+      'violin' => AnalysisViewerKind.violin,
       'marker_dotplot' => AnalysisViewerKind.dotPlot,
       _ => switch (output.outputType) {
           'embedding' => AnalysisViewerKind.scatter,
@@ -89,6 +94,13 @@ class ViewerFactory {
       ..register(
         AnalysisViewerKind.bar,
         (context, output, actions) => BarPlotViewer.fromOutput(
+          output: output.raw,
+          actions: actions,
+        ),
+      )
+      ..register(
+        AnalysisViewerKind.violin,
+        (context, output, actions) => ViolinPlotViewer(
           output: output.raw,
           actions: actions,
         ),

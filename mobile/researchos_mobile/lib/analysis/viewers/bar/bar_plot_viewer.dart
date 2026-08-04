@@ -144,9 +144,9 @@ BarPlotSpec barSpecFromOutput(Map<String, dynamic> output) {
   final structured = view.structured;
   final rows = rowsFromObject(structured['rows']);
   final sampleColumn =
-      _firstExisting(rows, const ['sample', 'sample_id', 'cluster', 'name']);
+      _firstExisting(rows, const ['sample', 'sample_id', 'cluster', 'bin', 'group', 'name']);
   final valueColumn =
-      _firstExisting(rows, const ['library_size', 'cell_count', 'read_count', 'value']);
+      _firstExisting(rows, const ['library_size', 'cell_count', 'count', 'read_count', 'value']);
   return BarPlotSpec(
     title: view.title,
     yAxisLabel: valueColumn ?? 'value',

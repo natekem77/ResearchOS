@@ -8,10 +8,14 @@ class ScatterToolbar extends StatelessWidget {
     super.key,
     required this.controller,
     this.categoryFilterLabel = 'Focus selection',
+    this.colorOptions = const [],
+    this.featureOptions = const [],
   });
 
   final ScatterController controller;
   final String categoryFilterLabel;
+  final List<String> colorOptions;
+  final List<String> featureOptions;
 
   @override
   Widget build(BuildContext context) {
@@ -28,6 +32,37 @@ class ScatterToolbar extends StatelessWidget {
               onChanged: (value) => controller.query = value,
             ),
             const SizedBox(height: ResearchOsSpacing.xs),
+            if (colorOptions.isNotEmpty || featureOptions.isNotEmpty) ...[
+              Wrap(
+                spacing: ResearchOsSpacing.sm,
+                runSpacing: ResearchOsSpacing.xs,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  if (colorOptions.isNotEmpty)
+                    DropdownMenu<String>(
+                      initialSelection: controller.colorBy ?? colorOptions.first,
+                      label: const Text('Color by'),
+                      dropdownMenuEntries: [
+                        for (final option in colorOptions)
+                          DropdownMenuEntry(value: option, label: option),
+                      ],
+                      onSelected: controller.setColorBy,
+                    ),
+                  if (featureOptions.isNotEmpty)
+                    SizedBox(
+                      width: 220,
+                      child: TextField(
+                        decoration: const InputDecoration(
+                          prefixIcon: Icon(Icons.biotech_outlined),
+                          labelText: 'Feature expression',
+                        ),
+                        onChanged: controller.setFeatureQuery,
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: ResearchOsSpacing.xs),
+            ],
             Align(
               alignment: Alignment.centerLeft,
               child: Wrap(

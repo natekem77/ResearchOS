@@ -26,6 +26,7 @@ class _DotPlotViewerState extends State<DotPlotViewer> {
   final GlobalKey _boundaryKey = GlobalKey();
   final TransformationController _transformController =
       TransformationController();
+  String _query = '';
 
   @override
   void dispose() {
@@ -41,6 +42,9 @@ class _DotPlotViewerState extends State<DotPlotViewer> {
         .map((row) => row['gene']?.toString() ?? '')
         .where((value) => value.isNotEmpty)
         .toSet()
+        .where((value) =>
+            _query.trim().isEmpty ||
+            value.toLowerCase().contains(_query.trim().toLowerCase()))
         .toList();
     final clusters = rows
         .map((row) => row['cluster']?.toString() ?? '')
@@ -64,6 +68,16 @@ class _DotPlotViewerState extends State<DotPlotViewer> {
             style: Theme.of(context).textTheme.bodySmall,
           ),
           const SizedBox(height: ResearchOsSpacing.xs),
+          TextField(
+            decoration: const InputDecoration(
+              prefixIcon: Icon(Icons.search),
+              labelText: 'Search genes',
+            ),
+            onChanged: (value) => setState(() {
+              _query = value;
+            }),
+          ),
+          const SizedBox(height: ResearchOsSpacing.xs),
           Expanded(
             child: GestureDetector(
               onDoubleTap: _resetView,
@@ -73,19 +87,35 @@ class _DotPlotViewerState extends State<DotPlotViewer> {
                 maxScale: 16,
                 boundaryMargin: const EdgeInsets.all(240),
                 clipBehavior: Clip.none,
-                child: CustomPaint(
-                  painter: _DotPlotPainter(
-                    rows: rows,
-                    genes: genes,
-                    clusters: clusters,
-                    min: min,
-                    max: max,
-                    colorScheme: Theme.of(context).colorScheme,
-                    textStyle: Theme.of(context).textTheme.labelSmall,
-                  ),
-                  child: SizedBox(
-                    width: math.max(360, 92.0 + clusters.length * 72),
-                    height: math.max(320, 56.0 + genes.length * 30),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onTapUp: (details) {
+                    final row = _dotAt(
+                      details.localPosition,
+                      Size(
+                        math.max(360, 92.0 + clusters.length * 72),
+                        math.max(320, 56.0 + genes.length * 30),
+                      ),
+                      rows,
+                      genes,
+                      clusters,
+                    );
+                    if (row != null) _showDotDetails(row);
+                  },
+                  child: CustomPaint(
+                    painter: _DotPlotPainter(
+                      rows: rows,
+                      genes: genes,
+                      clusters: clusters,
+                      min: min,
+                      max: max,
+                      colorScheme: Theme.of(context).colorScheme,
+                      textStyle: Theme.of(context).textTheme.labelSmall,
+                    ),
+                    child: SizedBox(
+                      width: math.max(360, 92.0 + clusters.length * 72),
+                      height: math.max(320, 56.0 + genes.length * 30),
+                    ),
                   ),
                 ),
               ),
@@ -106,6 +136,63 @@ class _DotPlotViewerState extends State<DotPlotViewer> {
     _transformController.value = _transformController.value.clone()
       ..setIdentity();
   }
+
+  void _showDotDetails(Map<String, dynamic> row) {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(ResearchOsSpacing.md),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${row['gene']} in cluster ${row['cluster']}',
+                  style: Theme.of(context).textTheme.titleLarge),
+              ViewerKeyValue('Percent expressing', row['percent_expressing']),
+              ViewerKeyValue(
+                'Average scaled expression',
+                row['average_scaled_expression'],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Map<String, dynamic>? _dotAt(
+  Offset position,
+  Size size,
+  List<Map<String, dynamic>> rows,
+  List<String> genes,
+  List<String> clusters,
+) {
+  const left = 90.0;
+  const top = 44.0;
+  final cellWidth =
+      math.max(54.0, (size.width - left - 16) / math.max(1, clusters.length));
+  final cellHeight =
+      math.max(24.0, (size.height - top - 12) / math.max(1, genes.length));
+  final clusterIndex = ((position.dx - left) / cellWidth).floor();
+  final geneIndex = ((position.dy - top) / cellHeight).floor();
+  if (clusterIndex < 0 ||
+      clusterIndex >= clusters.length ||
+      geneIndex < 0 ||
+      geneIndex >= genes.length) {
+    return null;
+  }
+  final cluster = clusters[clusterIndex];
+  final gene = genes[geneIndex];
+  for (final row in rows) {
+    if (row['cluster']?.toString() == cluster &&
+        row['gene']?.toString() == gene) {
+      return row;
+    }
+  }
+  return null;
 }
 
 class _DotPlotPainter extends CustomPainter {
