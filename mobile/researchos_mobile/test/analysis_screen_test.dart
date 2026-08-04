@@ -590,13 +590,14 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, 'Run DESeq2').last);
     await tester.pumpAndSettle();
 
-    expect(find.text('condition: D60, D70, D90, D120, D200'), findsOneWidget);
     expect(
-      find.text('Condition levels: D60, D70, D90, D120, D200'),
+        find.text('condition: D060, D070, D090, D120, D200'), findsOneWidget);
+    expect(
+      find.text('Condition levels: D060, D070, D090, D120, D200'),
       findsOneWidget,
     );
     expect(find.text('D200'), findsWidgets);
-    expect(find.text('D60'), findsWidgets);
+    expect(find.text('D060'), findsWidgets);
     expect(find.text('Zero-count samples: none'), findsOneWidget);
     expect(find.text('Duplicated genes: 0'), findsOneWidget);
     await tester.tap(find.text('Submit DESeq2'));
@@ -605,7 +606,7 @@ void main() {
       calls.any((call) =>
           call.startsWith('BODY ') &&
           call.contains('"numerator_level":"D200"') &&
-          call.contains('"denominator_level":"D60"')),
+          call.contains('"denominator_level":"D060"')),
       isTrue,
     );
     expect(tester.takeException(), isNull);
@@ -944,7 +945,7 @@ Map<String, dynamic> _geoDataset() {
         'sample_id_column': 'sample',
         'design_factors': ['condition'],
         'contrast_factor': 'condition',
-        'denominator_level': 'D60',
+        'denominator_level': 'D060',
         'numerator_level': 'D200',
       },
       'validation': {
@@ -954,9 +955,9 @@ Map<String, dynamic> _geoDataset() {
         'zero_count_samples': const [],
         'missing_metadata_samples': const [],
         'metadata_without_counts': const [],
-        'conditions': ['D60', 'D70', 'D90', 'D120', 'D200'],
+        'conditions': ['D060', 'D070', 'D090', 'D120', 'D200'],
         'condition_levels_by_factor': {
-          'condition': ['D60', 'D70', 'D90', 'D120', 'D200'],
+          'condition': ['D060', 'D070', 'D090', 'D120', 'D200'],
         },
         'count_matrix_dimensions': {
           'genes': 59618,
@@ -975,7 +976,7 @@ Map<String, dynamic> _exploratoryPublicDataset() {
     'tissue': 'Human retinal organoids',
     'sample_count': 15,
     'platform': 'GPL16791 Illumina HiSeq 2500',
-    'experimental_groups': ['D60', 'D70', 'D90', 'D120', 'D200'],
+    'experimental_groups': ['D060', 'D070', 'D090', 'D120', 'D200'],
     'source_data_kind': 'normalized_cpm',
     'exploratory_only': true,
     'summary': 'Processed CPM table for exploratory visualization.',

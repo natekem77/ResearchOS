@@ -1099,15 +1099,7 @@ class AnalysisService:
         dataset_dir.mkdir(parents=True, exist_ok=True)
         counts_path = dataset_dir / record["counts_filename"]
         metadata_path = dataset_dir / record["metadata_filename"]
-        if record.get("download_url"):
-            _download_public_geo_dataset(record, dataset_dir, counts_path, metadata_path)
-        else:
-            _write_counts_and_samples(
-                counts_path,
-                metadata_path,
-                genes=record["genes"],
-                samples=record["samples"],
-            )
+        _materialize_public_geo_dataset(record, dataset_dir, counts_path, metadata_path)
         relative_counts = str(counts_path.relative_to(self.allowed_roots[0]))
         relative_metadata = str(metadata_path.relative_to(self.allowed_roots[0]))
         dataset = self.register_server_dataset(
@@ -1148,15 +1140,7 @@ class AnalysisService:
             str(existing["storage_location_id"]),
             str(existing["metadata_path"]),
         )
-        if record.get("download_url"):
-            _download_public_geo_dataset(record, counts_path.parent, counts_path, metadata_path)
-        else:
-            _write_counts_and_samples(
-                counts_path,
-                metadata_path,
-                genes=record["genes"],
-                samples=record["samples"],
-            )
+        _materialize_public_geo_dataset(record, counts_path.parent, counts_path, metadata_path)
         summary = _peek_bulk_dataset(counts_path, metadata_path)
         source_data_kind = str(record.get("source_data_kind", "raw_counts"))
         exploratory_only = bool(record.get("exploratory_only", False))
@@ -1642,22 +1626,35 @@ class AnalysisService:
         payload = dict(row)
         metadata_summary = json.loads(row["metadata_summary_json"] or "{}")
         validation = metadata_summary.get("validation")
+        public_record = _public_geo_record_for_dataset_row(row)
         needs_factor_levels = not isinstance(validation, dict) or not validation.get("condition_levels_by_factor")
-        if needs_factor_levels:
+        needs_public_repair = public_record is not None and _metadata_needs_public_geo_repair(validation, public_record)
+        if needs_factor_levels or needs_public_repair:
             try:
                 counts_path, _ = self._resolve_location_path(str(row["storage_location_id"]), str(row["counts_path"]))
                 metadata_path, _ = self._resolve_location_path(str(row["storage_location_id"]), str(row["metadata_path"]))
+                if needs_public_repair:
+                    _materialize_public_geo_dataset(public_record, counts_path.parent, counts_path, metadata_path)
                 refreshed_summary = _peek_bulk_dataset(counts_path, metadata_path)
                 for key in ("source_data_kind", "exploratory_only", "suggested_deseq2"):
                     if key in metadata_summary:
                         refreshed_summary[key] = metadata_summary[key]
+                if public_record is not None:
+                    refreshed_summary["source_data_kind"] = public_record.get("source_data_kind", "raw_counts")
+                    refreshed_summary["exploratory_only"] = bool(public_record.get("exploratory_only", False))
+                    if isinstance(public_record.get("deseq2_defaults"), dict):
+                        refreshed_summary["suggested_deseq2"] = public_record["deseq2_defaults"]
                 metadata_summary = refreshed_summary
             except Exception:
                 logger.debug("analysis dataset metadata summary enrichment failed", exc_info=True)
         payload["metadata_summary"] = metadata_summary
         payload["access"] = json.loads(row["access_json"] or "{}")
         payload["server_local"] = True
-        payload["exploratory_only"] = bool(row["exploratory_only"]) if "exploratory_only" in row.keys() else False
+        if public_record is not None:
+            payload["source_data_kind"] = public_record.get("source_data_kind", payload.get("source_data_kind", "raw_counts"))
+            payload["exploratory_only"] = bool(public_record.get("exploratory_only", False))
+        else:
+            payload["exploratory_only"] = bool(row["exploratory_only"]) if "exploratory_only" in row.keys() else False
         return payload
 
     def _workflow_payload(self, row: sqlite3.Row, supported_workflows: set[str] | None = None) -> dict[str, Any]:
@@ -2117,6 +2114,34 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
 def _natural_label_sort_key(label: str) -> tuple[Any, ...]:
     parts = re.split(r"(\d+)", label)
     return tuple(int(part) if part.isdigit() else part.lower() for part in parts)
+
+
+def _public_geo_record_for_dataset_row(row: sqlite3.Row) -> dict[str, Any] | None:
+    if str(row["source_type"] or "") != "public_geo":
+        return None
+    display_name = str(row["display_name"] or "")
+    for record in _public_geo_datasets():
+        if str(record.get("title") or "") == display_name:
+            return record
+    return None
+
+
+def _metadata_needs_public_geo_repair(validation: Any, record: dict[str, Any]) -> bool:
+    configured = record.get("samples") or []
+    expected_levels = {str(group) for _sample, group in configured}
+    if not expected_levels:
+        return False
+    if not isinstance(validation, dict):
+        return True
+    by_factor = validation.get("condition_levels_by_factor")
+    levels: list[str] = []
+    if isinstance(by_factor, dict) and isinstance(by_factor.get("condition"), list):
+        levels = [str(item) for item in by_factor["condition"] if str(item)]
+    elif isinstance(validation.get("conditions"), list):
+        levels = [str(item) for item in validation["conditions"] if str(item)]
+    if not levels:
+        return True
+    return not set(levels).issubset(expected_levels)
 
 
 def _bulk_validation_report(counts_path: Path, metadata_path: Path, *, sample_id_column: str, group_column: str) -> dict[str, Any]:
@@ -2741,7 +2766,7 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
             "publication": "Qu et al.; PMID 38048222",
             "platform": "GPL16791 Illumina HiSeq 2500",
             "sample_count": 15,
-            "experimental_groups": ["D60", "D70", "D90", "D120", "D200"],
+            "experimental_groups": ["D060", "D070", "D090", "D120", "D200"],
             "summary": "RNA-seq at five time points in retinal organoid development with downloadable processed gene CPM table.",
             "source": "NCBI GEO",
             "geo_url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE229682",
@@ -2761,7 +2786,7 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
             "deseq2_defaults": {
                 "design_formula": "~ condition",
                 "contrast_factor": "condition",
-                "denominator_level": "D60",
+                "denominator_level": "D060",
                 "numerator_level": "D200",
                 "min_total_count": 10,
                 "min_samples_expressing": 2,
@@ -2769,15 +2794,15 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
                 "lfc_threshold": 1.0,
             },
             "samples": [
-                ("D060_1", "D60"),
-                ("D060_2", "D60"),
-                ("D060_3", "D60"),
-                ("D070_1", "D70"),
-                ("D070_2", "D70"),
-                ("D070_3", "D70"),
-                ("D090_1", "D90"),
-                ("D090_2", "D90"),
-                ("D090_3", "D90"),
+                ("D060_1", "D060"),
+                ("D060_2", "D060"),
+                ("D060_3", "D060"),
+                ("D070_1", "D070"),
+                ("D070_2", "D070"),
+                ("D070_3", "D070"),
+                ("D090_1", "D090"),
+                ("D090_2", "D090"),
+                ("D090_3", "D090"),
                 ("D120_1", "D120"),
                 ("D120_2", "D120"),
                 ("D120_3", "D120"),
@@ -3097,6 +3122,23 @@ def _download_public_geo_dataset(
         raise AnalysisValidationError(f"Unsupported public GEO import type: {kind}")
 
 
+def _materialize_public_geo_dataset(
+    record: dict[str, Any],
+    dataset_dir: Path,
+    counts_path: Path,
+    metadata_path: Path,
+) -> None:
+    if record.get("download_url"):
+        _download_public_geo_dataset(record, dataset_dir, counts_path, metadata_path)
+    else:
+        _write_counts_and_samples(
+            counts_path,
+            metadata_path,
+            genes=record["genes"],
+            samples=record["samples"],
+        )
+
+
 def _download_url(url: str, destination: Path) -> None:
     request = urllib.request.Request(
         url,
@@ -3201,7 +3243,10 @@ def _convert_expression_table_to_counts(
         writer = csv.writer(handle, delimiter="\t")
         writer.writerow([gene_column or "gene", *sample_names])
         writer.writerows(([gene, *values] for gene, values in rows))
-    _write_public_geo_metadata(metadata_path, record, sample_names=sample_names)
+    if configured_samples:
+        _write_public_geo_metadata(metadata_path, record)
+    else:
+        _write_public_geo_metadata(metadata_path, record, sample_names=sample_names)
 
 
 def _match_geo_member_to_sample(

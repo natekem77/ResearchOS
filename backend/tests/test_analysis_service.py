@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from app.analysis import AnalysisAuthorizationError, AnalysisService, AnalysisValidationError
+from app.analysis import service as analysis_service_module
 from app.config import Settings
 
 
@@ -368,6 +369,57 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(gse229682["source_data_kind"], "normalized_cpm")
         self.assertNotIn("bulk_rnaseq_deseq2", gse229682["recommended_workflows"])
         self.assertTrue(dataset["exploratory_only"])
+
+    def test_expression_table_import_uses_curated_metadata_not_annotation_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "expression.tsv"
+            counts = root / "counts.tsv"
+            metadata = root / "samples.csv"
+            with source.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle, delimiter="\t")
+                writer.writerow(
+                    [
+                        "",
+                        "chromosome_name",
+                        "strand",
+                        "start_position",
+                        "end_position",
+                        "external_gene_name",
+                        "transcript_count",
+                        "source",
+                        "D060_1",
+                        "D060_2",
+                        "D200_1",
+                        "D200_2",
+                    ]
+                )
+                writer.writerow(["ENSG1", "1", "+", "10", "20", "GENE1", "2", "ensembl", "10", "12", "40", "44"])
+                writer.writerow(["ENSG2", "2", "-", "30", "50", "GENE2", "1", "ensembl", "5", "7", "2", "3"])
+            record = {
+                "gene_column": "external_gene_name",
+                "samples": [
+                    ("D060_1", "D060"),
+                    ("D060_2", "D060"),
+                    ("D200_1", "D200"),
+                    ("D200_2", "D200"),
+                ],
+                "tissue": "Human retinal organoids",
+                "sample_accessions": {},
+            }
+
+            analysis_service_module._convert_expression_table_to_counts(record, source, counts, metadata)
+            summary = analysis_service_module._peek_bulk_dataset(counts, metadata)
+            with counts.open("r", encoding="utf-8") as handle:
+                header = handle.readline().strip().split("\t")
+
+        self.assertEqual(summary["validation"]["conditions"], ["D060", "D200"])
+        self.assertEqual(
+            summary["validation"]["condition_levels_by_factor"]["condition"],
+            ["D060", "D200"],
+        )
+        self.assertNotIn("chromosome_name", summary["validation"]["condition_levels_by_factor"]["condition"])
+        self.assertEqual(header, ["external_gene_name", "D060_1", "D060_2", "D200_1", "D200_2"])
 
     def test_zero_count_sample_requires_explicit_exclusion_for_deseq2(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
