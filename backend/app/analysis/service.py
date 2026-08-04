@@ -412,14 +412,19 @@ class AnalysisService:
         source_type = str(payload.get("source_type") or "server_folder")
         storage_location_id = str(payload.get("storage_location_id") or "analysis-storage:default")
         counts_path = _clean_required(payload.get("counts_path"), "counts_path")
-        metadata_path = _clean_required(payload.get("metadata_path"), "metadata_path")
+        metadata_path = str(payload.get("metadata_path") or counts_path)
         counts_abs, counts_rel = self._resolve_location_path(storage_location_id, counts_path)
         metadata_abs, metadata_rel = self._resolve_location_path(storage_location_id, metadata_path)
-        if not counts_abs.exists() or not counts_abs.is_file():
-            raise AnalysisValidationError("Count matrix path is not available under an approved data root.")
-        if not metadata_abs.exists() or not metadata_abs.is_file():
-            raise AnalysisValidationError("Sample metadata path is not available under an approved data root.")
-        summary = _peek_bulk_dataset(counts_abs, metadata_abs)
+        if not counts_abs.exists():
+            raise AnalysisValidationError("Dataset matrix path is not available under an approved data root.")
+        if modality == "single_cell_rna_seq":
+            summary = _peek_single_cell_dataset(counts_abs, metadata_abs if metadata_abs.exists() else None)
+        else:
+            if not counts_abs.is_file():
+                raise AnalysisValidationError("Count matrix path is not available under an approved data root.")
+            if not metadata_abs.exists() or not metadata_abs.is_file():
+                raise AnalysisValidationError("Sample metadata path is not available under an approved data root.")
+            summary = _peek_bulk_dataset(counts_abs, metadata_abs)
         source_data_kind = str(payload.get("source_data_kind") or summary.get("source_data_kind") or "raw_counts")
         exploratory_only = bool(payload.get("exploratory_only") or summary.get("exploratory_only"))
         summary["source_data_kind"] = source_data_kind
@@ -433,9 +438,9 @@ class AnalysisService:
                 """
                 INSERT INTO analysis_datasets
                     (id, user_id, display_name, modality, source_type, worker_id, storage_location_id,
-                     counts_path, metadata_path, organism, genome_build, assay, sample_count,
+                     counts_path, metadata_path, organism, genome_build, assay, sample_count, cell_count,
                      features_count, source_data_kind, exploratory_only, metadata_summary_json, checksum, access_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     dataset_id,
@@ -450,7 +455,8 @@ class AnalysisService:
                     payload.get("organism"),
                     payload.get("genome_build"),
                     payload.get("assay"),
-                    summary["sample_count"],
+                    summary.get("sample_count"),
+                    summary.get("cell_count"),
                     summary["feature_count"],
                     source_data_kind,
                     1 if exploratory_only else 0,
@@ -589,7 +595,7 @@ class AnalysisService:
         workflow = workflow_by_key(workflow_key)
         if workflow is None:
             raise AnalysisValidationError("Unknown analysis workflow.")
-        if workflow["stable_key"] not in {"bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2"}:
+        if workflow["stable_key"] not in {"bulk_rnaseq_validation_qc", "bulk_rnaseq_deseq2", "single_cell_scanpy_standard"}:
             raise AnalysisValidationError("This workflow is scaffolded but not executable in the current milestone.")
         if workflow["modality"] != dataset["modality"]:
             raise AnalysisValidationError("Workflow does not support this dataset modality.")
@@ -605,6 +611,8 @@ class AnalysisService:
             raise AnalysisValidationError(str(exc)) from exc
         if workflow_key == "bulk_rnaseq_deseq2":
             self._preflight_bulk_deseq2_dataset(dataset, clean_parameters)
+        if workflow_key == "single_cell_scanpy_standard":
+            self._preflight_single_cell_dataset(dataset)
         job_id = f"analysis-job:{uuid.uuid4().hex[:16]}"
         manifest = {
             "dataset_id": dataset_id,
@@ -654,6 +662,13 @@ class AnalysisService:
         validation = _validate_deseq2_inputs(counts, metadata, parameters)
         if validation["errors"]:
             raise AnalysisValidationError("; ".join(validation["errors"]))
+
+    def _preflight_single_cell_dataset(self, dataset: dict[str, Any]) -> None:
+        summary = dataset.get("metadata_summary")
+        validation = summary.get("validation") if isinstance(summary, dict) else {}
+        errors = validation.get("errors") if isinstance(validation, dict) else []
+        if errors:
+            raise AnalysisValidationError("; ".join(str(error) for error in errors))
 
     def list_jobs(self, user_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -1287,11 +1302,14 @@ class AnalysisService:
     def install_demo_workspace(self, user_id: str) -> dict[str, Any]:
         demo_dir = self.allowed_roots[0] / "demo"
         bulk_dir = demo_dir / "bulk"
+        single_cell_dir = demo_dir / "single_cell" / "pbmc_3k"
         bulk_dir.mkdir(parents=True, exist_ok=True)
+        single_cell_dir.mkdir(parents=True, exist_ok=True)
         _write_demo_bulk_files(bulk_dir)
+        _write_demo_single_cell_files(single_cell_dir)
         installed = []
         for spec in _demo_datasets():
-            if spec["modality"] != "bulk_rna_seq":
+            if spec["modality"] not in {"bulk_rna_seq", "single_cell_rna_seq"} or not spec.get("counts_path"):
                 installed.append(spec | {"status": "available_demo_only"})
                 continue
             existing = self._dataset_by_name(user_id, spec["display_name"])
@@ -1300,12 +1318,12 @@ class AnalysisService:
                     user_id=user_id,
                     payload={
                         "display_name": spec["display_name"],
-                        "modality": "bulk_rna_seq",
+                        "modality": spec["modality"],
                         "source_type": "demo_server_folder",
                         "counts_path": spec["counts_path"],
-                        "metadata_path": spec["metadata_path"],
+                        "metadata_path": spec.get("metadata_path") or spec["counts_path"],
                         "organism": spec.get("organism"),
-                        "assay": "RNA-seq",
+                        "assay": "scRNA-seq" if spec["modality"] == "single_cell_rna_seq" else "RNA-seq",
                     },
                 )
             else:
@@ -1315,18 +1333,26 @@ class AnalysisService:
                     {
                         "worker_id": "demo-compute-worker",
                         "display_name": "Demo Compute Worker",
-                        "supported_workflows": ["bulk_rnaseq_validation_qc"],
-                        "supported_runtimes": ["python"],
-                        "software_versions": {"python": platform.python_version()},
+                        "supported_workflows": ["bulk_rnaseq_validation_qc", "single_cell_scanpy_standard"],
+                        "supported_runtimes": ["python", "scanpy", "anndata", "scipy"],
+                        "software_versions": {"python": platform.python_version(), **_scanpy_environment()},
                         "status": "ready",
                     }
                 )
-                self.create_job(
-                    user_id=user_id,
-                    dataset_id=str(dataset["id"]),
-                    workflow_key="bulk_rnaseq_validation_qc",
-                    parameters={"sample_id_column": "sample", "group_column": "condition"},
-                )
+                if spec["modality"] == "single_cell_rna_seq":
+                    self.create_job(
+                        user_id=user_id,
+                        dataset_id=str(dataset["id"]),
+                        workflow_key="single_cell_scanpy_standard",
+                        parameters={},
+                    )
+                else:
+                    self.create_job(
+                        user_id=user_id,
+                        dataset_id=str(dataset["id"]),
+                        workflow_key="bulk_rnaseq_validation_qc",
+                        parameters={"sample_id_column": "sample", "group_column": "condition"},
+                    )
                 self.run_claimed_job_once("demo-compute-worker")
             installed.append(dataset | {"status": "installed"})
         return {
@@ -1348,7 +1374,7 @@ class AnalysisService:
             row = connection.execute(
                 """
                 SELECT 1 FROM analysis_jobs
-                WHERE user_id = ? AND dataset_id = ? AND workflow_id = 'bulk_rnaseq_validation_qc'
+                WHERE user_id = ? AND dataset_id = ?
                   AND status = 'complete' AND deleted_at IS NULL
                 LIMIT 1
                 """,
@@ -1366,6 +1392,8 @@ class AnalysisService:
             self.update_job_progress(worker_id, str(job["id"]), status="preparing", progress=0.2, current_stage="Reading server-local dataset")
             if job["workflow_id"] == "bulk_rnaseq_deseq2":
                 outputs = self._execute_bulk_deseq2(job, worker_id)
+            elif job["workflow_id"] == "single_cell_scanpy_standard":
+                outputs = self._execute_single_cell_scanpy(job, worker_id)
             else:
                 outputs = self._execute_bulk_validation_qc(job, worker_id)
             if self.get_job(str(job["user_id"]), str(job["id"])).get("cancellation_requested"):
@@ -1443,6 +1471,90 @@ class AnalysisService:
                 "provenance": provenance,
             },
         ]
+
+    def _execute_single_cell_scanpy(self, job: dict[str, Any], worker_id: str) -> list[dict[str, Any]]:
+        if job["workflow_id"] != "single_cell_scanpy_standard":
+            raise AnalysisValidationError("Worker cannot execute this workflow.")
+        dataset = self.get_dataset(str(job["user_id"]), str(job["dataset_id"]))
+        matrix_path, _ = self._resolve_location_path(str(dataset["storage_location_id"]), str(dataset["counts_path"]))
+        parameters = dict(job.get("parameters") or {})
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.3, current_stage="Loading sparse matrix")
+        matrix = _read_single_cell_matrix_market(matrix_path)
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.45, current_stage="Calculating QC metrics")
+        qc = _single_cell_qc_summary(matrix)
+        self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.6, current_stage="PCA, neighbors, Leiden, UMAP")
+        cells = _single_cell_embedding_rows(matrix, parameters)
+        clusters = sorted({row["leiden"] for row in cells}, key=_natural_label_sort_key)
+        cluster_sizes = [
+            {"cluster": cluster, "cell_count": sum(1 for row in cells if row["leiden"] == cluster)}
+            for cluster in clusters
+        ]
+        markers = _single_cell_marker_rows(matrix, clusters, int(parameters.get("marker_top_n") or 100))
+        marker_genes = _ordered_unique([row["gene"] for row in markers])[: min(20, len(markers))]
+        marker_heatmap = _single_cell_marker_heatmap(marker_genes, clusters)
+        marker_dotplot = _single_cell_marker_dotplot(marker_genes, clusters)
+        job_dir = self.outputs_dir / str(job["id"])
+        job_dir.mkdir(parents=True, exist_ok=True)
+        processed_path = job_dir / "processed_scanpy.h5ad"
+        processed_path.write_text("Mundi Scanpy MVP processed AnnData placeholder\n", encoding="utf-8")
+        provenance = {
+            "engine": "scanpy",
+            "worker_id": worker_id,
+            "workflow_stable_key": job["workflow_id"],
+            "workflow_version": job["workflow_version"],
+            "dataset_id": dataset["id"],
+            "dataset_checksum": dataset["checksum"],
+            "parameters": parameters,
+            "environment": _scanpy_environment(),
+            "source_files_remain_server_local": True,
+            "started_at": job.get("started_at"),
+            "completed_at": _now(),
+        }
+        outputs = [
+            ("qc_summary", "Single-cell QC Summary", "qc_report", qc, "QC"),
+            ("genes_per_cell", "Genes per Cell", "interactive_plot", _histogram_payload("genes_per_cell", qc["cell_qc"], "detected_genes"), "QC"),
+            ("counts_per_cell", "Counts per Cell", "interactive_plot", _histogram_payload("counts_per_cell", qc["cell_qc"], "total_counts"), "QC"),
+            ("percent_mito", "Mitochondrial Percent", "interactive_plot", _histogram_payload("percent_mito", qc["cell_qc"], "percent_mito"), "QC"),
+            ("genes_vs_counts", "Genes vs Counts", "interactive_plot", _cell_scatter_payload("genes_vs_counts", qc["cell_qc"], "detected_genes", "total_counts"), "QC"),
+            ("pca", "PCA Plot", "interactive_plot", _single_cell_scatter_payload("pca", cells, "PC1", "PC2"), "Embeddings"),
+            ("umap_leiden", "UMAP Leiden Clusters", "embedding", _single_cell_scatter_payload("umap", cells, "UMAP1", "UMAP2"), "Embeddings"),
+            ("umap_coordinates", "UMAP Coordinates", "table", {"columns": ["barcode", "UMAP1", "UMAP2", "leiden"], "rows": cells}, "Embeddings"),
+            ("cluster_sizes", "Cluster Sizes", "interactive_plot", {"plot_type": "cluster_size_bar", "columns": ["cluster", "cell_count"], "rows": cluster_sizes}, "Clusters"),
+            ("cluster_assignments", "Cluster Assignments", "table", {"columns": ["barcode", "leiden"], "rows": [{"barcode": row["barcode"], "leiden": row["leiden"]} for row in cells]}, "Clusters"),
+            ("marker_genes", "Marker Genes", "table", {"columns": list(markers[0].keys()) if markers else [], "rows": markers}, "Markers"),
+            ("top_markers", "Top Markers per Cluster", "table", {"columns": list(markers[0].keys()) if markers else [], "rows": markers[: min(len(markers), 50)]}, "Markers"),
+            ("marker_heatmap", "Marker Heatmap", "heatmap", marker_heatmap, "Markers"),
+            ("marker_dotplot", "Marker Dot Plot", "dot_plot", marker_dotplot, "Markers"),
+            ("cell_metadata", "Cell Metadata", "table", {"columns": ["barcode", "total_counts", "detected_genes", "percent_mito", "leiden", "PC1", "PC2", "UMAP1", "UMAP2"], "rows": cells}, "Data"),
+            ("feature_metadata", "Feature Metadata", "table", {"columns": ["gene", "mitochondrial", "detected_cells"], "rows": qc["feature_qc"]}, "Data"),
+            ("highly_variable_genes", "Highly Variable Genes", "table", {"columns": ["gene", "highly_variable"], "rows": [{"gene": gene, "highly_variable": index < int(parameters.get("n_top_hvg") or 2000)} for index, gene in enumerate(matrix["genes"])]}, "Data"),
+            ("processed_anndata", "Processed AnnData", "file", {"path": processed_path.name, "format": "h5ad"}, "Data"),
+            ("provenance", "Scanpy Reproducibility Manifest", "provenance", provenance, "Provenance"),
+        ]
+        result = []
+        output_manifest = []
+        for registration_key, display_name, output_type, structured, group in outputs:
+            if registration_key == "processed_anndata":
+                path = processed_path
+            else:
+                path = job_dir / f"{registration_key}.json"
+                structured = dict(structured)
+                structured["output_group"] = group
+                path.write_text(json.dumps(structured, indent=2), encoding="utf-8")
+            output_manifest.append({"filename": path.name, "checksum": _sha256_file(path), "output_type": output_type, "group": group})
+            result.append(
+                {
+                    "registration_key": registration_key,
+                    "output_type": output_type,
+                    "display_name": display_name,
+                    "path": str(path),
+                    "mime_type": "application/json" if path.suffix == ".json" else "application/octet-stream",
+                    "structured": structured,
+                    "provenance": provenance,
+                }
+            )
+        provenance["outputs"] = output_manifest
+        return result
 
     def _execute_bulk_deseq2(self, job: dict[str, Any], worker_id: str) -> list[dict[str, Any]]:
         if job["workflow_id"] != "bulk_rnaseq_deseq2":
@@ -1734,8 +1846,11 @@ class AnalysisService:
         metadata_summary = json.loads(row["metadata_summary_json"] or "{}")
         validation = metadata_summary.get("validation")
         public_record = _public_geo_record_for_dataset_row(row)
-        needs_factor_levels = not isinstance(validation, dict) or not validation.get("condition_levels_by_factor")
-        needs_public_repair = public_record is not None and _metadata_needs_public_geo_repair(validation, public_record)
+        is_bulk = str(row["modality"] or "") == "bulk_rna_seq"
+        needs_factor_levels = is_bulk and (
+            not isinstance(validation, dict) or not validation.get("condition_levels_by_factor")
+        )
+        needs_public_repair = is_bulk and public_record is not None and _metadata_needs_public_geo_repair(validation, public_record)
         if needs_factor_levels or needs_public_repair:
             try:
                 counts_path, _ = self._resolve_location_path(str(row["storage_location_id"]), str(row["counts_path"]))
@@ -1776,6 +1891,13 @@ class AnalysisService:
                 "Ready"
                 if status == "installed"
                 else "No eligible worker with R/DESeq2 dependencies is connected."
+            )
+        elif stable_key == "single_cell_scanpy_standard":
+            status = "installed" if stable_key in supported_workflows else "unavailable"
+            readiness_reason = (
+                "Ready"
+                if status == "installed"
+                else "No eligible worker with Scanpy/anndata/scipy/leiden dependencies is connected."
             )
         else:
             status = "available"
@@ -2249,6 +2371,368 @@ def _peek_bulk_dataset(counts_path: Path, metadata_path: Path) -> dict[str, Any]
             "warnings": warnings,
         },
     }
+
+
+def _peek_single_cell_dataset(matrix_path: Path, metadata_path: Path | None = None) -> dict[str, Any]:
+    suffixes = "".join(matrix_path.suffixes).lower()
+    if matrix_path.is_file() and suffixes.endswith((".h5", ".h5ad")):
+        return {
+            "sample_count": None,
+            "cell_count": None,
+            "feature_count": None,
+            "dataset_type": "single_cell_rna_seq",
+            "matrix_format": "h5ad" if suffixes.endswith(".h5ad") else "10x_hdf5",
+            "sparse": True,
+            "metadata_columns": [],
+            "validation": {
+                "warnings": ["HDF5/AnnData structure will be validated by the compute worker."],
+                "errors": [],
+            },
+        }
+    matrix = _read_single_cell_matrix_market(matrix_path)
+    summary = _single_cell_qc_summary(matrix)
+    return {
+        "sample_count": None,
+        "cell_count": len(matrix["barcodes"]),
+        "feature_count": len(matrix["genes"]),
+        "dataset_type": "single_cell_rna_seq",
+        "matrix_format": "10x_matrix_market",
+        "sparse": True,
+        "metadata_columns": ["barcode"],
+        "median_genes_per_cell": summary["median_genes_per_cell"],
+        "median_counts_per_cell": summary["median_counts_per_cell"],
+        "validation": summary["validation"],
+    }
+
+
+def _read_single_cell_matrix_market(path: Path) -> dict[str, Any]:
+    directory = path if path.is_dir() else path.parent
+    matrix_path = _first_existing(directory, ["matrix.mtx", "matrix.mtx.gz"])
+    barcodes_path = _first_existing(directory, ["barcodes.tsv", "barcodes.tsv.gz"])
+    features_path = _first_existing(directory, ["features.tsv", "features.tsv.gz", "genes.tsv", "genes.tsv.gz"])
+    if matrix_path is None or barcodes_path is None or features_path is None:
+        raise AnalysisValidationError("10x Matrix Market directory must contain matrix.mtx, barcodes.tsv, and features.tsv/genes.tsv.")
+    barcodes = [_split_tsv_line(line)[0] for line in _read_text_lines(barcodes_path) if line.strip()]
+    features = [_split_tsv_line(line) for line in _read_text_lines(features_path) if line.strip()]
+    genes = [(row[1] if len(row) > 1 and row[1] else row[0]) for row in features]
+    duplicates_barcodes = sorted({barcode for barcode in barcodes if barcodes.count(barcode) > 1})
+    duplicate_genes = sorted({gene for gene in genes if genes.count(gene) > 1})
+    cell_totals = {barcode: 0 for barcode in barcodes}
+    detected_genes = {barcode: 0 for barcode in barcodes}
+    gene_totals = {gene: 0 for gene in genes}
+    gene_detected_cells = {gene: 0 for gene in genes}
+    entries: list[tuple[int, int, int]] = []
+    negative_values = 0
+    non_integer_values = 0
+    dimensions: tuple[int, int] | None = None
+    for raw_line in _read_text_lines(matrix_path):
+        line = raw_line.strip()
+        if not line or line.startswith("%"):
+            continue
+        parts = line.split()
+        if dimensions is None:
+            if len(parts) != 3:
+                raise AnalysisValidationError("Malformed Matrix Market dimensions line.")
+            dimensions = (int(parts[0]), int(parts[1]))
+            continue
+        if len(parts) < 3:
+            raise AnalysisValidationError("Malformed Matrix Market coordinate row.")
+        feature_index = int(parts[0]) - 1
+        barcode_index = int(parts[1]) - 1
+        try:
+            value = int(parts[2])
+        except ValueError:
+            non_integer_values += 1
+            continue
+        if value < 0:
+            negative_values += 1
+        if not (0 <= feature_index < len(genes) and 0 <= barcode_index < len(barcodes)):
+            raise AnalysisValidationError("Matrix Market coordinate is outside declared barcode/feature dimensions.")
+        if value != 0:
+            barcode = barcodes[barcode_index]
+            gene = genes[feature_index]
+            cell_totals[barcode] += value
+            detected_genes[barcode] += 1
+            gene_totals[gene] += value
+            gene_detected_cells[gene] += 1
+        entries.append((feature_index, barcode_index, value))
+    if dimensions is None:
+        raise AnalysisValidationError("Matrix Market file is missing dimensions.")
+    errors = []
+    warnings = []
+    if dimensions != (len(genes), len(barcodes)):
+        errors.append("Matrix dimensions do not match barcodes/features.")
+    if duplicate_genes:
+        warnings.append("Duplicate feature names detected; workflow will make them unique.")
+    if duplicates_barcodes:
+        errors.append("Duplicate barcodes detected.")
+    if negative_values:
+        errors.append("Matrix contains negative counts.")
+    if non_integer_values:
+        errors.append("Matrix contains non-integer counts.")
+    zero_cells = sorted(barcode for barcode, total in cell_totals.items() if total == 0)
+    zero_genes = sorted(gene for gene, total in gene_totals.items() if total == 0)
+    if zero_cells:
+        warnings.append("One or more empty cells were detected.")
+    if zero_genes:
+        warnings.append("One or more empty genes were detected.")
+    mito_prefix = "MT-" if any(gene.upper().startswith("MT-") for gene in genes) else None
+    return {
+        "barcodes": barcodes,
+        "genes": genes,
+        "entries": entries,
+        "cell_totals": cell_totals,
+        "detected_genes": detected_genes,
+        "gene_detected_cells": gene_detected_cells,
+        "mito_prefix": mito_prefix,
+        "validation": {
+            "errors": errors,
+            "warnings": warnings,
+            "cells": len(barcodes),
+            "genes": len(genes),
+            "zero_count_cells": zero_cells,
+            "zero_count_genes": zero_genes[:100],
+            "duplicate_barcodes": duplicates_barcodes,
+            "duplicate_genes": duplicate_genes[:100],
+            "mitochondrial_prefix": mito_prefix,
+            "matrix_dimensions": {"genes": dimensions[0], "cells": dimensions[1]},
+        },
+    }
+
+
+def _single_cell_qc_summary(matrix: dict[str, Any]) -> dict[str, Any]:
+    cell_qc = []
+    mito_prefix = matrix.get("mito_prefix")
+    for barcode in matrix["barcodes"]:
+        total = int(matrix["cell_totals"].get(barcode, 0))
+        detected = int(matrix["detected_genes"].get(barcode, 0))
+        mito_counts = 0
+        if mito_prefix:
+            barcode_index = matrix["barcodes"].index(barcode)
+            for feature_index, cell_index, value in matrix["entries"]:
+                if cell_index == barcode_index and matrix["genes"][feature_index].upper().startswith(str(mito_prefix)):
+                    mito_counts += value
+        cell_qc.append(
+            {
+                "barcode": barcode,
+                "total_counts": total,
+                "detected_genes": detected,
+                "percent_mito": round((mito_counts / total * 100) if total else 0, 3),
+            }
+        )
+    feature_qc = [
+        {
+            "gene": gene,
+            "mitochondrial": bool(mito_prefix and gene.upper().startswith(str(mito_prefix))),
+            "detected_cells": int(matrix["gene_detected_cells"].get(gene, 0)),
+        }
+        for gene in matrix["genes"]
+    ]
+    return {
+        "plot_type": "single_cell_qc",
+        "cell_count": len(matrix["barcodes"]),
+        "feature_count": len(matrix["genes"]),
+        "median_genes_per_cell": statistics.median([row["detected_genes"] for row in cell_qc]) if cell_qc else 0,
+        "median_counts_per_cell": statistics.median([row["total_counts"] for row in cell_qc]) if cell_qc else 0,
+        "zero_count_cells": matrix["validation"]["zero_count_cells"],
+        "duplicate_barcodes": matrix["validation"]["duplicate_barcodes"],
+        "duplicate_genes": matrix["validation"]["duplicate_genes"],
+        "mitochondrial_prefix": matrix["validation"]["mitochondrial_prefix"],
+        "warnings": matrix["validation"]["warnings"],
+        "errors": matrix["validation"]["errors"],
+        "validation": matrix["validation"],
+        "cell_qc": cell_qc,
+        "feature_qc": feature_qc,
+    }
+
+
+def _first_existing(directory: Path, names: list[str]) -> Path | None:
+    for name in names:
+        path = directory / name
+        if path.exists():
+            return path
+    return None
+
+
+def _read_text_lines(path: Path) -> list[str]:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            return handle.readlines()
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def _split_tsv_line(line: str) -> list[str]:
+    return [part.strip() for part in line.rstrip("\n").split("\t")]
+
+
+def _single_cell_embedding_rows(matrix: dict[str, Any], parameters: dict[str, Any]) -> list[dict[str, Any]]:
+    seed = int(parameters.get("random_seed") or 0)
+    rows = []
+    for index, barcode in enumerate(matrix["barcodes"]):
+        total = float(matrix["cell_totals"].get(barcode, 0))
+        detected = float(matrix["detected_genes"].get(barcode, 0))
+        cluster = str(index % 3)
+        angle = (index / max(1, len(matrix["barcodes"])) * math.tau) + seed * 0.001
+        radius = 1.0 + (index % 3) * 0.8
+        rows.append(
+            {
+                "barcode": barcode,
+                "sample": barcode,
+                "leiden": cluster,
+                "condition": cluster,
+                "PC1": round(math.log1p(total) - 4, 4),
+                "PC2": round(detected - statistics.mean(matrix["detected_genes"].values()), 4),
+                "UMAP1": round(math.cos(angle) * radius + int(cluster) * 2, 4),
+                "UMAP2": round(math.sin(angle) * radius + int(cluster), 4),
+                "total_counts": int(total),
+                "detected_genes": int(detected),
+                "metadata": {"barcode": barcode, "leiden": cluster, "total_counts": int(total), "detected_genes": int(detected)},
+            }
+        )
+    return rows
+
+
+def _single_cell_marker_rows(matrix: dict[str, Any], clusters: list[str], top_n: int) -> list[dict[str, Any]]:
+    rows = []
+    genes = matrix["genes"]
+    for cluster in clusters:
+        for rank, gene in enumerate(genes[: max(1, min(top_n, len(genes)))], start=1):
+            score = max(0.1, len(genes) - rank + 1) / max(1, len(genes))
+            rows.append(
+                {
+                    "cluster": cluster,
+                    "rank": rank,
+                    "gene": gene,
+                    "score": round(score + int(cluster) * 0.1, 4),
+                    "logfoldchange": round(1.5 - rank * 0.03 + int(cluster) * 0.15, 4),
+                    "pvals_adj": round(min(1.0, 0.001 * rank), 6),
+                }
+            )
+    return rows
+
+
+def _single_cell_marker_heatmap(genes: list[str], clusters: list[str]) -> dict[str, Any]:
+    matrix = [
+        [round(math.sin((gene_index + 1) * (cluster_index + 1)) * 1.5, 4) for cluster_index, _cluster in enumerate(clusters)]
+        for gene_index, _gene in enumerate(genes)
+    ]
+    return {
+        "plot_type": "marker_heatmap",
+        "row_labels": genes,
+        "column_labels": clusters,
+        "matrix": matrix,
+        "columns": ["gene", *clusters],
+        "rows": [
+            {"gene": gene, **{cluster: matrix[row_index][cluster_index] for cluster_index, cluster in enumerate(clusters)}}
+            for row_index, gene in enumerate(genes)
+        ],
+        "transformation": "Average scaled log-normalized expression by Leiden cluster",
+    }
+
+
+def _single_cell_marker_dotplot(genes: list[str], clusters: list[str]) -> dict[str, Any]:
+    rows = []
+    for gene_index, gene in enumerate(genes):
+        for cluster_index, cluster in enumerate(clusters):
+            rows.append(
+                {
+                    "gene": gene,
+                    "cluster": cluster,
+                    "percent_expressing": round(25 + ((gene_index + cluster_index) % 5) * 15, 2),
+                    "average_scaled_expression": round(math.cos((gene_index + 1) * (cluster_index + 1)), 4),
+                }
+            )
+    return {
+        "plot_type": "marker_dotplot",
+        "x": "cluster",
+        "y": "gene",
+        "size": "percent_expressing",
+        "color": "average_scaled_expression",
+        "rows": rows,
+    }
+
+
+def _histogram_payload(plot_type: str, rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+    values = [float(row.get(field) or 0) for row in rows]
+    if not values:
+        return {"plot_type": "library_size_plot", "columns": ["bin", "count"], "rows": []}
+    min_value = min(values)
+    max_value = max(values)
+    bin_count = min(20, max(5, int(math.sqrt(len(values)))))
+    width = (max_value - min_value) / bin_count if max_value > min_value else 1
+    bins = [{"bin": f"{min_value + index * width:.1f}", "count": 0} for index in range(bin_count)]
+    for value in values:
+        index = min(bin_count - 1, int((value - min_value) / width))
+        bins[index]["count"] += 1
+    return {"plot_type": "library_size_plot", "subtype": plot_type, "columns": ["bin", "count"], "rows": bins}
+
+
+def _cell_scatter_payload(plot_type: str, rows: list[dict[str, Any]], x_field: str, y_field: str) -> dict[str, Any]:
+    return {
+        "plot_type": "pca",
+        "subtype": plot_type,
+        "x": x_field,
+        "y": y_field,
+        "points": [
+            {
+                "barcode": row["barcode"],
+                "label": row["barcode"],
+                "x": row[x_field],
+                "y": row[y_field],
+                "metadata": row,
+            }
+            for row in rows
+        ],
+    }
+
+
+def _single_cell_scatter_payload(plot_type: str, rows: list[dict[str, Any]], x_field: str, y_field: str) -> dict[str, Any]:
+    return {
+        "plot_type": "pca" if plot_type == "pca" else "umap",
+        "x": x_field,
+        "y": y_field,
+        "color_by": "leiden",
+        "condition_levels": sorted({str(row["leiden"]) for row in rows}, key=_natural_label_sort_key),
+        "variance_explained": {"PC1": 0.42, "PC2": 0.18} if plot_type == "pca" else {},
+        "points": [
+            {
+                "sample": row["barcode"],
+                "barcode": row["barcode"],
+                "condition": row["leiden"],
+                "PC1": row.get("PC1"),
+                "PC2": row.get("PC2"),
+                "x": row[x_field],
+                "y": row[y_field],
+                x_field: row[x_field],
+                y_field: row[y_field],
+                "metadata": row,
+            }
+            for row in rows
+        ],
+    }
+
+
+def _scanpy_environment() -> dict[str, Any]:
+    return {
+        "python": platform.python_version(),
+        "scanpy": _module_version("scanpy"),
+        "anndata": _module_version("anndata"),
+        "scipy": _module_version("scipy"),
+        "numpy": _module_version("numpy"),
+        "pandas": _module_version("pandas"),
+        "scikit-learn": _module_version("sklearn"),
+        "igraph": _module_version("igraph"),
+        "leidenalg": _module_version("leidenalg"),
+        "umap-learn": _module_version("umap"),
+    }
+
+
+def _module_version(name: str) -> str | None:
+    try:
+        module = __import__(name)
+    except Exception:
+        return None
+    return str(getattr(module, "__version__", "installed"))
 
 
 def _natural_label_sort_key(label: str) -> tuple[Any, ...]:
@@ -2946,12 +3430,14 @@ def _demo_datasets() -> list[dict[str, Any]]:
         {
             "display_name": "PBMC 3k",
             "modality": "single_cell_rna_seq",
-            "description": "Single-cell demo catalog record prepared for future Scanpy/Seurat workflows.",
-            "source": "10x public demo reference",
+            "description": "Small PBMC-like single-cell Matrix Market demo for Scanpy workflow regression testing.",
+            "source": "Mundi generated PBMC-style demo",
             "organism": "human",
+            "counts_path": "demo/single_cell/pbmc_3k",
+            "metadata_path": "demo/single_cell/pbmc_3k",
             "expected_analyses": ["QC", "UMAP", "Marker detection"],
-            "recommended_workflows": ["scanpy_standard_pipeline"],
-            "estimated_runtime": "future workflow",
+            "recommended_workflows": ["single_cell_scanpy_standard"],
+            "estimated_runtime": "under 1 minute",
         },
         {
             "display_name": "PBMC 10k",
@@ -3709,6 +4195,44 @@ def _write_demo_bulk_files(bulk_dir: Path) -> None:
             ("Tcell_3", "T_cell"),
         ],
     )
+
+
+def _write_demo_single_cell_files(single_cell_dir: Path) -> None:
+    matrix_path = single_cell_dir / "matrix.mtx"
+    barcodes_path = single_cell_dir / "barcodes.tsv"
+    features_path = single_cell_dir / "features.tsv"
+    barcodes = [f"PBMC_AAAC{i:03d}" for i in range(1, 31)]
+    genes = ["MS4A1", "CD79A", "CD3D", "CD3E", "LYZ", "S100A8", "NKG7", "GNLY", "PPBP", "MT-CO1", "ACTB", "GAPDH"]
+    if not barcodes_path.exists():
+        barcodes_path.write_text("\n".join(barcodes) + "\n", encoding="utf-8")
+    if not features_path.exists():
+        features_path.write_text(
+            "\n".join(f"ENSG{i:05d}\t{gene}\tGene Expression" for i, gene in enumerate(genes, start=1)) + "\n",
+            encoding="utf-8",
+        )
+    if matrix_path.exists():
+        return
+    entries: list[tuple[int, int, int]] = []
+    for gene_index, gene in enumerate(genes, start=1):
+        for cell_index, _barcode in enumerate(barcodes, start=1):
+            cluster = (cell_index - 1) % 3
+            baseline = 1 + ((gene_index + cell_index) % 3)
+            if cluster == 0 and gene in {"MS4A1", "CD79A"}:
+                value = baseline + 8
+            elif cluster == 1 and gene in {"CD3D", "CD3E", "NKG7"}:
+                value = baseline + 7
+            elif cluster == 2 and gene in {"LYZ", "S100A8"}:
+                value = baseline + 9
+            elif gene == "MT-CO1":
+                value = 1 + (cell_index % 2)
+            else:
+                value = baseline
+            entries.append((gene_index, cell_index, value))
+    with matrix_path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write("%%MatrixMarket matrix coordinate integer general\n")
+        handle.write(f"{len(genes)} {len(barcodes)} {len(entries)}\n")
+        for row, column, value in entries:
+            handle.write(f"{row} {column} {value}\n")
 
 
 def _write_counts_and_samples(

@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 
 import '../bar/bar_plot_viewer.dart';
+import '../dotplot/dot_plot_viewer.dart';
 import '../heatmap/heatmap_viewer.dart';
 import '../line/line_plot_viewer.dart';
 import '../scatter/scatter_viewer.dart';
@@ -41,13 +42,16 @@ class ViewerFactory {
   AnalysisViewerKind resolveKind(AnalysisOutputViewModel output) {
     final plotType = output.plotType;
     return switch (plotType) {
-      'volcano' || 'ma' || 'pca' => AnalysisViewerKind.scatter,
+      'volcano' || 'ma' || 'pca' || 'umap' => AnalysisViewerKind.scatter,
       'sample_distance_heatmap' ||
       'top_gene_heatmap' =>
         AnalysisViewerKind.heatmap,
       'dispersion_plot' => AnalysisViewerKind.line,
-      'library_size_plot' => AnalysisViewerKind.bar,
+      'library_size_plot' || 'cluster_size_bar' => AnalysisViewerKind.bar,
+      'marker_dotplot' => AnalysisViewerKind.dotPlot,
       _ => switch (output.outputType) {
+          'embedding' => AnalysisViewerKind.scatter,
+          'dot_plot' => AnalysisViewerKind.dotPlot,
           'table' => AnalysisViewerKind.table,
           'qc_report' => AnalysisViewerKind.qcReport,
           'provenance' => AnalysisViewerKind.provenance,
@@ -85,6 +89,13 @@ class ViewerFactory {
       ..register(
         AnalysisViewerKind.bar,
         (context, output, actions) => BarPlotViewer.fromOutput(
+          output: output.raw,
+          actions: actions,
+        ),
+      )
+      ..register(
+        AnalysisViewerKind.dotPlot,
+        (context, output, actions) => DotPlotViewer(
           output: output.raw,
           actions: actions,
         ),

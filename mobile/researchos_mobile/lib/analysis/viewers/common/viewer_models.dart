@@ -5,6 +5,7 @@ enum AnalysisViewerKind {
   heatmap,
   line,
   bar,
+  dotPlot,
   table,
   qcReport,
   provenance,
@@ -51,6 +52,9 @@ class AnalysisOutputViewModel {
     'top_gene_heatmap',
     'library_size_plot',
     'dispersion_plot',
+    'umap',
+    'marker_dotplot',
+    'cluster_size_bar',
   };
 
   static String? normalizePlotType(String? value) {
@@ -73,6 +77,9 @@ class AnalysisOutputViewModel {
       'library_size_plot' =>
         'library_size_plot',
       'dispersion' || 'dispersion_plot' => 'dispersion_plot',
+      'umap' || 'umap_leiden' => 'umap',
+      'marker_dotplot' || 'dot_plot' => 'marker_dotplot',
+      'cluster_size' || 'cluster_size_bar' => 'cluster_size_bar',
       _ => normalized,
     };
   }

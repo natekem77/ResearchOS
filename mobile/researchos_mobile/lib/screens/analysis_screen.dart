@@ -340,6 +340,31 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
+  Future<void> _runScanpy(Map<String, dynamic> dataset) async {
+    final request = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => const _ScanpyDialog(),
+    );
+    if (request == null) return;
+    try {
+      await widget.api.createAnalysisJob(
+        datasetId: dataset['id'].toString(),
+        workflowKey: 'single_cell_scanpy_standard',
+        parameters: request,
+      );
+      if (!mounted) return;
+      setState(() {
+        _message = 'Scanpy job queued.';
+      });
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not queue Scanpy job: $error';
+      });
+    }
+  }
+
   Future<void> _installDemoWorkspace() async {
     try {
       await widget.api.installAnalysisDemoWorkspace();
@@ -911,8 +936,11 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
                 _DatasetCard(
                   dataset: dataset,
                   deseq2Workflow: _workflowByKey(state, 'bulk_rnaseq_deseq2'),
+                  scanpyWorkflow:
+                      _workflowByKey(state, 'single_cell_scanpy_standard'),
                   onRunQc: () => _runQc(dataset),
                   onRunDeseq2: () => _runDeseq2(dataset),
+                  onRunScanpy: () => _runScanpy(dataset),
                   onDelete: () => _deleteDataset(dataset),
                 ),
           ],
@@ -1371,15 +1399,19 @@ class _DatasetCard extends StatelessWidget {
   const _DatasetCard({
     required this.dataset,
     required this.deseq2Workflow,
+    required this.scanpyWorkflow,
     required this.onRunQc,
     required this.onRunDeseq2,
+    required this.onRunScanpy,
     required this.onDelete,
   });
 
   final Map<String, dynamic> dataset;
   final Map<String, dynamic>? deseq2Workflow;
+  final Map<String, dynamic>? scanpyWorkflow;
   final VoidCallback onRunQc;
   final VoidCallback onRunDeseq2;
+  final VoidCallback onRunScanpy;
   final VoidCallback onDelete;
 
   @override
@@ -1388,6 +1420,7 @@ class _DatasetCard extends StatelessWidget {
     final metadata = summary is Map ? summary : const {};
     final modality = dataset['modality']?.toString() ?? 'bulk_rna_seq';
     final canRunQc = modality == 'bulk_rna_seq';
+    final canRunScanpy = modality == 'single_cell_rna_seq';
     final exploratory = _isExploratoryOnly(dataset);
     final deseq2Ready = canRunQc &&
         !exploratory &&
@@ -1396,6 +1429,10 @@ class _DatasetCard extends StatelessWidget {
         ? 'DESeq2 requires raw integer counts. This dataset is exploratory-only because its source data are normalized CPM/TPM values.'
         : deseq2Workflow?['readiness_reason']?.toString() ??
             'No eligible DESeq2 worker is connected.';
+    final scanpyReady =
+        canRunScanpy && scanpyWorkflow?['status']?.toString() == 'installed';
+    final scanpyReason = scanpyWorkflow?['readiness_reason']?.toString() ??
+        'No eligible Scanpy worker is connected.';
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(ResearchOsSpacing.md),
@@ -1419,7 +1456,7 @@ class _DatasetCard extends StatelessWidget {
                       const SizedBox(height: ResearchOsSpacing.xs),
                       Text(
                         '$modality • '
-                        '${dataset['sample_count'] ?? metadata['sample_count'] ?? 0} samples • '
+                        '${dataset['cell_count'] ?? metadata['cell_count'] ?? dataset['sample_count'] ?? metadata['sample_count'] ?? 0} ${canRunScanpy ? 'cells' : 'samples'} • '
                         '${dataset['features_count'] ?? metadata['feature_count'] ?? 0} genes',
                       ),
                       Text(dataset['source_type']?.toString() ?? 'server'),
@@ -1467,12 +1504,34 @@ class _DatasetCard extends StatelessWidget {
                   ),
                 ],
               )
+            else if (canRunScanpy)
+              Wrap(
+                spacing: ResearchOsSpacing.sm,
+                runSpacing: ResearchOsSpacing.xs,
+                children: [
+                  Tooltip(
+                    message: scanpyReady ? 'Ready' : scanpyReason,
+                    child: FilledButton.tonalIcon(
+                      onPressed: scanpyReady ? onRunScanpy : null,
+                      icon: const Icon(Icons.scatter_plot_outlined),
+                      label: const Text('Run Scanpy'),
+                    ),
+                  ),
+                ],
+              )
             else
               const Chip(label: Text('Catalog')),
             if (canRunQc && !deseq2Ready) ...[
               const SizedBox(height: ResearchOsSpacing.xs),
               Text(
                 deseq2Reason,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+            if (canRunScanpy && !scanpyReady) ...[
+              const SizedBox(height: ResearchOsSpacing.xs),
+              Text(
+                scanpyReason,
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -2003,6 +2062,143 @@ class _Deseq2Request {
   const _Deseq2Request(this.parameters);
 
   final Map<String, dynamic> parameters;
+}
+
+class _ScanpyDialog extends StatefulWidget {
+  const _ScanpyDialog();
+
+  @override
+  State<_ScanpyDialog> createState() => _ScanpyDialogState();
+}
+
+class _ScanpyDialogState extends State<_ScanpyDialog> {
+  final _minGenes = TextEditingController(text: '200');
+  final _maxMito = TextEditingController(text: '20');
+  final _minCells = TextEditingController(text: '3');
+  final _targetSum = TextEditingController(text: '10000');
+  final _hvg = TextEditingController(text: '2000');
+  final _pcs = TextEditingController(text: '30');
+  final _neighbors = TextEditingController(text: '15');
+  final _resolution = TextEditingController(text: '0.5');
+  final _markerTop = TextEditingController(text: '100');
+
+  @override
+  void dispose() {
+    _minGenes.dispose();
+    _maxMito.dispose();
+    _minCells.dispose();
+    _targetSum.dispose();
+    _hvg.dispose();
+    _pcs.dispose();
+    _neighbors.dispose();
+    _resolution.dispose();
+    _markerTop.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Run Scanpy'),
+      content: SizedBox(
+        width: 520,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ScanpyGroup(
+                title: 'QC Filtering',
+                children: [
+                  _numberField(_minGenes, 'Minimum genes per cell'),
+                  _numberField(_maxMito, 'Maximum mitochondrial percentage'),
+                  _numberField(_minCells, 'Minimum cells per gene'),
+                ],
+              ),
+              _ScanpyGroup(
+                title: 'Normalization and Features',
+                children: [
+                  _numberField(_targetSum, 'Target sum'),
+                  _numberField(_hvg, 'Highly variable genes'),
+                ],
+              ),
+              _ScanpyGroup(
+                title: 'Dimensionality Reduction',
+                children: [
+                  _numberField(_pcs, 'PCA components'),
+                  _numberField(_neighbors, 'Neighbors'),
+                ],
+              ),
+              _ScanpyGroup(
+                title: 'Clustering and Markers',
+                children: [
+                  _numberField(_resolution, 'Leiden resolution'),
+                  _numberField(_markerTop, 'Top markers per cluster'),
+                ],
+              ),
+              const SizedBox(height: ResearchOsSpacing.sm),
+              const Text(
+                'Estimated resources: 4 CPU cores, 16 GB RAM, no GPU required.',
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_parameters()),
+          child: const Text('Submit Scanpy'),
+        ),
+      ],
+    );
+  }
+
+  Widget _numberField(TextEditingController controller, String label) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: ResearchOsSpacing.sm),
+      child: TextField(
+        controller: controller,
+        decoration: InputDecoration(labelText: label),
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      ),
+    );
+  }
+
+  Map<String, dynamic> _parameters() {
+    return {
+      'min_genes_per_cell': int.tryParse(_minGenes.text) ?? 200,
+      'max_percent_mito': double.tryParse(_maxMito.text) ?? 20,
+      'min_cells_per_gene': int.tryParse(_minCells.text) ?? 3,
+      'target_sum': int.tryParse(_targetSum.text) ?? 10000,
+      'n_top_hvg': int.tryParse(_hvg.text) ?? 2000,
+      'n_pcs': int.tryParse(_pcs.text) ?? 30,
+      'n_neighbors': int.tryParse(_neighbors.text) ?? 15,
+      'leiden_resolution': double.tryParse(_resolution.text) ?? 0.5,
+      'marker_top_n': int.tryParse(_markerTop.text) ?? 100,
+      'marker_method': 'wilcoxon',
+      'random_seed': 0,
+    };
+  }
+}
+
+class _ScanpyGroup extends StatelessWidget {
+  const _ScanpyGroup({required this.title, required this.children});
+
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExpansionTile(
+      initiallyExpanded: true,
+      tilePadding: EdgeInsets.zero,
+      title: Text(title),
+      children: children,
+    );
+  }
 }
 
 class _JobCard extends StatelessWidget {

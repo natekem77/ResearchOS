@@ -134,19 +134,60 @@ BULK_DESEQ2 = AnalysisWorkflow(
     supported_runtimes=("r", "deseq2"),
 )
 
+SINGLE_CELL_SCANPY_STANDARD = AnalysisWorkflow(
+    stable_key="single_cell_scanpy_standard",
+    name="Scanpy Standard Pipeline",
+    description=(
+        "Run an approved single-cell RNA-seq workflow with QC filtering, "
+        "normalization, HVG selection, PCA, neighbors, Leiden clustering, "
+        "UMAP, marker-gene ranking, and processed AnnData output."
+    ),
+    workflow_version="1.0.0",
+    category="Single-cell RNA-seq",
+    modality="single_cell_rna_seq",
+    parameter_schema={
+        "type": "object",
+        "properties": {
+            "min_genes_per_cell": {"type": "integer", "minimum": 0, "default": 200},
+            "max_genes_per_cell": {"type": ["integer", "null"], "default": None},
+            "min_counts_per_cell": {"type": ["integer", "null"], "default": None},
+            "max_counts_per_cell": {"type": ["integer", "null"], "default": None},
+            "max_percent_mito": {"type": ["number", "null"], "minimum": 0, "default": 20},
+            "min_cells_per_gene": {"type": "integer", "minimum": 0, "default": 3},
+            "target_sum": {"type": "integer", "minimum": 1, "default": 10000},
+            "n_top_hvg": {"type": "integer", "minimum": 1, "default": 2000},
+            "regress_percent_mito": {"type": "boolean", "default": False},
+            "regress_total_counts": {"type": "boolean", "default": False},
+            "scale_max_value": {"type": ["number", "null"], "default": 10},
+            "n_pcs": {"type": "integer", "minimum": 2, "default": 30},
+            "n_neighbors": {"type": "integer", "minimum": 2, "default": 15},
+            "umap_min_dist": {"type": "number", "minimum": 0, "default": 0.5},
+            "umap_spread": {"type": "number", "minimum": 0, "default": 1.0},
+            "random_seed": {"type": "integer", "default": 0},
+            "leiden_resolution": {"type": "number", "minimum": 0, "default": 0.5},
+            "cluster_key": {"type": "string", "default": "leiden"},
+            "marker_method": {
+                "type": "string",
+                "enum": ["wilcoxon", "t-test", "logreg"],
+                "default": "wilcoxon",
+            },
+            "marker_top_n": {"type": "integer", "minimum": 1, "default": 100},
+            "marker_padj_threshold": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.05},
+            "marker_min_logfc": {"type": "number", "minimum": 0, "default": 0.25},
+        },
+        "additionalProperties": False,
+    },
+    resource_request={
+        "cpu_cores": 4,
+        "ram_gb": 16,
+        "gpu": "none",
+        "runtime_class": "medium",
+    },
+    supported_runtimes=("python", "scanpy", "anndata", "scipy"),
+)
+
 
 SCAFFOLD_WORKFLOWS = (
-    AnalysisWorkflow(
-        stable_key="scanpy_standard_pipeline",
-        name="Scanpy Standard Pipeline",
-        description="Scaffolded workflow definition for future single-cell processing.",
-        workflow_version="0.1.0-scaffold",
-        category="Single-cell RNA-seq",
-        modality="single_cell_rna_seq",
-        parameter_schema={"type": "object", "properties": {}, "additionalProperties": False},
-        resource_request={"cpu_cores": 8, "ram_gb": 64, "gpu": "optional", "runtime_class": "long"},
-        supported_runtimes=("python", "container"),
-    ),
     AnalysisWorkflow(
         stable_key="beta_vae_expression_model",
         name="beta-VAE Expression Model",
@@ -169,7 +210,15 @@ SCAFFOLD_WORKFLOWS = (
 
 
 def list_workflows() -> list[dict[str, Any]]:
-    return [workflow.payload() for workflow in (BULK_VALIDATION_QC, BULK_DESEQ2, *SCAFFOLD_WORKFLOWS)]
+    return [
+        workflow.payload()
+        for workflow in (
+            BULK_VALIDATION_QC,
+            BULK_DESEQ2,
+            SINGLE_CELL_SCANPY_STANDARD,
+            *SCAFFOLD_WORKFLOWS,
+        )
+    ]
 
 
 def workflow_by_key(stable_key: str) -> dict[str, Any] | None:
@@ -234,5 +283,41 @@ def validate_parameters(stable_key: str, parameters: dict[str, Any] | None) -> d
                 for item in raw.get("exclude_samples", [])
                 if str(item).strip()
             ],
+        }
+    if stable_key == SINGLE_CELL_SCANPY_STANDARD.stable_key:
+        def optional_int(name: str) -> int | None:
+            value = raw.get(name)
+            return None if value in {None, ""} else int(value)
+
+        def optional_float(name: str) -> float | None:
+            value = raw.get(name)
+            return None if value in {None, ""} else float(value)
+
+        marker_method = str(raw.get("marker_method") or "wilcoxon")
+        if marker_method not in {"wilcoxon", "t-test", "logreg"}:
+            raise ValueError("Unsupported Scanpy marker method.")
+        return {
+            "min_genes_per_cell": max(0, int(raw.get("min_genes_per_cell", 200))),
+            "max_genes_per_cell": optional_int("max_genes_per_cell"),
+            "min_counts_per_cell": optional_int("min_counts_per_cell"),
+            "max_counts_per_cell": optional_int("max_counts_per_cell"),
+            "max_percent_mito": optional_float("max_percent_mito") if "max_percent_mito" in raw else 20.0,
+            "min_cells_per_gene": max(0, int(raw.get("min_cells_per_gene", 3))),
+            "target_sum": max(1, int(raw.get("target_sum", 10000))),
+            "n_top_hvg": max(1, int(raw.get("n_top_hvg", 2000))),
+            "regress_percent_mito": bool(raw.get("regress_percent_mito", False)),
+            "regress_total_counts": bool(raw.get("regress_total_counts", False)),
+            "scale_max_value": optional_float("scale_max_value") if "scale_max_value" in raw else 10.0,
+            "n_pcs": max(2, int(raw.get("n_pcs", 30))),
+            "n_neighbors": max(2, int(raw.get("n_neighbors", 15))),
+            "umap_min_dist": max(0.0, float(raw.get("umap_min_dist", 0.5))),
+            "umap_spread": max(0.0, float(raw.get("umap_spread", 1.0))),
+            "random_seed": int(raw.get("random_seed", 0)),
+            "leiden_resolution": max(0.0, float(raw.get("leiden_resolution", 0.5))),
+            "cluster_key": str(raw.get("cluster_key") or "leiden").strip() or "leiden",
+            "marker_method": marker_method,
+            "marker_top_n": max(1, int(raw.get("marker_top_n", 100))),
+            "marker_padj_threshold": max(0.0, min(1.0, float(raw.get("marker_padj_threshold", 0.05)))),
+            "marker_min_logfc": max(0.0, float(raw.get("marker_min_logfc", 0.25))),
         }
     return raw

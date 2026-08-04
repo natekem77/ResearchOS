@@ -527,6 +527,7 @@ ScatterPlotSpec scatterSpecFromOutput(Map<String, dynamic> output) {
     'volcano' => _volcanoSpec(view, structured),
     'ma' => _maSpec(view, structured),
     'pca' => _pcaSpec(view, structured),
+    'umap' => _embeddingSpec(view, structured),
     _ => _genericScatterSpec(view, structured),
   };
 }
@@ -697,6 +698,46 @@ ScatterPlotSpec _genericScatterSpec(
           x: doubleFromObject(row['x']) ?? 0,
           y: doubleFromObject(row['y']) ?? 0,
           metadata: row,
+        ),
+    ],
+    rawRows: rows,
+  );
+}
+
+ScatterPlotSpec _embeddingSpec(
+    AnalysisOutputViewModel view, Map<String, dynamic> structured) {
+  final rows = rowsFromObject(structured['points']);
+  final colorBy = structured['color_by']?.toString() ?? 'leiden';
+  final levels = (structured['condition_levels'] is List
+          ? structured['condition_levels'] as List
+          : const [])
+      .map((value) => value.toString())
+      .where((value) => value.isNotEmpty)
+      .toList();
+  return ScatterPlotSpec(
+    title: view.title,
+    xAxisLabel: structured['x']?.toString() ?? 'UMAP1',
+    yAxisLabel: structured['y']?.toString() ?? 'UMAP2',
+    showLabelsByDefault: false,
+    legend: {
+      for (var index = 0; index < levels.length; index++)
+        levels[index]: _levelColor(index),
+    },
+    points: [
+      for (final row in rows)
+        ScatterPointModel(
+          id: _labelFor(row, ['barcode', 'sample', 'sample_id', 'label']),
+          label: _labelFor(row, ['barcode', 'sample', 'sample_id', 'label']),
+          x: doubleFromObject(row['x'] ?? row['UMAP1']) ?? 0,
+          y: doubleFromObject(row['y'] ?? row['UMAP2']) ?? 0,
+          colorKey: row['condition']?.toString() ??
+              mapFromObject(row['metadata'])[colorBy]?.toString(),
+          metadata: {
+            'barcode': _labelFor(row, ['barcode', 'sample', 'sample_id', 'label']),
+            colorBy: row['condition']?.toString() ??
+                mapFromObject(row['metadata'])[colorBy]?.toString(),
+            ...mapFromObject(row['metadata']),
+          },
         ),
     ],
     rawRows: rows,

@@ -845,6 +845,80 @@ class AnalysisServiceTests(unittest.TestCase):
             self.assertIn("summary_counts", volcano_detail["structured"])
             self.assertIn("auto_labels", volcano_detail["structured"])
 
+    def test_single_cell_scanpy_demo_run_registers_typed_outputs_lazily(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, root = self._fixture(tmpdir)
+            single_dir = root / "single-cell" / "pbmc"
+            single_dir.mkdir(parents=True)
+            analysis_service_module._write_demo_single_cell_files(single_dir)
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "PBMC 3k",
+                    "modality": "single_cell_rna_seq",
+                    "counts_path": "single-cell/pbmc",
+                    "metadata_path": "single-cell/pbmc",
+                    "organism": "human",
+                },
+            )
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Scanpy Worker",
+                    "supported_workflows": ["single_cell_scanpy_standard"],
+                    "supported_runtimes": ["python", "scanpy", "anndata", "scipy"],
+                    "software_versions": {"scanpy": "1.x", "anndata": "0.x"},
+                    "status": "ready",
+                }
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="single_cell_scanpy_standard",
+                parameters={"leiden_resolution": 0.5, "marker_top_n": 5},
+            )
+            completed = service.run_claimed_job_once("worker-1")
+            outputs = service.outputs_for_job("user:pi-owner", job["id"])
+            output_types = {output["output_type"] for output in outputs}
+            umap = next(output for output in outputs if output["display_name"] == "UMAP Leiden Clusters")
+            dotplot = next(output for output in outputs if output["display_name"] == "Marker Dot Plot")
+            processed = next(output for output in outputs if output["display_name"] == "Processed AnnData")
+            umap_detail = service.get_output("user:pi-owner", umap["id"])
+            dotplot_detail = service.get_output("user:pi-owner", dotplot["id"])
+
+        self.assertEqual(dataset["modality"], "single_cell_rna_seq")
+        self.assertEqual(dataset["cell_count"], 30)
+        self.assertEqual(dataset["features_count"], 12)
+        self.assertEqual(completed["status"], "complete")
+        self.assertIn("embedding", output_types)
+        self.assertIn("dot_plot", output_types)
+        self.assertIn("heatmap", output_types)
+        self.assertIn("file", output_types)
+        self.assertNotIn("structured", umap)
+        self.assertEqual(umap_detail["structured"]["plot_type"], "umap")
+        self.assertGreaterEqual(len(umap_detail["structured"]["condition_levels"]), 2)
+        self.assertEqual(dotplot_detail["structured"]["plot_type"], "marker_dotplot")
+        self.assertTrue(str(processed["storage_uri"]).endswith("processed_scanpy.h5ad"))
+
+    def test_single_cell_matrix_market_validation_rejects_malformed_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, root = self._fixture(tmpdir)
+            bad_dir = root / "single-cell" / "bad"
+            bad_dir.mkdir(parents=True)
+            (bad_dir / "matrix.mtx").write_text("%%MatrixMarket matrix coordinate integer general\n2 2 1\n3 1 5\n", encoding="utf-8")
+            (bad_dir / "barcodes.tsv").write_text("cell1\ncell2\n", encoding="utf-8")
+            (bad_dir / "features.tsv").write_text("gene1\tGENE1\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(AnalysisValidationError, "dimensions|outside"):
+                service.register_server_dataset(
+                    user_id="user:pi-owner",
+                    payload={
+                        "display_name": "Bad single cell",
+                        "modality": "single_cell_rna_seq",
+                        "counts_path": "single-cell/bad",
+                    },
+                )
+
     def test_deseq2_invalid_contrast_fails_with_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)
@@ -1282,7 +1356,7 @@ class AnalysisServiceTests(unittest.TestCase):
                 service.create_job(
                     user_id="user:pi-owner",
                     dataset_id=dataset["id"],
-                    workflow_key="scanpy_standard_pipeline",
+                    workflow_key="beta_vae_expression_model",
                 )
 
     def test_analysis_routes_are_registered(self) -> None:

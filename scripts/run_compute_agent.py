@@ -53,6 +53,28 @@ def _deseq2_versions() -> dict[str, str]:
     return versions
 
 
+def _scanpy_versions() -> dict[str, str]:
+    modules = {
+        "scanpy": "scanpy",
+        "anndata": "anndata",
+        "scipy": "scipy",
+        "numpy": "numpy",
+        "pandas": "pandas",
+        "scikit-learn": "sklearn",
+        "igraph": "igraph",
+        "leidenalg": "leidenalg",
+        "umap-learn": "umap",
+    }
+    versions: dict[str, str] = {}
+    for label, module_name in modules.items():
+        try:
+            module = __import__(module_name)
+        except Exception:
+            return {}
+        versions[label] = str(getattr(module, "__version__", "installed"))
+    return versions
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run a Mundi lab compute agent.")
     parser.add_argument("--worker-id", default=os.environ.get("MUNDI_COMPUTE_WORKER_ID", "local-compute-agent"))
@@ -70,6 +92,11 @@ def main() -> int:
         supported_workflows.append("bulk_rnaseq_deseq2")
         supported_runtimes.extend(["r", "deseq2"])
         software_versions.update(deseq2_versions)
+    scanpy_versions = _scanpy_versions()
+    if scanpy_versions:
+        supported_workflows.append("single_cell_scanpy_standard")
+        supported_runtimes.extend(["scanpy", "anndata", "scipy"])
+        software_versions.update(scanpy_versions)
 
     worker_payload = {
         "worker_id": args.worker_id,
@@ -89,6 +116,8 @@ def main() -> int:
     print(f"Supported workflows: {', '.join(supported_workflows)}")
     if "bulk_rnaseq_deseq2" not in supported_workflows:
         print("DESeq2 unavailable: install Rscript, DESeq2, and BiocManager to enable the workflow.")
+    if "single_cell_scanpy_standard" not in supported_workflows:
+        print("Scanpy unavailable: install scanpy, anndata, scipy, numpy, pandas, scikit-learn, igraph, leidenalg, and umap-learn.")
     print(f"Database: {service.store.path}")
     print(f"Approved roots: {[str(root) for root in service.allowed_roots]}")
 

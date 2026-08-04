@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:researchos_mobile/analysis/viewers/bar/bar_plot_viewer.dart';
 import 'package:researchos_mobile/analysis/viewers/common/viewer_factory.dart';
+import 'package:researchos_mobile/analysis/viewers/dotplot/dot_plot_viewer.dart';
 import 'package:researchos_mobile/analysis/viewers/heatmap/heatmap_viewer.dart';
 import 'package:researchos_mobile/analysis/viewers/line/line_plot_viewer.dart';
 import 'package:researchos_mobile/analysis/viewers/scatter/scatter_viewer.dart';
@@ -100,6 +101,8 @@ void main() {
       500,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.ensureVisible(find.byTooltip('Job actions').first);
+    await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Job actions').first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Delete').last);
@@ -509,6 +512,13 @@ void main() {
                 'readiness_reason':
                     'No eligible worker with R/DESeq2 dependencies is connected.',
               },
+              {
+                'stable_key': 'single_cell_scanpy_standard',
+                'name': 'Scanpy Standard Pipeline',
+                'workflow_version': '1.0.0',
+                'status': 'installed',
+                'readiness_reason': 'Ready',
+              },
             ],
           });
         }
@@ -778,8 +788,10 @@ void main() {
     final cases = [
       (_maOutput(), ScatterViewer, ScatterChart),
       (_pcaOutput(), ScatterViewer, ScatterChart),
+      (_umapOutput(), ScatterViewer, ScatterChart),
       (_sampleDistanceHeatmapOutput(), HeatmapViewer, null),
       (_topGeneHeatmapOutput(), HeatmapViewer, null),
+      (_markerDotPlotOutput(), DotPlotViewer, null),
       (_dispersionOutput(), LinePlotViewer, LineChart),
       (_librarySizePlotOutput(), BarPlotViewer, BarChart),
       (_tableOutput(), EnhancedTableViewer, null),
@@ -816,6 +828,49 @@ void main() {
       }
       expect(tester.takeException(), isNull);
     }
+  });
+
+  testWidgets('single-cell dataset opens Scanpy configuration and submits job',
+      (tester) async {
+    final calls = <String>[];
+    final api = _mockAnalysisApi(calls);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
+
+    await tester.scrollUntilVisible(
+      find.text('PBMC 3k'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.scrollUntilVisible(
+      find.widgetWithText(FilledButton, 'Run Scanpy'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    final runScanpyButton = find.widgetWithText(FilledButton, 'Run Scanpy');
+    await tester.ensureVisible(runScanpyButton);
+    await tester.pumpAndSettle();
+    await tester.tap(runScanpyButton);
+    await tester.pumpAndSettle();
+
+    expect(find.text('QC Filtering'), findsOneWidget);
+    expect(find.text('Normalization and Features'), findsOneWidget);
+    expect(find.text('Dimensionality Reduction'), findsOneWidget);
+    expect(find.text('Clustering and Markers'), findsOneWidget);
+    await tester.tap(find.text('Submit Scanpy'));
+    await tester.pumpAndSettle();
+
+    expect(
+      calls.any((call) =>
+          call.startsWith('BODY ') &&
+          call.contains('"workflow_key":"single_cell_scanpy_standard"') &&
+          call.contains('"leiden_resolution":0.5')),
+      isTrue,
+    );
+    expect(tester.takeException(), isNull);
   });
 }
 
@@ -927,6 +982,7 @@ ResearchOsApi _mockAnalysisApi(
               'metadata_summary': const {},
             },
             _geoDataset(),
+            _singleCellDataset(),
             {
               'id': 'analysis-dataset:cpm',
               'display_name': 'GSE229682 CPM-only retinal organoids',
@@ -989,6 +1045,12 @@ ResearchOsApi _mockAnalysisApi(
             {
               'stable_key': 'bulk_rnaseq_deseq2',
               'name': 'DESeq2 Differential Expression',
+              'status': 'installed',
+              'readiness_reason': 'Ready',
+            },
+            {
+              'stable_key': 'single_cell_scanpy_standard',
+              'name': 'Scanpy Standard Pipeline',
               'status': 'installed',
               'readiness_reason': 'Ready',
             },
@@ -1171,6 +1233,35 @@ Map<String, dynamic> _geoDataset() {
   };
 }
 
+Map<String, dynamic> _singleCellDataset() {
+  return {
+    'id': 'analysis-dataset:pbmc3k',
+    'display_name': 'PBMC 3k',
+    'modality': 'single_cell_rna_seq',
+    'cell_count': 30,
+    'features_count': 12,
+    'source_type': 'server_folder',
+    'metadata_summary': {
+      'dataset_type': 'single_cell_rna_seq',
+      'matrix_format': '10x_mtx',
+      'sparse': true,
+      'metadata_columns': ['barcode', 'leiden', 'sample'],
+      'validation': {
+        'cells': 30,
+        'genes': 12,
+        'median_genes_per_cell': 8,
+        'median_counts_per_cell': 54,
+        'zero_count_cells': const [],
+        'duplicate_barcodes': const [],
+        'duplicate_genes': const [],
+        'mitochondrial_gene_prefix': 'MT-',
+        'warnings': const [],
+        'errors': const [],
+      },
+    },
+  };
+}
+
 Map<String, dynamic> _exploratoryPublicDataset() {
   return {
     'accession': 'GSE229682',
@@ -1297,6 +1388,40 @@ Map<String, dynamic> _pcaOutput() {
   };
 }
 
+Map<String, dynamic> _umapOutput() {
+  return {
+    'id': 'analysis-output:umap',
+    'display_name': 'UMAP Leiden Clusters',
+    'output_type': 'embedding',
+    'viewer_config': {'plot_subtype': 'umap'},
+    'structured': {
+      'plot_type': 'umap',
+      'x_axis': 'UMAP1',
+      'y_axis': 'UMAP2',
+      'color_by': 'leiden',
+      'condition_levels': ['0', '1'],
+      'points': [
+        {
+          'barcode': 'AAAC-1',
+          'cell_id': 'AAAC-1',
+          'UMAP1': -1.0,
+          'UMAP2': 0.2,
+          'leiden': '0',
+          'metadata': {'leiden': '0', 'sample': 'PBMC'},
+        },
+        {
+          'barcode': 'TTTG-1',
+          'cell_id': 'TTTG-1',
+          'UMAP1': 1.1,
+          'UMAP2': -0.4,
+          'leiden': '1',
+          'metadata': {'leiden': '1', 'sample': 'PBMC'},
+        },
+      ],
+    },
+  };
+}
+
 Map<String, dynamic> _sampleDistanceHeatmapOutput() {
   return {
     'id': 'analysis-output:sample-distance',
@@ -1341,6 +1466,65 @@ Map<String, dynamic> _topGeneHeatmapOutput() {
       'matrix': [
         [-1.0, 1.0],
         [-1.0, 1.0],
+      ],
+    },
+  };
+}
+
+Map<String, dynamic> _markerDotPlotOutput() {
+  return {
+    'id': 'analysis-output:marker-dotplot',
+    'display_name': 'Marker Dot Plot',
+    'output_type': 'dot_plot',
+    'structured': {
+      'plot_type': 'marker_dotplot',
+      'clusters': ['0', '1'],
+      'genes': ['MS4A1', 'CD3D'],
+      'points': [
+        {
+          'cluster': '0',
+          'gene': 'MS4A1',
+          'percent_expressing': 0.82,
+          'average_scaled_expression': 1.4,
+        },
+        {
+          'cluster': '0',
+          'gene': 'CD3D',
+          'percent_expressing': 0.18,
+          'average_scaled_expression': -0.6,
+        },
+        {
+          'cluster': '1',
+          'gene': 'MS4A1',
+          'percent_expressing': 0.22,
+          'average_scaled_expression': -0.4,
+        },
+        {
+          'cluster': '1',
+          'gene': 'CD3D',
+          'percent_expressing': 0.78,
+          'average_scaled_expression': 1.2,
+        },
+      ],
+      'columns': [
+        'cluster',
+        'gene',
+        'percent_expressing',
+        'average_scaled_expression'
+      ],
+      'rows': [
+        {
+          'cluster': '0',
+          'gene': 'MS4A1',
+          'percent_expressing': 0.82,
+          'average_scaled_expression': 1.4,
+        },
+        {
+          'cluster': '1',
+          'gene': 'CD3D',
+          'percent_expressing': 0.78,
+          'average_scaled_expression': 1.2,
+        },
       ],
     },
   };
