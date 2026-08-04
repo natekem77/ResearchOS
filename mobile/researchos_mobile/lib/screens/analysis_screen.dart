@@ -2117,15 +2117,17 @@ class _OutputTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final structured = output['structured'];
-    final summary = structured is Map ? structured['summary'] : null;
+    final structuredSummary = structured is Map ? structured['summary'] : null;
+    final summary = output['summary'] is Map
+        ? output['summary'] as Map
+        : structuredSummary is Map
+            ? structuredSummary
+            : null;
+    final summaryText = _outputSummaryText(summary, output);
     return ListTile(
       leading: const Icon(Icons.insert_chart_outlined),
       title: Text(output['display_name']?.toString() ?? 'Analysis output'),
-      subtitle: Text(
-        summary is Map
-            ? '${summary['sample_count'] ?? '-'} samples • ${summary['feature_count'] ?? '-'} features'
-            : output['output_type']?.toString() ?? 'Output',
-      ),
+      subtitle: Text(summaryText),
       onTap: onOpen,
       onLongPress: () => _showOutputActions(context),
       trailing: Tooltip(
@@ -2191,6 +2193,19 @@ class _OutputTile extends StatelessWidget {
       ),
     );
   }
+}
+
+String _outputSummaryText(Map? summary, Map<String, dynamic> output) {
+  if (summary != null) {
+    final sampleCount = summary['sample_count'];
+    final featureCount = summary['feature_count'];
+    if (sampleCount != null || featureCount != null) {
+      return '${sampleCount ?? '-'} samples • ${featureCount ?? '-'} features';
+    }
+    final content = summary['content'];
+    if (content != null) return content.toString();
+  }
+  return output['output_type']?.toString() ?? 'Output';
 }
 
 class _GroupedOutputBrowser extends StatelessWidget {

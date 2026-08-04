@@ -997,10 +997,17 @@ class AnalysisService:
         self.get_job(user_id, job_id)
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT * FROM analysis_outputs WHERE job_id = ? ORDER BY created_at ASC",
+                """
+                SELECT id, job_id, dataset_id, registration_key, output_type,
+                       display_name, storage_uri, mime_type, size_bytes,
+                       created_at
+                FROM analysis_outputs
+                WHERE job_id = ?
+                ORDER BY created_at ASC
+                """,
                 (job_id,),
             ).fetchall()
-        return [self._output_payload(row) for row in rows]
+        return [self._output_list_payload(row) for row in rows]
 
     def get_output(self, user_id: str, output_id: str) -> dict[str, Any]:
         with self._connect() as connection:
@@ -1112,7 +1119,10 @@ class AnalysisService:
         with self._connect() as connection:
             rows = connection.execute(
                 f"""
-                SELECT o.*, j.workflow_id AS job_workflow_id, j.workflow_version AS job_workflow_version,
+                SELECT o.id, o.job_id, o.dataset_id, o.registration_key,
+                       o.output_type, o.display_name, o.storage_uri,
+                       o.mime_type, o.size_bytes, o.created_at,
+                       j.workflow_id AS job_workflow_id, j.workflow_version AS job_workflow_version,
                        j.status AS job_status, j.created_at AS job_created_at,
                        d.display_name AS dataset_name
                 FROM analysis_outputs o
@@ -1123,7 +1133,7 @@ class AnalysisService:
                 """,
                 params,
             ).fetchall()
-        return [self._output_payload(row) for row in rows]
+        return [self._output_list_payload(row) for row in rows]
 
     def output_groups(self, user_id: str) -> list[dict[str, Any]]:
         datasets = {dataset["id"]: dataset for dataset in self.list_datasets(user_id)}
@@ -1836,6 +1846,14 @@ class AnalysisService:
             "provenance": json.loads(row["provenance_json"] or "{}"),
         }
 
+    def _output_list_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+        payload = dict(row)
+        payload["summary"] = _output_list_summary(payload)
+        payload["has_structured_content"] = True
+        payload["has_viewer_config"] = True
+        payload["has_provenance"] = True
+        return payload
+
     def _output_context(self, user_id: str, output: dict[str, Any]) -> dict[str, Any]:
         try:
             job = self.get_job(user_id, str(output["job_id"]))
@@ -1884,6 +1902,31 @@ def _fresh_supported_workflows(connection: sqlite3.Connection) -> set[str]:
             continue
         supported.update(str(workflow) for workflow in workflows)
     return supported
+
+
+def _output_list_summary(output: dict[str, Any]) -> dict[str, Any]:
+    output_type = str(output.get("output_type") or "output")
+    display_name = str(output.get("display_name") or "Analysis output")
+    size_bytes = output.get("size_bytes")
+    summary: dict[str, Any] = {
+        "display_name": display_name,
+        "output_type": output_type,
+    }
+    if size_bytes is not None:
+        summary["size_bytes"] = size_bytes
+    if output_type == "interactive_plot":
+        summary["content"] = "Interactive plot content loads when opened."
+    elif output_type == "heatmap":
+        summary["content"] = "Heatmap matrix content loads when opened."
+    elif output_type in {"table", "differential_expression_table"}:
+        summary["content"] = "Table rows load when opened."
+    elif output_type == "provenance":
+        summary["content"] = "Reproducibility manifest loads when opened."
+    elif output_type == "qc_report":
+        summary["content"] = "QC report details load when opened."
+    else:
+        summary["content"] = "Output content loads when opened."
+    return summary
 
 
 def _safe_unlink(path: Path, root: Path) -> None:

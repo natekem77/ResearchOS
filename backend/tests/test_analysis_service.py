@@ -749,13 +749,15 @@ class AnalysisServiceTests(unittest.TestCase):
             )
             completed = service.run_claimed_job_once("worker-1")
             outputs = service.outputs_for_job("user:pi-owner", job["id"])
+            qc = next(output for output in outputs if output["output_type"] == "qc_report")
+            qc_detail = service.get_output("user:pi-owner", qc["id"])
 
         self.assertEqual(completed["status"], "complete")
         self.assertEqual(completed["progress"], 1)
         self.assertEqual({output["output_type"] for output in outputs}, {"qc_report", "table", "provenance"})
-        qc = next(output for output in outputs if output["output_type"] == "qc_report")
-        self.assertTrue(qc["structured"]["summary"]["integer_counts_valid"])
-        self.assertTrue(qc["provenance"]["source_files_remain_server_local"])
+        self.assertNotIn("structured", qc)
+        self.assertTrue(qc_detail["structured"]["summary"]["integer_counts_valid"])
+        self.assertTrue(qc_detail["provenance"]["source_files_remain_server_local"])
 
     def test_deseq2_workflow_registration_and_demo_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -803,18 +805,24 @@ class AnalysisServiceTests(unittest.TestCase):
             self.assertIn("heatmap", output_types)
             self.assertIn("provenance", output_types)
             de_table = next(output for output in outputs if output["output_type"] == "differential_expression_table")
-            self.assertIn("log2FoldChange", de_table["structured"]["columns"])
             volcano = next(output for output in outputs if output["display_name"] == "Volcano Plot")
-            self.assertIn("log2FoldChange", volcano["structured"]["points"][0])
-            self.assertIn("neg_log10_padj", volcano["structured"]["points"][0])
+            de_table_detail = service.get_output("user:pi-owner", de_table["id"])
+            volcano_detail = service.get_output("user:pi-owner", volcano["id"])
+            output_details = [
+                service.get_output("user:pi-owner", output["id"])
+                for output in outputs
+            ]
+            self.assertIn("log2FoldChange", de_table_detail["structured"]["columns"])
+            self.assertIn("log2FoldChange", volcano_detail["structured"]["points"][0])
+            self.assertIn("neg_log10_padj", volcano_detail["structured"]["points"][0])
             plot_types = {
                 output["structured"].get("plot_type")
-                for output in outputs
+                for output in output_details
                 if output["structured"].get("plot_type")
             }
             self.assertIn("dispersion_plot", plot_types)
             self.assertIn("library_size_plot", plot_types)
-            self.assertTrue(de_table["provenance"]["source_files_remain_server_local"])
+            self.assertTrue(de_table_detail["provenance"]["source_files_remain_server_local"])
 
     def test_deseq2_invalid_contrast_fails_with_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1099,9 +1107,98 @@ class AnalysisServiceTests(unittest.TestCase):
                     registration_key="library_sizes",
                 )
             outputs = service.outputs_for_job("user:pi-owner", job["id"])
+            detail = service.get_output("user:pi-owner", outputs[0]["id"])
 
         self.assertEqual(len(outputs), 1)
-        self.assertEqual(outputs[0]["structured"]["rows"][0]["sample"], "B")
+        self.assertNotIn("structured", outputs[0])
+        self.assertEqual(outputs[0]["summary"]["content"], "Table rows load when opened.")
+        self.assertEqual(detail["structured"]["rows"][0]["sample"], "B")
+
+    def test_large_deseq2_outputs_list_as_lightweight_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Large Retina Bulk",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            rows = [
+                {
+                    "gene_id": f"GENE{i:05d}",
+                    "baseMean": float(i + 1),
+                    "log2FoldChange": 1.25 if i % 2 == 0 else -0.75,
+                    "pvalue": 0.001,
+                    "padj": 0.01,
+                    "direction": "up" if i % 2 == 0 else "down",
+                }
+                for i in range(20000)
+            ]
+            points = [
+                {
+                    "gene_id": row["gene_id"],
+                    "x": row["log2FoldChange"],
+                    "y": 2.0,
+                    "padj": row["padj"],
+                    "baseMean": row["baseMean"],
+                }
+                for row in rows
+            ]
+            with service._connect() as connection:
+                service._insert_output(
+                    connection,
+                    job_id=job["id"],
+                    dataset_id=dataset["id"],
+                    output_type="differential_expression_table",
+                    display_name="Differential Expression Table",
+                    structured={"columns": list(rows[0].keys()), "rows": rows},
+                    registration_key="differential_expression",
+                )
+                service._insert_output(
+                    connection,
+                    job_id=job["id"],
+                    dataset_id=dataset["id"],
+                    output_type="interactive_plot",
+                    display_name="Volcano Plot",
+                    structured={"plot_type": "volcano", "points": points},
+                    registration_key="volcano",
+                )
+
+            listed = service.list_outputs("user:pi-owner")
+            grouped = service.output_groups("user:pi-owner")
+            job_outputs = service.outputs_for_job("user:pi-owner", job["id"])
+            table_metadata = next(item for item in listed if item["display_name"] == "Differential Expression Table")
+            volcano_metadata = next(item for item in listed if item["display_name"] == "Volcano Plot")
+            table_detail = service.get_output("user:pi-owner", table_metadata["id"])
+            volcano_detail = service.get_output("user:pi-owner", volcano_metadata["id"])
+
+        self.assertNotIn("structured", table_metadata)
+        self.assertNotIn("structured", volcano_metadata)
+        self.assertNotIn("structured", grouped[0]["outputs"][0])
+        self.assertNotIn("structured", job_outputs[0])
+        self.assertEqual(table_metadata["job_id"], job["id"])
+        self.assertEqual(table_metadata["dataset_id"], dataset["id"])
+        self.assertEqual(table_metadata["output_type"], "differential_expression_table")
+        self.assertEqual(table_metadata["summary"]["content"], "Table rows load when opened.")
+        self.assertEqual(volcano_metadata["summary"]["content"], "Interactive plot content loads when opened.")
+        self.assertEqual(len(table_detail["structured"]["rows"]), 20000)
+        self.assertEqual(len(volcano_detail["structured"]["points"]), 20000)
 
     def test_output_groups_are_dataset_job_output_ordered(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
