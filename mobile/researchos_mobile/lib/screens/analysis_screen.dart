@@ -8,6 +8,7 @@ import '../api/researchos_api.dart';
 import '../design_system/researchos_design_system.dart';
 
 final ViewerFactory _analysisViewerFactory = ViewerFactory();
+const Duration _analysisSectionTimeout = Duration(seconds: 6);
 
 class AnalysisScreen extends StatefulWidget {
   const AnalysisScreen({
@@ -24,7 +25,6 @@ class AnalysisScreen extends StatefulWidget {
 }
 
 class _AnalysisScreenState extends State<AnalysisScreen> {
-  late Future<_AnalysisState> _future;
   _AnalysisState? _lastState;
   Timer? _pollTimer;
   bool _polling = false;
@@ -37,7 +37,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   @override
   void initState() {
     super.initState();
-    _future = _loadAndTrack(generation: ++_reloadGeneration);
+    _lastState = _AnalysisState.empty();
+    unawaited(_reload(quiet: true));
   }
 
   @override
@@ -47,35 +48,101 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     super.dispose();
   }
 
-  Future<_AnalysisState> _load() async {
-    final results = await Future.wait([
-      widget.api.analysisWorkers(),
-      widget.api.analysisDatasets(),
-      widget.api.analysisWorkflows(),
-      widget.api.analysisJobs(),
-      widget.api.allAnalysisOutputs(),
-      widget.api.analysisOutputGroups(),
-      widget.api.analysisStorageLocations(),
-      widget.api.analysisDemoLibrary(),
-      widget.api.publicAnalysisDatasets(),
+  Future<_AnalysisState> _load({required int generation}) async {
+    var current = _lastState ?? _AnalysisState.empty();
+    final previous = current;
+    final errors = <String, String>{};
+
+    void publish(_AnalysisState next) {
+      current = next.copyWith(errors: Map<String, String>.from(errors));
+      if (!mounted || generation != _reloadGeneration) return;
+      setState(() {
+        _lastState = current;
+      });
+    }
+
+    await Future.wait([
+      _loadSection(
+        errors,
+        'compute',
+        widget.api.analysisWorkers,
+        previous.workers,
+      ).then((value) => publish(current.copyWith(workers: value))),
+      _loadSection(
+        errors,
+        'datasets',
+        widget.api.analysisDatasets,
+        previous.datasets,
+      ).then((value) => publish(current.copyWith(datasets: value))),
+      _loadSection(
+        errors,
+        'workflows',
+        widget.api.analysisWorkflows,
+        previous.workflows,
+      ).then((value) => publish(current.copyWith(workflows: value))),
+      _loadSection(
+        errors,
+        'jobs',
+        widget.api.analysisJobs,
+        previous.jobs,
+      ).then((value) => publish(current.copyWith(jobs: value))),
+      _loadSection(
+        errors,
+        'outputs',
+        widget.api.allAnalysisOutputs,
+        previous.outputs,
+      ).then((value) => publish(current.copyWith(outputs: value))),
+      _loadSection(
+        errors,
+        'output_groups',
+        widget.api.analysisOutputGroups,
+        previous.outputGroups,
+      ).then((value) => publish(current.copyWith(outputGroups: value))),
+      _loadSection(
+        errors,
+        'storage',
+        widget.api.analysisStorageLocations,
+        previous.storageLocations,
+      ).then((value) => publish(current.copyWith(storageLocations: value))),
+      _loadSection(
+        errors,
+        'demo_library',
+        widget.api.analysisDemoLibrary,
+        previous.demoLibrary,
+      ).then((value) => publish(current.copyWith(demoLibrary: value))),
+      _loadSection(
+        errors,
+        'public_datasets',
+        widget.api.publicAnalysisDatasets,
+        previous.publicDatasets,
+      ).then((value) => publish(current.copyWith(publicDatasets: value))),
     ]);
-    return _AnalysisState(
-      workers: results[0] as List<Map<String, dynamic>>,
-      datasets: results[1] as List<Map<String, dynamic>>,
-      workflows: results[2] as List<Map<String, dynamic>>,
-      jobs: results[3] as List<Map<String, dynamic>>,
-      outputs: results[4] as List<Map<String, dynamic>>,
-      outputGroups: results[5] as List<Map<String, dynamic>>,
-      storageLocations: results[6] as List<Map<String, dynamic>>,
-      demoLibrary: results[7] is Map<String, dynamic>
-          ? results[7] as Map<String, dynamic>
-          : const {},
-      publicDatasets: results[8] as List<Map<String, dynamic>>,
-    );
+    return current.copyWith(errors: Map<String, String>.from(errors));
+  }
+
+  Future<T> _loadSection<T>(
+    Map<String, String> errors,
+    String key,
+    Future<T> Function() loader,
+    T fallback,
+  ) async {
+    try {
+      return await loader().timeout(_analysisSectionTimeout);
+    } catch (error) {
+      errors[key] = _sectionErrorMessage(error);
+      return fallback;
+    }
+  }
+
+  String _sectionErrorMessage(Object error) {
+    if (error is TimeoutException) {
+      return 'Timed out while loading this section. Tap Retry to try again.';
+    }
+    return error.toString();
   }
 
   Future<_AnalysisState> _loadAndTrack({required int generation}) async {
-    final state = await _load();
+    final state = await _load(generation: generation);
     if (mounted && generation == _reloadGeneration) {
       _lastState = state;
       _syncPolling(state);
@@ -92,11 +159,6 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       if (_lastState != null) return _lastState!;
       throw error;
     });
-    if (mounted) {
-      setState(() {
-        _future = next;
-      });
-    }
     try {
       await next;
     } catch (error) {
@@ -545,164 +607,187 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<_AnalysisState>(
-      future: _future,
-      builder: (context, snapshot) {
-        final state = snapshot.data;
-        return ListView(
-          padding: ResearchOsSpacing.screen,
+    final state = _lastState ?? _AnalysisState.empty();
+    return ListView(
+      padding: ResearchOsSpacing.screen,
+      children: [
+        Wrap(
+          spacing: ResearchOsSpacing.sm,
+          runSpacing: ResearchOsSpacing.xs,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
-            Wrap(
-              spacing: ResearchOsSpacing.sm,
-              runSpacing: ResearchOsSpacing.xs,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Text(
-                  'Analysis',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                FilledButton.icon(
-                  onPressed: _registerDataset,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Register Dataset'),
-                ),
-              ],
+            Text(
+              'Analysis',
+              style: Theme.of(context).textTheme.headlineSmall,
             ),
-            const SizedBox(height: ResearchOsSpacing.sm),
-            const Text(
-                'Genomics, Imaging, and Compute share the same dataset -> job -> output model.'),
-            if (_message != null) ...[
-              const SizedBox(height: ResearchOsSpacing.md),
-              MaterialBanner(
-                content: Text(_message!),
-                actions: [
-                  TextButton(
-                    onPressed: () {
-                      setState(() {
-                        _message = null;
-                      });
-                    },
-                    child: const Text('Dismiss'),
-                  ),
-                ],
-              ),
-            ],
-            const SizedBox(height: ResearchOsSpacing.lg),
-            const _SectionHeader(
-              title: 'Genomics',
-              subtitle: 'Bulk RNA-seq, Single-cell RNA-seq, Models',
-              icon: Icons.biotech_outlined,
+            FilledButton.icon(
+              onPressed: _registerDataset,
+              icon: const Icon(Icons.add),
+              label: const Text('Register Dataset'),
             ),
-            const SizedBox(height: ResearchOsSpacing.sm),
-            _GenomicsRail(onOpenImaging: widget.onOpenImaging),
-            const SizedBox(height: ResearchOsSpacing.md),
-            _PublicDatasetsPanel(
-              datasets: state?.publicDatasets ?? const [],
-              searchController: _publicDatasetSearchController,
-              onImport: _importPublicDataset,
-              onImportAndRun: _importAndRunPublicDataset,
-              onSearchChanged: (_) => setState(() {}),
-            ),
-            const SizedBox(height: ResearchOsSpacing.md),
-            _DemoLibraryPanel(
-              demoLibrary: state?.demoLibrary ?? const {},
-              onInstall: _installDemoWorkspace,
-            ),
-            const SizedBox(height: ResearchOsSpacing.lg),
-            const _SectionHeader(
-              title: 'Compute',
-              subtitle: 'Lab-hosted workers and approved workflow capabilities',
-              icon: Icons.memory_outlined,
-            ),
-            const SizedBox(height: ResearchOsSpacing.sm),
-            if (snapshot.connectionState == ConnectionState.waiting &&
-                state == null)
-              const Center(child: CircularProgressIndicator())
-            else if (snapshot.hasError)
-              Text('Analysis is unavailable: ${snapshot.error}')
-            else ...[
-              _WorkerSummary(
-                workers: state?.workers ?? const [],
-                onOpenWorker: (worker) => unawaited(_showWorkerDetails(worker)),
-              ),
-              const SizedBox(height: ResearchOsSpacing.lg),
-              const _SectionHeader(
-                title: 'Dataset Registry',
-                subtitle: 'Bulk RNA, Single Cell, Imaging, and model datasets',
-                icon: Icons.table_chart_outlined,
-              ),
-              const SizedBox(height: ResearchOsSpacing.sm),
-              if ((state?.datasets ?? const []).isEmpty)
-                const _EmptyPanel(
-                  icon: Icons.dataset_outlined,
-                  text: 'No datasets are registered yet.',
-                )
-              else
-                for (final dataset in state!.datasets)
-                  _DatasetCard(
-                    dataset: dataset,
-                    deseq2Workflow: _workflowByKey(state, 'bulk_rnaseq_deseq2'),
-                    onRunQc: () => _runQc(dataset),
-                    onRunDeseq2: () => _runDeseq2(dataset),
-                  ),
-              const SizedBox(height: ResearchOsSpacing.lg),
-              const _SectionHeader(
-                title: 'Workflow Registry',
-                subtitle:
-                    'Installed, available, and disabled analysis workflows',
-                icon: Icons.schema_outlined,
-              ),
-              const SizedBox(height: ResearchOsSpacing.sm),
-              for (final workflow in state?.workflows ?? const [])
-                _WorkflowCard(workflow: workflow),
-              const SizedBox(height: ResearchOsSpacing.lg),
-              const _SectionHeader(
-                title: 'Analysis Jobs',
-                subtitle: 'Queued, running, and completed compute work',
-                icon: Icons.account_tree_outlined,
-              ),
-              const SizedBox(height: ResearchOsSpacing.sm),
-              if ((state?.jobs ?? const []).isEmpty)
-                const _EmptyPanel(
-                  icon: Icons.pending_actions_outlined,
-                  text: 'No analysis jobs have been submitted.',
-                )
-              else
-                for (final job in state!.jobs)
-                  _JobCard(
-                    job: job,
-                    hasOutputs: state.outputs.any(
-                      (output) =>
-                          output['job_id']?.toString() == job['id']?.toString(),
-                    ),
-                    onOpenOutputs: () => _showJobDetails(job),
-                  ),
-              const SizedBox(height: ResearchOsSpacing.lg),
-              const _SectionHeader(
-                title: 'Output Browser',
-                subtitle:
-                    'QC reports, tables, plots, embeddings, and model outputs',
-                icon: Icons.collections_bookmark_outlined,
-              ),
-              const SizedBox(height: ResearchOsSpacing.sm),
-              if ((state?.outputs ?? const []).isEmpty)
-                const _EmptyPanel(
-                  icon: Icons.insert_chart_outlined,
-                  text: 'No analysis outputs have been registered yet.',
-                )
-              else
-                _GroupedOutputBrowser(
-                  groups: state!.outputGroups,
-                  outputs: state.outputs,
-                  onOpen: _openOutput,
-                  onInsert: _insertOutput,
-                  onRename: _renameOutput,
-                  onDelete: _deleteOutput,
-                ),
-            ],
           ],
-        );
-      },
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        const Text(
+            'Genomics, Imaging, and Compute share the same dataset -> job -> output model.'),
+        if (_message != null) ...[
+          const SizedBox(height: ResearchOsSpacing.md),
+          MaterialBanner(
+            content: Text(_message!),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  setState(() {
+                    _message = null;
+                  });
+                },
+                child: const Text('Dismiss'),
+              ),
+            ],
+          ),
+        ],
+        const SizedBox(height: ResearchOsSpacing.lg),
+        const _SectionHeader(
+          title: 'Genomics',
+          subtitle: 'Bulk RNA-seq, Single-cell RNA-seq, Models',
+          icon: Icons.biotech_outlined,
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        _GenomicsRail(onOpenImaging: widget.onOpenImaging),
+        const SizedBox(height: ResearchOsSpacing.md),
+        if (state.errorFor('public_datasets') != null)
+          _InlineSectionError(
+            message: state.errorFor('public_datasets')!,
+            onRetry: () => unawaited(_reload(quiet: true)),
+          ),
+        _PublicDatasetsPanel(
+          datasets: state.publicDatasets,
+          searchController: _publicDatasetSearchController,
+          onImport: _importPublicDataset,
+          onImportAndRun: _importAndRunPublicDataset,
+          onSearchChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: ResearchOsSpacing.md),
+        if (state.errorFor('demo_library') != null)
+          _InlineSectionError(
+            message: state.errorFor('demo_library')!,
+            onRetry: () => unawaited(_reload(quiet: true)),
+          ),
+        _DemoLibraryPanel(
+          demoLibrary: state.demoLibrary,
+          onInstall: _installDemoWorkspace,
+        ),
+        const SizedBox(height: ResearchOsSpacing.lg),
+        const _SectionHeader(
+          title: 'Compute',
+          subtitle: 'Lab-hosted workers and approved workflow capabilities',
+          icon: Icons.memory_outlined,
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        if (state.errorFor('compute') != null)
+          _InlineSectionError(
+            message: state.errorFor('compute')!,
+            onRetry: () => unawaited(_reload(quiet: true)),
+          ),
+        _WorkerSummary(
+          workers: state.workers,
+          onOpenWorker: (worker) => unawaited(_showWorkerDetails(worker)),
+        ),
+        const SizedBox(height: ResearchOsSpacing.lg),
+        const _SectionHeader(
+          title: 'Dataset Registry',
+          subtitle: 'Bulk RNA, Single Cell, Imaging, and model datasets',
+          icon: Icons.table_chart_outlined,
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        if (state.errorFor('datasets') != null)
+          _InlineSectionError(
+            message: state.errorFor('datasets')!,
+            onRetry: () => unawaited(_reload(quiet: true)),
+          ),
+        if (state.datasets.isEmpty)
+          const _EmptyPanel(
+            icon: Icons.dataset_outlined,
+            text: 'No datasets are registered yet.',
+          )
+        else
+          for (final dataset in state.datasets)
+            _DatasetCard(
+              dataset: dataset,
+              deseq2Workflow: _workflowByKey(state, 'bulk_rnaseq_deseq2'),
+              onRunQc: () => _runQc(dataset),
+              onRunDeseq2: () => _runDeseq2(dataset),
+            ),
+        const SizedBox(height: ResearchOsSpacing.lg),
+        const _SectionHeader(
+          title: 'Workflow Registry',
+          subtitle: 'Installed, available, and disabled analysis workflows',
+          icon: Icons.schema_outlined,
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        if (state.errorFor('workflows') != null)
+          _InlineSectionError(
+            message: state.errorFor('workflows')!,
+            onRetry: () => unawaited(_reload(quiet: true)),
+          ),
+        for (final workflow in state.workflows)
+          _WorkflowCard(workflow: workflow),
+        const SizedBox(height: ResearchOsSpacing.lg),
+        const _SectionHeader(
+          title: 'Analysis Jobs',
+          subtitle: 'Queued, running, and completed compute work',
+          icon: Icons.account_tree_outlined,
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        if (state.errorFor('jobs') != null)
+          _InlineSectionError(
+            message: state.errorFor('jobs')!,
+            onRetry: () => unawaited(_reload(quiet: true)),
+          ),
+        if (state.jobs.isEmpty)
+          const _EmptyPanel(
+            icon: Icons.pending_actions_outlined,
+            text: 'No analysis jobs have been submitted.',
+          )
+        else
+          for (final job in state.jobs)
+            _JobCard(
+              job: job,
+              hasOutputs: state.outputs.any(
+                (output) =>
+                    output['job_id']?.toString() == job['id']?.toString(),
+              ),
+              onOpenOutputs: () => _showJobDetails(job),
+            ),
+        const SizedBox(height: ResearchOsSpacing.lg),
+        const _SectionHeader(
+          title: 'Output Browser',
+          subtitle: 'QC reports, tables, plots, embeddings, and model outputs',
+          icon: Icons.collections_bookmark_outlined,
+        ),
+        const SizedBox(height: ResearchOsSpacing.sm),
+        if (state.errorFor('outputs') != null ||
+            state.errorFor('output_groups') != null)
+          _InlineSectionError(
+            message:
+                state.errorFor('outputs') ?? state.errorFor('output_groups')!,
+            onRetry: () => unawaited(_reload(quiet: true)),
+          ),
+        if (state.outputs.isEmpty)
+          const _EmptyPanel(
+            icon: Icons.insert_chart_outlined,
+            text: 'No analysis outputs have been registered yet.',
+          )
+        else
+          _GroupedOutputBrowser(
+            groups: state.outputGroups,
+            outputs: state.outputs,
+            onOpen: _openOutput,
+            onInsert: _insertOutput,
+            onRename: _renameOutput,
+            onDelete: _deleteOutput,
+          ),
+      ],
     );
   }
 }
@@ -2489,6 +2574,47 @@ class _EmptyPanel extends StatelessWidget {
   }
 }
 
+class _InlineSectionError extends StatelessWidget {
+  const _InlineSectionError({
+    required this.message,
+    required this.onRetry,
+  });
+
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      color: Theme.of(context).colorScheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(ResearchOsSpacing.sm),
+        child: Row(
+          children: [
+            Icon(
+              Icons.warning_amber_outlined,
+              color: Theme.of(context).colorScheme.onErrorContainer,
+            ),
+            const SizedBox(width: ResearchOsSpacing.sm),
+            Expanded(
+              child: Text(
+                message,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onErrorContainer,
+                ),
+              ),
+            ),
+            TextButton(
+              onPressed: onRetry,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _RegisterDatasetDialog extends StatefulWidget {
   const _RegisterDatasetDialog({
     required this.storageLocations,
@@ -2667,7 +2793,23 @@ class _AnalysisState {
     required this.storageLocations,
     required this.demoLibrary,
     required this.publicDatasets,
+    required this.errors,
   });
+
+  factory _AnalysisState.empty() {
+    return const _AnalysisState(
+      workers: <Map<String, dynamic>>[],
+      datasets: <Map<String, dynamic>>[],
+      workflows: <Map<String, dynamic>>[],
+      jobs: <Map<String, dynamic>>[],
+      outputs: <Map<String, dynamic>>[],
+      outputGroups: <Map<String, dynamic>>[],
+      storageLocations: <Map<String, dynamic>>[],
+      demoLibrary: <String, dynamic>{},
+      publicDatasets: <Map<String, dynamic>>[],
+      errors: <String, String>{},
+    );
+  }
 
   final List<Map<String, dynamic>> workers;
   final List<Map<String, dynamic>> datasets;
@@ -2678,6 +2820,35 @@ class _AnalysisState {
   final List<Map<String, dynamic>> storageLocations;
   final Map<String, dynamic> demoLibrary;
   final List<Map<String, dynamic>> publicDatasets;
+  final Map<String, String> errors;
+
+  String? errorFor(String key) => errors[key];
+
+  _AnalysisState copyWith({
+    List<Map<String, dynamic>>? workers,
+    List<Map<String, dynamic>>? datasets,
+    List<Map<String, dynamic>>? workflows,
+    List<Map<String, dynamic>>? jobs,
+    List<Map<String, dynamic>>? outputs,
+    List<Map<String, dynamic>>? outputGroups,
+    List<Map<String, dynamic>>? storageLocations,
+    Map<String, dynamic>? demoLibrary,
+    List<Map<String, dynamic>>? publicDatasets,
+    Map<String, String>? errors,
+  }) {
+    return _AnalysisState(
+      workers: workers ?? this.workers,
+      datasets: datasets ?? this.datasets,
+      workflows: workflows ?? this.workflows,
+      jobs: jobs ?? this.jobs,
+      outputs: outputs ?? this.outputs,
+      outputGroups: outputGroups ?? this.outputGroups,
+      storageLocations: storageLocations ?? this.storageLocations,
+      demoLibrary: demoLibrary ?? this.demoLibrary,
+      publicDatasets: publicDatasets ?? this.publicDatasets,
+      errors: errors ?? this.errors,
+    );
+  }
 }
 
 String? _emptyToNull(String value) {

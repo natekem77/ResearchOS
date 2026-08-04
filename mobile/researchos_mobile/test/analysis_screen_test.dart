@@ -565,6 +565,62 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('slow public datasets endpoint does not block other sections',
+      (tester) async {
+    final calls = <String>[];
+    final api = _mockAnalysisApi(
+      calls,
+      publicDatasetsDelay: const Duration(seconds: 7),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+
+    for (var i = 0; i < 20; i += 1) {
+      await tester.pump(const Duration(milliseconds: 250));
+      if (find
+          .text('Lab Analysis Server', skipOffstage: false)
+          .evaluate()
+          .isNotEmpty) {
+        break;
+      }
+    }
+
+    expect(calls, contains('GET /mobile/analysis/workers'));
+    expect(
+        find.text(
+          '2 demo datasets prepared for regression testing.',
+          skipOffstage: false,
+        ),
+        findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Lab Analysis Server'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Lab Analysis Server'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('Bulk SAG GRKi'),
+      240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(find.text('Bulk SAG GRKi'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 7));
+    await tester.pump();
+    await tester.scrollUntilVisible(
+      find.text('Public Datasets'),
+      -240,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(
+        find.textContaining(
+          'Timed out while loading this section',
+          skipOffstage: false,
+        ),
+        findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('DESeq2 dialog uses imported condition defaults and validation',
       (tester) async {
     final calls = <String>[];
@@ -647,7 +703,10 @@ void main() {
   });
 }
 
-ResearchOsApi _mockAnalysisApi(List<String> calls) {
+ResearchOsApi _mockAnalysisApi(
+  List<String> calls, {
+  Duration publicDatasetsDelay = Duration.zero,
+}) {
   return ResearchOsApi(
     baseUrl: 'http://example.test',
     client: MockClient((request) async {
@@ -692,6 +751,9 @@ ResearchOsApi _mockAnalysisApi(List<String> calls) {
         });
       }
       if (request.url.path == '/mobile/analysis/public-datasets') {
+        if (publicDatasetsDelay > Duration.zero) {
+          await Future<void>.delayed(publicDatasetsDelay);
+        }
         return _json({
           'datasets': [
             _publicDataset(),

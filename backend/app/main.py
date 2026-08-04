@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -216,6 +217,34 @@ app = FastAPI(
     description="AI-powered research operating system for scientific laboratories.",
     version="0.1.0",
 )
+
+
+@app.middleware("http")
+async def log_mobile_analysis_timing(request: Request, call_next):
+    if not request.url.path.startswith("/mobile/analysis/"):
+        return await call_next(request)
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.exception(
+            "mobile_analysis_endpoint method=%s path=%s status=error elapsed_ms=%s",
+            request.method,
+            request.url.path,
+            elapsed_ms,
+        )
+        raise
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    logger.info(
+        "mobile_analysis_endpoint method=%s path=%s status=%s elapsed_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+    )
+    return response
+
 
 if FRONTEND_DIR.exists():
     app.mount(
