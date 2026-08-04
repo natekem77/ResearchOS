@@ -2,6 +2,7 @@ import csv
 import json
 import os
 import sqlite3
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -258,6 +259,39 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(dataset["features_count"], 7)
         self.assertTrue(dataset["metadata_summary"]["validation"]["sample_names_match"])
         self.assertEqual(dataset["metadata_summary"]["validation"]["duplicate_gene_count"], 0)
+
+    def test_public_pbmc_catalog_and_10x_import_registers_single_cell_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, root = self._fixture(tmpdir)
+            source_dir = Path(tmpdir) / "source_pbmc"
+            matrix_dir = source_dir / "filtered_feature_bc_matrix"
+            matrix_dir.mkdir(parents=True)
+            analysis_service_module._write_demo_single_cell_files(matrix_dir)
+            archive_path = Path(tmpdir) / "pbmc.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                archive.add(matrix_dir, arcname="filtered_feature_bc_matrix")
+            original_download = analysis_service_module._download_url
+
+            def fake_download(_url: str, destination: Path) -> None:
+                destination.write_bytes(archive_path.read_bytes())
+
+            analysis_service_module._download_url = fake_download
+            self.addCleanup(setattr, analysis_service_module, "_download_url", original_download)
+
+            records = service.public_geo_datasets("PBMC")
+            dataset = service.import_public_geo_dataset("user:pi-owner", "10X-PBMC-3K")
+            again = service.import_public_geo_dataset("user:pi-owner", "10X-PBMC-3K")
+            matrix_exists = (root / dataset["counts_path"] / "matrix.mtx").exists()
+
+        accessions = {record["accession"] for record in records}
+        self.assertIn("10X-PBMC-3K", accessions)
+        self.assertIn("10X-PBMC-10K-V3", accessions)
+        self.assertEqual(dataset["modality"], "single_cell_rna_seq")
+        self.assertEqual(dataset["source_type"], "public_geo")
+        self.assertEqual(dataset["cell_count"], 30)
+        self.assertEqual(dataset["features_count"], 12)
+        self.assertTrue(matrix_exists)
+        self.assertEqual(again["id"], dataset["id"])
 
     def test_raw_count_dataset_allows_deseq2_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -868,6 +902,8 @@ class AnalysisServiceTests(unittest.TestCase):
                     "supported_workflows": ["single_cell_scanpy_standard"],
                     "supported_runtimes": ["python", "scanpy", "anndata", "scipy"],
                     "software_versions": {"scanpy": "1.x", "anndata": "0.x"},
+                    "ram_gb": 16,
+                    "available_disk_gb": 100,
                     "status": "ready",
                 }
             )

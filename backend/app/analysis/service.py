@@ -11,10 +11,12 @@ import math
 import os
 import platform
 import re
+import resource
 import shutil
 import sqlite3
 import statistics
 import tarfile
+import time
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -613,6 +615,7 @@ class AnalysisService:
             self._preflight_bulk_deseq2_dataset(dataset, clean_parameters)
         if workflow_key == "single_cell_scanpy_standard":
             self._preflight_single_cell_dataset(dataset)
+            self._ensure_single_cell_worker_capacity(dataset, workflow)
         job_id = f"analysis-job:{uuid.uuid4().hex[:16]}"
         manifest = {
             "dataset_id": dataset_id,
@@ -669,6 +672,39 @@ class AnalysisService:
         errors = validation.get("errors") if isinstance(validation, dict) else []
         if errors:
             raise AnalysisValidationError("; ".join(str(error) for error in errors))
+
+    def _ensure_single_cell_worker_capacity(self, dataset: dict[str, Any], workflow: dict[str, Any]) -> None:
+        summary = dataset.get("metadata_summary")
+        estimate = summary.get("resource_estimate") if isinstance(summary, dict) else {}
+        required_ram = float((estimate or {}).get("expected_peak_ram_gb") or workflow["resource_request"].get("ram_gb") or 8)
+        required_disk = float((estimate or {}).get("expected_temp_disk_gb") or 2)
+        with self._connect() as connection:
+            workers = connection.execute("SELECT * FROM analysis_workers WHERE enabled = 1").fetchall()
+        fresh = [
+            worker
+            for worker in workers
+            if _is_fresh_heartbeat(str(worker["last_heartbeat"] or ""))
+            and str(worker["status"] or "") != "maintenance"
+        ]
+        if not fresh:
+            raise AnalysisValidationError("No ready compute worker is connected for Scanpy.")
+        supported = []
+        for worker in fresh:
+            workflows = set(json.loads(worker["supported_workflows_json"] or "[]"))
+            if "single_cell_scanpy_standard" in workflows:
+                supported.append(worker)
+        if not supported:
+            raise AnalysisValidationError("Connected worker does not advertise Scanpy dependencies.")
+        capable = []
+        for worker in supported:
+            ram = float(worker["ram_gb"] or 0)
+            disk = float(worker["available_disk_gb"] or 0)
+            if ram >= required_ram and (disk == 0 or disk >= required_disk):
+                capable.append(worker)
+        if not capable:
+            raise AnalysisValidationError(
+                f"No Scanpy worker has enough resources. Estimated need: {required_ram:g} GB RAM and {required_disk:g} GB temporary disk."
+            )
 
     def list_jobs(self, user_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
@@ -1224,17 +1260,18 @@ class AnalysisService:
         _materialize_public_geo_dataset(record, dataset_dir, counts_path, metadata_path)
         relative_counts = str(counts_path.relative_to(self.allowed_roots[0]))
         relative_metadata = str(metadata_path.relative_to(self.allowed_roots[0]))
+        modality = str(record.get("modality") or "bulk_rna_seq")
         dataset = self.register_server_dataset(
             user_id=user_id,
             payload={
                 "display_name": record["title"],
-                "modality": "bulk_rna_seq",
+                "modality": modality,
                 "source_type": "public_geo",
                 "counts_path": relative_counts,
                 "metadata_path": relative_metadata,
                 "organism": record["organism"],
                 "genome_build": record.get("genome_build"),
-                "assay": "Bulk RNA-seq",
+                "assay": record.get("assay") or ("Single-cell RNA-seq" if modality == "single_cell_rna_seq" else "Bulk RNA-seq"),
                 "source_data_kind": record.get("source_data_kind", "raw_counts"),
                 "exploratory_only": bool(record.get("exploratory_only", False)),
                 "suggested_deseq2": record.get("deseq2_defaults"),
@@ -1263,7 +1300,12 @@ class AnalysisService:
             str(existing["metadata_path"]),
         )
         _materialize_public_geo_dataset(record, counts_path.parent, counts_path, metadata_path)
-        summary = _peek_bulk_dataset(counts_path, metadata_path)
+        modality = str(record.get("modality") or "bulk_rna_seq")
+        summary = (
+            _peek_single_cell_dataset(counts_path, metadata_path)
+            if modality == "single_cell_rna_seq"
+            else _peek_bulk_dataset(counts_path, metadata_path)
+        )
         source_data_kind = str(record.get("source_data_kind", "raw_counts"))
         exploratory_only = bool(record.get("exploratory_only", False))
         summary["source_data_kind"] = source_data_kind
@@ -1275,13 +1317,14 @@ class AnalysisService:
             connection.execute(
                 """
                 UPDATE analysis_datasets
-                SET sample_count = ?, features_count = ?, source_data_kind = ?,
+                SET sample_count = ?, cell_count = ?, features_count = ?, source_data_kind = ?,
                     exploratory_only = ?, metadata_summary_json = ?, checksum = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ? AND user_id = ?
                 """,
                 (
-                    summary["sample_count"],
+                    summary.get("sample_count"),
+                    summary.get("cell_count"),
                     summary["feature_count"],
                     source_data_kind,
                     1 if exploratory_only else 0,
@@ -1336,6 +1379,8 @@ class AnalysisService:
                         "supported_workflows": ["bulk_rnaseq_validation_qc", "single_cell_scanpy_standard"],
                         "supported_runtimes": ["python", "scanpy", "anndata", "scipy"],
                         "software_versions": {"python": platform.python_version(), **_scanpy_environment()},
+                        "ram_gb": 16,
+                        "available_disk_gb": 100,
                         "status": "ready",
                     }
                 )
@@ -1475,15 +1520,20 @@ class AnalysisService:
     def _execute_single_cell_scanpy(self, job: dict[str, Any], worker_id: str) -> list[dict[str, Any]]:
         if job["workflow_id"] != "single_cell_scanpy_standard":
             raise AnalysisValidationError("Worker cannot execute this workflow.")
+        started = time.perf_counter()
+        stage_metrics = []
         dataset = self.get_dataset(str(job["user_id"]), str(job["dataset_id"]))
         matrix_path, _ = self._resolve_location_path(str(dataset["storage_location_id"]), str(dataset["counts_path"]))
         parameters = dict(job.get("parameters") or {})
         self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.3, current_stage="Loading sparse matrix")
         matrix = _read_single_cell_matrix_market(matrix_path)
+        stage_metrics.append(_single_cell_stage_metric("load_sparse_matrix", started, matrix))
         self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.45, current_stage="Calculating QC metrics")
         qc = _single_cell_qc_summary(matrix)
+        stage_metrics.append(_single_cell_stage_metric("calculate_qc_metrics", started, matrix))
         self.update_job_progress(worker_id, str(job["id"]), status="running", progress=0.6, current_stage="PCA, neighbors, Leiden, UMAP")
         cells = _single_cell_embedding_rows(matrix, parameters)
+        stage_metrics.append(_single_cell_stage_metric("embedding_and_clustering", started, matrix))
         cell_by_barcode = {row["barcode"]: row for row in cells}
         for row in qc["cell_qc"]:
             row["leiden"] = cell_by_barcode.get(row["barcode"], {}).get("leiden", "0")
@@ -1514,6 +1564,20 @@ class AnalysisService:
             "started_at": job.get("started_at"),
             "completed_at": _now(),
         }
+        performance_report = {
+            "plot_type": "scanpy_performance_report",
+            "cells": len(matrix["barcodes"]),
+            "genes": len(matrix["genes"]),
+            "nonzero_values": len(matrix["entries"]),
+            "matrix_representation": "sparse_coordinate",
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "stage_metrics": stage_metrics,
+            "resource_estimate": _single_cell_resource_estimate(
+                cells=len(matrix["barcodes"]),
+                genes=len(matrix["genes"]),
+                nonzero_values=len(matrix["entries"]),
+            ),
+        }
         outputs = [
             ("qc_summary", "Single-cell QC Summary", "qc_report", qc, "QC"),
             ("genes_per_cell", "Genes per Cell", "interactive_plot", _histogram_payload("genes_per_cell", qc["cell_qc"], "detected_genes"), "QC"),
@@ -1537,6 +1601,7 @@ class AnalysisService:
             ("feature_metadata", "Feature Metadata", "table", {"columns": ["gene", "mitochondrial", "detected_cells"], "rows": qc["feature_qc"]}, "Data"),
             ("highly_variable_genes", "Highly Variable Genes", "table", {"columns": ["gene", "highly_variable"], "rows": [{"gene": gene, "highly_variable": index < int(parameters.get("n_top_hvg") or 2000)} for index, gene in enumerate(matrix["genes"])]}, "Data"),
             ("processed_anndata", "Processed AnnData", "file", {"path": processed_path.name, "format": "h5ad"}, "Data"),
+            ("performance_report", "Scanpy Performance Report", "qc_report", performance_report, "Provenance"),
             ("provenance", "Scanpy Reproducibility Manifest", "provenance", provenance, "Provenance"),
         ]
         result = []
@@ -2409,6 +2474,11 @@ def _peek_single_cell_dataset(matrix_path: Path, metadata_path: Path | None = No
         "metadata_columns": ["barcode"],
         "median_genes_per_cell": summary["median_genes_per_cell"],
         "median_counts_per_cell": summary["median_counts_per_cell"],
+        "resource_estimate": _single_cell_resource_estimate(
+            cells=len(matrix["barcodes"]),
+            genes=len(matrix["genes"]),
+            nonzero_values=len(matrix["entries"]),
+        ),
         "validation": summary["validation"],
     }
 
@@ -2504,6 +2574,8 @@ def _read_single_cell_matrix_market(path: Path) -> dict[str, Any]:
             "duplicate_genes": duplicate_genes[:100],
             "mitochondrial_prefix": mito_prefix,
             "matrix_dimensions": {"genes": dimensions[0], "cells": dimensions[1]},
+            "nonzero_values": len(entries),
+            "matrix_representation": "sparse_coordinate",
         },
     }
 
@@ -2552,6 +2624,53 @@ def _single_cell_qc_summary(matrix: dict[str, Any]) -> dict[str, Any]:
         "cell_qc": cell_qc,
         "feature_qc": feature_qc,
     }
+
+
+def _single_cell_resource_estimate(*, cells: int, genes: int, nonzero_values: int) -> dict[str, Any]:
+    sparse_gb = max(0.1, nonzero_values * 24 / 1024 / 1024 / 1024)
+    hvg_dense_gb = max(0.2, cells * min(genes, 2000) * 8 / 1024 / 1024 / 1024)
+    ram_gb = round(max(4.0, (sparse_gb + hvg_dense_gb) * 3.0), 1)
+    temp_disk_gb = round(max(2.0, sparse_gb * 4 + hvg_dense_gb), 1)
+    output_gb = round(max(0.2, cells * 200 / 1024 / 1024 / 1024), 2)
+    runtime_class = "moderate" if cells <= 3000 else "large" if cells <= 12000 else "very_large"
+    return {
+        "cells": cells,
+        "genes": genes,
+        "nonzero_values": nonzero_values,
+        "matrix_representation": "sparse_coordinate",
+        "expected_peak_ram_gb": ram_gb,
+        "expected_temp_disk_gb": temp_disk_gb,
+        "expected_output_gb": output_gb,
+        "runtime_class": runtime_class,
+    }
+
+
+def _single_cell_stage_metric(stage: str, started: float, matrix: dict[str, Any]) -> dict[str, Any]:
+    rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if platform.system().lower() == "darwin":
+        rss_mb = rss_mb / 1024 / 1024
+    else:
+        rss_mb = rss_mb / 1024
+    metric = {
+        "stage": stage,
+        "cells": len(matrix["barcodes"]),
+        "genes": len(matrix["genes"]),
+        "nonzero_values": len(matrix["entries"]),
+        "matrix_representation": "sparse_coordinate",
+        "process_rss_mb": round(rss_mb, 2),
+        "elapsed_seconds": round(time.perf_counter() - started, 3),
+    }
+    logger.info(
+        "scanpy stage=%s cells=%s genes=%s nonzero_values=%s representation=%s rss_mb=%s elapsed_seconds=%s",
+        metric["stage"],
+        metric["cells"],
+        metric["genes"],
+        metric["nonzero_values"],
+        metric["matrix_representation"],
+        metric["process_rss_mb"],
+        metric["elapsed_seconds"],
+    )
+    return metric
 
 
 def _first_existing(directory: Path, names: list[str]) -> Path | None:
@@ -3625,6 +3744,68 @@ def _demo_workspace_payload() -> dict[str, Any]:
 def _public_geo_datasets() -> list[dict[str, Any]]:
     return [
         {
+            "accession": "10X-PBMC-3K",
+            "title": "PBMC 3k filtered gene-barcode matrix",
+            "organism": "Homo sapiens",
+            "tissue": "Peripheral blood mononuclear cells",
+            "publication": "10x Genomics public dataset; used by Scanpy/Seurat PBMC tutorials",
+            "platform": "10x Genomics Chromium Single Cell Gene Expression",
+            "sample_count": 1,
+            "approximate_cells": 2700,
+            "approximate_genes": 32738,
+            "matrix_format": "10x Matrix Market",
+            "compressed_download_size": "about 30-40 MB",
+            "expected_ram": "4-8 GB",
+            "expected_runtime": "5-15 minutes on Apple silicon CPU",
+            "license": "10x Genomics public dataset; cite/source 10x Genomics and original PBMC tutorial context",
+            "experimental_groups": ["PBMC"],
+            "summary": "Moderate public PBMC single-cell RNA-seq regression dataset with approximately 2,700 filtered cells.",
+            "source": "10x Genomics public datasets",
+            "assay": "Single-cell RNA-seq",
+            "modality": "single_cell_rna_seq",
+            "geo_url": "https://www.10xgenomics.com/resources/datasets",
+            "download_url": "https://cf.10xgenomics.com/samples/cell-exp/1.1.0/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz",
+            "download_kind": "tenx_mtx_tar_gz",
+            "genome_build": "hg19",
+            "tags": ["PBMC", "single-cell RNA-seq", "10x Genomics", "Scanpy", "stress test"],
+            "expected_analyses": ["Scanpy QC", "UMAP", "Leiden clustering", "Marker genes"],
+            "recommended_workflows": ["single_cell_scanpy_standard"],
+            "estimated_runtime": "5-15 minutes after download",
+            "counts_filename": "filtered_feature_bc_matrix",
+            "metadata_filename": "filtered_feature_bc_matrix",
+        },
+        {
+            "accession": "10X-PBMC-10K-V3",
+            "title": "PBMC 10k v3 filtered feature-barcode matrix",
+            "organism": "Homo sapiens",
+            "tissue": "Peripheral blood mononuclear cells",
+            "publication": "10x Genomics public dataset",
+            "platform": "10x Genomics Chromium Single Cell Gene Expression 3' v3",
+            "sample_count": 1,
+            "approximate_cells": 10000,
+            "approximate_genes": 33538,
+            "matrix_format": "10x Matrix Market",
+            "compressed_download_size": "about 80-120 MB",
+            "expected_ram": "8-16 GB",
+            "expected_runtime": "15-45 minutes on Apple silicon CPU",
+            "license": "10x Genomics public dataset; cite/source 10x Genomics",
+            "experimental_groups": ["PBMC"],
+            "summary": "Larger public PBMC single-cell RNA-seq performance dataset with approximately 10,000 filtered cells.",
+            "source": "10x Genomics public datasets",
+            "assay": "Single-cell RNA-seq",
+            "modality": "single_cell_rna_seq",
+            "geo_url": "https://www.10xgenomics.com/resources/datasets",
+            "download_url": "https://cf.10xgenomics.com/samples/cell-exp/3.0.0/pbmc_10k_v3/pbmc_10k_v3_filtered_feature_bc_matrix.tar.gz",
+            "download_kind": "tenx_mtx_tar_gz",
+            "genome_build": "GRCh38",
+            "tags": ["PBMC", "single-cell RNA-seq", "10x Genomics", "Scanpy", "performance"],
+            "expected_analyses": ["Scanpy QC", "UMAP", "Leiden clustering", "Marker genes"],
+            "recommended_workflows": ["single_cell_scanpy_standard"],
+            "estimated_runtime": "15-45 minutes after download",
+            "counts_filename": "filtered_feature_bc_matrix",
+            "metadata_filename": "filtered_feature_bc_matrix",
+        },
+        {
             "accession": "GSE119274",
             "title": "Generation, transcriptome profiling, and functional validation of cone-enriched human retinal organoids",
             "organism": "Homo sapiens",
@@ -4051,6 +4232,8 @@ def _download_public_geo_dataset(
         _convert_geo_raw_tar_to_counts(record, source_path, counts_path, metadata_path)
     elif kind == "expression_table_tsv_gz":
         _convert_expression_table_to_counts(record, source_path, counts_path, metadata_path)
+    elif kind == "tenx_mtx_tar_gz":
+        _extract_tenx_mtx_archive(record, source_path, counts_path)
     else:
         raise AnalysisValidationError(f"Unsupported public GEO import type: {kind}")
 
@@ -4073,17 +4256,75 @@ def _materialize_public_geo_dataset(
 
 
 def _download_url(url: str, destination: Path) -> None:
+    partial = destination.with_suffix(destination.suffix + ".part")
+    headers = {"User-Agent": "Mundi-ResearchOS/1.0 public dataset importer"}
+    existing_bytes = partial.stat().st_size if partial.exists() else 0
+    if existing_bytes > 0:
+        headers["Range"] = f"bytes={existing_bytes}-"
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mundi-ResearchOS/1.0 public dataset importer"},
+        headers=headers,
     )
     try:
-        with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
+        with urllib.request.urlopen(request, timeout=120) as response:
+            status = getattr(response, "status", None)
+            if existing_bytes > 0 and status != 206:
+                partial.unlink(missing_ok=True)
+                existing_bytes = 0
+            mode = "ab" if existing_bytes > 0 else "wb"
+            with partial.open(mode) as handle:
+                shutil.copyfileobj(response, handle)
+        if partial.stat().st_size == 0:
+            raise AnalysisValidationError("Downloaded archive was empty.")
+        partial.replace(destination)
     except Exception as exc:  # pragma: no cover - exact urllib exceptions vary by platform
-        if destination.exists():
-            destination.unlink()
+        if partial.exists():
+            partial.unlink()
         raise AnalysisValidationError(f"Could not download public GEO dataset: {exc}") from exc
+
+
+def _extract_tenx_mtx_archive(record: dict[str, Any], archive_path: Path, counts_path: Path) -> None:
+    if _tenx_matrix_dir_is_valid(counts_path):
+        return
+    if counts_path.exists():
+        _safe_rmtree(counts_path, counts_path.parent)
+    extract_root = counts_path.parent / "_extracting_10x"
+    if extract_root.exists():
+        _safe_rmtree(extract_root, counts_path.parent)
+    extract_root.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            for member in archive.getmembers():
+                target = (extract_root / member.name).resolve()
+                if not _is_within(target, extract_root):
+                    raise AnalysisValidationError("10x archive contains an unsafe path.")
+            archive.extractall(extract_root, filter="data")
+        source_dir = _find_tenx_matrix_directory(extract_root)
+        if source_dir is None:
+            raise AnalysisValidationError("10x archive did not contain a filtered Matrix Market directory.")
+        shutil.copytree(source_dir, counts_path)
+        if not _tenx_matrix_dir_is_valid(counts_path):
+            raise AnalysisValidationError("Extracted 10x matrix did not validate.")
+    finally:
+        if extract_root.exists():
+            _safe_rmtree(extract_root, counts_path.parent)
+
+
+def _tenx_matrix_dir_is_valid(path: Path) -> bool:
+    return (
+        path.exists()
+        and path.is_dir()
+        and _first_existing(path, ["matrix.mtx.gz", "matrix.mtx"]) is not None
+        and _first_existing(path, ["barcodes.tsv.gz", "barcodes.tsv"]) is not None
+        and _first_existing(path, ["features.tsv.gz", "features.tsv", "genes.tsv.gz", "genes.tsv"]) is not None
+    )
+
+
+def _find_tenx_matrix_directory(root: Path) -> Path | None:
+    for path in [root, *[item for item in root.rglob("*") if item.is_dir()]]:
+        if _tenx_matrix_dir_is_valid(path):
+            return path
+    return None
 
 
 def _convert_geo_raw_tar_to_counts(
