@@ -912,6 +912,148 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertEqual(len(references), 2)
         self.assertTrue(deleted["deleted"])
 
+    def test_dataset_delete_conflict_and_related_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            service.run_claimed_job_once("worker-1")
+
+            with self.assertRaisesRegex(AnalysisValidationError, "referenced by 1 job"):
+                service.delete_dataset("user:pi-owner", dataset["id"])
+            summary = service.delete_dataset(
+                "user:pi-owner",
+                dataset["id"],
+                delete_related=True,
+                remove_files=True,
+            )
+
+            with service._connect() as connection:
+                dataset_row = connection.execute(
+                    "SELECT 1 FROM analysis_datasets WHERE id = ?",
+                    (dataset["id"],),
+                ).fetchone()
+                output_row = connection.execute(
+                    "SELECT 1 FROM analysis_outputs WHERE job_id = ?",
+                    (job["id"],),
+                ).fetchone()
+
+        self.assertTrue(summary["deleted"])
+        self.assertEqual(summary["jobs"], 1)
+        self.assertEqual(summary["outputs"], 3)
+        self.assertIsNone(dataset_row)
+        self.assertIsNone(output_row)
+
+    def test_public_geo_dataset_delete_removes_safe_local_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, root = self._fixture(tmpdir)
+            dataset = service.import_public_geo_dataset(
+                "user:pi-owner",
+                "GSE-MUNDI-RET-ORG-BULK",
+            )
+            counts_path = root / str(dataset["counts_path"])
+            dataset_dir = counts_path.parent
+            self.assertTrue(counts_path.exists())
+
+            summary = service.delete_dataset(
+                "user:pi-owner",
+                dataset["id"],
+                delete_related=True,
+                remove_files=True,
+            )
+
+        self.assertTrue(summary["deleted"])
+        self.assertTrue(summary["files_removed"])
+        self.assertFalse(dataset_dir.exists())
+
+    def test_dataset_delete_rejects_unauthorized_user(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+
+            with self.assertRaisesRegex(AnalysisValidationError, "not found"):
+                service.delete_dataset("user:other", dataset["id"])
+
+    def test_job_delete_can_preserve_or_remove_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            service.register_worker(
+                {
+                    "worker_id": "worker-1",
+                    "display_name": "Lab Analysis Server",
+                    "supported_workflows": ["bulk_rnaseq_validation_qc"],
+                    "supported_runtimes": ["python"],
+                }
+            )
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            job = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            service.run_claimed_job_once("worker-1")
+
+            preserve_summary = service.delete_job("user:pi-owner", job["id"])
+            preserved_outputs = service.list_outputs("user:pi-owner")
+
+            job2 = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            service.run_claimed_job_once("worker-1")
+            remove_summary = service.delete_job(
+                "user:pi-owner",
+                job2["id"],
+                delete_outputs=True,
+            )
+            removed_outputs = [
+                output
+                for output in service.list_outputs("user:pi-owner")
+                if output["job_id"] == job2["id"]
+            ]
+
+        self.assertFalse(preserve_summary["outputs_deleted"])
+        self.assertTrue(preserved_outputs)
+        self.assertTrue(remove_summary["outputs_deleted"])
+        self.assertEqual(removed_outputs, [])
+
     def test_output_registration_is_idempotent_within_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)

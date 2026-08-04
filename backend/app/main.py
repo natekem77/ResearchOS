@@ -5508,6 +5508,24 @@ def get_mobile_analysis_dataset(dataset_id: str, request: Request) -> dict[str, 
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.delete("/mobile/analysis/datasets/{dataset_id}", tags=["analysis"])
+def delete_mobile_analysis_dataset(
+    dataset_id: str,
+    request: Request,
+    delete_related: bool = False,
+    remove_files: bool = False,
+) -> dict[str, object]:
+    try:
+        return _analysis_service().delete_dataset(
+            _request_user_id(request),
+            dataset_id,
+            delete_related=delete_related,
+            remove_files=remove_files,
+        )
+    except AnalysisValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/mobile/analysis/public-datasets", tags=["analysis"])
 def list_mobile_analysis_public_datasets(
     request: Request,
@@ -5589,10 +5607,17 @@ def retry_mobile_analysis_job(job_id: str, request: Request) -> dict[str, object
 
 
 @app.delete("/mobile/analysis/jobs/{job_id}", tags=["analysis"])
-def delete_mobile_analysis_job(job_id: str, request: Request) -> dict[str, object]:
+def delete_mobile_analysis_job(
+    job_id: str,
+    request: Request,
+    delete_outputs: bool = False,
+) -> dict[str, object]:
     try:
-        _analysis_service().delete_job(_request_user_id(request), job_id)
-        return {"deleted": True}
+        return _analysis_service().delete_job(
+            _request_user_id(request),
+            job_id,
+            delete_outputs=delete_outputs,
+        )
     except AnalysisValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

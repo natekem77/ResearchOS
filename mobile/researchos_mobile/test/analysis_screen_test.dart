@@ -21,6 +21,103 @@ void main() {
     expect(defaultNavigationDestinationIds, isNot(contains('analysis')));
   });
 
+  testWidgets('analysis sections collapse expand and preserve state',
+      (tester) async {
+    final api = _mockAnalysisApi(<String>[]);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Public Datasets'), findsOneWidget);
+    expect(find.text('Search GEO'), findsNothing);
+    await tester.tap(find.text('Public Datasets'));
+    await tester.pumpAndSettle();
+    expect(find.text('Search GEO'), findsOneWidget);
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Search GEO'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('dataset delete confirmation cancel does not delete',
+      (tester) async {
+    final calls = <String>[];
+    final api = _mockAnalysisApi(calls);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
+    await tester.scrollUntilVisible(
+      find.text('Bulk SAG GRKi'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byTooltip('Dataset actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Delete dataset?'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(
+      calls
+          .where((call) => call.startsWith('DELETE /mobile/analysis/datasets')),
+      isEmpty,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('dataset and job deletion refresh after success', (tester) async {
+    final calls = <String>[];
+    final api = _mockAnalysisApi(calls);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
+    );
+    await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
+
+    await tester.scrollUntilVisible(
+      find.text('Bulk SAG GRKi'),
+      400,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byTooltip('Dataset actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete').last);
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('bulk_rnaseq_validation_qc'),
+      500,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byTooltip('Job actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete job only'));
+    await tester.pumpAndSettle();
+
+    expect(
+      calls,
+      contains('DELETE /mobile/analysis/datasets/analysis-dataset%3Atest'),
+    );
+    expect(
+      calls,
+      contains('DELETE /mobile/analysis/jobs/analysis-job%3Atest'),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('Analysis screen shows worker, datasets, jobs, and outputs',
       (tester) async {
     final calls = <String>[];
@@ -240,6 +337,7 @@ void main() {
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
     await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
 
     expect(find.text('Analysis'), findsOneWidget);
     await tester.scrollUntilVisible(
@@ -277,6 +375,8 @@ void main() {
       240,
       scrollable: find.byType(Scrollable).first,
     );
+    await tester.ensureVisible(find.text('Open Results'));
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Open Results'));
     await tester.pumpAndSettle();
 
@@ -317,6 +417,7 @@ void main() {
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
     await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
 
     await tester.scrollUntilVisible(
       find.text('Library Sizes'),
@@ -334,6 +435,7 @@ void main() {
           .first,
     );
     await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
 
     expect(find.text('DMSO_1'), findsOneWidget);
     expect(find.text('library_size'), findsOneWidget);
@@ -437,6 +539,7 @@ void main() {
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
     await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
 
     await tester.scrollUntilVisible(
       find.text('Small Retina Bulk With A Deliberately Long Display Name'),
@@ -497,9 +600,10 @@ void main() {
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
     await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
 
     await tester.scrollUntilVisible(
-      find.text('Public Datasets'),
+      find.text('Public Datasets').first,
       -300,
       scrollable: find.byType(Scrollable).first,
     );
@@ -529,6 +633,7 @@ void main() {
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
     await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
 
     await tester.enterText(
         find.widgetWithText(TextField, 'Search GEO'), 'GSE229682');
@@ -575,6 +680,9 @@ void main() {
     await tester.pumpWidget(
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
+    await tester.pump();
+    await tester.tap(find.text('Expand all'));
+    await tester.pump();
 
     for (var i = 0; i < 20; i += 1) {
       await tester.pump(const Duration(milliseconds: 250));
@@ -587,12 +695,7 @@ void main() {
     }
 
     expect(calls, contains('GET /mobile/analysis/workers'));
-    expect(
-        find.text(
-          '2 demo datasets prepared for regression testing.',
-          skipOffstage: false,
-        ),
-        findsOneWidget);
+    expect(calls, contains('GET /mobile/analysis/demo-library'));
     await tester.scrollUntilVisible(
       find.text('Lab Analysis Server'),
       240,
@@ -607,11 +710,10 @@ void main() {
     expect(find.text('Bulk SAG GRKi'), findsOneWidget);
     await tester.pump(const Duration(seconds: 7));
     await tester.pump();
-    await tester.scrollUntilVisible(
-      find.text('Public Datasets'),
-      -240,
-      scrollable: find.byType(Scrollable).first,
-    );
+    for (var i = 0; i < 8; i += 1) {
+      await tester.drag(find.byType(Scrollable).first, const Offset(0, 500));
+      await tester.pump();
+    }
     expect(
         find.textContaining(
           'Timed out while loading this section',
@@ -629,6 +731,7 @@ void main() {
       MaterialApp(home: Scaffold(body: AnalysisScreen(api: api))),
     );
     await tester.pumpAndSettle();
+    await _expandAllAnalysisSections(tester);
 
     await tester.scrollUntilVisible(
       find.text('Imported retinal GEO counts'),
@@ -714,6 +817,24 @@ ResearchOsApi _mockAnalysisApi(
       if (request.method == 'POST' &&
           request.url.path == '/mobile/analysis/jobs') {
         calls.add('BODY ${request.body}');
+      }
+      if (request.method == 'DELETE' &&
+          request.url.path.startsWith('/mobile/analysis/datasets/')) {
+        return _json({
+          'deleted': true,
+          'jobs': 1,
+          'outputs': 3,
+          'files_removed': true,
+        });
+      }
+      if (request.method == 'DELETE' &&
+          request.url.path.startsWith('/mobile/analysis/jobs/')) {
+        return _json({
+          'deleted': true,
+          'outputs': 3,
+          'outputs_deleted':
+              request.url.queryParameters['delete_outputs'] == 'true',
+        });
       }
       if (request.url.path == '/mobile/analysis/workers') {
         return _json({
@@ -914,6 +1035,13 @@ ResearchOsApi _mockAnalysisApi(
       return http.Response('not found', 404);
     }),
   );
+}
+
+Future<void> _expandAllAnalysisSections(WidgetTester tester) async {
+  final button = find.text('Expand all');
+  if (button.evaluate().isEmpty) return;
+  await tester.tap(button);
+  await tester.pumpAndSettle();
 }
 
 Map<String, dynamic> _qcOutput() {

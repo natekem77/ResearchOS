@@ -414,6 +414,17 @@ class ResearchOsApi {
     throw const ResearchOsApiException('Invalid analysis dataset response.');
   }
 
+  Future<Map<String, dynamic>> deleteAnalysisDataset({
+    required String datasetId,
+    bool deleteRelated = false,
+    bool removeFiles = false,
+  }) {
+    return _deleteMap(
+      '/mobile/analysis/datasets/${Uri.encodeComponent(datasetId)}'
+      '?delete_related=$deleteRelated&remove_files=$removeFiles',
+    );
+  }
+
   Future<Map<String, dynamic>> registerAnalysisDataset({
     required String displayName,
     required String countsPath,
@@ -470,6 +481,16 @@ class ResearchOsApi {
   Future<List<Map<String, dynamic>>> analysisJobs() async {
     final json = await _getMap('/mobile/analysis/jobs');
     return _jsonObjectList(json['jobs']);
+  }
+
+  Future<Map<String, dynamic>> deleteAnalysisJob({
+    required String jobId,
+    bool deleteOutputs = false,
+  }) {
+    return _deleteMap(
+      '/mobile/analysis/jobs/${Uri.encodeComponent(jobId)}'
+      '?delete_outputs=$deleteOutputs',
+    );
   }
 
   Future<Map<String, dynamic>> createAnalysisJob({

@@ -9,6 +9,16 @@ import '../design_system/researchos_design_system.dart';
 
 final ViewerFactory _analysisViewerFactory = ViewerFactory();
 const Duration _analysisSectionTimeout = Duration(seconds: 6);
+const Map<String, bool> _defaultAnalysisSectionExpansion = {
+  'public_datasets': false,
+  'compute': false,
+  'datasets': true,
+  'workflows': false,
+  'jobs': true,
+  'outputs': false,
+};
+final Map<String, bool> _analysisSectionExpansionMemory =
+    Map<String, bool>.from(_defaultAnalysisSectionExpansion);
 
 class AnalysisScreen extends StatefulWidget {
   const AnalysisScreen({
@@ -31,6 +41,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   bool _reloadInProgress = false;
   int _reloadGeneration = 0;
   String? _message;
+  String _jobFilter = 'all';
+  late final Map<String, bool> _expandedSections =
+      Map<String, bool>.from(_analysisSectionExpansionMemory);
   final TextEditingController _publicDatasetSearchController =
       TextEditingController();
 
@@ -208,6 +221,37 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       if (workflow['stable_key']?.toString() == key) return workflow;
     }
     return null;
+  }
+
+  bool _sectionExpanded(String id) =>
+      _expandedSections[id] ?? _defaultAnalysisSectionExpansion[id] ?? true;
+
+  void _setSectionExpanded(String id, bool expanded) {
+    setState(() {
+      _expandedSections[id] = expanded;
+      _analysisSectionExpansionMemory[id] = expanded;
+    });
+  }
+
+  void _setAllSections(bool expanded) {
+    setState(() {
+      for (final id in _defaultAnalysisSectionExpansion.keys) {
+        _expandedSections[id] = expanded;
+        _analysisSectionExpansionMemory[id] = expanded;
+      }
+    });
+  }
+
+  List<Map<String, dynamic>> _filteredJobs(List<Map<String, dynamic>> jobs) {
+    return jobs.where((job) {
+      final status = job['status']?.toString() ?? 'queued';
+      return switch (_jobFilter) {
+        'active' => _isActiveJob(job),
+        'completed' => status == 'complete' || status == 'completed',
+        'failed' => status == 'failed',
+        _ => true,
+      };
+    }).toList(growable: false);
   }
 
   Future<void> _registerDataset() async {
@@ -605,9 +649,134 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     }
   }
 
+  Future<void> _deleteDataset(Map<String, dynamic> dataset) async {
+    final state = _lastState ?? _AnalysisState.empty();
+    final datasetId = dataset['id']?.toString() ?? '';
+    if (datasetId.isEmpty) return;
+    final relatedJobs = state.jobs
+        .where((job) => job['dataset_id']?.toString() == datasetId)
+        .toList(growable: false);
+    final relatedOutputs = state.outputs
+        .where((output) => output['dataset_id']?.toString() == datasetId)
+        .toList(growable: false);
+    final hasActiveJobs = relatedJobs.any((job) => _isActiveJob(job));
+    final removeLocalFiles = dataset['source_type']?.toString() == 'public_geo';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete dataset?'),
+        content: Text(
+          '${dataset['display_name'] ?? 'Dataset'}\n\n'
+          'Type: ${dataset['modality'] ?? 'dataset'}\n'
+          'Referenced by ${relatedJobs.length} job(s) and '
+          '${relatedOutputs.length} output(s).\n\n'
+          '${hasActiveJobs ? 'Active jobs must be cancelled before deletion.\n\n' : ''}'
+          '${removeLocalFiles ? 'Local imported files will be removed when safe.' : 'Source files outside Mundi local imports will not be removed.'}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed:
+                hasActiveJobs ? null : () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      final summary = await widget.api.deleteAnalysisDataset(
+        datasetId: datasetId,
+        deleteRelated: true,
+        removeFiles: removeLocalFiles,
+      );
+      if (!mounted) return;
+      setState(() {
+        _message =
+            'Dataset deleted. Removed ${summary['jobs'] ?? 0} job(s) and ${summary['outputs'] ?? 0} output(s).';
+      });
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not delete dataset: $error';
+      });
+    }
+  }
+
+  Future<void> _deleteJob(Map<String, dynamic> job) async {
+    if (_isActiveJob(job)) {
+      setState(() {
+        _message = 'Cancel this job before deleting it.';
+      });
+      return;
+    }
+    final state = _lastState ?? _AnalysisState.empty();
+    final jobId = job['id']?.toString() ?? '';
+    if (jobId.isEmpty) return;
+    final relatedOutputs = state.outputs
+        .where((output) => output['job_id']?.toString() == jobId)
+        .toList(growable: false);
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete job?'),
+        content: Text(
+          '${job['workflow_id'] ?? 'Analysis job'}\n\n'
+          'Status: ${job['status'] ?? 'unknown'}\n'
+          'Generated outputs: ${relatedOutputs.length}\n\n'
+          'Deleting the job only preserves generated outputs. Deleting outputs removes the generated result records and owned files.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('job_only'),
+            child: const Text('Delete job only'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop('job_and_outputs'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            child: const Text('Delete job and outputs'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null) return;
+    try {
+      await widget.api.deleteAnalysisJob(
+        jobId: jobId,
+        deleteOutputs: choice == 'job_and_outputs',
+      );
+      if (!mounted) return;
+      setState(() {
+        _message = 'Job deleted.';
+      });
+      await _reload(quiet: true);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _message = 'Could not delete job: $error';
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = _lastState ?? _AnalysisState.empty();
+    final filteredJobs = _filteredJobs(state.jobs);
     return ListView(
       padding: ResearchOsSpacing.screen,
       children: [
@@ -624,6 +793,16 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               onPressed: _registerDataset,
               icon: const Icon(Icons.add),
               label: const Text('Register Dataset'),
+            ),
+            TextButton.icon(
+              onPressed: () => _setAllSections(true),
+              icon: const Icon(Icons.unfold_more),
+              label: const Text('Expand all'),
+            ),
+            TextButton.icon(
+              onPressed: () => _setAllSections(false),
+              icon: const Icon(Icons.unfold_less),
+              label: const Text('Collapse all'),
             ),
           ],
         ),
@@ -655,17 +834,28 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         const SizedBox(height: ResearchOsSpacing.sm),
         _GenomicsRail(onOpenImaging: widget.onOpenImaging),
         const SizedBox(height: ResearchOsSpacing.md),
-        if (state.errorFor('public_datasets') != null)
-          _InlineSectionError(
-            message: state.errorFor('public_datasets')!,
-            onRetry: () => unawaited(_reload(quiet: true)),
-          ),
-        _PublicDatasetsPanel(
-          datasets: state.publicDatasets,
-          searchController: _publicDatasetSearchController,
-          onImport: _importPublicDataset,
-          onImportAndRun: _importAndRunPublicDataset,
-          onSearchChanged: (_) => setState(() {}),
+        AnalysisSection(
+          icon: Icons.public_outlined,
+          title: 'Public Datasets',
+          subtitle: 'Curated public GEO datasets for import',
+          itemCount: state.publicDatasets.length,
+          expanded: _sectionExpanded('public_datasets'),
+          onChanged: (expanded) =>
+              _setSectionExpanded('public_datasets', expanded),
+          children: [
+            if (state.errorFor('public_datasets') != null)
+              _InlineSectionError(
+                message: state.errorFor('public_datasets')!,
+                onRetry: () => unawaited(_reload(quiet: true)),
+              ),
+            _PublicDatasetsPanel(
+              datasets: state.publicDatasets,
+              searchController: _publicDatasetSearchController,
+              onImport: _importPublicDataset,
+              onImportAndRun: _importAndRunPublicDataset,
+              onSearchChanged: (_) => setState(() {}),
+            ),
+          ],
         ),
         const SizedBox(height: ResearchOsSpacing.md),
         if (state.errorFor('demo_library') != null)
@@ -677,116 +867,153 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           demoLibrary: state.demoLibrary,
           onInstall: _installDemoWorkspace,
         ),
-        const SizedBox(height: ResearchOsSpacing.lg),
-        const _SectionHeader(
+        const SizedBox(height: ResearchOsSpacing.md),
+        AnalysisSection(
+          icon: Icons.memory_outlined,
           title: 'Compute',
           subtitle: 'Lab-hosted workers and approved workflow capabilities',
-          icon: Icons.memory_outlined,
+          itemCount: state.workers.length,
+          expanded: _sectionExpanded('compute'),
+          onChanged: (expanded) => _setSectionExpanded('compute', expanded),
+          children: [
+            if (state.errorFor('compute') != null)
+              _InlineSectionError(
+                message: state.errorFor('compute')!,
+                onRetry: () => unawaited(_reload(quiet: true)),
+              ),
+            _WorkerSummary(
+              workers: state.workers,
+              onOpenWorker: (worker) => unawaited(_showWorkerDetails(worker)),
+            ),
+          ],
         ),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        if (state.errorFor('compute') != null)
-          _InlineSectionError(
-            message: state.errorFor('compute')!,
-            onRetry: () => unawaited(_reload(quiet: true)),
-          ),
-        _WorkerSummary(
-          workers: state.workers,
-          onOpenWorker: (worker) => unawaited(_showWorkerDetails(worker)),
-        ),
-        const SizedBox(height: ResearchOsSpacing.lg),
-        const _SectionHeader(
+        const SizedBox(height: ResearchOsSpacing.md),
+        AnalysisSection(
+          icon: Icons.table_chart_outlined,
           title: 'Dataset Registry',
           subtitle: 'Bulk RNA, Single Cell, Imaging, and model datasets',
-          icon: Icons.table_chart_outlined,
+          itemCount: state.datasets.length,
+          expanded: _sectionExpanded('datasets'),
+          onChanged: (expanded) => _setSectionExpanded('datasets', expanded),
+          children: [
+            if (state.errorFor('datasets') != null)
+              _InlineSectionError(
+                message: state.errorFor('datasets')!,
+                onRetry: () => unawaited(_reload(quiet: true)),
+              ),
+            if (state.datasets.isEmpty)
+              const _EmptyPanel(
+                icon: Icons.dataset_outlined,
+                text: 'No datasets are registered yet.',
+              )
+            else
+              for (final dataset in state.datasets)
+                _DatasetCard(
+                  dataset: dataset,
+                  deseq2Workflow: _workflowByKey(state, 'bulk_rnaseq_deseq2'),
+                  onRunQc: () => _runQc(dataset),
+                  onRunDeseq2: () => _runDeseq2(dataset),
+                  onDelete: () => _deleteDataset(dataset),
+                ),
+          ],
         ),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        if (state.errorFor('datasets') != null)
-          _InlineSectionError(
-            message: state.errorFor('datasets')!,
-            onRetry: () => unawaited(_reload(quiet: true)),
-          ),
-        if (state.datasets.isEmpty)
-          const _EmptyPanel(
-            icon: Icons.dataset_outlined,
-            text: 'No datasets are registered yet.',
-          )
-        else
-          for (final dataset in state.datasets)
-            _DatasetCard(
-              dataset: dataset,
-              deseq2Workflow: _workflowByKey(state, 'bulk_rnaseq_deseq2'),
-              onRunQc: () => _runQc(dataset),
-              onRunDeseq2: () => _runDeseq2(dataset),
-            ),
-        const SizedBox(height: ResearchOsSpacing.lg),
-        const _SectionHeader(
+        const SizedBox(height: ResearchOsSpacing.md),
+        AnalysisSection(
+          icon: Icons.schema_outlined,
           title: 'Workflow Registry',
           subtitle: 'Installed, available, and disabled analysis workflows',
-          icon: Icons.schema_outlined,
+          itemCount: state.workflows.length,
+          expanded: _sectionExpanded('workflows'),
+          onChanged: (expanded) => _setSectionExpanded('workflows', expanded),
+          children: [
+            if (state.errorFor('workflows') != null)
+              _InlineSectionError(
+                message: state.errorFor('workflows')!,
+                onRetry: () => unawaited(_reload(quiet: true)),
+              ),
+            for (final workflow in state.workflows)
+              _WorkflowCard(workflow: workflow),
+          ],
         ),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        if (state.errorFor('workflows') != null)
-          _InlineSectionError(
-            message: state.errorFor('workflows')!,
-            onRetry: () => unawaited(_reload(quiet: true)),
-          ),
-        for (final workflow in state.workflows)
-          _WorkflowCard(workflow: workflow),
-        const SizedBox(height: ResearchOsSpacing.lg),
-        const _SectionHeader(
+        const SizedBox(height: ResearchOsSpacing.md),
+        AnalysisSection(
+          icon: Icons.account_tree_outlined,
           title: 'Analysis Jobs',
           subtitle: 'Queued, running, and completed compute work',
-          icon: Icons.account_tree_outlined,
-        ),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        if (state.errorFor('jobs') != null)
-          _InlineSectionError(
-            message: state.errorFor('jobs')!,
-            onRetry: () => unawaited(_reload(quiet: true)),
-          ),
-        if (state.jobs.isEmpty)
-          const _EmptyPanel(
-            icon: Icons.pending_actions_outlined,
-            text: 'No analysis jobs have been submitted.',
-          )
-        else
-          for (final job in state.jobs)
-            _JobCard(
-              job: job,
-              hasOutputs: state.outputs.any(
-                (output) =>
-                    output['job_id']?.toString() == job['id']?.toString(),
-              ),
-              onOpenOutputs: () => _showJobDetails(job),
+          itemCount: filteredJobs.length,
+          expanded: _sectionExpanded('jobs'),
+          onChanged: (expanded) => _setSectionExpanded('jobs', expanded),
+          children: [
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'active', label: Text('Active')),
+                ButtonSegment(value: 'completed', label: Text('Completed')),
+                ButtonSegment(value: 'failed', label: Text('Failed')),
+                ButtonSegment(value: 'all', label: Text('All')),
+              ],
+              selected: {_jobFilter},
+              onSelectionChanged: (values) {
+                setState(() {
+                  _jobFilter = values.first;
+                });
+              },
             ),
-        const SizedBox(height: ResearchOsSpacing.lg),
-        const _SectionHeader(
+            const SizedBox(height: ResearchOsSpacing.sm),
+            if (state.errorFor('jobs') != null)
+              _InlineSectionError(
+                message: state.errorFor('jobs')!,
+                onRetry: () => unawaited(_reload(quiet: true)),
+              ),
+            if (filteredJobs.isEmpty)
+              const _EmptyPanel(
+                icon: Icons.pending_actions_outlined,
+                text: 'No analysis jobs have been submitted.',
+              )
+            else
+              for (final job in filteredJobs)
+                _JobCard(
+                  job: job,
+                  hasOutputs: state.outputs.any(
+                    (output) =>
+                        output['job_id']?.toString() == job['id']?.toString(),
+                  ),
+                  onOpenOutputs: () => _showJobDetails(job),
+                  onDelete: () => _deleteJob(job),
+                ),
+          ],
+        ),
+        const SizedBox(height: ResearchOsSpacing.md),
+        AnalysisSection(
+          icon: Icons.collections_bookmark_outlined,
           title: 'Output Browser',
           subtitle: 'QC reports, tables, plots, embeddings, and model outputs',
-          icon: Icons.collections_bookmark_outlined,
+          itemCount: state.outputs.length,
+          expanded: _sectionExpanded('outputs'),
+          onChanged: (expanded) => _setSectionExpanded('outputs', expanded),
+          children: [
+            if (state.errorFor('outputs') != null ||
+                state.errorFor('output_groups') != null)
+              _InlineSectionError(
+                message: state.errorFor('outputs') ??
+                    state.errorFor('output_groups')!,
+                onRetry: () => unawaited(_reload(quiet: true)),
+              ),
+            if (state.outputs.isEmpty)
+              const _EmptyPanel(
+                icon: Icons.insert_chart_outlined,
+                text: 'No analysis outputs have been registered yet.',
+              )
+            else
+              _GroupedOutputBrowser(
+                groups: state.outputGroups,
+                outputs: state.outputs,
+                onOpen: _openOutput,
+                onInsert: _insertOutput,
+                onRename: _renameOutput,
+                onDelete: _deleteOutput,
+              ),
+          ],
         ),
-        const SizedBox(height: ResearchOsSpacing.sm),
-        if (state.errorFor('outputs') != null ||
-            state.errorFor('output_groups') != null)
-          _InlineSectionError(
-            message:
-                state.errorFor('outputs') ?? state.errorFor('output_groups')!,
-            onRetry: () => unawaited(_reload(quiet: true)),
-          ),
-        if (state.outputs.isEmpty)
-          const _EmptyPanel(
-            icon: Icons.insert_chart_outlined,
-            text: 'No analysis outputs have been registered yet.',
-          )
-        else
-          _GroupedOutputBrowser(
-            groups: state.outputGroups,
-            outputs: state.outputs,
-            onOpen: _openOutput,
-            onInsert: _insertOutput,
-            onRename: _renameOutput,
-            onDelete: _deleteOutput,
-          ),
       ],
     );
   }
@@ -1146,12 +1373,14 @@ class _DatasetCard extends StatelessWidget {
     required this.deseq2Workflow,
     required this.onRunQc,
     required this.onRunDeseq2,
+    required this.onDelete,
   });
 
   final Map<String, dynamic> dataset;
   final Map<String, dynamic>? deseq2Workflow;
   final VoidCallback onRunQc;
   final VoidCallback onRunDeseq2;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -1196,6 +1425,23 @@ class _DatasetCard extends StatelessWidget {
                       Text(dataset['source_type']?.toString() ?? 'server'),
                     ],
                   ),
+                ),
+                PopupMenuButton<String>(
+                  tooltip: 'Dataset actions',
+                  onSelected: (value) {
+                    if (value == 'delete') onDelete();
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'delete',
+                      child: Text(
+                        'Delete',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1764,11 +2010,13 @@ class _JobCard extends StatelessWidget {
     required this.job,
     required this.hasOutputs,
     required this.onOpenOutputs,
+    required this.onDelete,
   });
 
   final Map<String, dynamic> job;
   final bool hasOutputs;
   final VoidCallback onOpenOutputs;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -1783,6 +2031,7 @@ class _JobCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: Text(
@@ -1791,6 +2040,26 @@ class _JobCard extends StatelessWidget {
                   ),
                 ),
                 Chip(label: Text(status)),
+                PopupMenuButton<String>(
+                  tooltip: 'Job actions',
+                  onSelected: (value) {
+                    if (value == 'delete') onDelete();
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'delete',
+                      enabled: !_isActiveJob(job),
+                      child: Text(
+                        _isActiveJob(job) ? 'Cancel before deleting' : 'Delete',
+                        style: TextStyle(
+                          color: _isActiveJob(job)
+                              ? null
+                              : Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ],
             ),
             const SizedBox(height: ResearchOsSpacing.xs),
@@ -2494,6 +2763,89 @@ class _KeyValue extends StatelessWidget {
   }
 }
 
+class AnalysisSection extends StatelessWidget {
+  const AnalysisSection({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.expanded,
+    required this.onChanged,
+    required this.children,
+    this.itemCount,
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final int? itemCount;
+  final bool expanded;
+  final ValueChanged<bool> onChanged;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => onChanged(!expanded),
+            child: Padding(
+              padding: const EdgeInsets.all(ResearchOsSpacing.md),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(icon),
+                  const SizedBox(width: ResearchOsSpacing.sm),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                title,
+                                style: Theme.of(context).textTheme.titleMedium,
+                              ),
+                            ),
+                            if (itemCount != null) ...[
+                              const SizedBox(width: ResearchOsSpacing.xs),
+                              Chip(
+                                visualDensity: VisualDensity.compact,
+                                label: Text(itemCount.toString()),
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: ResearchOsSpacing.xs),
+                        Text(subtitle),
+                      ],
+                    ),
+                  ),
+                  Icon(expanded ? Icons.expand_less : Icons.expand_more),
+                ],
+              ),
+            ),
+          ),
+          if (expanded) ...[
+            const Divider(height: 1),
+            Padding(
+              padding: const EdgeInsets.all(ResearchOsSpacing.sm),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: children,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader({
     required this.title,
@@ -2865,6 +3217,16 @@ bool _isExploratoryOnly(Map<String, dynamic> dataset) {
       sourceKind == 'normalized_tpm' ||
       sourceKind == 'cpm' ||
       sourceKind == 'tpm';
+}
+
+bool _isActiveJob(Map<String, dynamic> job) {
+  return {
+    'queued',
+    'claimed',
+    'preparing',
+    'running',
+    'uploading_results',
+  }.contains(job['status']?.toString() ?? 'queued');
 }
 
 Map<String, dynamic> _publicDeseq2Defaults(Map<String, dynamic> dataset) {

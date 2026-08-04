@@ -488,6 +488,86 @@ class AnalysisService:
             raise AnalysisValidationError("Analysis dataset not found.")
         return self._dataset_payload(row)
 
+    def delete_dataset(
+        self,
+        user_id: str,
+        dataset_id: str,
+        *,
+        delete_related: bool = False,
+        remove_files: bool = False,
+    ) -> dict[str, Any]:
+        dataset = self.get_dataset(user_id, dataset_id)
+        with self._connect() as connection:
+            jobs = connection.execute(
+                "SELECT * FROM analysis_jobs WHERE dataset_id = ? AND user_id = ? AND deleted_at IS NULL",
+                (dataset_id, user_id),
+            ).fetchall()
+            outputs = connection.execute(
+                """
+                SELECT o.* FROM analysis_outputs o
+                JOIN analysis_jobs j ON j.id = o.job_id
+                WHERE o.dataset_id = ? AND j.user_id = ?
+                """,
+                (dataset_id, user_id),
+            ).fetchall()
+            active_jobs = [row for row in jobs if str(row["status"]) in ACTIVE_JOB_STATUSES]
+            if active_jobs:
+                raise AnalysisValidationError("Dataset has active jobs. Cancel running or queued jobs before deleting it.")
+            if (jobs or outputs) and not delete_related:
+                raise AnalysisValidationError(
+                    f"Dataset is referenced by {len(jobs)} job(s) and {len(outputs)} output(s)."
+                )
+            output_payloads = [self._output_payload(row) for row in outputs]
+            for output in output_payloads:
+                storage_uri = output.get("storage_uri")
+                if storage_uri:
+                    _safe_unlink(self.base_dir / str(storage_uri), self.base_dir)
+            if delete_related:
+                connection.execute(
+                    "DELETE FROM analysis_notebook_references WHERE user_id = ? AND output_id IN (SELECT id FROM analysis_outputs WHERE dataset_id = ?)",
+                    (user_id, dataset_id),
+                )
+                connection.execute("DELETE FROM analysis_outputs WHERE dataset_id = ?", (dataset_id,))
+                connection.execute(
+                    "UPDATE analysis_jobs SET deleted_at = CURRENT_TIMESTAMP WHERE dataset_id = ? AND user_id = ?",
+                    (dataset_id, user_id),
+                )
+            connection.execute(
+                "DELETE FROM analysis_datasets WHERE id = ? AND user_id = ?",
+                (dataset_id, user_id),
+            )
+        files_removed = False
+        if remove_files and str(dataset.get("source_type") or "") in {"public_geo"}:
+            try:
+                counts_path, _ = self._resolve_location_path(
+                    str(dataset["storage_location_id"]),
+                    str(dataset.get("counts_path") or ""),
+                )
+                files_root = counts_path.parent
+                _safe_rmtree(files_root, self.allowed_roots[0])
+                files_removed = True
+            except AnalysisValidationError:
+                files_removed = False
+        self._audit(
+            user_id,
+            "dataset.delete",
+            dataset_id,
+            {
+                "delete_related": delete_related,
+                "remove_files": remove_files,
+                "files_removed": files_removed,
+                "jobs": len(jobs),
+                "outputs": len(outputs),
+            },
+        )
+        return {
+            "deleted": True,
+            "dataset_id": dataset_id,
+            "jobs": len(jobs),
+            "outputs": len(outputs),
+            "files_removed": files_removed,
+        }
+
     def list_workflows(self, query: str | None = None) -> list[dict[str, Any]]:
         with self._connect() as connection:
             if query and query.strip():
@@ -760,15 +840,32 @@ class AnalysisService:
             )
         return self.get_job(user_id, job_id)
 
-    def delete_job(self, user_id: str, job_id: str) -> None:
+    def delete_job(self, user_id: str, job_id: str, *, delete_outputs: bool = False) -> dict[str, Any]:
         job = self.get_job(user_id, job_id)
         if job["status"] in ACTIVE_JOB_STATUSES:
             raise AnalysisValidationError("Running analysis jobs cannot be deleted. Cancel the job first.")
         with self._connect() as connection:
+            outputs = connection.execute(
+                "SELECT * FROM analysis_outputs WHERE job_id = ?",
+                (job_id,),
+            ).fetchall()
+            output_payloads = [self._output_payload(row) for row in outputs]
+            if delete_outputs:
+                for output in output_payloads:
+                    storage_uri = output.get("storage_uri")
+                    if storage_uri:
+                        _safe_unlink(self.base_dir / str(storage_uri), self.base_dir)
+                connection.execute(
+                    "DELETE FROM analysis_notebook_references WHERE user_id = ? AND output_id IN (SELECT id FROM analysis_outputs WHERE job_id = ?)",
+                    (user_id, job_id),
+                )
+                connection.execute("DELETE FROM analysis_outputs WHERE job_id = ?", (job_id,))
             connection.execute(
                 "UPDATE analysis_jobs SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
                 (job_id, user_id),
             )
+        self._audit(user_id, "job.delete", job_id, {"delete_outputs": delete_outputs, "outputs": len(outputs)})
+        return {"deleted": True, "job_id": job_id, "outputs": len(outputs), "outputs_deleted": delete_outputs}
 
     def recover_interrupted_jobs(self) -> dict[str, int]:
         """Requeue active jobs whose worker heartbeat is stale or whose runtime timed out."""
