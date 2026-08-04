@@ -176,6 +176,21 @@ class _ScatterPlot extends StatelessWidget {
     final bounds = _pointBounds(points);
     return Column(
       children: [
+        if (spec.summary.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: ResearchOsSpacing.xs),
+            child: Wrap(
+              spacing: ResearchOsSpacing.xs,
+              runSpacing: ResearchOsSpacing.xs,
+              children: [
+                for (final entry in spec.summary.entries)
+                  Chip(
+                    visualDensity: VisualDensity.compact,
+                    label: Text('${_prettyKey(entry.key)}: ${entry.value}'),
+                  ),
+              ],
+            ),
+          ),
         Text(
           '${spec.yAxisLabel} vs ${spec.xAxisLabel}',
           style: Theme.of(context).textTheme.labelLarge,
@@ -477,7 +492,9 @@ class _ScatterLabelPainter extends CustomPainter {
     final rect = _flChartPlotRect(size);
     final painter = TextPainter(textDirection: TextDirection.ltr);
     for (final point in points) {
-      if (!alwaysLabel && point.id != selectedId) continue;
+      if (!alwaysLabel && point.id != selectedId && point.size != 7.5) {
+        continue;
+      }
       painter
         ..text = TextSpan(
           text: point.label,
@@ -517,6 +534,12 @@ ScatterPlotSpec scatterSpecFromOutput(Map<String, dynamic> output) {
 ScatterPlotSpec _volcanoSpec(
     AnalysisOutputViewModel view, Map<String, dynamic> structured) {
   final thresholds = mapFromObject(structured['thresholds']);
+  final summaryCounts = mapFromObject(structured['summary_counts']);
+  final autoLabels = (structured['auto_labels'] is List
+          ? structured['auto_labels'] as List
+          : const [])
+      .map((value) => value.toString())
+      .toSet();
   final lfc = doubleFromObject(thresholds['lfc']) ?? 0;
   final alpha = doubleFromObject(thresholds['alpha']);
   return ScatterPlotSpec(
@@ -542,6 +565,8 @@ ScatterPlotSpec _volcanoSpec(
           label: 'padj',
         ),
     ],
+    summary: summaryCounts,
+    autoLabelIds: autoLabels,
     points: [
       for (final row in rowsFromObject(structured['points']))
         if ((_labelFor(row, ['gene_id', 'gene', 'label'])).isNotEmpty)
@@ -555,6 +580,9 @@ ScatterPlotSpec _volcanoSpec(
                 doubleFromObject(row['y']) ??
                 0,
             colorKey: _volcanoColorKey(row),
+            size: autoLabels.contains(_labelFor(row, ['gene_id', 'gene', 'label']))
+                ? 7.5
+                : null,
             metadata: {
               'gene': _labelFor(row, ['gene_id', 'gene', 'label']),
               'log2 fold change': row['log2FoldChange'] ?? row['x'],
@@ -573,25 +601,39 @@ ScatterPlotSpec _maSpec(
   final rows = rowsFromObject(structured['points']);
   return ScatterPlotSpec(
     title: view.title,
-    xAxisLabel: 'baseMean',
+    xAxisLabel: 'log10 baseMean',
     yAxisLabel: 'log2 fold change',
-    legend: const {'point': Colors.blueGrey, 'significant': Colors.green},
+    legend: const {
+      'not significant': Colors.blueGrey,
+      'up': Colors.redAccent,
+      'down': Colors.blueAccent,
+      'significant': Colors.green,
+    },
+    thresholds: const [
+      ThresholdLineModel(axis: Axis.horizontal, value: 0, label: 'log2FC = 0'),
+    ],
     points: [
       for (final row in rows)
-        ScatterPointModel(
-          id: _labelFor(row, ['gene_id', 'gene', 'label']),
-          label: _labelFor(row, ['gene_id', 'gene', 'label']),
-          x: doubleFromObject(row['baseMean']) ??
-              doubleFromObject(row['x']) ??
-              0,
-          y: doubleFromObject(row['log2FoldChange']) ??
-              doubleFromObject(row['y']) ??
-              0,
-          colorKey: row['significance']?.toString() == 'significant'
-              ? 'significant'
-              : 'point',
-          metadata: row,
-        ),
+        if ((doubleFromObject(row['x']) ??
+                _safeLog10(doubleFromObject(row['baseMean'])) ??
+                doubleFromObject(row['baseMean'])) !=
+            null)
+          ScatterPointModel(
+            id: _labelFor(row, ['gene_id', 'gene', 'label']),
+            label: _labelFor(row, ['gene_id', 'gene', 'label']),
+            x: doubleFromObject(row['x']) ??
+                _safeLog10(doubleFromObject(row['baseMean'])) ??
+                0,
+            y: _clampFinite(
+              doubleFromObject(row['log2FoldChange']) ??
+                  doubleFromObject(row['y']) ??
+                  0,
+              -12,
+              12,
+            ),
+            colorKey: _volcanoColorKey(row),
+            metadata: row,
+          ),
     ],
     rawRows: rows,
   );
@@ -601,6 +643,13 @@ ScatterPlotSpec _pcaSpec(
     AnalysisOutputViewModel view, Map<String, dynamic> structured) {
   final variance = mapFromObject(structured['variance_explained']);
   final rows = rowsFromObject(structured['points']);
+  final colorBy = structured['color_by']?.toString() ?? 'condition';
+  final levels = (structured['condition_levels'] is List
+          ? structured['condition_levels'] as List
+          : const [])
+      .map((value) => value.toString())
+      .where((value) => value.isNotEmpty)
+      .toList();
   return ScatterPlotSpec(
     title: view.title,
     xAxisLabel:
@@ -608,6 +657,10 @@ ScatterPlotSpec _pcaSpec(
     yAxisLabel:
         'PC2${variance['PC2'] == null ? '' : ' (${_percent(variance['PC2'])})'}',
     showLabelsByDefault: true,
+    legend: {
+      for (var index = 0; index < levels.length; index++)
+        levels[index]: _levelColor(index),
+    },
     points: [
       for (final row in rows)
         ScatterPointModel(
@@ -615,8 +668,14 @@ ScatterPlotSpec _pcaSpec(
           label: _labelFor(row, ['sample', 'sample_id', 'label']),
           x: doubleFromObject(row['PC1']) ?? doubleFromObject(row['x']) ?? 0,
           y: doubleFromObject(row['PC2']) ?? doubleFromObject(row['y']) ?? 0,
-          colorKey: mapFromObject(row['metadata'])['condition']?.toString(),
-          metadata: row,
+          colorKey: row['condition']?.toString() ??
+              mapFromObject(row['metadata'])[colorBy]?.toString(),
+          metadata: {
+            'sample ID': _labelFor(row, ['sample', 'sample_id', 'label']),
+            colorBy: row['condition']?.toString() ??
+                mapFromObject(row['metadata'])[colorBy]?.toString(),
+            ...mapFromObject(row['metadata']),
+          },
         ),
     ],
     rawRows: rows,
@@ -755,4 +814,27 @@ String _percent(Object? value) {
   final number = doubleFromObject(value);
   if (number == null) return '';
   return '${(number * 100).toStringAsFixed(0)}%';
+}
+
+double? _safeLog10(double? value) {
+  if (value == null || value <= 0) return null;
+  return math.log(value) / math.ln10;
+}
+
+double _clampFinite(double value, double min, double max) {
+  if (!value.isFinite) return 0;
+  return value.clamp(min, max).toDouble();
+}
+
+Color _levelColor(int index) {
+  const palette = [
+    Colors.blueAccent,
+    Colors.redAccent,
+    Colors.green,
+    Colors.orange,
+    Colors.purpleAccent,
+    Colors.cyan,
+    Colors.pinkAccent,
+  ];
+  return palette[index % palette.length];
 }

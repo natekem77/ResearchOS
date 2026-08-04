@@ -42,10 +42,7 @@ class ViewerScaffold extends StatelessWidget {
         children: [
           Row(
             children: [
-              Expanded(
-                child:
-                    Text(title, style: Theme.of(context).textTheme.titleMedium),
-              ),
+              const Spacer(),
               PopupMenuButton<String>(
                 tooltip: 'Visualization actions',
                 onSelected: (value) {

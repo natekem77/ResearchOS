@@ -56,12 +56,24 @@ class _HeatmapViewerState extends State<HeatmapViewer> {
         children: [
           AnimatedBuilder(
             animation: _controller,
-            builder: (context, _) => SwitchListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Show values'),
-              value: _controller.showValues,
-              onChanged: _controller.setShowValues,
+            builder: (context, _) => Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (widget.spec.subtitle != null) ...[
+                  Text(
+                    widget.spec.subtitle!,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: ResearchOsSpacing.xs),
+                ],
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Show values'),
+                  value: _controller.showValues,
+                  onChanged: _controller.setShowValues,
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -343,6 +355,26 @@ void _paintText(
 HeatmapSpec heatmapSpecFromOutput(Map<String, dynamic> output) {
   final view = AnalysisOutputViewModel(output);
   final structured = view.structured;
+  final explicitMatrix = structured['matrix'];
+  final explicitRows = (structured['row_labels'] ?? structured['rows_labels']);
+  final explicitColumns =
+      (structured['column_labels'] ?? structured['columns_labels']);
+  if (explicitMatrix is List && explicitRows is List && explicitColumns is List) {
+    return HeatmapSpec(
+      title: view.title,
+      subtitle: structured['transformation']?.toString(),
+      rowLabels: explicitRows.map((value) => value.toString()).toList(),
+      columnLabels: explicitColumns.map((value) => value.toString()).toList(),
+      matrix: [
+        for (final row in explicitMatrix)
+          [
+            for (final value in row is List ? row : const [])
+              doubleFromObject(value) ?? 0,
+          ],
+      ],
+      rawRows: rowsFromObject(structured['rows']),
+    );
+  }
   final rows = rowsFromObject(structured['rows']);
   final columns =
       (structured['columns'] is List ? structured['columns'] as List : const [])
@@ -355,6 +387,7 @@ HeatmapSpec heatmapSpecFromOutput(Map<String, dynamic> output) {
   final valueColumns = columns.where((column) => column != rowKey).toList();
   return HeatmapSpec(
     title: view.title,
+    subtitle: structured['transformation']?.toString(),
     rowLabels: [
       for (final row in rows)
         (row[rowKey] ?? row['sample'] ?? row['gene_id'] ?? '').toString(),

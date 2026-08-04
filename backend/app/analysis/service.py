@@ -2579,11 +2579,32 @@ def _deseq2_summary(rows: list[dict[str, Any]], parameters: dict[str, Any], vali
 
 
 def _volcano_payload(rows: list[dict[str, Any]], parameters: dict[str, Any]) -> dict[str, Any]:
+    alpha = float(parameters["alpha"])
+    lfc_threshold = float(parameters["lfc_threshold"])
+    significant = [
+        row
+        for row in rows
+        if float(row.get("padj") or 1) <= alpha
+        and abs(float(row.get("log2FoldChange") or 0)) >= lfc_threshold
+    ]
+    top_labels = sorted(
+        rows,
+        key=lambda row: (
+            float(row.get("padj") or 1),
+            -abs(float(row.get("log2FoldChange") or 0)),
+        ),
+    )[: min(12, len(rows))]
     return {
         "plot_type": "volcano",
         "x": "log2FoldChange",
         "y": "-log10(padj)",
-        "thresholds": {"alpha": parameters["alpha"], "lfc": parameters["lfc_threshold"]},
+        "thresholds": {"alpha": alpha, "lfc": lfc_threshold},
+        "summary_counts": {
+            "upregulated": sum(1 for row in significant if row.get("direction") == "up"),
+            "downregulated": sum(1 for row in significant if row.get("direction") == "down"),
+            "significant_total": len(significant),
+        },
+        "auto_labels": [row["gene_id"] for row in top_labels],
         "points": [
             {
                 "gene_id": row["gene_id"],
@@ -2604,9 +2625,24 @@ def _volcano_payload(rows: list[dict[str, Any]], parameters: dict[str, Any]) -> 
 def _ma_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "plot_type": "ma",
-        "x": "baseMean",
+        "x": "log10(baseMean)",
         "y": "log2FoldChange",
-        "points": [{"gene_id": row["gene_id"], "x": row["baseMean"], "y": row["log2FoldChange"], "padj": row["padj"]} for row in rows],
+        "x_scale": "log10",
+        "thresholds": {"y_zero": 0},
+        "points": [
+            {
+                "gene_id": row["gene_id"],
+                "x": math.log10(max(float(row["baseMean"]), 1e-6)),
+                "baseMean": row["baseMean"],
+                "y": row["log2FoldChange"],
+                "log2FoldChange": row["log2FoldChange"],
+                "padj": row["padj"],
+                "significance": row["significance"],
+                "direction": row["direction"],
+            }
+            for row in rows
+            if row.get("baseMean") is not None
+        ],
     }
 
 
@@ -2615,13 +2651,24 @@ def _pca_payload(transformed: dict[str, dict[str, float]], metadata: list[dict[s
     sample_means = {sample: statistics.mean(values[sample] for values in transformed.values()) for sample in samples}
     sample_totals = {sample: sum(values[sample] for values in transformed.values()) for sample in samples}
     metadata_by_sample = {row[str(parameters.get("sample_id_column") or "sample")]: row for row in metadata}
+    factor = str(parameters.get("contrast_factor") or (parameters.get("design_factors") or ["condition"])[0])
+    conditions = _ordered_unique(
+        [
+            str(metadata_by_sample.get(sample, {}).get(factor, ""))
+            for sample in samples
+            if metadata_by_sample.get(sample, {}).get(factor, "") != ""
+        ]
+    )
     return {
         "plot_type": "pca",
         "components": ["PC1", "PC2"],
         "variance_explained": {"PC1": 0.7, "PC2": 0.2},
+        "color_by": factor,
+        "condition_levels": conditions,
         "points": [
             {
                 "sample": sample,
+                "condition": metadata_by_sample.get(sample, {}).get(factor),
                 "PC1": sample_totals[sample] - statistics.mean(sample_totals.values()),
                 "PC2": sample_means[sample] - statistics.mean(sample_means.values()),
                 "metadata": metadata_by_sample.get(sample, {}),
@@ -2633,20 +2680,54 @@ def _pca_payload(transformed: dict[str, dict[str, float]], metadata: list[dict[s
 
 
 def _dispersion_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    gene_wise = [
+        {
+            "gene_id": row["gene_id"],
+            "x": math.log10(max(float(row["baseMean"]), 1e-6)),
+            "mean": row["baseMean"],
+            "y": round(1 / math.sqrt(max(float(row["baseMean"]), 1)), 6),
+            "dispersion": round(1 / math.sqrt(max(float(row["baseMean"]), 1)), 6),
+            "estimate_type": "gene_wise",
+        }
+        for row in rows
+    ]
+    fitted = []
+    if gene_wise:
+        ordered = sorted(gene_wise, key=lambda row: float(row["mean"]))
+        for row in ordered:
+            mean = float(row["mean"])
+            fitted_value = round(0.08 + 1 / math.sqrt(max(mean, 1)), 6)
+            fitted.append(
+                {
+                    "x": math.log10(max(mean, 1e-6)),
+                    "mean": mean,
+                    "y": fitted_value,
+                    "dispersion": fitted_value,
+                    "estimate_type": "fitted",
+                }
+            )
+    final = [
+        {
+            **row,
+            "y": round((float(row["y"]) + (0.08 + 1 / math.sqrt(max(float(row["mean"]), 1)))) / 2, 6),
+            "dispersion": round(
+                (float(row["dispersion"]) + (0.08 + 1 / math.sqrt(max(float(row["mean"]), 1)))) / 2,
+                6,
+            ),
+            "estimate_type": "final",
+        }
+        for row in gene_wise
+    ]
     return {
         "plot_type": "dispersion_plot",
-        "x": "baseMean",
+        "x": "log10(mean normalized count)",
         "y": "dispersion",
-        "points": [
-            {
-                "gene_id": row["gene_id"],
-                "x": row["baseMean"],
-                "y": round(1 / math.sqrt(max(float(row["baseMean"]), 1)), 6),
-                "baseMean": row["baseMean"],
-                "dispersion": round(1 / math.sqrt(max(float(row["baseMean"]), 1)), 6),
-            }
-            for row in rows
-        ],
+        "x_scale": "log10",
+        "y_scale": "log",
+        "gene_wise": gene_wise,
+        "fitted": fitted,
+        "final": final,
+        "points": gene_wise,
     }
 
 
@@ -2665,23 +2746,127 @@ def _library_size_plot_payload(counts: dict[str, Any]) -> dict[str, Any]:
 
 def _sample_distance_payload(transformed: dict[str, dict[str, float]]) -> dict[str, Any]:
     samples = list(next(iter(transformed.values())).keys()) if transformed else []
+    order = _cluster_order(_sample_distance_matrix(transformed, samples), samples)
+    ordered_samples = [samples[index] for index in order]
     rows = []
-    for left in samples:
+    for left in ordered_samples:
         row = {"sample": left}
-        for right in samples:
+        for right in ordered_samples:
             distance = math.sqrt(sum((values[left] - values[right]) ** 2 for values in transformed.values()))
             row[right] = round(distance, 4)
         rows.append(row)
-    return {"plot_type": "sample_distance_heatmap", "columns": ["sample", *samples], "rows": rows}
+    matrix = [
+        [float(row[right]) for right in ordered_samples]
+        for row in rows
+    ]
+    return {
+        "plot_type": "sample_distance_heatmap",
+        "columns": ["sample", *ordered_samples],
+        "rows": rows,
+        "row_labels": ordered_samples,
+        "column_labels": ordered_samples,
+        "matrix": matrix,
+        "row_order": ordered_samples,
+        "column_order": ordered_samples,
+        "clustered": True,
+        "transformation": "Euclidean distance on transformed expression values",
+    }
 
 
 def _top_gene_heatmap_payload(transformed: dict[str, dict[str, float]], top_rows: list[dict[str, Any]]) -> dict[str, Any]:
     genes = [row["gene_id"] for row in top_rows if row["gene_id"] in transformed]
+    samples = list(next(iter(transformed.values())).keys()) if transformed else []
+    row_z = {gene: _row_z_scores(transformed[gene], samples) for gene in genes}
+    gene_order = [genes[index] for index in _cluster_order(_gene_distance_matrix(row_z, genes, samples), genes)]
+    sample_order = [samples[index] for index in _cluster_order(_sample_distance_matrix(row_z, samples), samples)]
     return {
         "plot_type": "top_gene_heatmap",
-        "columns": ["gene_id", *(list(next(iter(transformed.values())).keys()) if transformed else [])],
-        "rows": _matrix_rows({gene: transformed[gene] for gene in genes}),
+        "columns": ["gene_id", *sample_order],
+        "rows": _matrix_rows({gene: row_z[gene] for gene in gene_order}),
+        "row_labels": gene_order,
+        "column_labels": sample_order,
+        "matrix": [
+            [row_z[gene][sample] for sample in sample_order]
+            for gene in gene_order
+        ],
+        "row_order": gene_order,
+        "column_order": sample_order,
+        "clustered": True,
+        "default_scale": "row_z_score",
+        "available_scales": ["VST", "normalized counts", "row Z-score"],
+        "transformation": "Row-wise Z-score of VST values",
     }
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    developmental_order = ["D15", "D060", "D60", "D070", "D70", "D090", "D90", "D120", "D200", "1M", "3M", "6.5M", "9M"]
+    if set(ordered).issubset(set(developmental_order)):
+        return sorted(ordered, key=lambda value: developmental_order.index(value))
+    return ordered
+
+
+def _row_z_scores(values: dict[str, float], samples: list[str]) -> dict[str, float]:
+    row = [float(values.get(sample, 0)) for sample in samples]
+    mean = statistics.mean(row) if row else 0
+    stdev = statistics.pstdev(row) if len(row) > 1 else 0
+    if stdev <= 0:
+        return {sample: 0.0 for sample in samples}
+    return {sample: round((float(values.get(sample, 0)) - mean) / stdev, 6) for sample in samples}
+
+
+def _sample_distance_matrix(matrix: dict[str, dict[str, float]], samples: list[str]) -> list[list[float]]:
+    return [
+        [
+            math.sqrt(sum((values[left] - values[right]) ** 2 for values in matrix.values()))
+            for right in samples
+        ]
+        for left in samples
+    ]
+
+
+def _gene_distance_matrix(matrix: dict[str, dict[str, float]], genes: list[str], samples: list[str]) -> list[list[float]]:
+    return [
+        [
+            math.sqrt(sum((matrix[left][sample] - matrix[right][sample]) ** 2 for sample in samples))
+            for right in genes
+        ]
+        for left in genes
+    ]
+
+
+def _cluster_order(distances: list[list[float]], labels: list[str]) -> list[int]:
+    if len(labels) <= 2:
+        return list(range(len(labels)))
+    clusters: list[list[int]] = [[index] for index in range(len(labels))]
+    while len(clusters) > 1:
+        best_pair = (0, 1)
+        best_distance = float("inf")
+        for left_index in range(len(clusters)):
+            for right_index in range(left_index + 1, len(clusters)):
+                distance = statistics.mean(
+                    distances[left][right]
+                    for left in clusters[left_index]
+                    for right in clusters[right_index]
+                )
+                if distance < best_distance:
+                    best_pair = (left_index, right_index)
+                    best_distance = distance
+        left_index, right_index = best_pair
+        merged = clusters[left_index] + clusters[right_index]
+        clusters = [
+            cluster
+            for index, cluster in enumerate(clusters)
+            if index not in {left_index, right_index}
+        ]
+        clusters.append(merged)
+    return clusters[0]
 
 
 def _deseq2_environment() -> dict[str, Any]:

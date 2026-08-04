@@ -582,6 +582,8 @@ void main() {
     expect(find.byType(ScatterViewer), findsOneWidget);
     expect(find.byType(ScatterChart), findsOneWidget);
     expect(find.text('Export PNG 300 dpi'), findsOneWidget);
+    expect(find.text('upregulated: 1'), findsOneWidget);
+    expect(find.text('significant total: 1'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).last, 'POU4F2');
     await tester.pumpAndSettle();
@@ -800,6 +802,17 @@ void main() {
       if (output['output_type'] != 'table') {
         expect(find.text('Plot'), findsOneWidget);
         expect(find.text('Data'), findsOneWidget);
+        expect(find.text('Export PNG 300 dpi'), findsOneWidget);
+      }
+      if (output['id'] == 'analysis-output:ma') {
+        expect(find.textContaining('log10 baseMean'), findsWidgets);
+      }
+      if (output['id'] == 'analysis-output:pca') {
+        expect(find.text('DMSO'), findsOneWidget);
+        expect(find.text('SAG'), findsOneWidget);
+      }
+      if (output['id'] == 'analysis-output:top-genes') {
+        expect(find.text('Row-wise Z-score of VST values'), findsOneWidget);
       }
       expect(tester.takeException(), isNull);
     }
@@ -1186,6 +1199,12 @@ Map<String, dynamic> _volcanoOutput() {
     'structured': {
       'plot_type': 'volcano',
       'thresholds': {'alpha': 0.05, 'lfc': 1.0},
+      'summary_counts': {
+        'upregulated': 1,
+        'downregulated': 0,
+        'significant total': 1,
+      },
+      'auto_labels': ['POU4F2'],
       'points': [
         {
           'gene_id': 'POU4F2',
@@ -1221,9 +1240,28 @@ Map<String, dynamic> _maOutput() {
     'output_type': 'interactive_plot',
     'structured': {
       'plot_type': 'ma',
+      'x_scale': 'log10',
       'points': [
-        {'gene_id': 'POU4F2', 'x': 30, 'y': 1.8, 'padj': 0.01},
-        {'gene_id': 'RBPMS', 'x': 24, 'y': 1.2, 'padj': 0.05},
+        {
+          'gene_id': 'POU4F2',
+          'x': 1.477,
+          'baseMean': 30,
+          'y': 1.8,
+          'log2FoldChange': 1.8,
+          'padj': 0.01,
+          'significance': 'significant',
+          'direction': 'up',
+        },
+        {
+          'gene_id': 'RBPMS',
+          'x': 1.38,
+          'baseMean': 24,
+          'y': 1.2,
+          'log2FoldChange': 1.2,
+          'padj': 0.05,
+          'significance': 'not significant',
+          'direction': 'none',
+        },
       ],
     },
   };
@@ -1237,15 +1275,19 @@ Map<String, dynamic> _pcaOutput() {
     'structured': {
       'plot_type': 'pca',
       'variance_explained': {'PC1': 0.7, 'PC2': 0.2},
+      'color_by': 'condition',
+      'condition_levels': ['DMSO', 'SAG'],
       'points': [
         {
           'sample': 'DMSO_1',
+          'condition': 'DMSO',
           'PC1': -1.0,
           'PC2': 0.2,
           'metadata': {'condition': 'DMSO'},
         },
         {
           'sample': 'SAG_1',
+          'condition': 'SAG',
           'PC1': 1.0,
           'PC2': -0.2,
           'metadata': {'condition': 'SAG'},
@@ -1263,9 +1305,17 @@ Map<String, dynamic> _sampleDistanceHeatmapOutput() {
     'structured': {
       'plot_type': 'sample_distance_heatmap',
       'columns': ['sample', 'DMSO_1', 'SAG_1'],
+      'clustered': true,
+      'transformation': 'Euclidean distance on transformed expression values',
       'rows': [
         {'sample': 'DMSO_1', 'DMSO_1': 0.0, 'SAG_1': 2.195},
         {'sample': 'SAG_1', 'DMSO_1': 2.195, 'SAG_1': 0.0},
+      ],
+      'row_labels': ['DMSO_1', 'SAG_1'],
+      'column_labels': ['DMSO_1', 'SAG_1'],
+      'matrix': [
+        [0.0, 2.195],
+        [2.195, 0.0],
       ],
     },
   };
@@ -1279,9 +1329,18 @@ Map<String, dynamic> _topGeneHeatmapOutput() {
     'structured': {
       'plot_type': 'top_gene_heatmap',
       'columns': ['gene_id', 'DMSO_1', 'SAG_1'],
+      'clustered': true,
+      'default_scale': 'row_z_score',
+      'transformation': 'Row-wise Z-score of VST values',
       'rows': [
-        {'gene_id': 'POU4F2', 'DMSO_1': 1.0, 'SAG_1': 4.0},
-        {'gene_id': 'RBPMS', 'DMSO_1': 2.0, 'SAG_1': 5.0},
+        {'gene_id': 'POU4F2', 'DMSO_1': -1.0, 'SAG_1': 1.0},
+        {'gene_id': 'RBPMS', 'DMSO_1': -1.0, 'SAG_1': 1.0},
+      ],
+      'row_labels': ['POU4F2', 'RBPMS'],
+      'column_labels': ['DMSO_1', 'SAG_1'],
+      'matrix': [
+        [-1.0, 1.0],
+        [-1.0, 1.0],
       ],
     },
   };
@@ -1294,9 +1353,18 @@ Map<String, dynamic> _dispersionOutput() {
     'output_type': 'interactive_plot',
     'structured': {
       'plot_type': 'dispersion_plot',
-      'points': [
-        {'mean': 10, 'dispersion': 0.4},
-        {'mean': 20, 'dispersion': 0.2},
+      'x_scale': 'log10',
+      'gene_wise': [
+        {'x': 1.0, 'mean': 10, 'y': 0.4, 'dispersion': 0.4},
+        {'x': 1.3, 'mean': 20, 'y': 0.2, 'dispersion': 0.2},
+      ],
+      'fitted': [
+        {'x': 1.0, 'mean': 10, 'y': 0.32, 'dispersion': 0.32},
+        {'x': 1.3, 'mean': 20, 'y': 0.24, 'dispersion': 0.24},
+      ],
+      'final': [
+        {'x': 1.0, 'mean': 10, 'y': 0.36, 'dispersion': 0.36},
+        {'x': 1.3, 'mean': 20, 'y': 0.22, 'dispersion': 0.22},
       ],
     },
   };

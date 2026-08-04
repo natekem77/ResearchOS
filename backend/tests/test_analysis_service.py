@@ -823,6 +823,27 @@ class AnalysisServiceTests(unittest.TestCase):
             self.assertIn("dispersion_plot", plot_types)
             self.assertIn("library_size_plot", plot_types)
             self.assertTrue(de_table_detail["provenance"]["source_files_remain_server_local"])
+            dispersion = next(output for output in output_details if output["structured"].get("plot_type") == "dispersion_plot")
+            pca = next(output for output in output_details if output["structured"].get("plot_type") == "pca")
+            sample_distance = next(output for output in output_details if output["structured"].get("plot_type") == "sample_distance_heatmap")
+            top_gene_heatmap = next(output for output in output_details if output["structured"].get("plot_type") == "top_gene_heatmap")
+            self.assertIn("gene_wise", dispersion["structured"])
+            self.assertIn("fitted", dispersion["structured"])
+            self.assertIn("final", dispersion["structured"])
+            self.assertEqual(dispersion["structured"]["x_scale"], "log10")
+            self.assertEqual(pca["structured"]["color_by"], "condition")
+            self.assertIn("variance_explained", pca["structured"])
+            self.assertTrue(sample_distance["structured"]["clustered"])
+            self.assertEqual(sample_distance["structured"]["row_order"], sample_distance["structured"]["column_order"])
+            self.assertTrue(top_gene_heatmap["structured"]["clustered"])
+            self.assertEqual(top_gene_heatmap["structured"]["default_scale"], "row_z_score")
+            self.assertAlmostEqual(
+                sum(top_gene_heatmap["structured"]["matrix"][0]),
+                0,
+                places=5,
+            )
+            self.assertIn("summary_counts", volcano_detail["structured"])
+            self.assertIn("auto_labels", volcano_detail["structured"])
 
     def test_deseq2_invalid_contrast_fails_with_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

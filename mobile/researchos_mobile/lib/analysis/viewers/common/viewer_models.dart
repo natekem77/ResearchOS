@@ -139,6 +139,8 @@ class ScatterPlotSpec {
     required this.points,
     this.thresholds = const [],
     this.legend = const {},
+    this.summary = const {},
+    this.autoLabelIds = const {},
     this.showLabelsByDefault = false,
     this.detailsTitle = 'Point',
     this.rawRows,
@@ -150,6 +152,8 @@ class ScatterPlotSpec {
   final List<ScatterPointModel> points;
   final List<ThresholdLineModel> thresholds;
   final Map<String, Color> legend;
+  final Map<String, dynamic> summary;
+  final Set<String> autoLabelIds;
   final bool showLabelsByDefault;
   final String detailsTitle;
   final List<Map<String, dynamic>>? rawRows;
@@ -161,6 +165,7 @@ class HeatmapSpec {
     required this.rowLabels,
     required this.columnLabels,
     required this.matrix,
+    this.subtitle,
     this.rawRows,
   });
 
@@ -168,6 +173,7 @@ class HeatmapSpec {
   final List<String> rowLabels;
   final List<String> columnLabels;
   final List<List<double>> matrix;
+  final String? subtitle;
   final List<Map<String, dynamic>>? rawRows;
 }
 
@@ -176,11 +182,15 @@ class LineSeriesModel {
     required this.name,
     required this.points,
     this.color,
+    this.connectPoints = true,
+    this.showPoints = false,
   });
 
   final String name;
   final List<Offset> points;
   final Color? color;
+  final bool connectPoints;
+  final bool showPoints;
 }
 
 class LinePlotSpec {

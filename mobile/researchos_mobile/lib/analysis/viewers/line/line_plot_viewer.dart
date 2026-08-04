@@ -55,6 +55,20 @@ class _LinePlotViewerState extends State<LinePlotViewer> {
               label: const Text('Reset view'),
             ),
           ),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (var index = 0; index < widget.spec.series.length; index++)
+                Chip(
+                  visualDensity: VisualDensity.compact,
+                  avatar: CircleAvatar(
+                    backgroundColor: widget.spec.series[index].color ??
+                        plotTheme.palette[index % plotTheme.palette.length],
+                  ),
+                  label: Text(widget.spec.series[index].name),
+                ),
+            ],
+          ),
           Expanded(
             child: GestureDetector(
               onDoubleTap: _resetView,
@@ -83,7 +97,11 @@ class _LinePlotViewerState extends State<LinePlotViewer> {
                           color: widget.spec.series[index].color ??
                               plotTheme
                                   .palette[index % plotTheme.palette.length],
-                          dotData: const FlDotData(show: false),
+                          barWidth:
+                              widget.spec.series[index].connectPoints ? 2 : 0,
+                          dotData: FlDotData(
+                            show: widget.spec.series[index].showPoints,
+                          ),
                         ),
                     ],
                     gridData: const FlGridData(show: true),
@@ -118,6 +136,65 @@ class _LinePlotViewerState extends State<LinePlotViewer> {
 LinePlotSpec lineSpecFromOutput(Map<String, dynamic> output) {
   final view = AnalysisOutputViewModel(output);
   final structured = view.structured;
+  if (view.plotType == 'dispersion_plot' &&
+      (structured['gene_wise'] != null || structured['fitted'] != null)) {
+    final geneWise = rowsFromObject(structured['gene_wise']);
+    final fitted = rowsFromObject(structured['fitted']);
+    final finalRows = rowsFromObject(structured['final']);
+    return LinePlotSpec(
+      title: view.title,
+      xAxisLabel: structured['x']?.toString() ?? 'log10 mean normalized count',
+      yAxisLabel: structured['y']?.toString() ?? 'dispersion',
+      series: [
+        LineSeriesModel(
+          name: 'gene-wise estimates',
+          connectPoints: false,
+          showPoints: true,
+          color: Colors.blueGrey,
+          points: [
+            for (final row in geneWise)
+              Offset(
+                doubleFromObject(row['x'] ?? row['mean']) ?? 0,
+                doubleFromObject(row['y'] ?? row['dispersion']) ?? 0,
+              ),
+          ],
+        ),
+        if (fitted.isNotEmpty)
+          LineSeriesModel(
+            name: 'fitted trend',
+            connectPoints: true,
+            showPoints: false,
+            color: Colors.redAccent,
+            points: [
+              for (final row in fitted)
+                Offset(
+                  doubleFromObject(row['x'] ?? row['mean']) ?? 0,
+                  doubleFromObject(row['y'] ?? row['dispersion']) ?? 0,
+                ),
+            ],
+          ),
+        if (finalRows.isNotEmpty)
+          LineSeriesModel(
+            name: 'final estimates',
+            connectPoints: false,
+            showPoints: true,
+            color: Colors.green,
+            points: [
+              for (final row in finalRows)
+                Offset(
+                  doubleFromObject(row['x'] ?? row['mean']) ?? 0,
+                  doubleFromObject(row['y'] ?? row['dispersion']) ?? 0,
+                ),
+            ],
+          ),
+      ],
+      rawRows: [
+        ...geneWise,
+        ...fitted,
+        ...finalRows,
+      ],
+    );
+  }
   final rows = rowsFromObject(structured['points'] ?? structured['rows']);
   return LinePlotSpec(
     title: view.title,
