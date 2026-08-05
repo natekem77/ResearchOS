@@ -42,6 +42,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   int _reloadGeneration = 0;
   String? _message;
   String _jobFilter = 'all';
+  final Set<String> _highlightedJobIds = <String>{};
   late final Map<String, bool> _expandedSections =
       Map<String, bool>.from(_analysisSectionExpansionMemory);
   final TextEditingController _publicDatasetSearchController =
@@ -98,7 +99,11 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         'jobs',
         widget.api.analysisJobs,
         previous.jobs,
-      ).then((value) => publish(current.copyWith(jobs: value))),
+      ).then(
+        (value) => publish(
+          current.copyWith(jobs: _mergeHighlightedJobs(value, previous.jobs)),
+        ),
+      ),
       _loadSection(
         errors,
         'outputs',
@@ -243,7 +248,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
   }
 
   List<Map<String, dynamic>> _filteredJobs(List<Map<String, dynamic>> jobs) {
-    return jobs.where((job) {
+    final filtered = jobs.where((job) {
       final status = job['status']?.toString() ?? 'queued';
       return switch (_jobFilter) {
         'active' => _isActiveJob(job),
@@ -251,7 +256,68 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         'failed' => status == 'failed',
         _ => true,
       };
-    }).toList(growable: false);
+    }).toList(growable: true);
+    filtered.sort(
+      (left, right) => _jobCreatedAt(right).compareTo(_jobCreatedAt(left)),
+    );
+    return filtered.toList(growable: false);
+  }
+
+  void _insertCreatedJobResponse(
+    Map<String, dynamic> response,
+    Map<String, dynamic> dataset,
+    String workflowKey,
+  ) {
+    final rawJob = response['job'];
+    if (rawJob is! Map) return;
+    final job = Map<String, dynamic>.from(rawJob);
+    final jobId = job['id']?.toString();
+    if (jobId == null || jobId.isEmpty) return;
+    job['dataset_id'] ??= dataset['id'];
+    job['workflow_id'] ??= workflowKey;
+    job['dataset_display_name'] ??= dataset['display_name'];
+    job['workflow_display_name'] ??=
+        _workflowByKey(_lastState, workflowKey)?['name'] ??
+            _formatWorkflowName(workflowKey);
+    job['created_at'] ??= DateTime.now().toUtc().toIso8601String();
+    job['start_time'] ??= job['queued_at'] ?? job['created_at'];
+    final current = _lastState ?? _AnalysisState.empty();
+    final jobs = [
+      job,
+      for (final existing in current.jobs)
+        if (existing['id']?.toString() != jobId) existing,
+    ];
+    setState(() {
+      _lastState = current.copyWith(jobs: jobs);
+      _highlightedJobIds.add(jobId);
+    });
+    Timer(const Duration(seconds: 5), () {
+      if (!mounted) return;
+      setState(() {
+        _highlightedJobIds.remove(jobId);
+      });
+    });
+  }
+
+  List<Map<String, dynamic>> _mergeHighlightedJobs(
+    List<Map<String, dynamic>> loaded,
+    List<Map<String, dynamic>> previous,
+  ) {
+    if (_highlightedJobIds.isEmpty) return loaded;
+    final loadedIds = loaded
+        .map((job) => job['id']?.toString())
+        .whereType<String>()
+        .toSet();
+    final pending = previous.where((job) {
+      final id = job['id']?.toString();
+      return id != null &&
+          _highlightedJobIds.contains(id) &&
+          !loadedIds.contains(id);
+    });
+    return [
+      ...pending,
+      ...loaded,
+    ];
   }
 
   Future<void> _registerDataset() async {
@@ -286,7 +352,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
 
   Future<void> _runQc(Map<String, dynamic> dataset) async {
     try {
-      await widget.api.createAnalysisJob(
+      final response = await widget.api.createAnalysisJob(
         datasetId: dataset['id'].toString(),
         workflowKey: 'bulk_rnaseq_validation_qc',
         parameters: const {
@@ -295,6 +361,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         },
       );
       if (!mounted) return;
+      _insertCreatedJobResponse(response, dataset, 'bulk_rnaseq_validation_qc');
       setState(() {
         _message = 'Bulk RNA-seq QC job queued.';
       });
@@ -322,12 +389,13 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     );
     if (request == null) return;
     try {
-      await widget.api.createAnalysisJob(
+      final response = await widget.api.createAnalysisJob(
         datasetId: dataset['id'].toString(),
         workflowKey: 'bulk_rnaseq_deseq2',
         parameters: request.parameters,
       );
       if (!mounted) return;
+      _insertCreatedJobResponse(response, dataset, 'bulk_rnaseq_deseq2');
       setState(() {
         _message = 'DESeq2 job queued.';
       });
@@ -347,12 +415,13 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     );
     if (request == null) return;
     try {
-      await widget.api.createAnalysisJob(
+      final response = await widget.api.createAnalysisJob(
         datasetId: dataset['id'].toString(),
         workflowKey: 'single_cell_scanpy_standard',
         parameters: request,
       );
       if (!mounted) return;
+      _insertCreatedJobResponse(response, dataset, 'single_cell_scanpy_standard');
       setState(() {
         _message = 'Scanpy job queued.';
       });
@@ -414,7 +483,7 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       final modality =
           imported['modality']?.toString() ?? dataset['modality']?.toString();
       if (modality == 'single_cell_rna_seq') {
-        await widget.api.createAnalysisJob(
+        final jobResponse = await widget.api.createAnalysisJob(
           datasetId: datasetId,
           workflowKey: 'single_cell_scanpy_standard',
           parameters: const {
@@ -432,13 +501,18 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           },
         );
         if (!mounted) return;
+        _insertCreatedJobResponse(
+          jobResponse,
+          imported,
+          'single_cell_scanpy_standard',
+        );
         setState(() {
           _message = 'Public single-cell dataset imported; Scanpy job queued.';
         });
         await _reload(quiet: true);
         return;
       }
-      await widget.api.createAnalysisJob(
+      final qcResponse = await widget.api.createAnalysisJob(
         datasetId: datasetId,
         workflowKey: 'bulk_rnaseq_validation_qc',
         parameters: const {
@@ -446,13 +520,25 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
           'group_column': 'condition',
         },
       );
+      if (!mounted) return;
+      _insertCreatedJobResponse(
+        qcResponse,
+        imported,
+        'bulk_rnaseq_validation_qc',
+      );
       final exploratory =
           _isExploratoryOnly(dataset) || _isExploratoryOnly(imported);
       if (!exploratory) {
-        await widget.api.createAnalysisJob(
+        final deResponse = await widget.api.createAnalysisJob(
           datasetId: datasetId,
           workflowKey: 'bulk_rnaseq_deseq2',
           parameters: _publicDeseq2Defaults(dataset),
+        );
+        if (!mounted) return;
+        _insertCreatedJobResponse(
+          deResponse,
+          imported,
+          'bulk_rnaseq_deseq2',
         );
       }
       if (!mounted) return;
@@ -1028,6 +1114,9 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
               for (final job in filteredJobs)
                 _JobCard(
                   job: job,
+                  highlighted: _highlightedJobIds.contains(
+                    job['id']?.toString(),
+                  ),
                   hasOutputs: state.outputs.any(
                     (output) =>
                         output['job_id']?.toString() == job['id']?.toString(),
@@ -2238,12 +2327,14 @@ class _ScanpyGroup extends StatelessWidget {
 class _JobCard extends StatelessWidget {
   const _JobCard({
     required this.job,
+    required this.highlighted,
     required this.hasOutputs,
     required this.onOpenOutputs,
     required this.onDelete,
   });
 
   final Map<String, dynamic> job;
+  final bool highlighted;
   final bool hasOutputs;
   final VoidCallback onOpenOutputs;
   final VoidCallback onDelete;
@@ -2254,7 +2345,27 @@ class _JobCard extends StatelessWidget {
         ? (job['progress'] as num).toDouble().clamp(0.0, 1.0).toDouble()
         : 0.0;
     final status = job['status']?.toString() ?? 'queued';
+    final datasetName = job['dataset_display_name']?.toString() ??
+        job['dataset_name']?.toString() ??
+        job['dataset_id']?.toString() ??
+        'Dataset';
+    final workflowName = job['workflow_display_name']?.toString() ??
+        _formatWorkflowName(job['workflow_id']?.toString() ?? 'Analysis job');
+    final runNumber = (job['run_number'] is num)
+        ? (job['run_number'] as num).toInt()
+        : 1;
+    final title = runNumber > 1 ? '$datasetName Run #$runNumber' : datasetName;
+    final currentStage = job['current_stage']?.toString();
+    final stageLabel = currentStage == null || currentStage.trim().isEmpty
+        ? _formatJobStatus(status)
+        : currentStage;
+    final elapsed = _jobElapsedLabel(job);
+    final start = _jobStartLabel(job);
+    final progressPercent = (progress * 100).round();
+    final colors = Theme.of(context).colorScheme;
     return Card(
+      color:
+          highlighted ? colors.primaryContainer.withValues(alpha: 0.55) : null,
       child: Padding(
         padding: const EdgeInsets.all(ResearchOsSpacing.md),
         child: Column(
@@ -2264,12 +2375,22 @@ class _JobCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: Text(
-                    job['workflow_id']?.toString() ?? 'Analysis job',
-                    style: Theme.of(context).textTheme.titleMedium,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: ResearchOsSpacing.xxs),
+                      Text(
+                        workflowName,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                      ),
+                    ],
                   ),
                 ),
-                Chip(label: Text(status)),
+                Chip(label: Text(_formatJobStatus(status))),
                 PopupMenuButton<String>(
                   tooltip: 'Job actions',
                   onSelected: (value) {
@@ -2293,7 +2414,21 @@ class _JobCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: ResearchOsSpacing.xs),
-            Text(job['current_stage']?.toString() ?? 'Queued'),
+            Wrap(
+              spacing: ResearchOsSpacing.sm,
+              runSpacing: ResearchOsSpacing.xxs,
+              children: [
+                _JobMetric(icon: Icons.insights_outlined, label: stageLabel),
+                if (start != null)
+                  _JobMetric(icon: Icons.schedule_outlined, label: start),
+                if (elapsed != null)
+                  _JobMetric(icon: Icons.timer_outlined, label: elapsed),
+                _JobMetric(
+                  icon: Icons.percent_outlined,
+                  label: '$progressPercent%',
+                ),
+              ],
+            ),
             if (job['queue_reason'] != null) ...[
               const SizedBox(height: ResearchOsSpacing.xs),
               Text(
@@ -2325,6 +2460,29 @@ class _JobCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _JobMetric extends StatelessWidget {
+  const _JobMetric({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          icon,
+          size: 16,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+        const SizedBox(width: ResearchOsSpacing.xxs),
+        Text(label, style: Theme.of(context).textTheme.bodySmall),
+      ],
     );
   }
 }
@@ -3472,6 +3630,60 @@ bool _isActiveJob(Map<String, dynamic> job) {
     'running',
     'uploading_results',
   }.contains(job['status']?.toString() ?? 'queued');
+}
+
+DateTime _jobCreatedAt(Map<String, dynamic> job) {
+  final value =
+      job['created_at'] ?? job['queued_at'] ?? job['start_time'] ?? '';
+  return DateTime.tryParse(value.toString()) ??
+      DateTime.fromMillisecondsSinceEpoch(0);
+}
+
+String _formatWorkflowName(String workflowId) {
+  return workflowId
+      .split(RegExp(r'[_\s-]+'))
+      .where((part) => part.isNotEmpty)
+      .map((part) => part.length <= 3
+          ? part.toUpperCase()
+          : '${part[0].toUpperCase()}${part.substring(1)}')
+      .join(' ');
+}
+
+String _formatJobStatus(String status) {
+  return status
+      .split(RegExp(r'[_\s-]+'))
+      .where((part) => part.isNotEmpty)
+      .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+      .join(' ');
+}
+
+String? _jobStartLabel(Map<String, dynamic> job) {
+  final value = job['start_time'] ?? job['started_at'] ?? job['queued_at'];
+  if (value == null) return null;
+  final parsed = DateTime.tryParse(value.toString())?.toLocal();
+  if (parsed == null) return null;
+  final hour = parsed.hour % 12 == 0 ? 12 : parsed.hour % 12;
+  final minute = parsed.minute.toString().padLeft(2, '0');
+  final suffix = parsed.hour >= 12 ? 'PM' : 'AM';
+  return '$hour:$minute $suffix';
+}
+
+String? _jobElapsedLabel(Map<String, dynamic> job) {
+  final raw = job['elapsed_seconds'];
+  final seconds =
+      raw is num ? raw.round() : int.tryParse(raw?.toString() ?? '');
+  if (seconds == null || seconds < 0) return null;
+  if (seconds < 60) return '${seconds}s';
+  final minutes = seconds ~/ 60;
+  final remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return remainingSeconds == 0
+        ? '${minutes}m'
+        : '${minutes}m ${remainingSeconds}s';
+  }
+  final hours = minutes ~/ 60;
+  final remainingMinutes = minutes % 60;
+  return remainingMinutes == 0 ? '${hours}h' : '${hours}h ${remainingMinutes}m';
 }
 
 Map<String, dynamic> _publicDeseq2Defaults(Map<String, dynamic> dataset) {

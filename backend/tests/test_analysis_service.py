@@ -1220,6 +1220,51 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(remove_summary["outputs_deleted"])
         self.assertEqual(removed_outputs, [])
 
+    def test_job_listing_includes_display_context_and_newest_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service, _root = self._fixture(tmpdir)
+            dataset = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "Bulk SAG GRKi",
+                    "counts_path": "bulk/counts.tsv",
+                    "metadata_path": "bulk/samples.csv",
+                },
+            )
+            first = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            second = service.create_job(
+                user_id="user:pi-owner",
+                dataset_id=dataset["id"],
+                workflow_key="bulk_rnaseq_validation_qc",
+                parameters={"sample_id_column": "sample", "group_column": "condition"},
+            )
+            with sqlite3.connect(Path(tmpdir) / "researchos.db") as connection:
+                connection.execute(
+                    "UPDATE analysis_jobs SET created_at = ? WHERE id = ?",
+                    ("2026-08-04T12:00:00+00:00", first["id"]),
+                )
+                connection.execute(
+                    "UPDATE analysis_jobs SET created_at = ? WHERE id = ?",
+                    ("2026-08-04T12:01:00+00:00", second["id"]),
+                )
+            jobs = service.list_jobs("user:pi-owner")
+
+        self.assertEqual([job["id"] for job in jobs], [second["id"], first["id"]])
+        self.assertEqual(jobs[0]["dataset_display_name"], "Bulk SAG GRKi")
+        self.assertEqual(
+            jobs[0]["workflow_display_name"],
+            "Bulk RNA-seq Dataset Validation/QC",
+        )
+        self.assertEqual(jobs[0]["run_number"], 2)
+        self.assertEqual(jobs[1]["run_number"], 1)
+        self.assertIsNotNone(jobs[0]["start_time"])
+        self.assertIsNotNone(jobs[0]["elapsed_seconds"])
+
     def test_output_registration_is_idempotent_within_job(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, _root = self._fixture(tmpdir)

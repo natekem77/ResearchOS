@@ -98,7 +98,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.scrollUntilVisible(
-      find.text('bulk_rnaseq_validation_qc'),
+      find.text('Bulk RNA-seq Dataset Validation/QC'),
       500,
       scrollable: find.byType(Scrollable).first,
     );
@@ -306,8 +306,16 @@ void main() {
             return _json({
               'job': {
                 'id': 'analysis-job:test',
+                'dataset_id': 'analysis-dataset:test',
+                'dataset_display_name': 'Bulk SAG GRKi',
+                'workflow_id': 'bulk_rnaseq_validation_qc',
+                'workflow_display_name': 'Bulk RNA-seq Dataset Validation/QC',
                 'status': 'queued',
                 'progress': 0,
+                'current_stage': 'Queued',
+                'created_at': '2026-07-23T11:19:00Z',
+                'start_time': '2026-07-23T11:19:00Z',
+                'elapsed_seconds': 0,
               }
             });
           }
@@ -315,10 +323,16 @@ void main() {
             'jobs': [
               {
                 'id': 'analysis-job:test',
+                'dataset_id': 'analysis-dataset:test',
+                'dataset_display_name': 'Bulk SAG GRKi',
                 'workflow_id': 'bulk_rnaseq_validation_qc',
+                'workflow_display_name': 'Bulk RNA-seq Dataset Validation/QC',
                 'status': 'complete',
                 'progress': 1,
                 'current_stage': 'Complete',
+                'created_at': '2026-07-23T11:20:00Z',
+                'start_time': '2026-07-23T11:20:00Z',
+                'elapsed_seconds': 42,
               }
             ],
           });
@@ -873,6 +887,9 @@ void main() {
           call.contains('"leiden_resolution":0.5')),
       isTrue,
     );
+    expect(find.text('Scanpy job queued.'), findsOneWidget);
+    expect(find.text('Scanpy Standard Pipeline'), findsWidgets);
+    expect(find.text('Queued'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 }
@@ -1062,11 +1079,33 @@ ResearchOsApi _mockAnalysisApi(
       }
       if (request.url.path == '/mobile/analysis/jobs') {
         if (request.method == 'POST') {
+          final body = jsonDecode(request.body) as Map<String, dynamic>;
+          final workflowId = body['workflow_id']?.toString() ?? '';
+          final datasetId = body['dataset_id']?.toString() ?? '';
+          final datasetName = datasetId == 'analysis-dataset:single-cell'
+              ? 'PBMC 3k (10x public)'
+              : datasetId == 'analysis-dataset:geo'
+                  ? 'GSE229682 retinal organoid raw counts'
+                  : 'Bulk SAG GRKi';
+          final workflowName = workflowId == 'single_cell_scanpy_standard'
+              ? 'Scanpy Standard Pipeline'
+              : workflowId == 'bulk_rnaseq_deseq2'
+                  ? 'DESeq2 Differential Expression'
+                  : 'Bulk RNA-seq Dataset Validation/QC';
           return _json({
             'job': {
               'id': 'analysis-job:queued',
+              'dataset_id': datasetId,
+              'dataset_display_name': datasetName,
+              'workflow_id': workflowId,
+              'workflow_display_name': workflowName,
               'status': 'queued',
               'progress': 0,
+              'current_stage': 'Queued',
+              'created_at': '2026-08-04T12:01:00Z',
+              'queued_at': '2026-08-04T12:01:00Z',
+              'start_time': '2026-08-04T12:01:00Z',
+              'elapsed_seconds': 0,
             }
           });
         }
@@ -1074,17 +1113,29 @@ ResearchOsApi _mockAnalysisApi(
           'jobs': [
             {
               'id': 'analysis-job:test',
+              'dataset_id': 'analysis-dataset:test',
+              'dataset_display_name': 'Bulk SAG GRKi',
               'workflow_id': 'bulk_rnaseq_validation_qc',
+              'workflow_display_name': 'Bulk RNA-seq Dataset Validation/QC',
               'status': 'complete',
               'progress': 1,
               'current_stage': 'Complete',
+              'created_at': '2026-07-23T11:20:00Z',
+              'start_time': '2026-07-23T11:20:00Z',
+              'elapsed_seconds': 42,
             },
             {
               'id': 'analysis-job:failed',
+              'dataset_id': 'analysis-dataset:geo',
+              'dataset_display_name': 'GSE229682 retinal organoid raw counts',
               'workflow_id': 'bulk_rnaseq_deseq2',
+              'workflow_display_name': 'DESeq2 Differential Expression',
               'status': 'failed',
               'progress': 1,
               'current_stage': 'Failed',
+              'created_at': '2026-07-23T11:21:00Z',
+              'start_time': '2026-07-23T11:21:00Z',
+              'elapsed_seconds': 8,
               'error_summary': 'DESeq2 requires raw integer counts.',
             },
           ],

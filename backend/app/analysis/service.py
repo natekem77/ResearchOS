@@ -2009,6 +2009,7 @@ class AnalysisService:
         }
 
     def _job_payload(self, row: sqlite3.Row) -> dict[str, Any]:
+        display = self._job_display_context(row)
         return dict(row) | {
             "parameters": json.loads(row["parameters_json"] or "{}"),
             "resource_request": json.loads(row["resource_request_json"] or "{}"),
@@ -2017,6 +2018,37 @@ class AnalysisService:
             "retry_count": int(row["retry_count"] or 0),
             "max_retries": int(row["max_retries"] or self.max_transient_retries),
             "queue_reason": self._queue_reason(row),
+            **display,
+        }
+
+    def _job_display_context(self, row: sqlite3.Row) -> dict[str, Any]:
+        with self._connect() as connection:
+            dataset = connection.execute(
+                "SELECT display_name FROM analysis_datasets WHERE id = ?",
+                (row["dataset_id"],),
+            ).fetchone()
+            workflow = connection.execute(
+                "SELECT name FROM analysis_workflows WHERE stable_key = ?",
+                (row["workflow_id"],),
+            ).fetchone()
+            run_number = connection.execute(
+                """
+                SELECT COUNT(*) FROM analysis_jobs
+                WHERE user_id = ? AND dataset_id = ? AND workflow_id = ?
+                  AND created_at <= ? AND deleted_at IS NULL
+                """,
+                (row["user_id"], row["dataset_id"], row["workflow_id"], row["created_at"]),
+            ).fetchone()[0]
+        start_time = row["started_at"] or row["queued_at"] or row["created_at"]
+        end_time = row["finished_at"] or _now()
+        elapsed_seconds = _elapsed_seconds(start_time, end_time)
+        return {
+            "dataset_display_name": dataset["display_name"] if dataset else row["dataset_id"],
+            "workflow_display_name": workflow["name"] if workflow else row["workflow_id"],
+            "run_number": int(run_number or 1),
+            "display_title": f"{dataset['display_name'] if dataset else row['dataset_id']}",
+            "start_time": start_time,
+            "elapsed_seconds": elapsed_seconds,
         }
 
     def _queue_reason(self, row: sqlite3.Row) -> str | None:
@@ -2260,6 +2292,19 @@ def _bounded_progress(value: object) -> float:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _elapsed_seconds(start: object, end: object) -> int | None:
+    try:
+        start_dt = datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        end_dt = datetime.fromisoformat(str(end).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=timezone.utc)
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=timezone.utc)
+    return max(0, int((end_dt - start_dt).total_seconds()))
 
 
 def _is_within(path: Path, root: Path) -> bool:
