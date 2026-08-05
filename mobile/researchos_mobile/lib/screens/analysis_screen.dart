@@ -304,10 +304,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
     List<Map<String, dynamic>> previous,
   ) {
     if (_highlightedJobIds.isEmpty) return loaded;
-    final loadedIds = loaded
-        .map((job) => job['id']?.toString())
-        .whereType<String>()
-        .toSet();
+    final loadedIds =
+        loaded.map((job) => job['id']?.toString()).whereType<String>().toSet();
     final pending = previous.where((job) {
       final id = job['id']?.toString();
       return id != null &&
@@ -421,7 +419,8 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
         parameters: request,
       );
       if (!mounted) return;
-      _insertCreatedJobResponse(response, dataset, 'single_cell_scanpy_standard');
+      _insertCreatedJobResponse(
+          response, dataset, 'single_cell_scanpy_standard');
       setState(() {
         _message = 'Scanpy job queued.';
       });
@@ -2351,9 +2350,8 @@ class _JobCard extends StatelessWidget {
         'Dataset';
     final workflowName = job['workflow_display_name']?.toString() ??
         _formatWorkflowName(job['workflow_id']?.toString() ?? 'Analysis job');
-    final runNumber = (job['run_number'] is num)
-        ? (job['run_number'] as num).toInt()
-        : 1;
+    final runNumber =
+        (job['run_number'] is num) ? (job['run_number'] as num).toInt() : 1;
     final title = runNumber > 1 ? '$datasetName Run #$runNumber' : datasetName;
     final currentStage = job['current_stage']?.toString();
     final stageLabel = currentStage == null || currentStage.trim().isEmpty
@@ -2382,7 +2380,7 @@ class _JobCard extends StatelessWidget {
                         title,
                         style: Theme.of(context).textTheme.titleMedium,
                       ),
-                      const SizedBox(height: ResearchOsSpacing.xxs),
+                      const SizedBox(height: ResearchOsSpacing.xs),
                       Text(
                         workflowName,
                         style: Theme.of(context).textTheme.bodyMedium,
@@ -2416,7 +2414,7 @@ class _JobCard extends StatelessWidget {
             const SizedBox(height: ResearchOsSpacing.xs),
             Wrap(
               spacing: ResearchOsSpacing.sm,
-              runSpacing: ResearchOsSpacing.xxs,
+              runSpacing: ResearchOsSpacing.xs,
               children: [
                 _JobMetric(icon: Icons.insights_outlined, label: stageLabel),
                 if (start != null)
@@ -2480,7 +2478,7 @@ class _JobMetric extends StatelessWidget {
           size: 16,
           color: Theme.of(context).colorScheme.onSurfaceVariant,
         ),
-        const SizedBox(width: ResearchOsSpacing.xxs),
+        const SizedBox(width: ResearchOsSpacing.xs),
         Text(label, style: Theme.of(context).textTheme.bodySmall),
       ],
     );
