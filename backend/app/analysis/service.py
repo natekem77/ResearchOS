@@ -433,6 +433,8 @@ class AnalysisService:
         summary["exploratory_only"] = exploratory_only
         if isinstance(payload.get("suggested_deseq2"), dict):
             summary["suggested_deseq2"] = payload["suggested_deseq2"]
+        if payload.get("public_accession"):
+            summary["public_accession"] = str(payload["public_accession"])
         dataset_id = f"analysis-dataset:{uuid.uuid4().hex[:16]}"
         checksum = _fingerprint_paths([counts_abs, metadata_abs])
         with self._connect() as connection:
@@ -1248,7 +1250,7 @@ class AnalysisService:
         )
         if record is None:
             raise AnalysisValidationError("Public GEO dataset is not available in the curated import catalog.")
-        existing = self._dataset_by_name(user_id, record["title"])
+        existing = self._public_dataset_by_accession(user_id, record["accession"])
         if existing is not None:
             refreshed = self._refresh_public_geo_dataset(user_id, existing, record)
             return refreshed | {"import_status": "already_imported"}
@@ -1275,6 +1277,7 @@ class AnalysisService:
                 "source_data_kind": record.get("source_data_kind", "raw_counts"),
                 "exploratory_only": bool(record.get("exploratory_only", False)),
                 "suggested_deseq2": record.get("deseq2_defaults"),
+                "public_accession": record["accession"],
             },
         )
         self._audit(
@@ -1312,6 +1315,7 @@ class AnalysisService:
         summary["exploratory_only"] = exploratory_only
         if isinstance(record.get("deseq2_defaults"), dict):
             summary["suggested_deseq2"] = record["deseq2_defaults"]
+        summary["public_accession"] = record["accession"]
         checksum = _fingerprint_paths([counts_path, metadata_path])
         with self._connect() as connection:
             connection.execute(
@@ -1413,6 +1417,21 @@ class AnalysisService:
                 "SELECT * FROM analysis_datasets WHERE user_id = ? AND display_name = ?",
                 (user_id, display_name),
             ).fetchone()
+
+    def _public_dataset_by_accession(self, user_id: str, accession: str) -> sqlite3.Row | None:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM analysis_datasets WHERE user_id = ? AND source_type = 'public_geo'",
+                (user_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                summary = json.loads(row["metadata_summary_json"] or "{}")
+            except json.JSONDecodeError:
+                summary = {}
+            if str(summary.get("public_accession") or "").lower() == accession.lower():
+                return row
+        return None
 
     def _completed_demo_job_exists(self, user_id: str, dataset_id: str) -> bool:
         with self._connect() as connection:
@@ -2985,7 +3004,14 @@ def _public_geo_record_for_dataset_row(row: sqlite3.Row) -> dict[str, Any] | Non
     if str(row["source_type"] or "") != "public_geo":
         return None
     display_name = str(row["display_name"] or "")
+    try:
+        metadata = json.loads(row["metadata_summary_json"] or "{}")
+    except json.JSONDecodeError:
+        metadata = {}
+    accession = str(metadata.get("public_accession") or "")
     for record in _public_geo_datasets():
+        if accession and str(record.get("accession") or "").lower() == accession.lower():
+            return record
         if str(record.get("title") or "") == display_name:
             return record
     return None
@@ -3745,7 +3771,7 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
     return [
         {
             "accession": "10X-PBMC-3K",
-            "title": "PBMC 3k filtered gene-barcode matrix",
+            "title": "PBMC 3k (10x public)",
             "organism": "Homo sapiens",
             "tissue": "Peripheral blood mononuclear cells",
             "publication": "10x Genomics public dataset; used by Scanpy/Seurat PBMC tutorials",
@@ -3776,7 +3802,7 @@ def _public_geo_datasets() -> list[dict[str, Any]]:
         },
         {
             "accession": "10X-PBMC-10K-V3",
-            "title": "PBMC 10k v3 filtered feature-barcode matrix",
+            "title": "PBMC 10k (10x public)",
             "organism": "Homo sapiens",
             "tissue": "Peripheral blood mononuclear cells",
             "publication": "10x Genomics public dataset",

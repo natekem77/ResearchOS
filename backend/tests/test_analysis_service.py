@@ -263,6 +263,19 @@ class AnalysisServiceTests(unittest.TestCase):
     def test_public_pbmc_catalog_and_10x_import_registers_single_cell_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             service, root = self._fixture(tmpdir)
+            demo_dir = root / "demo" / "single_cell" / "pbmc_3k"
+            demo_dir.mkdir(parents=True)
+            analysis_service_module._write_demo_single_cell_files(demo_dir)
+            demo = service.register_server_dataset(
+                user_id="user:pi-owner",
+                payload={
+                    "display_name": "PBMC 3k",
+                    "modality": "single_cell_rna_seq",
+                    "counts_path": "demo/single_cell/pbmc_3k",
+                    "metadata_path": "demo/single_cell/pbmc_3k",
+                    "organism": "human",
+                },
+            )
             source_dir = Path(tmpdir) / "source_pbmc"
             matrix_dir = source_dir / "filtered_feature_bc_matrix"
             matrix_dir.mkdir(parents=True)
@@ -288,6 +301,8 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertIn("10X-PBMC-10K-V3", accessions)
         self.assertEqual(dataset["modality"], "single_cell_rna_seq")
         self.assertEqual(dataset["source_type"], "public_geo")
+        self.assertNotEqual(dataset["id"], demo["id"])
+        self.assertEqual(demo["cell_count"], 30)
         self.assertEqual(dataset["cell_count"], 30)
         self.assertEqual(dataset["features_count"], 12)
         self.assertTrue(matrix_exists)

@@ -411,6 +411,33 @@ class _AnalysisScreenState extends State<AnalysisScreen> {
       if (datasetId == null || datasetId.isEmpty) {
         throw StateError('Imported dataset response did not include an id.');
       }
+      final modality =
+          imported['modality']?.toString() ?? dataset['modality']?.toString();
+      if (modality == 'single_cell_rna_seq') {
+        await widget.api.createAnalysisJob(
+          datasetId: datasetId,
+          workflowKey: 'single_cell_scanpy_standard',
+          parameters: const {
+            'min_genes_per_cell': 200,
+            'max_percent_mito': 20,
+            'min_cells_per_gene': 3,
+            'target_sum': 10000,
+            'n_top_hvg': 2000,
+            'n_pcs': 30,
+            'n_neighbors': 15,
+            'leiden_resolution': 0.5,
+            'marker_top_n': 100,
+            'marker_method': 'wilcoxon',
+            'random_seed': 0,
+          },
+        );
+        if (!mounted) return;
+        setState(() {
+          _message = 'Public single-cell dataset imported; Scanpy job queued.';
+        });
+        await _reload(quiet: true);
+        return;
+      }
       await widget.api.createAnalysisJob(
         datasetId: datasetId,
         workflowKey: 'bulk_rnaseq_validation_qc',
@@ -1241,6 +1268,7 @@ class _PublicDatasetCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final exploratory = _isExploratoryOnly(dataset);
+    final modality = dataset['modality']?.toString();
     return Padding(
       padding: const EdgeInsets.only(top: ResearchOsSpacing.sm),
       child: DecoratedBox(
@@ -1316,9 +1344,11 @@ class _PublicDatasetCard extends StatelessWidget {
                   FilledButton.icon(
                     onPressed: onImportAndRun,
                     icon: const Icon(Icons.play_arrow_outlined),
-                    label: Text(exploratory
-                        ? 'Import + QC only'
-                        : 'Import + Run DESeq2'),
+                    label: Text(modality == 'single_cell_rna_seq'
+                        ? 'Import + Run Scanpy'
+                        : exploratory
+                            ? 'Import + QC only'
+                            : 'Import + Run DESeq2'),
                   ),
                 ],
               ),
@@ -1419,8 +1449,10 @@ class _DatasetCard extends StatelessWidget {
     final summary = dataset['metadata_summary'];
     final metadata = summary is Map ? summary : const {};
     final modality = dataset['modality']?.toString() ?? 'bulk_rna_seq';
+    final sourceType = dataset['source_type']?.toString() ?? '';
     final canRunQc = modality == 'bulk_rna_seq';
     final canRunScanpy = modality == 'single_cell_rna_seq';
+    final scanpyRunnableDataset = canRunScanpy && sourceType == 'public_geo';
     final exploratory = _isExploratoryOnly(dataset);
     final deseq2Ready = canRunQc &&
         !exploratory &&
@@ -1429,10 +1461,12 @@ class _DatasetCard extends StatelessWidget {
         ? 'DESeq2 requires raw integer counts. This dataset is exploratory-only because its source data are normalized CPM/TPM values.'
         : deseq2Workflow?['readiness_reason']?.toString() ??
             'No eligible DESeq2 worker is connected.';
-    final scanpyReady =
-        canRunScanpy && scanpyWorkflow?['status']?.toString() == 'installed';
-    final scanpyReason = scanpyWorkflow?['readiness_reason']?.toString() ??
-        'No eligible Scanpy worker is connected.';
+    final scanpyReady = scanpyRunnableDataset &&
+        scanpyWorkflow?['status']?.toString() == 'installed';
+    final scanpyReason = !scanpyRunnableDataset
+        ? 'Run Scanpy is enabled for imported public single-cell datasets. The small built-in demo remains a lightweight fixture.'
+        : scanpyWorkflow?['readiness_reason']?.toString() ??
+            'No eligible Scanpy worker is connected.';
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(ResearchOsSpacing.md),

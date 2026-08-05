@@ -844,7 +844,7 @@ void main() {
     await _expandAllAnalysisSections(tester);
 
     await tester.scrollUntilVisible(
-      find.text('PBMC 3k'),
+      find.text('PBMC 3k (10x public)'),
       400,
       scrollable: find.byType(Scrollable).first,
     );
@@ -1239,8 +1239,9 @@ Map<String, dynamic> _geoDataset() {
 Map<String, dynamic> _singleCellDataset() {
   return {
     'id': 'analysis-dataset:pbmc3k',
-    'display_name': 'PBMC 3k',
+    'display_name': 'PBMC 3k (10x public)',
     'modality': 'single_cell_rna_seq',
+    'source_type': 'public_geo',
     'cell_count': 30,
     'features_count': 12,
     'source_type': 'server_folder',
