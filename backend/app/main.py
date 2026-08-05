@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from fastapi import Body, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from app.agents.manager import create_default_agent_manager
 from app.ai.provider_manager import AIService, get_ai_provider
@@ -1055,7 +1055,9 @@ class MobileAnalysisDatasetRequest(BaseModel):
 
 class MobileAnalysisJobRequest(BaseModel):
     dataset_id: str
-    workflow_key: str
+    workflow_key: str = Field(
+        validation_alias=AliasChoices("workflow_key", "workflow_id")
+    )
     parameters: dict[str, object] = Field(default_factory=dict)
     priority: int = 0
 

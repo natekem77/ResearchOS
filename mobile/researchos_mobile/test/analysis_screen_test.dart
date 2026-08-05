@@ -892,6 +892,39 @@ void main() {
     expect(find.text('Queued'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
+
+  test('ResearchOsApi submits Scanpy jobs with workflow_key', () async {
+    late Map<String, dynamic> submitted;
+    final api = ResearchOsApi(
+      baseUrl: 'http://example.test',
+      client: MockClient((request) async {
+        expect(request.method, 'POST');
+        expect(request.url.path, '/mobile/analysis/jobs');
+        submitted = jsonDecode(request.body) as Map<String, dynamic>;
+        return _json({
+          'job': {
+            'id': 'analysis-job:scanpy',
+            'dataset_id': 'analysis-dataset:single-cell',
+            'workflow_id': 'single_cell_scanpy_standard',
+            'status': 'queued',
+            'progress': 0,
+          }
+        });
+      }),
+    );
+
+    final response = await api.createAnalysisJob(
+      datasetId: 'analysis-dataset:single-cell',
+      workflowKey: 'single_cell_scanpy_standard',
+      parameters: const {'leiden_resolution': 0.5},
+    );
+
+    expect(response['job']['id'], 'analysis-job:scanpy');
+    expect(submitted['dataset_id'], 'analysis-dataset:single-cell');
+    expect(submitted['workflow_key'], 'single_cell_scanpy_standard');
+    expect(submitted, isNot(contains('workflow_id')));
+    expect(submitted['parameters'], containsPair('leiden_resolution', 0.5));
+  });
 }
 
 ResearchOsApi _mockAnalysisApi(
@@ -1080,16 +1113,18 @@ ResearchOsApi _mockAnalysisApi(
       if (request.url.path == '/mobile/analysis/jobs') {
         if (request.method == 'POST') {
           final body = jsonDecode(request.body) as Map<String, dynamic>;
-          final workflowId = body['workflow_id']?.toString() ?? '';
+          expect(body, containsPair('workflow_key', isA<String>()));
+          expect(body, isNot(contains('workflow_id')));
+          final workflowKey = body['workflow_key']?.toString() ?? '';
           final datasetId = body['dataset_id']?.toString() ?? '';
           final datasetName = datasetId == 'analysis-dataset:single-cell'
               ? 'PBMC 3k (10x public)'
               : datasetId == 'analysis-dataset:geo'
                   ? 'GSE229682 retinal organoid raw counts'
                   : 'Bulk SAG GRKi';
-          final workflowName = workflowId == 'single_cell_scanpy_standard'
+          final workflowName = workflowKey == 'single_cell_scanpy_standard'
               ? 'Scanpy Standard Pipeline'
-              : workflowId == 'bulk_rnaseq_deseq2'
+              : workflowKey == 'bulk_rnaseq_deseq2'
                   ? 'DESeq2 Differential Expression'
                   : 'Bulk RNA-seq Dataset Validation/QC';
           return _json({
@@ -1097,7 +1132,7 @@ ResearchOsApi _mockAnalysisApi(
               'id': 'analysis-job:queued',
               'dataset_id': datasetId,
               'dataset_display_name': datasetName,
-              'workflow_id': workflowId,
+              'workflow_id': workflowKey,
               'workflow_display_name': workflowName,
               'status': 'queued',
               'progress': 0,

@@ -1480,6 +1480,26 @@ class AnalysisServiceTests(unittest.TestCase):
         self.assertTrue(any(path == "/mobile/analysis/notebook-references" and "POST" in methods for path, methods in routes))
         self.assertTrue(any(path == "/mobile/analysis/storage-report" and "GET" in methods for path, methods in routes))
 
+    def test_mobile_analysis_job_request_accepts_workflow_key_and_legacy_alias(self) -> None:
+        from app.main import MobileAnalysisJobRequest
+
+        canonical = MobileAnalysisJobRequest.model_validate(
+            {
+                "dataset_id": "analysis-dataset:single-cell",
+                "workflow_key": "single_cell_scanpy_standard",
+                "parameters": {"leiden_resolution": 0.5},
+            }
+        )
+        legacy = MobileAnalysisJobRequest.model_validate(
+            {
+                "dataset_id": "analysis-dataset:single-cell",
+                "workflow_id": "single_cell_scanpy_standard",
+            }
+        )
+
+        self.assertEqual(canonical.workflow_key, "single_cell_scanpy_standard")
+        self.assertEqual(legacy.workflow_key, "single_cell_scanpy_standard")
+
 
 def _write_bulk_fixture(root: Path) -> None:
     bulk = root / "bulk"
